@@ -1,6 +1,6 @@
 # CotaForge
 
-[English](README.md) · **Español**
+[English](README.md) · **Español** · [Sitio web](https://jomruizgo.github.io/cotaforge/es/)
 
 Diseño mecánico en FreeCAD, desde Claude Code. El agente construye piezas, ensambles y planos de taller en pasos pequeños y medidos. Puedes interrumpirlo, deshacer cualquier paso, y guardar y retomar el archivo nativo.
 
