@@ -1878,7 +1878,9 @@ class LiveGeometry(drawing_assembly.AssemblyRays, sc.Geometry):
         if leg_b > leg_a:  # the longer leg is the one the angle is measured from
             leg_a, leg_b = leg_b, leg_a
         angle = math.degrees(math.atan2(leg_b * math.sin(gamma), leg_a - leg_b * math.cos(gamma)))
-        return sc.ChamferInfo(face_id, leg_a, leg_b, angle, direction, g.vec(face.CenterOfMass))
+        return sc.ChamferInfo(
+            face_id, leg_a, leg_b, angle, direction, g.vec(face.CenterOfMass), prov.outward_normal(face)
+        )
 
 
 def hole_infos(doc: reg.DocumentRec, body: str | None, op: str | None) -> list[sc.HoleInfo]:

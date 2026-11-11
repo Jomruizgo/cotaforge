@@ -4,6 +4,16 @@
 
 `/cotaforge:plan` inicia un diseño. El agente pregunta el sector y el proceso con que se fabrica la pieza. La lista de pasos siempre se puede leer: pide el árbol de operaciones.
 
+## Tres formas de empezar
+
+`/cotaforge:plan` pregunta una vez cómo quieres trabajar, y recuerda tu respuesta.
+
+- **Primero el boceto.** El agente investiga, propone un boceto rápido en FreeCAD, lo acuerda contigo, guarda una copia y solo entonces construye el detalle.
+- **Directo.** Para arquitecturas conocidas: casi directo al diseño final.
+- **Diseño sistemático**: el método clásico de los libros de diseño. Primero funciones y alternativas, luego el concepto y el detalle.
+
+Recomendamos empezar por el boceto. Ves el concepto pronto y puedes cambiar de rumbo antes de gastar más tokens en el detalle.
+
 ## Pasos pequeños
 
 Una operación por llamada: un croquis, una extrusión, un taladro. Cada una devuelve volumen, tamaño y validez medidos. Todo croquis está totalmente acotado, así que al cambiar un número cambia la pieza.

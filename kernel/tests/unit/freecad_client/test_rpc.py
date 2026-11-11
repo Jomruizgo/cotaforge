@@ -280,3 +280,29 @@ def test_wrong_id_is_worker_lost(make_worker: WorkerFactory) -> None:
         worker.call("extrude", {"operation_id": "base"}, timeout_s=5.0)
     assert "id" in str(info.value)
     assert not worker.alive
+
+
+def test_an_isolated_worker_gets_a_profile_of_its_own_and_never_the_shared_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``COTAFORGE_FREECAD_ISOLATED=1`` (set by the test fixtures and by scripts that start FreeCAD next to the engineer's
+    work): the profile, with its recent files, temp and recovery data, is under the data directory, or new for the run,
+    for the headless worker too; without the switch nothing changes."""
+    monkeypatch.setattr(rpc.sys, "platform", "linux")
+    log = tmp_path / "logs" / "w.log"
+    log.parent.mkdir()
+    assert rpc.isolated_home(log, {}) is None
+    assert rpc.isolated_home(log, {rpc.ENV_ISOLATED: "0", rpc.ENV_COTAFORGE_HOME: str(tmp_path)}) is None
+    data = tmp_path / "data"
+    assert rpc.isolated_home(log, {rpc.ENV_ISOLATED: "1", rpc.ENV_COTAFORGE_HOME: str(data)}) == data / "freecad-home"
+    first = rpc.isolated_home(log, {rpc.ENV_ISOLATED: "1"})
+    second = rpc.isolated_home(log, {rpc.ENV_ISOLATED: "1"})
+    assert first is not None and second is not None and first != second and first.parent == log.parent
+    monkeypatch.setenv(rpc.ENV_ISOLATED, "1")
+    monkeypatch.setenv(rpc.ENV_COTAFORGE_HOME, str(data))
+    for visible in (False, True):
+        env = rpc.worker_env(log, visible=visible)
+        assert Path(env[rpc.ENV_USER_HOME]) == data / "freecad-home" and (data / "freecad-home").is_dir()
+        assert env[rpc.ENV_WORKER_ISOLATED] == "1"
+    monkeypatch.delenv(rpc.ENV_ISOLATED)
+    assert rpc.ENV_WORKER_ISOLATED not in rpc.worker_env(log, visible=True)

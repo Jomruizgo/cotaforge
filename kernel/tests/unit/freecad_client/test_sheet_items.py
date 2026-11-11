@@ -440,6 +440,55 @@ def test_a_chamfer_is_leg_by_angle() -> None:
     assert "legs 3 and 2 mm" in r.detail
 
 
+def test_a_chamfer_leader_ends_on_the_chamfer_line_and_goes_out_along_its_normal() -> None:
+    class WithNormal(PlateGeometry):
+        def chamfer(self, face_id: str) -> sc.ChamferInfo:
+            info = super().chamfer(face_id)
+            return sc.ChamferInfo(
+                info.face,
+                info.leg_a,
+                info.leg_b,
+                info.angle_deg,
+                info.edge_dir,
+                info.middle,
+                (0.7071067811865476, 0.0, 0.7071067811865476),
+            )
+
+    ctx = make_context()
+    ctx.geometry = WithNormal()
+    (r,) = draw(ctx, {"type": "dim", "id": "c1", "kind": "chamfer", "face": "face:slope"})
+    assert r.status == "ok"
+    anchor = ctx.extras["anchors"]["c1"][-1]
+    tip = anchor["tip"]
+    assert tip == pytest.approx((198.5, 163.0))  # the middle of the chamfer line in the front view
+    dx, dy = anchor["elbow"][0] - tip[0], anchor["elbow"][1] - tip[1]
+    assert dx > 0 and dy > 0 and dx == pytest.approx(dy)  # along the outward normal (45 degrees), from outside
+    assert ctx.extras["chamfer_marks"]["c1"][0] == "front"
+    assert ctx.extras["chamfer_marks"]["c1"][2] == pytest.approx((0.7071067811865476, 0.7071067811865476))
+
+
+def test_a_chamfer_with_a_side_asked_keeps_the_agents_diagonal() -> None:
+    class WithNormal(PlateGeometry):
+        def chamfer(self, face_id: str) -> sc.ChamferInfo:
+            info = super().chamfer(face_id)
+            return sc.ChamferInfo(
+                info.face,
+                info.leg_a,
+                info.leg_b,
+                info.angle_deg,
+                info.edge_dir,
+                info.middle,
+                (0.7071067811865476, 0.0, 0.7071067811865476),
+            )
+
+    ctx = make_context()
+    ctx.geometry = WithNormal()
+    (r,) = draw(ctx, {"type": "dim", "id": "c1", "kind": "chamfer", "face": "face:slope", "side": "below"})
+    assert r.status in ("ok", "warning")
+    anchor = ctx.extras["anchors"]["c1"][-1]
+    assert anchor["elbow"][1] < anchor["tip"][1]  # the engineer's side wins over the default
+
+
 def test_dim_checks_its_arguments_by_kind() -> None:
     for spec, message in (
         ({"type": "dim", "kind": "distance", "from": {"at": [0, 0, 0]}}, "needs from and to"),

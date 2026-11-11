@@ -13,7 +13,7 @@ You are about to start a design (`$ARGUMENTS`). The engineer chooses the workflo
 ## Starting workflows
 - **Sketch first**: understand and research what is needed (no long report); propose early with a sketch in the CAD software, not with text; discuss and agree it; save a COPY of the agreed sketch; pause (see below); build the detail as an assembly with each part independent. In the sketch fast is fine (boxes, cylinders, booleans) and moving mechanisms are checked at their extreme positions. No paperwork before drawing.
 - **Direct**: known architectures; almost straight to the model.
-- **Full methodical**: functions, alternatives and morphological matrix before the sketch and the detail (Pahl and Beitz).
+- **Systematic design** (Pahl and Beitz, VDI 2221): functions, alternatives and morphological matrix, then the concept sketch and the detail.
 
 If you see a better workflow for this problem, propose it and say why; the engineer decides.
 

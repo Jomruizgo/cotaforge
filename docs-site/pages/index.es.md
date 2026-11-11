@@ -7,20 +7,28 @@ hide:
 
 # CotaForge
 
-Diseño mecánico en FreeCAD, desde Claude Code. Describes la pieza. CotaForge la construye en pasos pequeños, mide cada uno y hace el plano de taller.
+Diseño mecánico en FreeCAD, con Claude Code.
 
 [Instalar](install.md){ .md-button .md-button--primary }
-[Tu primera pieza](first-part.md){ .md-button }
+[Tu primer diseño](first-part.md){ .md-button }
 
-!!! warning "Alfa"
-    Solo funciona con Claude Code y FreeCAD 1.1.
+!!! warning "Versión temprana de desarrollo"
+    Espera errores y cambios. Solo funciona con Claude Code y FreeCAD 1.1.
 
 ## Qué hace
 
-- **Modela.** Cada croquis está totalmente acotado. Puedes interrumpir y deshacer cualquier paso.
-- **Mide.** Los volúmenes, tamaños y listas de taladros los da FreeCAD, no una suposición del modelo.
-- **Cuestiona.** Si una decisión parece mala, lo dice y da la razón. Tú decides.
-- **Recuerda.** Una regla que le enseñas se guarda solo cuando la apruebas.
-- **Dibuja.** Alguien distinto del autor revisa la hoja antes de escribir el PDF.
+Parte de una idea. Según cuánto quieras trabajar con la IA, te ayuda a construir:
+
+- un boceto;
+- un diseño parcial que terminas a mano;
+- un diseño final.
+
+Propone soluciones, sobre todo cuando estás atascado. Busca componentes comerciales. Cuanto más contexto le des, mejores serán sus propuestas.
+
+Si ya sabes qué componentes comerciales vas a usar, descarga sus archivos 3D y entrégaselos. Así el diseño coincide con la realidad.
+
+También ayuda a hacer los planos. Como con cualquier trabajo hecho con IA, revísalos antes de producir.
+
+Eliges cómo empezar: [tres formas](how-it-works.md#tres-formas-de-empezar). Recomendamos empezar por un boceto.
 
 Siguiente: [qué necesitas](what-you-need.md) y luego [instalar](install.md).

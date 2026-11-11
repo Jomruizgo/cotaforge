@@ -11,7 +11,7 @@ Este manual supone que ya usas Claude Code (terminal, prompts, permisos, plugins
 3. [Requisitos](#3-requisitos)
 4. [Instalación paso a paso](#4-instalación-paso-a-paso)
 5. [Crear tu espacio de diseño](#5-crear-tu-espacio-de-diseño)
-6. [Tu primera pieza](#6-tu-primera-pieza)
+6. [Tu primer diseño](#6-tu-primer-diseño)
 7. [Cómo trabaja el agente](#7-cómo-trabaja-el-agente)
 8. [Guardar y retomar](#8-guardar-y-retomar)
 9. [Materiales, procesos y restricciones](#9-materiales-procesos-y-restricciones)
@@ -281,7 +281,7 @@ Escribe `/cotaforge:` para ver los comandos. Sin registrar, carga el plugin para
 
 ---
 
-## 6. Tu primera pieza
+## 6. Tu primer diseño
 
 1. Pídela con `/cotaforge:plan`. Por ejemplo: "Una placa de 60 x 40 x 10 mm llamada `plate`, con un agujero pasante Ø8 centrado en la cara superior y un redondeo de radio 5 en la esquina del origen. Dime el volumen después de cada paso."
 2. Responde las preguntas del agente. Pregunta solo lo que no puede decidir.
@@ -663,7 +663,7 @@ Cuando un problema no tiene una arquitectura conocida, tú eliges el flujo de tr
 
 - **Primero el boceto**: entender y buscar, proponer un boceto rápido en el software de CAD, acordarlo contigo, guardar una copia, pausar, y luego construir el detalle como un ensamble con piezas independientes.
 - **Directo**: para arquitecturas conocidas, casi directo al modelo.
-- **Metodológico completo**: funciones, alternativas y una matriz morfológica antes del boceto y el detalle (Pahl y Beitz).
+- **Diseño sistemático**: el método clásico de los libros de diseño. Primero funciones y alternativas, luego el concepto y el detalle.
 
 Antes del detalle, el agente hace una pausa para decirte qué datos son supuestos y calcular lo que dimensiona el diseño.
 

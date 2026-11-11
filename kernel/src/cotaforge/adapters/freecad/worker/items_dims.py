@@ -660,7 +660,17 @@ def _chamfer(ctx: Context, spec: dict[str, Any]) -> str:
     tip = view.project(info.middle)
     diagonal = outward_diagonal(view, tip, spec.get("side"))
     text = f"{ctx.num(round(info.leg_a, 2))} × {ctx.num(round(info.angle_deg, 1))}°"
-    ctx.add(place_leader(ctx, view, tip, diagonal, [text], spec.get("offset_mm"), asked(spec)))
+    # the leader ends in the middle of the chamfer's own line and goes out along its outward normal (ISO 129: from outside,
+    # perpendicular to the line); a ``side`` the item asks for keeps the old diagonal, and a geometry with no normal too
+    normal = None
+    if info.normal is not None:
+        nx, ny = view.axis(info.normal)
+        if math.hypot(nx, ny) > 1e-6:
+            normal = (nx / math.hypot(nx, ny), ny / math.hypot(nx, ny))
+    along = normal if spec.get("side") is None else None
+    ctx.add(place_leader(ctx, view, tip, diagonal, [text], spec.get("offset_mm"), asked(spec), along))
+    if normal is not None:
+        ctx.extras.setdefault("chamfer_marks", {})[str(ctx.extras.get("current"))] = (view.name, tip, normal)
     general = sheet_tol.general_note(ctx, "radius", info.leg_a)
     return f"chamfer {text} in the {view.name} view (legs {ctx.num(info.leg_a)} and {ctx.num(info.leg_b)} mm){general}"
 

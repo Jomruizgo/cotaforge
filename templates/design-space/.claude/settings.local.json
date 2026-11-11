@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__cad",
+      "WebSearch",
+      "WebFetch",
+      "Edit(./calculations/**)",
+      "Edit(./drawings/**)",
+      "Edit(./assumptions-and-decisions.md)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "cad"
+  ],
+  "claudeMdExcludes": [
+    "**/.claude/CLAUDE.md"
+  ]
+}
