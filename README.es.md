@@ -4,7 +4,7 @@
 
 Diseño mecánico en FreeCAD, desde Claude Code. El agente construye piezas, ensambles y planos de taller en pasos pequeños y medidos. Puedes interrumpirlo, deshacer cualquier paso, y guardar y retomar el archivo nativo.
 
-Alfa. Solo funciona con Claude Code y FreeCAD 1.1.x. Windows está soportado; en Linux funciona desde el código fuente.
+**Versión temprana de desarrollo.** Espera errores y cambios. Solo funciona con Claude Code y FreeCAD 1.1.x. Windows está soportado; en Linux funciona desde el código fuente.
 
 Sitio web: <https://jomruizgo.github.io/cotaforge/es/>
 
@@ -63,6 +63,10 @@ Con el instalador: menú Inicio > **Crear proyecto nuevo (CotaForge)**, elige un
 ## Comentarios
 
 [Abre un issue](https://github.com/Jomruizgo/cotaforge/issues/new/choose). Adjunta las versiones de CotaForge, Claude Code y FreeCAD, lo que pediste y el error exacto. Nunca adjuntes un archivo de un cliente.
+
+## Descargo de responsabilidad
+
+Se entrega tal como está, con licencia MIT. Los autores no se hacen responsables del mal uso, de los errores de la herramienta, ni del software de CAD o del modelo de IA que use. Tú revisas el diseño y los planos, y eres responsable de lo que pasa a producción.
 
 ## Contribuir y licencia
 

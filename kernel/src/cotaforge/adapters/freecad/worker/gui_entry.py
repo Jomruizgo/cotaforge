@@ -14,6 +14,12 @@ import sys
 import traceback
 
 try:
+    if os.environ.get("COTAFORGE_WORKER_ISOLATED") == "1":
+        # a profile of its own, empty: no recent files and no autosave (so no recovery data)
+        import FreeCAD
+
+        FreeCAD.ParamGet("User parameter:BaseApp/Preferences/RecentFiles").SetInt("RecentFiles", 0)
+        FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Document").SetBool("AutoSaveEnabled", False)
     import main
 
     main.run()

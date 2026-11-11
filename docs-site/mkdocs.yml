@@ -90,7 +90,7 @@ plugins:
           nav_translations:
             What you need: Qué necesitas
             Install: Instalar
-            Your first part: Tu primera pieza
+            Your first design: Tu primer diseño
             How it works: Cómo funciona
             FAQ and limits: Preguntas y límites
             Contribute: Contribuir
@@ -100,7 +100,7 @@ nav:
   - Home: index.md
   - What you need: what-you-need.md
   - Install: install.md
-  - Your first part: first-part.md
+  - Your first design: first-part.md
   - How it works: how-it-works.md
   - FAQ and limits: faq.md
   - Contribute: contribute.md

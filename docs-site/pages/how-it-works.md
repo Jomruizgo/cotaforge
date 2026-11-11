@@ -4,6 +4,16 @@
 
 `/cotaforge:plan` starts a design. The agent asks for the sector and the process that makes the part. The list of steps is always readable: ask for the operation tree.
 
+## Three ways to start
+
+`/cotaforge:plan` asks once how you want to work, and remembers your answer.
+
+- **Sketch first.** The agent researches, proposes a quick sketch in FreeCAD, agrees it with you, saves a copy, and only then builds the detail.
+- **Direct.** For known architectures: almost straight to the final design.
+- **Systematic design**: the classic method of design textbooks. Functions and alternatives first, then the concept and the detail.
+
+We recommend the sketch first. You see the concept early and can change course before spending more tokens on detail.
+
 ## Small steps
 
 One operation per call: a sketch, an extrusion, a hole. Each returns measured volume, size and validity. Every sketch is fully dimensioned, so changing a number changes the part.

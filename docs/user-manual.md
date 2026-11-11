@@ -11,7 +11,7 @@ This manual assumes you already use Claude Code (terminal, prompts, permissions,
 3. [Requirements](#3-requirements)
 4. [Step-by-step installation](#4-step-by-step-installation)
 5. [Create your design space](#5-create-your-design-space)
-6. [Your first part](#6-your-first-part)
+6. [Your first design](#6-your-first-design)
 7. [How the agent works](#7-how-the-agent-works)
 8. [Save and resume](#8-save-and-resume)
 9. [Materials, processes and constraints](#9-materials-processes-and-constraints)
@@ -281,7 +281,7 @@ Type `/cotaforge:` to see the commands. Without registering, load the plugin for
 
 ---
 
-## 6. Your first part
+## 6. Your first design
 
 1. Ask with `/cotaforge:plan`. For example: "A 60 x 40 x 10 mm plate named `plate`, with an Ø8 through hole centered on the top face and a radius 5 fillet on the origin corner. Tell me the volume after each step."
 2. Answer the agent's questions. It asks only what it cannot decide.
@@ -663,7 +663,7 @@ When a problem has no known architecture, you choose the workflow. `/cotaforge:p
 
 - **Sketch first**: understand and search, propose a quick sketch in the CAD software, agree it with you, save a copy, pause, then build the detail as an assembly with independent parts.
 - **Direct**: for known architectures, almost straight to the model.
-- **Full methodological**: functions, alternatives and a morphological matrix before the sketch and detail (Pahl and Beitz).
+- **Systematic design**: the classic method of design textbooks. Functions and alternatives first, then the concept and the detail.
 
 Before the detail the agent pauses to tell you which data are assumptions and to compute what sizes the design.
 

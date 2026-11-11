@@ -147,3 +147,10 @@ def volume(text: str) -> float:
     match = re.search(r"volume: (-?[\d.]+) mm3", text)
     assert match, f"no volume in: {text}"
     return float(match.group(1))
+
+
+@pytest.fixture(autouse=True)
+def isolated_freecad_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every FreeCAD these tests start (the server child inherits the environment) gets a profile of its own: never the
+    engineer's recent files, recovery data or preferences."""
+    monkeypatch.setenv("COTAFORGE_FREECAD_ISOLATED", "1")

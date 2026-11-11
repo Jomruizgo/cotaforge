@@ -16,7 +16,8 @@ Coordinates are SVG page coordinates in mm (origin top left, y down); the caller
 """
 
 import math
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 
 STANDARD_SCALES = (10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01)
 PAGES_MM = {
@@ -29,6 +30,7 @@ PAGES_MM = {
 }  # landscape
 
 SPACING_MM = 20.0  # between the front view and the top / right views
+SPACING_MAX_MM = 2 * SPACING_MM  # ... the most the layout spreads them to when the sheet has room to spare
 DIM_MARGIN_MM = 14.0  # a dimension line and its text beyond a view
 ISO_GAP_MM = 12.0
 AREA_LEFT_MM = 25.0  # the frame of the ISO 5457 templates starts at 20
@@ -148,11 +150,22 @@ def _needed_spec(scale: float, s: Spec) -> tuple[float, float]:
     return block_w + gap + s.iso[0] * scale, max(block_h, s.iso[1] * scale + DIM_MARGIN_MM if s.iso[0] > 0 else block_h)
 
 
-def _blocks_spec(scale: float, s: Spec, left: float, area_w: float, top: float) -> list[Box]:
+def _drop(needed_h: float, area_h: float | None) -> float:
+    """How far the whole block goes down from the top of the drawing area so it is centred between the top margin and the
+    bottom (the title block, or the parts list of an assembly): half of the spare height; none when it does not fit or no
+    height is given."""
+    return 0.0 if area_h is None else max(0.0, (area_h - needed_h) / 2)
+
+
+def _blocks_spec(
+    scale: float, s: Spec, left: float, area_w: float, top: float, area_h: float | None = None
+) -> list[Box]:
     """The page rectangles (y down) of the left group (front, top, right and their dimensions) and of the isometric view
-    when everything is centred across the drawing area."""
+    when everything is centred across the drawing area (and down it, when ``area_h`` -- the height the block may use -- is
+    given: without it the block hangs from ``top``)."""
     needed = _needed_spec(scale, s)
     start = _start(left, area_w, needed[0], s.iso)
+    top += _drop(needed[1], area_h)
     block_w, block_h, _, _ = _extents(scale, s)
     iso_x = start + block_w + ISO_GAP_MM
     blocks = [(start, top, start + block_w, top + block_h)]
@@ -179,9 +192,23 @@ def _blocks(
     top: float,
     has_top: bool = True,
     has_right: bool = True,
+    area_h: float | None = None,
 ) -> list[Box]:
     """The page rectangles of the views of a first-angle sheet and of the isometric one (see _blocks_spec)."""
-    return _blocks_spec(scale, Spec(w, d, h, iso, has_top, has_right), left, area_w, top)
+    return _blocks_spec(scale, Spec(w, d, h, iso, has_top, has_right), left, area_w, top, area_h)
+
+
+def _spread(spec: Spec, fits: Callable[[Spec], bool]) -> Spec:
+    """``spec`` with the views spaced out when there is room: the spacing between the front view and the top / right ones
+    grows to ``SPACING_MAX_MM`` (else half way to it) as long as everything still fits, so the sheet reads evenly and a
+    dimension fits between the views. A sheet with a single standard view has no gap to widen."""
+    if not (spec.top or spec.right) or spec.spacing >= SPACING_MAX_MM:
+        return spec
+    for spacing in (SPACING_MAX_MM, (SPACING_MAX_MM + spec.spacing) / 2):
+        wider = replace(spec, spacing=spacing)
+        if fits(wider):
+            return wider
+    return spec
 
 
 def _start(left: float, area_w: float, needed_w: float, iso: tuple[float, float]) -> float:
@@ -244,10 +271,14 @@ def plan(
             page_h - TITLE_BLOCK_TOP_MM,
         )
 
-    def fits_at(s: float) -> bool:
-        if not _fits(_needed_spec(s, spec), area_w, area_h):
+    # the block is centred between the top margin and the bottom of the free area (the parts list of an assembly, when
+    # there is one, is the bottom: a block that only fits beside it hangs from the top as it always did)
+    free_h = (bottom if held is None else min(bottom, held[1])) - top
+
+    def fits_at(s: float, sp: Spec = spec) -> bool:
+        if not _fits(_needed_spec(s, sp), area_w, area_h):
             return False
-        return held is None or _clear_of(_blocks_spec(s, spec, left, area_w, top), held)
+        return held is None or _clear_of(_blocks_spec(s, sp, left, area_w, top, free_h), held)
 
     standard = True
     if scale is None:
@@ -264,13 +295,16 @@ def plan(
                     break
                 chosen *= 0.95
         scale = chosen
-    needed = _needed_spec(scale, spec)
     fits = fits_at(scale)
+    if fits:  # room to spare: the views move apart (the scale stays what it was)
+        spec = _spread(spec, lambda sp: fits_at(scale, sp))
+    needed = _needed_spec(scale, spec)
     start = _start(left, area_w, needed[0], iso)  # everything centred across the drawing area
+    top += _drop(needed[1], free_h)  # ... and down it
     block_w, _, front_x, front_y = _extents(scale, spec)
     front = (start + front_x, top + front_y)
     iso_centre = (start + block_w + ISO_GAP_MM + iso[0] * scale / 2, top + DIM_MARGIN_MM + iso[1] * scale / 2)
-    return Layout(scale=scale, standard=standard, fits=fits, front=front, iso=iso_centre, spacing=spacing_mm)
+    return Layout(scale=scale, standard=standard, fits=fits, front=front, iso=iso_centre, spacing=spec.spacing)
 
 
 def _fits(needed: tuple[float, float], area_w: float, area_h: float) -> bool:

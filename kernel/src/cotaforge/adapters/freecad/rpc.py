@@ -37,6 +37,15 @@ DEFAULT_FREECAD_ROOT = Path("~/Applications/freecad-1.1.3/squashfs-root")
 ENV_FREECAD_ROOT = "COTAFORGE_FREECAD_ROOT"
 ENV_WORKER_LOG = "COTAFORGE_WORKER_LOG"
 ENV_USER_HOME = "FREECAD_USER_HOME"
+ENV_ISOLATED = "COTAFORGE_FREECAD_ISOLATED"
+"""``1``: this FreeCAD gets a profile of its own (see ``isolated_home``) and no document recovery. Set by the test
+fixtures and by scripts that start FreeCAD next to the engineer's real work: without it a worker shares the
+harness's default private profile in the temp folder, with the recent files and the recovery data of every
+session of the engineer."""
+ENV_COTAFORGE_HOME = "COTAFORGE_HOME"
+ENV_WORKER_ISOLATED = "COTAFORGE_WORKER_ISOLATED"
+"""Set by ``worker_env`` for an isolated worker: ``gui_entry.py`` turns the recent files and the autosave (the
+source of recovery data) off in its preferences."""
 ENV_MOD_DIRS = "COTAFORGE_FREECAD_MOD_DIRS"
 """Optional override (``os.pathsep``-separated) of the engineer's user ``Mod`` folders searched for add-ons."""
 ENV_USER_MODS = "COTAFORGE_WORKER_USER_MODS"
@@ -221,6 +230,22 @@ def user_mod_candidates(
     return [base / "v1-1" / "Mod", base / "Mod", home / ".FreeCAD" / "Mod"]
 
 
+def isolated_home(log_path: Path, env: Mapping[str, str] | None = None) -> Path | None:
+    """The private FreeCAD profile of an isolated worker, or ``None`` when ``COTAFORGE_FREECAD_ISOLATED`` is not
+    ``1``. It is ``<COTAFORGE_HOME>/freecad-home`` when the data directory is set (the profile lives and dies with
+    it), else a new folder next to the log that no other run reuses. FreeCAD puts its configuration, recent files,
+    temp and recovery data under ``FREECAD_USER_HOME`` (checked with ``FreeCADCmd --dump-config`` on 1.1.3)."""
+    env = os.environ if env is None else env
+    if env.get(ENV_ISOLATED) != "1":
+        return None
+    data = (env.get(ENV_COTAFORGE_HOME) or "").strip()
+    if data:
+        return Path(data).expanduser() / "freecad-home"
+    import uuid  # noqa: PLC0415 - only the isolated start without a data directory needs it
+
+    return log_path.parent / f"freecad-home-{uuid.uuid4().hex[:8]}"
+
+
 def worker_env(log_path: Path, *, visible: bool = False, enable_test_hooks: bool = False) -> dict[str, str]:
     """Extra environment for the worker process (merged over the parent's by ``WorkerProcess``).
 
@@ -244,11 +269,15 @@ def worker_env(log_path: Path, *, visible: bool = False, enable_test_hooks: bool
     env = {ENV_WORKER_LOG: str(log_path)}
     if enable_test_hooks:
         env[ENV_TEST_HOOKS] = "1"
-    if visible:
+    isolated = isolated_home(log_path)
+    if visible or isolated is not None:
         env[ENV_USER_MODS] = os.pathsep.join(str(p) for p in user_mod_candidates())
-        home = log_path.parent / "freecad-home"
+        home = isolated if isolated is not None else log_path.parent / "freecad-home"
         home.mkdir(parents=True, exist_ok=True)
         env[ENV_USER_HOME] = str(home)
+        if isolated is not None:
+            env[ENV_WORKER_ISOLATED] = "1"
+    if visible:
         if sys.platform.startswith("linux"):
             env.setdefault("FONTCONFIG_FILE", os.environ.get("FONTCONFIG_FILE", "/etc/fonts/fonts.conf"))
             env.setdefault("FONTCONFIG_PATH", os.environ.get("FONTCONFIG_PATH", "/etc/fonts"))
