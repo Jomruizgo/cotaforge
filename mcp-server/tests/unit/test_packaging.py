@@ -151,9 +151,10 @@ def test_the_workflow_runs_on_pull_requests_tags_and_by_hand_and_only_drafts_rel
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "--draft" in text and "gh release create" in text
     assert "--latest" not in text and "gh release edit" not in text
-    assert 'Join-Path (Split-Path $env:SETUP) "cotaforge-setup.exe"' in text and "$env:SETUP $latest" in text, (
-        "the release also carries cotaforge-setup.exe, the stable name the download link of the site points at"
+    assert 'Join-Path (Split-Path $env:SETUP) "cotaforge-setup.exe"' in text and "Move-Item $env:SETUP $latest" in text, (
+        "the release carries one installer, cotaforge-setup.exe, the stable name the download link of the site points at"
     )
+    assert '"${{ github.ref_name }}" $latest --draft' in text, "only that one file is attached"
     assert "/VERYSILENT" in text and "/SUPPRESSMSGBOXES" in text and "/NORESTART" in text
 
 
