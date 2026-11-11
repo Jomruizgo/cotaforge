@@ -1,8 +1,12 @@
 # Preguntas y límites
 
+## Descargo de responsabilidad
+
+CotaForge es una versión temprana de desarrollo, entregada tal como está, con licencia MIT. Los autores no se hacen responsables del mal uso, de los errores de la herramienta, ni del software de CAD o del modelo de IA que use. Tú revisas el diseño y los planos, y eres responsable de lo que pasa a producción.
+
 ## Costo y privacidad
 
-CotaForge es gratuito y de código abierto (MIT). Claude Code necesita un plan de Claude. Los planos y las revisiones usan agentes adicionales, así que gastan más de tu límite.
+CotaForge es gratuito y de código abierto (licencia MIT). Para usarlo necesitas Claude Code con un plan de Claude.
 
 Tus archivos están en tu computador. Para lo que ve Claude, lee [qué necesitas](what-you-need.md#qué-ve-claude).
 
@@ -19,6 +23,12 @@ Solo FreeCAD 1.1. Windows 10 y 11; Linux desde el código fuente. Solo Claude Co
 - La chapa metálica necesita el complemento SheetMetal de FreeCAD.
 - `check` compara la pieza con el material, el proceso y el tamaño que declaraste. No calcula esfuerzos ni verifica tolerancias.
 - El criterio del agente no se verifica. Decidir si una pieza es buena idea te corresponde a ti.
+
+Algunos límites son de FreeCAD, no de CotaForge:
+
+- La velocidad de cada paso depende de tu máquina (procesador y memoria).
+- FreeCAD puede volverse lento o cerrarse con ensambles grandes o con muchas piezas abiertas. Si se cierra, se pierde lo que no se haya guardado.
+- No abras el mismo archivo en dos sesiones a la vez: la última que guarde pisa a la otra.
 
 Más en el [manual](manual.md#12-límites).
 

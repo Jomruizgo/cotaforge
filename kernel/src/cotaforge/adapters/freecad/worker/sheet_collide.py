@@ -7,7 +7,8 @@ each item put on the page) plus the lines of the views, looks at their INK -- te
 by one unit -- and reports where the ink of one unit lies on the ink of another:
 
 * a text box over a text box (>= ``MIN_OVERLAP_MM2``);
-* a text box over a line, arrow or frame edge of another unit or of a view's outline;
+* a text box over a line, arrow or frame edge of another unit or of a view's outline, or inside / over the frame (a closed
+  rectangle: a datum or tolerance frame) of another unit even when no edge crosses it;
 * two dimension lines of different units lying on one another (collinear and overlapping).
 
 A leader crossing a dimension line, an extension line crossing an outline and centre lines under anything are how a
@@ -64,6 +65,9 @@ class Ink:
     texts: tuple[tuple[Rect, str], ...]
     lines: tuple[Segment, ...]
     dimension_lines: tuple[Segment, ...]
+    frames: tuple[
+        Rect, ...
+    ] = ()  # the closed rectangles (a datum or tolerance frame): a text wholly inside one has no edge across it
 
 
 @dataclass(frozen=True)
@@ -123,6 +127,7 @@ def ink_of(owner: str, entities: "list[Entity] | tuple[Entity, ...]") -> Ink:
     that ends in an arrowhead (the extension lines of two dimensions from one datum lie on one another and should)."""
     texts: list[tuple[Rect, str]] = []
     lines: list[Segment] = []
+    frames: list[Rect] = []
     candidates: list[Segment] = []
     tips: list[Point] = []
     for e in entities:
@@ -134,11 +139,17 @@ def ink_of(owner: str, entities: "list[Entity] | tuple[Entity, ...]") -> Ink:
             continue
         segs = _segments(e)
         lines += segs
+        if isinstance(e, Polyline) and e.closed and len(e.points) == 4:
+            xs, ys = [p[0] for p in e.points], [p[1] for p in e.points]
+            if all(abs(p[0] - min(xs)) < 1e-6 or abs(p[0] - max(xs)) < 1e-6 for p in e.points) and all(
+                abs(p[1] - min(ys)) < 1e-6 or abs(p[1] - max(ys)) < 1e-6 for p in e.points
+            ):
+                frames.append((min(xs), min(ys), max(xs), max(ys)))
         if isinstance(e, Solid) and layer == DIMENSIONS and e.points:
             tips.append(e.points[0])
         elif layer == DIMENSIONS and isinstance(e, Line):
             candidates += segs
-    return Ink(owner, tuple(texts), tuple(lines), tuple(main_lines(candidates, tips)))
+    return Ink(owner, tuple(texts), tuple(lines), tuple(main_lines(candidates, tips)), tuple(frames))
 
 
 def _on_segment(s: Segment, p: Point, tol: float) -> bool:
@@ -316,6 +327,23 @@ def _pair(a: Ink, b: Ink) -> list[Collision]:
                     )
                 )
                 break
+    for first, second in ((a, b), (b, a)):  # a text on the frame of a datum or a tolerance, edge or no edge across it
+        for t, text in first.texts:
+            for frame in second.frames:
+                if _area(t, frame) >= MIN_OVERLAP_MM2:
+                    out.append(
+                        Collision(
+                            first.owner,
+                            second.owner,
+                            "text_frame",
+                            (
+                                (max(t[0], frame[0]) + min(t[2], frame[2])) / 2,
+                                (max(t[1], frame[1]) + min(t[3], frame[3])) / 2,
+                            ),
+                            f"{text!r} lies on a frame of {second.owner}",
+                        )
+                    )
+                    break
     for sa in a.dimension_lines:
         for sb in b.dimension_lines:
             if _collinear_overlap(sa, sb) >= MIN_RUN_MM:

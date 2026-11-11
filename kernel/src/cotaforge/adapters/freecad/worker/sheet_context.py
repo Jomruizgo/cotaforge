@@ -215,6 +215,7 @@ class ChamferInfo:
     angle_deg: float  # between the chamfer face and the face of ``leg_a``
     edge_dir: Vec3
     middle: Vec3  # a model point in the middle of the chamfer face
+    normal: Vec3 | None = None  # the outward normal of the chamfer face (``None``: the geometry does not say)
 
 
 @dataclass
@@ -225,7 +226,9 @@ class Projection:
     visible: list[Entity]
     hidden: list[Entity] = field(default_factory=list)
     cut_loops: list[list[Point]] = field(default_factory=list)
-    cut_owner: list[int] = field(default_factory=list)  # for each loop, the index of the body (shape) whose face it bounds
+    cut_owner: list[int] = field(
+        default_factory=list
+    )  # for each loop, the index of the body (shape) whose face it bounds
 
 
 class Geometry:

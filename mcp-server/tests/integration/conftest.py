@@ -65,6 +65,7 @@ async def running_server(
         "COTAFORGE_ADAPTER": "freecad",
         "COTAFORGE_WORKSPACE": str(workspace),
         "COTAFORGE_VISIBLE": "1" if visible else "0",
+        "COTAFORGE_FREECAD_ISOLATED": "1",  # a FreeCAD profile of its own: never the engineer's recent files or recovery data
     }
     params = StdioServerParameters(command=sys.executable, args=["-m", "cotaforge_mcp"], env=env)
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
@@ -134,3 +135,10 @@ async def close_findings(
     for point in findings:
         await cad.ok("drawing", action="answer", id=point, text=reason, **arguments)
     return len(findings)
+
+
+@pytest.fixture(autouse=True)
+def isolated_freecad_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every FreeCAD these tests start (the server child inherits the environment) gets a profile of its own: never the
+    engineer's recent files, recovery data or preferences."""
+    monkeypatch.setenv("COTAFORGE_FREECAD_ISOLATED", "1")

@@ -4,7 +4,7 @@
 
 Mechanical design in FreeCAD, driven from Claude Code. The agent builds parts, assemblies and shop drawings in small, measured steps. You can interrupt it, undo any step, and save and resume the native file.
 
-Alpha. It works only with Claude Code and FreeCAD 1.1.x. Windows is supported; Linux works from source.
+**Early development version.** Expect errors and changes. It works only with Claude Code and FreeCAD 1.1.x. Windows is supported; Linux works from source.
 
 Website: <https://jomruizgo.github.io/cotaforge/>
 
@@ -63,6 +63,10 @@ With the installer: Start menu > **Create new project (CotaForge)**, choose an e
 ## Feedback
 
 [Open an issue](https://github.com/Jomruizgo/cotaforge/issues/new/choose). Attach the CotaForge, Claude Code and FreeCAD versions, what you asked and the exact error. Never attach a customer's file.
+
+## Disclaimer
+
+Provided as is under the MIT license. The authors take no responsibility for misuse, for errors the tool makes, or for the CAD software or the AI model it uses. You review the design and the drawings, and you are responsible for what goes to production.
 
 ## Contributing and license
 

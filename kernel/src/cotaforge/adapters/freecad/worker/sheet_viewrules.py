@@ -1,21 +1,28 @@
 # ruff: noqa: E501
-"""Three drawing rules a shop reader expects, as checks on plain sheet data (no FreeCAD import, adapter-neutral: the
+"""Drawing rules a shop reader expects, as checks on plain sheet data (no FreeCAD import, adapter-neutral: the
 FreeCAD review and the external adapter's review both build these facts and call the functions below).
 
 * ``dimension_side``: a dimension sits on the side of the feature it measures, the side where its extension lines cross the
   least of the part. A spigot at the bottom is dimensioned below; the extension lines do not run across the whole part when
   the other side is free.
+* ``dimension_crossings``: no extension line of a dimension crosses the dimension line of another one (ISO 129).
+* ``datum_on_line``: the triangle and the frame of a datum do not lie on a line of another item.
+* ``datum_unused``: a datum item whose letter no tolerance frame (``gdt`` item) cites.
+* ``chamfer_leader_problems``: the leader of a chamfer callout ends on the chamfer's own line, comes from outside the part
+  and is close to perpendicular to that line.
 * ``redundant_views``: a view that only carries a cutting line, or whose dimensions another view repeats, goes when another
   view that stays can carry the line. On a turned part the cutting line goes on the circular view and the section carries
   the diameters and lengths.
 * ``short_dimensions``: on a short dimension whose text and two arrows do not fit between the extension lines, the arrows
   go outside.
+* ``sheet_underused``: the views and their dimensions cover too little of the free drawing area while a larger scale or a
+  smaller paper would hold them, or they sit in a corner with most of the room on one side.
 
 Everything is in sheet millimetres, y up. The functions return plain findings; the adapters turn them into review rows.
 """
 
 import math
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 
 Segment = tuple[float, float, float, float]
@@ -60,6 +67,11 @@ class SideFinding:
     better: str
     crossings_now: int
     crossings_better: int
+    reason: str = (
+        "crossings"  # crossings: the other side crosses at most half as often | length: the same count, half the run
+    )
+    length_now: float = 0.0  # mm of the extension lines that run inside the part, on the side the dimension is on
+    length_better: float = 0.0  # and on the other side (to the edge of the view)
 
 
 def _hit(p: tuple[float, float], q: tuple[float, float], s: Segment) -> float | None:
@@ -92,6 +104,20 @@ def crossings(
     return count
 
 
+def run_inside(
+    p: tuple[float, float], q: tuple[float, float], outline: Sequence[Segment], skip: float = START_MM
+) -> float:
+    """How far (mm) the path ``p``-``q`` runs before it leaves the part for good: the distance from ``p`` to the LAST place
+    it crosses the outline (0 when it crosses nothing). It is what an extension line draws over the part."""
+    return max((d for s in outline if (d := _hit(p, q, s)) is not None and d > skip), default=0.0)
+
+
+LENGTH_RATIO = (
+    0.5  # on a tie of crossings the other side wins when its run over the part is at most this share of the one now
+)
+MIN_GAIN_MM = 5.0  # ... and when it is at least this much shorter (a few millimetres is not worth a move)
+
+
 def _axis(dim: DimShape) -> str | None:
     """``h``: the dimension line is horizontal (the extension lines are vertical); ``v``: the other way; ``None``: the extension
     lines are not axis-aligned or are of both kinds."""
@@ -112,10 +138,18 @@ def _axis(dim: DimShape) -> str | None:
 def dimension_side(
     dims: Sequence[DimShape], outlines: Mapping[str, Sequence[Segment]], boxes: Mapping[str, Rect]
 ) -> list[SideFinding]:
-    """The dimensions whose extension lines cross the part of their own view while the opposite side crosses at most half as
-    much. ``outlines``: the visible outline of each view as segments; ``boxes``: the rectangle of each view (the opposite side
-    is followed to its edge). A dimension that can only go across (the other side crosses as much) is left alone, and so is
-    one whose view has no outline."""
+    """The dimensions whose extension lines cross the part of their own view while the opposite side is clearly better.
+    ``outlines``: the visible outline of each view as segments; ``boxes``: the rectangle of each view (the opposite side is
+    followed to its edge). Two ways to be clearly better, each summed over the extension lines of the dimension:
+
+    * ``crossings``: the opposite side crosses the outline at most half as often (a spigot dimensioned across the whole part
+      while the free side is one step away);
+    * ``length`` (only when both sides cross at least once, so a hole inside the part is not simply "across"): the extension
+      lines run over the part (from the feature to the last crossing of the outline) at most ``LENGTH_RATIO`` as far on the
+      other side and at least ``MIN_GAIN_MM`` less. Two holes 15 mm from the left edge and 85 mm from the right one are
+      dimensioned on the left, where the extension lines run 15 mm over the part instead of 85.
+
+    A dimension that can only go across (the other side is as bad) is left alone, and so is one whose view has no outline."""
     out: list[SideFinding] = []
     for dim in dims:
         outline, box = outlines.get(dim.view), boxes.get(dim.view)
@@ -124,6 +158,8 @@ def dimension_side(
             continue
         now = 0
         other = 0
+        run_now = 0.0
+        run_other = 0.0
         direction = 1.0
         horizontal = axis == "h"  # the dimension line is horizontal: the extension lines run along y
         for x1, y1, x2, y2 in dim.extension:
@@ -140,10 +176,28 @@ def dimension_side(
                 to_edge = (box[0] if direction > 0 else box[2], far[1])
             now += crossings(feature, to_line, outline)
             other += crossings(feature, to_edge, outline)
-        if now >= 1 and other * 2 <= now:
+            run_now += run_inside(feature, to_line, outline)
+            run_other += run_inside(feature, to_edge, outline)
+        by_count = now >= 1 and other * 2 <= now
+        by_length = (
+            now >= 1 and other >= 1 and run_other <= LENGTH_RATIO * run_now and run_now - run_other >= MIN_GAIN_MM
+        )
+        if by_count or by_length:
             names = ("above", "below") if horizontal else ("right", "left")
             first, second = names if direction > 0 else names[::-1]
-            out.append(SideFinding(dim.owner, dim.view, first, second, now, other))
+            out.append(
+                SideFinding(
+                    dim.owner,
+                    dim.view,
+                    first,
+                    second,
+                    now,
+                    other,
+                    "crossings" if by_count else "length",
+                    round(run_now, 2),
+                    round(run_other, 2),
+                )
+            )
     return out
 
 
@@ -186,6 +240,317 @@ def free_side(dim: DimShape, box: Rect, taken: Sequence[Rect], area: Rect | None
     if any(_rects_meet(strip, t) for t in taken):
         return None
     return other
+
+
+# --- an extension line across the dimension line of another dimension (ISO 129) ----------------------------------------
+
+
+@dataclass(frozen=True)
+class CrossingFinding:
+    owner: str  # the dimension whose extension line crosses
+    other: str  # the dimension whose dimension line is crossed
+    view: str
+    at: tuple[float, float]  # where (sheet mm)
+
+
+CROSS_MARGIN_MM = (
+    0.5  # a crossing this close to an end (the arrow tip of the line, the end of the extension line) is a touch
+)
+
+
+def dimension_line(dim: DimShape) -> Segment | None:
+    """The dimension line of ``dim`` as a segment: from the first to the last of its extension lines at ``line_at`` (the
+    arrows stand on it), longer by two arrow lengths at each end when the arrows are outside (the line runs on past them).
+    ``None``: not axis-aligned, no line position, or fewer than two extension lines (nothing says where it ends)."""
+    axis = _axis(dim)
+    if axis is None or dim.line_at is None or len(dim.extension) < 2:
+        return None
+    horizontal = axis == "h"
+    across = sorted((s[0] + s[2]) / 2 if horizontal else (s[1] + s[3]) / 2 for s in dim.extension)
+    lo, hi = across[0], across[-1]
+    if hi - lo < 1e-6:
+        return None
+    tail = _tail(dim)
+    if horizontal:
+        return (lo - tail, dim.line_at, hi + tail, dim.line_at)
+    return (dim.line_at, lo - tail, dim.line_at, hi + tail)
+
+
+def _tail(dim: DimShape) -> float:
+    """How far the dimension line runs past each arrow tip: two arrow lengths when the arrows are outside, else nothing."""
+    return 2 * dim.arrow_length if dim.arrows_inside is False else 0.0
+
+
+def _crossing_point(
+    a: Segment, b: Segment, a_margin: float, b_ends: tuple[float, float, float]
+) -> tuple[float, float] | None:
+    """Where ``a`` crosses ``b`` (``None`` when parallel or apart), unless the crossing lies within ``a_margin`` of an end
+    of ``a`` or within ``CROSS_MARGIN_MM`` of the end of ``b`` or of its two arrow tips: ``b_ends`` = (tail, span, tail) of
+    ``b`` along its length."""
+    rx, ry = a[2] - a[0], a[3] - a[1]
+    sx, sy = b[2] - b[0], b[3] - b[1]
+    denom = rx * sy - ry * sx
+    la, lb = math.hypot(rx, ry), math.hypot(sx, sy)
+    if abs(denom) < 1e-12 or la < 1e-9 or lb < 1e-9:
+        return None
+    qpx, qpy = b[0] - a[0], b[1] - a[1]
+    t = (qpx * sy - qpy * sx) / denom
+    u = (qpx * ry - qpy * rx) / denom
+    if not (0.0 <= t <= 1.0 and 0.0 <= u <= 1.0):
+        return None
+    along_a, along_b = t * la, u * lb
+    if along_a < a_margin or la - along_a < a_margin:
+        return None
+    tail_lo, span, _ = b_ends
+    tips = (tail_lo, tail_lo + span)  # the places the arrows stand: where another dimension's extension line is a touch
+    if (
+        along_b < CROSS_MARGIN_MM
+        or lb - along_b < CROSS_MARGIN_MM
+        or any(abs(along_b - tip) < CROSS_MARGIN_MM for tip in tips)
+    ):
+        return None
+    return (a[0] + t * rx, a[1] + t * ry)
+
+
+def dimension_crossings(dims: Sequence[DimShape]) -> list[CrossingFinding]:
+    """The places where an extension line of one dimension crosses the dimension line of ANOTHER dimension of the same view
+    (ISO 129 asks to avoid it: the reader takes the crossing for the end of a measure). Not counted: an extension line that
+    only touches the dimension line at its end (the arrow tip: two dimensions from one datum), the extension lines of the
+    dimension itself, and a crossing within ``CROSS_MARGIN_MM`` of the end of either line. One finding per pair (the
+    dimension that crosses, the one crossed): the first crossing found."""
+    lines = {id(d): dimension_line(d) for d in dims}
+    out: list[CrossingFinding] = []
+    for x in dims:
+        for y in dims:
+            line = lines[id(y)]
+            if (
+                x is y or x.view != y.view or line is None
+            ):  # (one item may draw several dimensions: they are judged apart)
+                continue
+            tail = _tail(y)
+            ends = (tail, math.hypot(line[2] - line[0], line[3] - line[1]) - 2 * tail, tail)
+            for ext in x.extension:
+                found = _crossing_point(ext, line, CROSS_MARGIN_MM, ends)
+                if found is not None:
+                    out.append(CrossingFinding(x.owner, y.owner, x.view, found))
+                    break
+    seen: set[tuple[str, str]] = set()
+    unique: list[CrossingFinding] = []
+    for f in out:
+        if (f.owner, f.other) not in seen:
+            seen.add((f.owner, f.other))
+            unique.append(f)
+    return unique
+
+
+# --- the datum symbol on a line of another item -----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DatumInk:
+    """The ink of a datum symbol: the points of its filled ``triangle``, the rectangles of its ``frames`` (the lettered box)
+    and the ``lines`` that join them (its stem)."""
+
+    owner: str
+    triangle: tuple[tuple[float, float], ...] = ()
+    frames: tuple[Rect, ...] = ()
+    lines: tuple[Segment, ...] = ()
+
+
+@dataclass(frozen=True)
+class DatumOnLine:
+    owner: str  # the datum item
+    over: str  # the item whose line it lies on
+    part: str  # triangle | frame | stem
+    at: tuple[float, float]
+
+
+DATUM_SHRINK_MM = 0.2  # the ink of the datum is taken this much smaller: a line touching its edge is not on it
+SAME_LINE_MM = 0.3  # two parallel lines this close lie on one another (the stem along an extension line)
+MIN_ALONG_MM = 1.0  # ... when they run along each other this far
+
+
+def _trim(s: Segment, by: float) -> Segment | None:
+    length = math.hypot(s[2] - s[0], s[3] - s[1])
+    if length <= 2 * by + 1e-9:
+        return None
+    ux, uy = (s[2] - s[0]) / length, (s[3] - s[1]) / length
+    return (s[0] + ux * by, s[1] + uy * by, s[2] - ux * by, s[3] - uy * by)
+
+
+def _segments_cross(a: Segment, b: Segment) -> tuple[float, float] | None:
+    """The point where ``a`` and ``b`` cross (each one trimmed by ``DATUM_SHRINK_MM`` at both ends), ``None`` otherwise."""
+    p, q = _trim(a, DATUM_SHRINK_MM), _trim(b, DATUM_SHRINK_MM)
+    if p is None or q is None:
+        return None
+    at = _hit((p[0], p[1]), (p[2], p[3]), q)
+    if at is None:
+        return None
+    length = math.hypot(p[2] - p[0], p[3] - p[1])
+    return (p[0] + (p[2] - p[0]) * at / length, p[1] + (p[3] - p[1]) * at / length)
+
+
+def _in_triangle(p: tuple[float, float], tri: Sequence[tuple[float, float]]) -> bool:
+    """Whether ``p`` lies inside the triangle (farther than ``DATUM_SHRINK_MM`` from its sides)."""
+    signs = []
+    for i in range(3):
+        a, b = tri[i], tri[(i + 1) % 3]
+        edge = math.hypot(b[0] - a[0], b[1] - a[1])
+        if edge < 1e-9:
+            return False
+        signs.append(((b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])) / edge)
+    return all(s > DATUM_SHRINK_MM for s in signs) or all(s < -DATUM_SHRINK_MM for s in signs)
+
+
+def _on_polygon(
+    shape: Sequence[Segment], inside: "Callable[[tuple[float, float]], bool]", line: Segment
+) -> tuple[float, float] | None:
+    for side in shape:
+        found = _segments_cross(side, line)
+        if found is not None:
+            return found
+    for end in ((line[0], line[1]), (line[2], line[3])):
+        if inside(end):
+            return end
+    return None
+
+
+def _along(a: Segment, b: Segment) -> bool:
+    """Whether two segments lie on one line (within ``SAME_LINE_MM``) and run along each other at least ``MIN_ALONG_MM``."""
+    la = math.hypot(a[2] - a[0], a[3] - a[1])
+    if la < 1e-9:
+        return False
+    ux, uy = (a[2] - a[0]) / la, (a[3] - a[1]) / la
+
+    def lateral(x: float, y: float) -> float:
+        return abs((x - a[0]) * uy - (y - a[1]) * ux)
+
+    def along(x: float, y: float) -> float:
+        return (x - a[0]) * ux + (y - a[1]) * uy
+
+    if lateral(b[0], b[1]) > SAME_LINE_MM or lateral(b[2], b[3]) > SAME_LINE_MM:
+        return False
+    lo, hi = sorted((along(b[0], b[1]), along(b[2], b[3])))
+    return min(hi, la) - max(lo, 0.0) >= MIN_ALONG_MM
+
+
+def datum_on_line(datums: Sequence[DatumInk], others: Mapping[str, Sequence[Segment]]) -> list[DatumOnLine]:
+    """The datum symbols whose triangle, frame or stem lie on a line of another item: an extension line, a dimension line or a
+    leader that passes through the triangle or the lettered box (or ends inside it), or runs along the stem. ``others`` are
+    the line segments of each other item by id; the outline of the part the triangle rests on is not among them, so
+    resting on it is fine. One finding per (datum, item): the first part found."""
+    out: list[DatumOnLine] = []
+    for datum in datums:
+        tri_sides: list[Segment] = []
+        if len(datum.triangle) == 3:
+            tri = datum.triangle
+            tri_sides = [(tri[i][0], tri[i][1], tri[(i + 1) % 3][0], tri[(i + 1) % 3][1]) for i in range(3)]
+        for owner, segments in others.items():
+            if owner == datum.owner:
+                continue
+            found: DatumOnLine | None = None
+            for line in segments:
+                at = _on_polygon(tri_sides, lambda p, t=datum.triangle: _in_triangle(p, t), line) if tri_sides else None
+                if at is not None:
+                    found = DatumOnLine(datum.owner, owner, "triangle", at)
+                    break
+                for x0, y0, x1, y1 in datum.frames:
+                    box = (x0 + DATUM_SHRINK_MM, y0 + DATUM_SHRINK_MM, x1 - DATUM_SHRINK_MM, y1 - DATUM_SHRINK_MM)
+                    sides = [
+                        (box[0], box[1], box[2], box[1]),
+                        (box[2], box[1], box[2], box[3]),
+                        (box[2], box[3], box[0], box[3]),
+                        (box[0], box[3], box[0], box[1]),
+                    ]
+                    at = (
+                        _on_polygon(sides, lambda p, b=box: b[0] < p[0] < b[2] and b[1] < p[1] < b[3], line)
+                        if box[2] > box[0] and box[3] > box[1]
+                        else None
+                    )
+                    if at is not None:
+                        found = DatumOnLine(datum.owner, owner, "frame", at)
+                        break
+                if found is not None:
+                    break
+                stem = next((s for s in datum.lines if _along(s, line) or _segments_cross(s, line) is not None), None)
+                if stem is not None:
+                    found = DatumOnLine(datum.owner, owner, "stem", ((stem[0] + stem[2]) / 2, (stem[1] + stem[3]) / 2))
+                    break
+            if found is not None:
+                out.append(found)
+    return out
+
+
+# --- a datum no tolerance frame uses --------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DatumUnused:
+    owner: str  # the id of the datum item
+    letter: str
+
+
+def datum_unused(datums: Sequence[tuple[str, str]], cited: Collection[Sequence[str]]) -> list[DatumUnused]:
+    """The datum items (``(item id, letter)``) whose letter no tolerance frame cites. ``cited`` holds the ``datums`` list of
+    each ``gdt`` item of the sheet (up to three letters); letters compare in capitals, and several frames may cite one datum.
+    A datum symbol means nothing on its own: it is there for a frame."""
+    used = {str(letter).upper() for letters in cited for letter in letters}
+    return [DatumUnused(owner, letter) for owner, letter in datums if letter.upper() not in used]
+
+
+# --- the leader of a chamfer callout ------------------------------------------------------------------------------------
+
+CHAMFER_TOL_MM = 0.5  # the end of the leader is on the chamfer line when it is this near it
+CHAMFER_ANGLE_DEG = (
+    30.0  # a leader may deviate this much from the normal of the chamfer line (close to perpendicular to it)
+)
+PARALLEL_DEG = 5.0  # a segment of the outline is the chamfer line when it is this near parallel to it
+
+
+def _distance_to_segment(p: tuple[float, float], s: Segment) -> float:
+    dx, dy = s[2] - s[0], s[3] - s[1]
+    length2 = dx * dx + dy * dy
+    t = 0.0 if length2 == 0 else max(0.0, min(1.0, ((p[0] - s[0]) * dx + (p[1] - s[1]) * dy) / length2))
+    return math.hypot(p[0] - (s[0] + t * dx), p[1] - (s[1] + t * dy))
+
+
+def chamfer_leader_problems(
+    tip: tuple[float, float],
+    elbow: tuple[float, float],
+    point: tuple[float, float],
+    normal: tuple[float, float],
+    outline: Sequence[Segment] = (),
+) -> list[str]:
+    """What is wrong with the leader of a chamfer callout, as codes: ``off_line`` (its end is not on the chamfer's own line:
+    the line through ``point`` perpendicular to ``normal``, and, when the ``outline`` of the view is known, a segment of it
+    parallel to the chamfer within ``CHAMFER_TOL_MM`` of the end: it points at a neighbouring face), ``from_inside`` (it
+    comes from the side of the part, against ``normal``, the outward normal of the chamfer) and ``oblique`` (more than
+    ``CHAMFER_ANGLE_DEG`` off the normal: it should be close to perpendicular to the chamfer line). Empty: the leader is right."""
+    length = math.hypot(normal[0], normal[1])
+    if length < 1e-9:
+        return []
+    nx, ny = normal[0] / length, normal[1] / length
+    problems: list[str] = []
+    on_line = abs((tip[0] - point[0]) * nx + (tip[1] - point[1]) * ny) <= CHAMFER_TOL_MM
+    if on_line and outline:
+        sin_tol = math.sin(math.radians(PARALLEL_DEG))
+        on_line = any(
+            abs((s[2] - s[0]) * nx + (s[3] - s[1]) * ny) <= sin_tol * math.hypot(s[2] - s[0], s[3] - s[1])
+            and _distance_to_segment(tip, s) <= CHAMFER_TOL_MM
+            for s in outline
+            if math.hypot(s[2] - s[0], s[3] - s[1]) > 1e-9
+        )
+    if not on_line:
+        problems.append("off_line")
+    dx, dy = elbow[0] - tip[0], elbow[1] - tip[1]
+    reach = math.hypot(dx, dy)
+    if reach > 1e-9:
+        cos = (dx * nx + dy * ny) / reach
+        if cos < 0.0:
+            problems.append("from_inside")
+        elif math.degrees(math.acos(min(1.0, cos))) > CHAMFER_ANGLE_DEG:
+            problems.append("oblique")
+    return problems
 
 
 # --- rule 3: arrows outside on a short dimension ----------------------------------------------------------------------
@@ -267,3 +632,115 @@ def redundant_views(views: Sequence[ViewUse]) -> list[RedundantView]:
         out.append(RedundantView(view.name, "repeated" if view.dims else "cut_only", view.cuts, repeated))
         staying.discard(view.name)
     return out
+
+
+# --- the paper a sheet leaves blank -----------------------------------------------------------------------------------------
+
+LOW_COVERAGE = 0.35  # the views and their dimensions cover less than this share of the free drawing area: too small
+CORNER_RATIO = 3.0  # the free room on one side is more than this many times the other ...
+CORNER_MIN_MM = 60.0  # ... and bigger than this: the block of views sits in a corner
+FIT_MARGIN_MM = 2.0  # a larger scale / a smaller paper must leave this much room round the block to be proposed
+
+
+@dataclass(frozen=True)
+class Underused:
+    """A sheet that wastes its paper: ``reason`` is ``small`` (the block covers ``coverage`` of the free area while a larger
+    scale or a smaller paper would hold it) or ``corner`` (the free room on one ``side`` is much bigger than on the opposite
+    one). ``scale`` is the largest standard scale at which the block still fits (``None``: none larger does), ``paper`` the
+    smallest paper that holds it at the scale it has (``None``: none smaller does)."""
+
+    reason: str  # small | corner
+    coverage: float
+    block: tuple[float, float]  # width and height of the block of views and their dimensions
+    area: tuple[float, float]  # width and height of the free drawing area
+    scale: float | None = None
+    paper: str | None = None
+    side: str = ""  # corner: the side with the free room (left | right | above | below)
+    free_mm: float = 0.0  # corner: how much room is there
+    opposite_mm: float = 0.0  # corner: how much on the opposite side
+
+
+def _hull(rects: Sequence[Rect]) -> Rect | None:
+    if not rects:
+        return None
+    return (min(r[0] for r in rects), min(r[1] for r in rects), max(r[2] for r in rects), max(r[3] for r in rects))
+
+
+def sheet_underused(
+    rects: Sequence[Rect],
+    area: Rect,
+    scale: float,
+    page: tuple[float, float] | None = None,
+    corner: bool = True,
+    scales: Sequence[float] = (),
+    papers: Mapping[str, tuple[float, float]] | None = None,
+) -> Underused | None:
+    """Whether the views of a sheet, with their dimensions (``rects``: the rectangles of the views and of the dimension
+    strips, y up), waste the free drawing ``area``: ``None`` when the sheet is balanced.
+
+    * ``small``: the hull of ``rects`` covers less than ``LOW_COVERAGE`` of the area AND a larger standard scale (from
+      ``scales``) would still fit it, or a smaller paper (from ``papers``: name -> (width, height) of its free area, at the
+      scale the block has; ``page`` is the free area of the paper the sheet is on) would hold it. The block is judged as it is, not redrawn: a sheet whose scale was asked for and is already the
+      largest that fits is not small, it is a small part.
+    * ``corner`` (only when ``corner``: an assembly keeps room for its parts list and the exploded view): the free room on one
+      side of the hull is more than ``CORNER_RATIO`` times the opposite one and bigger than ``CORNER_MIN_MM``."""
+    hull = _hull(rects)
+    if hull is None or scale <= 0:
+        return None
+    width, height = hull[2] - hull[0], hull[3] - hull[1]
+    area_w, area_h = area[2] - area[0], area[3] - area[1]
+    if width <= 0 or height <= 0 or area_w <= 0 or area_h <= 0:
+        return None
+    coverage = width * height / (area_w * area_h)
+    larger = [
+        s
+        for s in scales
+        if s > scale * (1 + 1e-9)
+        and width * (s / scale) + 2 * FIT_MARGIN_MM <= area_w
+        and height * (s / scale) + 2 * FIT_MARGIN_MM <= area_h
+    ]
+    smaller_paper = _smaller_paper(width, height, page, papers or {})
+    block, free = (round(width, 1), round(height, 1)), (round(area_w, 1), round(area_h, 1))
+    if coverage < LOW_COVERAGE and (larger or smaller_paper):
+        return Underused("small", coverage, block, free, max(larger) if larger else None, smaller_paper)
+    if not corner:
+        return None
+    gaps = {
+        "left": hull[0] - area[0],
+        "right": area[2] - hull[2],
+        "below": hull[1] - area[1],
+        "above": area[3] - hull[3],
+    }
+    for first, second in (("left", "right"), ("below", "above")):
+        a, b = gaps[first], gaps[second]
+        if a < 0 or b < 0:  # the block reaches past the area: not a matter of room
+            continue
+        more, less, side = (a, b, first) if a >= b else (b, a, second)
+        if more > CORNER_MIN_MM and more > CORNER_RATIO * less:
+            return Underused(
+                "corner",
+                coverage,
+                block,
+                free,
+                max(larger) if larger else None,
+                smaller_paper,
+                side,
+                round(more, 1),
+                round(less, 1),
+            )
+    return None
+
+
+def _smaller_paper(
+    width: float, height: float, page: tuple[float, float] | None, papers: Mapping[str, tuple[float, float]]
+) -> str | None:
+    """The smallest of ``papers`` (name: (width, height) of the free area) that holds a block of ``width`` x ``height`` and is
+    smaller than the sheet's own free area (``page``: the free area of the paper it is on)."""
+    if page is None:
+        return None
+    fitting = [
+        (w * h, name)
+        for name, (w, h) in papers.items()
+        if w * h < page[0] * page[1] - 1e-6 and width + 2 * FIT_MARGIN_MM <= w and height + 2 * FIT_MARGIN_MM <= h
+    ]
+    return min(fitting)[1] if fitting else None

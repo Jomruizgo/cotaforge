@@ -73,8 +73,13 @@ NON_BLOCKING = frozenset(
         "dowel_unmarked",
         "dimension_repeated",
         "dimension_side",
+        "dimension_crossing",
+        "datum_on_line",
+        "datum_unused",
+        "leader_not_on_chamfer",
         "view_redundant",
         "arrows_inside_short",
+        "sheet_underused",
         "hatch_same_as_neighbour",
         "hatch_pattern_differs",
     }

@@ -267,9 +267,12 @@ def place_leader(
     lines: list[str],
     offset_mm: float | None,
     explicit: bool = False,
+    along: tuple[float, float] | None = None,
 ) -> list[Entity]:
     """A leader from ``tip`` along ``diagonal`` to an elbow beyond the edge of ``view`` (``offset_mm`` farther, default
-    ``CALLOUT_GAP_MM``), its text on a shelf. When the text would land on something already placed or outside the
+    ``CALLOUT_GAP_MM``), its text on a shelf. ``along``: an exact direction (page vector, any length) the leader takes instead
+    of a diagonal: only that direction is tried (the elbow is nudged outward along it), ``diagonal`` and the other
+    diagonals are ignored (a chamfer callout goes along the outward normal of the chamfer line). When the text would land on something already placed or outside the
     frame it is moved outward, and when that does not help the other diagonals are tried (the one asked for comes
     first) -- unless the item asked for its place (``explicit``: ``side`` / ``offset_mm``): then it goes exactly there
     and, when that is not a clean place, the item's result says why. The text's rectangle is reserved so the next
@@ -277,14 +280,22 @@ def place_leader(
     gap = (CALLOUT_GAP_MM + ctx.nudge() * NUDGE_MM) if offset_mm is None else offset_mm
     box = view.box
     sx0, sy0 = diagonal
-    candidates = [(sx0, sy0)] if explicit else [(sx0, sy0), (-sx0, sy0), (sx0, -sy0), (-sx0, -sy0)]
+    step: Point | None = None  # the exact direction asked for, as a unit vector
+    if along is not None and math.hypot(*along) > 1e-9:
+        reach = math.hypot(*along)
+        step = (along[0] / reach, along[1] / reach)
+        sx0, sy0 = (1.0 if step[0] >= 0 else -1.0), (1.0 if step[1] >= 0 else -1.0)
+    candidates = [(sx0, sy0)] if explicit or step is not None else [(sx0, sy0), (-sx0, sy0), (sx0, -sy0), (-sx0, -sy0)]
     best: tuple[list[Entity], tuple[float, float, float, float], Point, float, bool, bool] | None = None
     for sx, sy in candidates:
         need_x = (box[2] - tip[0] if sx > 0 else tip[0] - box[0]) + gap
         need_y = (box[3] - tip[1] if sy > 0 else tip[1] - box[1]) + gap
         distance = max(MIN_LEADER_MM, min(need_x, need_y))
+        if step is not None:
+            distance = max(MIN_LEADER_MM, _ray_exit(box, tip, step) + gap)
+        vx, vy = step if step is not None else (sx, sy)
         for _ in range(1 if explicit else NUDGE_TRIES):
-            elbow = (tip[0] + sx * distance, tip[1] + sy * distance)
+            elbow = (tip[0] + vx * distance, tip[1] + vy * distance)
             entities, rect = leader(tip, elbow, lines, "right" if sx > 0 else "left")
             fits = ctx.inside(rect)
             free = (
