@@ -1,0 +1,175 @@
+# Canonical sectors of the memory: every example of the base set names one of these ids. The engineer extends this
+# table with a `sectors.yaml` in the memory folder of the project or of the user (same format: new sectors, or
+# `aliases` added to an existing id). Aliases are compared without case, accents or punctuation, and work in English
+# and in Spanish: the ids before 0.10 (`chapa-metalica`...) stay as aliases, so an old entry still reaches its sector.
+sectors:
+  - id: fixtures
+    name: Fixtures, tooling and gauges
+    aliases:
+      - dispositivos
+      - dispositivo
+      - dispositivos de manufactura
+      - dispositivos de fijacion
+      - utillaje
+      - utillajes
+      - utiles
+      - plantillas
+      - herramental
+      - calibres
+      - galgas
+      - fixture
+      - fixtures
+      - manufacturing fixtures
+      - workholding
+      - jigs
+      - gauges
+      - tooling
+  - id: special-machines
+    name: Special machines and automation
+    aliases:
+      - maquinas especiales y automatizacion
+      - maquinaria especial
+      - maquinas especiales
+      - maquina especial
+      - automatizacion
+      - mecatronica
+      - lineas de ensamble
+      - celdas
+      - machine building
+      - special machines
+      - special machinery
+      - automation
+      - mechatronics
+      - assembly lines
+  - id: welded-structures
+    name: Welded structures and frames
+    aliases:
+      - estructuras y bastidores soldados
+      - estructuras soldadas
+      - estructura soldada
+      - estructuras metalicas
+      - estructura metalica
+      - bastidores
+      - bastidor
+      - caldereria
+      - fabricacion soldada
+      - soldadura
+      - weldments
+      - weldment
+      - welded structures
+      - welded frames
+      - welding
+      - steel structures
+      - fabrications
+  - id: sheet-metal
+    name: Sheet metal
+    aliases:
+      - chapa metalica
+      - chapa
+      - lamina
+      - plegado
+      - corte y plegado
+      - gabinetes
+      - carcasas
+      - sheet metal
+      - press brake
+      - enclosures
+      - cabinets
+  - id: precision-machining
+    name: Precision machined parts
+    aliases:
+      - piezas mecanizadas de precision
+      - mecanizado de precision
+      - mecanizado
+      - maquinado
+      - piezas mecanizadas
+      - torneado
+      - fresado
+      - cnc
+      - precision machining
+      - machined parts
+      - machining
+      - cnc machining
+  - id: injection-molds
+    name: Injection molds
+    aliases:
+      - moldes de inyeccion
+      - moldes
+      - molde
+      - inyeccion de plastico
+      - molding
+      - moulding
+      - mold
+      - molds
+      - injection molds
+      - injection molding
+      - plastic injection
+  - id: power-transmission
+    name: Power transmission and mechanisms
+    aliases:
+      - transmision de potencia y mecanismos
+      - transmision mecanismos
+      - transmision
+      - transmision de potencia
+      - mecanismos
+      - reductores
+      - ejes y rodamientos
+      - power transmission
+      - mechanisms
+      - drives
+      - gearboxes
+      - shafts and bearings
+  - id: hygienic-equipment
+    name: Hygienic equipment (food and pharma)
+    aliases:
+      - equipo higienico alimentos y farmacia
+      - equipo higienico
+      - diseno higienico
+      - equipo sanitario
+      - alimentos
+      - alimentario
+      - farmaceutico
+      - bioproceso
+      - hygienic
+      - hygienic design
+      - sanitary
+      - sanitary equipment
+      - food
+      - food processing
+      - pharma
+  - id: process-and-transport-equipment
+    name: Process and transport equipment
+    aliases:
+      - equipos de proceso y transporte
+      - equipo de proceso y transporte
+      - maquinaria de proceso
+      - equipos de proceso
+      - equipo de proceso
+      - transporte
+      - manejo de materiales
+      - transportadores
+      - tolvas
+      - process equipment
+      - process machinery
+      - material handling
+      - conveyors
+      - hoppers
+  - id: general
+    name: No sector declared
+    aliases:
+      - sin sector declarado
+      - otro
+      - ninguno
+      - no declarado
+      - sin sector
+      - other
+      - none
+      - not declared
+      - no sector
+
+# Words that fit more than one sector: they are never assigned on their own (the engineer says which one, with an id
+# or with another alias).
+ambiguous:
+  matrices: [injection-molds, sheet-metal]
+  troqueles: [sheet-metal, injection-molds]
+  dies: [sheet-metal, injection-molds]

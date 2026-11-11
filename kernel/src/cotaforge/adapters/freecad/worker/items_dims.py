@@ -1,0 +1,678 @@
+# ruff: noqa: E501
+"""``overall`` and ``dim``: the overall size of the part and dimensions between features (no FreeCAD import).
+
+``dim`` has four kinds -- ``distance`` (linear, between two references: points of the part, faces, edges or hole
+centres, which also gives centre-to-centre), ``radius`` (a cylindrical face), ``angle`` (between two planar faces) and
+``chamfer`` (a flat chamfer face: leg x angle). The value is always measured on the model; the item only says WHAT to
+measure and where to put it.
+"""
+
+import math
+from dataclasses import dataclass
+from typing import Any
+
+import sheet_tol
+from items_attach import attach_face
+from items_common import asked, outward_diagonal, place_leader
+from sheet_context import (
+    COMMON_FIELDS,
+    Context,
+    ItemError,
+    ItemType,
+    Point,
+    Vec3,
+    ViewInfo,
+    add,
+    check_fields,
+    cross,
+    dot,
+    model_axis,
+    norm,
+    parallel,
+    perpendicular,
+    scale,
+    sub,
+    unit,
+    v_enum,
+    v_ids,
+    v_ref,
+    v_view_or_section,
+)
+from sheet_draw import angle_dimension, linear_dimension
+from sheet_model import text_width
+from sheet_units import NativeDim, Ref2
+
+AXES: dict[str, Vec3] = {"x": (1.0, 0.0, 0.0), "y": (0.0, 1.0, 0.0), "z": (0.0, 0.0, 1.0)}
+OVERALL = "overall"  # the key of the outer diameter of a body of revolution, given by ``overall`` and by a ``dim`` on its face
+VIEW_PREFERENCE = {"x": ("front", "top"), "y": ("top", "right"), "z": ("front", "right")}
+DEFAULT_SIDE = {("h", "front"): "above", ("h", "top"): "below", ("h", "right"): "above"}
+DEFAULT_SIDE_V = {"front": "right", "top": "right", "right": "left"}
+ANGLE_RADIUS_MM = 12.0
+POSITION_EPS_MM = 0.05
+
+CHECKS = {
+    "kind": v_enum("distance", "radius", "angle", "chamfer", "diameter"),
+    "from": v_ref,
+    "to": v_ref,
+    "along": v_enum("x", "y", "z"),
+    "arrows": v_enum("auto", "inside", "outside"),
+    "face": v_ids("face"),
+    "faces": v_ids("face"),
+    **sheet_tol.CHECKS,
+    **COMMON_FIELDS,
+    "view": v_view_or_section,
+}
+
+
+# --- overall ---------------------------------------------------------------------------------------------------------
+
+
+def check_overall(spec: dict[str, Any]) -> dict[str, Any]:
+    return check_fields(spec, {"offset_mm": COMMON_FIELDS["offset_mm"]})
+
+
+def _is_diameter(view: ViewInfo, axis: Vec3 | None) -> tuple[bool, bool]:
+    """Whether the (width, height) a view shows of a body of revolution about ``axis`` are its diameter."""
+    if axis is None:
+        return False, False
+    if view.looks_along(axis):
+        return True, True
+    ax, ay = view.axis(axis)
+    return (abs(ay) > 0.99, abs(ax) > 0.99)
+
+
+def _record(ctx: Context, name: str, view: str, orient: str, line: float, mid: float, text: str) -> None:
+    """Keep where an overall dimension was drawn (page mm, y up): TechDraw's own object for it is put on the same line
+    (``sheet_mirror``)."""
+    ctx.extras.setdefault("overall_dims", {})[name] = {
+        "view": view,
+        "orient": orient,
+        "line": line,
+        "mid": mid,
+        "text": text,
+    }
+
+
+def _record_overall(ctx: Context, view: ViewInfo, horizontal: bool, diameter: float | None = None) -> None:
+    """Keep that an overall dimension says the part's whole extent along the model axis a page direction of ``view`` runs
+    along -- and, when it is the diameter of a body of revolution, that diameter (the review flags the same size given again
+    in another view)."""
+    box = ctx.extras.get("model_box")
+    axis = model_axis(view.xdir if horizontal else view.ydir)
+    if box is not None and axis is not None:
+        i = "xyz".index(axis)
+        ctx.record_dimension(("len", axis, round(box[0][i], 2), round(box[1][i], 2)), view.name)
+    if diameter is not None:
+        ctx.record_dimension(("dia", round(diameter, 2), OVERALL), view.name)
+
+
+def draw_overall(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
+    """Width and height on the front view, depth on the top view: measured on the projected geometry. A body of
+    revolution gets its diameter ONCE, as ``Ø`` on the first view that shows it across (front, else top); the other
+    view does not repeat it."""
+    out: list[str] = []
+    sizes: dict[str, float] = {}
+    front, top = ctx.views.get("front"), ctx.views.get("top")
+    # a sheet of ONE standard view that is not the front one (a plate seen from above): that view gives the width and the
+    # height, and the thickness is a note
+    primary = front or top or ctx.views.get("right")
+    only = front is None
+    if only:
+        top = None
+    offset = spec.get("offset_mm")
+    round_part = ctx.geometry.round_extent()
+    axis = round_part[0] if round_part else None
+    given = False
+    if primary is not None:
+        name = primary.name
+        ctx.used_view(name)
+        b = primary.box
+        width, height = (b[2] - b[0]) / primary.scale, (b[3] - b[1]) / primary.scale
+        w_round, h_round = _is_diameter(primary, axis)
+        below = (
+            ctx.third_angle and not only
+        )  # third angle: the top view hangs above the front one, the width goes below
+        dist = ctx.stack_distance(name, "below" if below else "above", offset)
+        shown = f"Ø{ctx.num(width)}" if w_round else ctx.num(width)
+        edge, line = (b[1], b[1] - dist) if below else (b[3], b[3] + dist)
+        entities, taken = linear_dimension((b[0], edge), (b[2], edge), "h", line, shown)
+        ctx.add(entities)
+        ctx.reserve_dimension(entities, taken)
+        _record(ctx, "width", name, "h", line, (b[0] + b[2]) / 2, shown)
+        _record_overall(ctx, primary, True, width if w_round else None)
+        given = w_round or h_round
+        out.append(f"width {shown}")
+        sizes["width"] = width
+        if not (h_round and w_round):  # a circle's height is its width: say it once
+            dist = ctx.stack_distance(name, "right", offset)
+            shown_h = f"Ø{ctx.num(height)}" if h_round else ctx.num(height)
+            entities, taken = linear_dimension((b[2], b[1]), (b[2], b[3]), "v", b[2] + dist, shown_h)
+            ctx.add(entities)
+            ctx.reserve_dimension(entities, taken)
+            _record(ctx, "height", name, "v", b[2] + dist, (b[1] + b[3]) / 2, shown_h)
+            _record_overall(ctx, primary, False, height if h_round else None)
+            out.append(f"height {shown_h}")
+            sizes["height"] = height
+    if top is not None:
+        ctx.used_view("top")
+        b = top.box
+        depth = (b[3] - b[1]) / top.scale
+        d_round = _is_diameter(top, axis)[1]
+        if not (d_round and given):
+            dist = ctx.stack_distance("top", "right", offset)
+            shown_d = f"Ø{ctx.num(depth)}" if d_round else ctx.num(depth)
+            entities, taken = linear_dimension((b[2], b[1]), (b[2], b[3]), "v", b[2] + dist, shown_d)
+            ctx.add(entities)
+            ctx.reserve_dimension(entities, taken)
+            _record(ctx, "depth", "top", "v", b[2] + dist, (b[1] + b[3]) / 2, shown_d)
+            _record_overall(ctx, top, False, depth if d_round else None)
+            out.append(f"depth {shown_d}")
+            sizes["depth"] = depth
+    right = ctx.views.get("right")
+    if top is None and right is not None and not only:  # no top view: the depth is the width of the right view
+        ctx.used_view("right")
+        b = right.box
+        depth = (b[2] - b[0]) / right.scale
+        dist = ctx.stack_distance("right", "above", offset)
+        entities, taken = linear_dimension((b[0], b[3]), (b[2], b[3]), "h", b[3] + dist, ctx.num(depth))
+        ctx.add(entities)
+        ctx.reserve_dimension(entities, taken)
+        _record(ctx, "depth", "right", "h", b[3] + dist, (b[0] + b[2]) / 2, ctx.num(depth))
+        _record_overall(ctx, right, True)
+        out.append(f"depth {ctx.num(depth)}")
+        sizes["depth"] = depth
+    if not out:
+        msg = "the sheet has no front or top view to take the overall size from"
+        raise ItemError(msg)
+    general = sheet_tol.general_notes(ctx, "linear", sizes)
+    return "ok", ", ".join(out) + " mm" + general
+
+
+# --- references -------------------------------------------------------------------------------------------------------
+
+
+@dataclass
+class Ref:
+    """A place on the part a dimension reaches: ``point`` is where it is (a point, a hole centre, the middle of a
+    face or of a straight edge), ``kind`` what it is. ``normal`` belongs to planes and circles, ``direction`` to
+    lines and axes, ``radius`` to holes, circles and cylinders."""
+
+    kind: str
+    point: Vec3
+    label: str
+    normal: Vec3 | None = None
+    direction: Vec3 | None = None
+    radius: float | None = None
+
+
+def resolve_ref(ctx: Context, ref: dict[str, Any]) -> Ref:
+    if "at" in ref:
+        p: Vec3 = tuple(ref["at"])  # type: ignore[assignment]
+        for hole in ctx.holes:
+            if hole.on_axis(p):
+                d = unit(hole.direction)
+                foot = add(hole.centre, scale(d, dot(sub(p, hole.centre), d)))
+                return Ref("hole", foot, f"the hole at {_pt(ctx, p)}", direction=d, radius=hole.diameter / 2)
+        snapped = ctx.geometry.on_part(p)
+        if snapped is None:
+            msg = (
+                f"the point {_pt(ctx, p)} is not on the part: a dimension measures the model, so its references "
+                "must be "
+                "points of it (a vertex, a point on an edge or a face) or the axis of a hole; use face=/edge= ids to "
+                "avoid typing coordinates"
+            )
+            raise ItemError(msg)
+        return Ref("point", snapped, f"the point {_pt(ctx, p)}")
+    if "face" in ref:
+        face = ctx.geometry.face(ref["face"])
+        if face.kind == "plane" and face.normal is not None:
+            return Ref("plane", face.point, ref["face"], normal=unit(face.normal))
+        if face.kind == "cylinder" and face.axis_point is not None and face.axis_dir is not None:
+            return Ref("axis", face.axis_point, ref["face"], direction=unit(face.axis_dir), radius=face.radius)
+        msg = f"{ref['face']} is a {face.kind} face: a dimension reference needs a plane or a cylinder"
+        raise ItemError(msg)
+    edge = ctx.geometry.edge(ref["edge"])
+    if edge.kind == "line" and edge.start is not None and edge.end is not None:
+        mid = tuple((a + b) / 2 for a, b in zip(edge.start, edge.end, strict=True))
+        return Ref("line", mid, ref["edge"], direction=unit(sub(edge.end, edge.start)))  # type: ignore[arg-type]
+    if edge.kind == "circle" and edge.centre is not None:
+        return Ref("circle", edge.centre, ref["edge"], normal=edge.axis_dir, radius=edge.radius)
+    msg = f"{ref['edge']} is a {edge.kind} edge: a dimension reference needs a straight or a circular edge"
+    raise ItemError(msg)
+
+
+def _pt(ctx: Context, p: Vec3) -> str:
+    return "[" + ", ".join(ctx.num(c) for c in p) + "]"
+
+
+def coordinate(ref: Ref, axis: Vec3, name: str) -> float:
+    """Where ``ref`` is along ``axis``; an error when the reference has no single place along it."""
+    if ref.kind == "plane" and ref.normal is not None and not parallel(ref.normal, axis):
+        msg = f"{ref.label} is a face that is not perpendicular to the {name} axis, so it has no single {name} position"
+        raise ItemError(msg)
+    if ref.kind == "line" and ref.direction is not None and not perpendicular(ref.direction, axis):
+        msg = (
+            f"{ref.label} is an edge that is not perpendicular to the {name} axis, so it has no single {name} position"
+        )
+        raise ItemError(msg)
+    if ref.kind in ("hole", "axis") and ref.direction is not None and parallel(ref.direction, axis):
+        msg = f"{ref.label} is an axis along {name}: it has no {name} position; use a face or an edge across it"
+        raise ItemError(msg)
+    return dot(ref.point, axis)
+
+
+def _axis_name(v: Vec3) -> str | None:
+    return next((name for name, a in AXES.items() if parallel(a, v)), None)
+
+
+def _along(ctx: Context, a: Ref, b: Ref, wanted: str | None) -> str:
+    if wanted is not None:
+        return wanted
+    planes = [r for r in (a, b) if r.kind == "plane" and r.normal is not None]
+    names = {_axis_name(r.normal) for r in planes if r.normal is not None}
+    if names:
+        if None in names or len(names) > 1:
+            msg = "the faces are not perpendicular to one x, y or z axis; say along=x|y|z or use other references"
+            raise ItemError(msg)
+        return str(names.pop())
+    delta = sub(b.point, a.point)
+    big = [name for name, axis in AXES.items() if abs(dot(delta, axis)) > POSITION_EPS_MM]
+    if len(big) != 1:
+        apart = ", ".join(big) or "no axis"
+        msg = (
+            f"the two references are apart along {apart}: say along=x|y|z to choose the direction the dimension "
+            "measures"
+        )
+        raise ItemError(msg)
+    return big[0]
+
+
+def _view_for_axis(ctx: Context, axis_name: str, wanted: str | None, refs: tuple[Ref, ...] = ()) -> ViewInfo:
+    axis = AXES[axis_name]
+    if wanted:
+        ctx.view(wanted)  # a view the sheet no longer has is said so, not blamed on the axis
+    names = [wanted] if wanted else list(VIEW_PREFERENCE[axis_name])
+    rims = [r.direction if r.direction is not None else r.normal for r in refs if r.radius is not None]
+    if wanted is None and rims and rims[0] is not None:  # holes: the view that shows them as circles comes first
+        names.sort(key=lambda n: 0 if n in ctx.views and ctx.views[n].looks_along(rims[0]) else 1)
+    for name in names:
+        view = ctx.find_view(name)
+        if view is not None and view.shows_axis_along(axis):
+            return view
+    msg = (
+        f"no view shows the {axis_name} axis"
+        if wanted is None
+        else f"the {wanted} view does not show the {axis_name} axis (it looks along it)"
+    )
+    raise ItemError(msg)
+
+
+def _edge_start(ref: Ref, view: ViewInfo, p: Point, towards: float, orient: str) -> Point:
+    """Where the extension line of ``ref`` starts: at the rim of a hole that shows as a circle, else at the point."""
+    axis = ref.direction if ref.direction is not None else ref.normal
+    if ref.radius is None or axis is None or not view.looks_along(axis):
+        return p
+    r = ref.radius * view.scale
+    sign = 1.0 if towards >= (p[1] if orient == "h" else p[0]) else -1.0
+    return (p[0], p[1] + sign * r) if orient == "h" else (p[0] + sign * r, p[1])
+
+
+# --- dim --------------------------------------------------------------------------------------------------------------
+
+
+def check(spec: dict[str, Any]) -> dict[str, Any]:
+    out = check_fields(spec, CHECKS, required=("kind",))
+    kind = out["kind"]
+    if kind == "distance":
+        if "from" not in out or "to" not in out:
+            msg = 'distance needs from and to, each {"at": [x,y,z]}, {"face": "face:N"} or {"edge": "edge:N"}'
+            raise ItemError(msg)
+    elif kind in ("radius", "chamfer", "diameter"):
+        if "face" not in out or len(out["face"]) != 1:
+            msg = f"{kind} needs face (one face id)"
+            raise ItemError(msg)
+    elif "faces" not in out or len(out["faces"]) != 2:
+        msg = "angle needs faces: two planar face ids"
+        raise ItemError(msg)
+    sheet_tol.check_combination(out)
+    if ("fit" in out or "tol" in out) and kind == "chamfer":
+        msg = "a chamfer takes no fit or tolerance here: its general tolerance is the chamfer height of ISO 2768"
+        raise ItemError(msg)
+    if "fit" in out and kind in ("radius", "angle"):
+        msg = f"a fit (ISO 286) is for a size, not for a {kind}: use tol"
+        raise ItemError(msg)
+    return out
+
+
+def _toleranced(
+    ctx: Context, spec: dict[str, Any], value: float, general: str, prefix: str = "", unit: str = ""
+) -> tuple[sheet_tol.Rendered, str]:
+    """(the text of a dimension, what to add to its result): the value with its tolerance, or -- when it has none --
+    the general tolerance the sheet's ISO 2768 class gives a dimension of this ``general`` kind (``linear``, ``radius``
+    or ``angle``)."""
+    res = sheet_tol.resolve(spec, value)
+    if res is None:
+        return sheet_tol.Rendered(f"{prefix}{ctx.num(value)}{unit}"), sheet_tol.general_note(ctx, general, value)
+    if res.iso:
+        sheet_tol.mark_iso286(ctx)
+    rendered = sheet_tol.render(ctx, value, res, prefix, unit, stackable=general == "linear" and not prefix)
+    stacked = f" (deviations stacked: {rendered.stack[0]} over {rendered.stack[1]})" if rendered.stack else ""
+    return rendered, f"; toleranced{stacked}"
+
+
+def _distance(ctx: Context, spec: dict[str, Any]) -> str:
+    a, b = resolve_ref(ctx, spec["from"]), resolve_ref(ctx, spec["to"])
+    name = _along(ctx, a, b, spec.get("along"))
+    axis = AXES[name]
+    ca, cb = coordinate(a, axis, name), coordinate(b, axis, name)
+    value = abs(cb - ca)
+    if value < POSITION_EPS_MM:
+        msg = f"the two references are at the same {name} position (distance 0)"
+        raise ItemError(msg)
+    view = _view_for_axis(ctx, name, spec.get("view"), (a, b))
+    ax, ay = view.axis(axis)
+    orient = "h" if abs(ax) >= abs(ay) else "v"
+    side = spec.get("side") or (
+        DEFAULT_SIDE.get(("h", view.name), "above") if orient == "h" else DEFAULT_SIDE_V.get(view.name, "right")
+    )
+    if (orient == "h") != (side in ("above", "below")):
+        msg = (
+            f"this dimension is {'horizontal' if orient == 'h' else 'vertical'} in the {view.name} view: side must be "
+            + ("above or below" if orient == "h" else "left or right")
+        )
+        raise ItemError(msg)
+    box = view.box
+    dist = ctx.stack_distance(view.name, side, spec.get("offset_mm"))
+    line = {"above": box[3] + dist, "below": box[1] - dist, "right": box[2] + dist, "left": box[0] - dist}[side]
+    centres = (view.project(a.point), view.project(b.point))
+    if (
+        view.derived
+    ):  # in a section a face is a line of the cut: the extension line starts at its end, not at its middle
+        centres = (_trace_end(ctx, view, a, centres[0], side), _trace_end(ctx, view, b, centres[1], side))
+    pa, pb = _edge_start(a, view, centres[0], line, orient), _edge_start(b, view, centres[1], line, orient)
+    rendered, extra = _toleranced(ctx, spec, value, "linear")
+    entities, taken = linear_dimension(pa, pb, orient, line, rendered.text, arrows=spec.get("arrows", "auto"))
+    if rendered.stack is not None:
+        sheet_tol.stack_entities(entities, rendered.stack, horizontal=orient == "h")
+        grow = max(text_width(s, 2.5) for s in rendered.stack) + 2.0
+        taken = (
+            taken[0],
+            taken[1],
+            taken[2] + (grow if orient == "h" else 0.0),
+            taken[3] + (grow if orient == "v" else 0.0),
+        )
+    ctx.add(entities)
+    ctx.reserve_dimension(entities, taken)
+    res = sheet_tol.resolve(spec, value)
+    label = (
+        ((centres[0][0] + centres[1][0]) / 2, line) if orient == "h" else (line, (centres[0][1] + centres[1][1]) / 2)
+    )
+    ctx.used_view(view.name)
+    ctx.record_dimension(("len", name, round(min(ca, cb), 2), round(max(ca, cb), 2)), view.name)
+    if not view.derived:  # a section is made of sheet entities: TechDraw has no view of it to measure in
+        ctx.native(
+            NativeDim(
+                item=str(ctx.extras["current"]),
+                name="d1",
+                kind="distance",
+                view=view.name,
+                refs=(Ref2("point", centres[0]), Ref2("point", centres[1])),
+                label=label,
+                expected=value,
+                text=None if res is None or rendered.stack is not None else rendered.text,
+                orient=orient,
+                tol=(res.upper, res.lower) if res is not None and rendered.stack is not None else None,
+                rect=taken,
+                arrows=str(spec.get("arrows", "auto")),
+            )
+        )
+    return f"{ctx.num(value)} mm along {name} in the {view.name} view ({a.label} to {b.label}){extra}"
+
+
+def _trace_end(ctx: Context, view: ViewInfo, ref: "Ref", centre: Point, side: str) -> Point:
+    """Where the extension line of a planar face seen edge-on in a section starts: the end of the face's trace on the side
+    the dimension goes to (``centre``, the middle of the face, when the geometry cannot say)."""
+    if ref.kind != "plane" or not ref.label.startswith("face:"):
+        return centre
+    try:
+        loops = ctx.geometry.face_outline(ref.label, view.centre, view.xdir, view.direction)
+    except ItemError:
+        return centre
+    points = [(view.x + p[0] * view.scale, view.y + p[1] * view.scale) for loop in loops for p in loop]
+    if not points:
+        return centre
+    pick = {"right": lambda p: p[0], "left": lambda p: -p[0], "above": lambda p: p[1], "below": lambda p: -p[1]}[side]
+    best = max(points, key=pick)
+    # keep the coordinate along the measured direction (the face's own position), take the other from the trace end
+    return (best[0], centre[1]) if side in ("right", "left") else (centre[0], best[1])
+
+
+def _radius(ctx: Context, spec: dict[str, Any]) -> str:
+    face = ctx.geometry.face(spec["face"][0])
+    if face.kind != "cylinder" or face.axis_dir is None or face.axis_point is None or face.surface_point is None:
+        msg = f"{spec['face'][0]} is a {face.kind} face: radius needs a cylindrical face (a fillet, a boss, a bore)"
+        raise ItemError(msg)
+    view = _view_looking_along_axis(ctx, face.axis_dir, spec.get("view"), spec["face"][0])
+    centre, tip = view.project(face.axis_point), view.project(face.surface_point)
+    dx, dy = tip[0] - centre[0], tip[1] - centre[1]
+    diagonal = (1.0 if dx >= 0 else -1.0, 1.0 if dy >= 0 else -1.0)
+    if spec.get("side") in ("right", "left", "above", "below"):
+        diagonal = outward_diagonal(view, tip, spec["side"])
+    rendered, extra = _toleranced(ctx, spec, face.radius or 0.0, "radius", prefix="R")
+    ctx.add(place_leader(ctx, view, tip, diagonal, [rendered.text], spec.get("offset_mm"), asked(spec)))
+    ctx.used_view(view.name)
+    ctx.native(
+        NativeDim(
+            item=str(ctx.extras["current"]),
+            name="r1",
+            kind="radius",
+            view=view.name,
+            refs=(Ref2("circle", (centre[0], centre[1], (face.radius or 0.0) * view.scale)),),
+            label=_label_of(ctx),
+            expected=face.radius,
+            text=rendered.text if sheet_tol.resolve(spec, face.radius or 0.0) is not None else None,
+            leader=True,
+            rect=_anchor_rect(ctx),
+        )
+    )
+    return f"{rendered.text} in the {view.name} view{extra}"
+
+
+def _anchor_rect(ctx: Context) -> Any:
+    """The rectangle of the leader text the item being drawn has just placed."""
+    return ctx.extras["anchors"][ctx.extras["current"]][-1]["rect"]
+
+
+def _label_of(ctx: Context) -> Point:
+    x0, y0, x1, y1 = _anchor_rect(ctx)
+    return ((x0 + x1) / 2, (y0 + y1) / 2)
+
+
+def _diameter(ctx: Context, spec: dict[str, Any]) -> str:
+    """The diameter of a cylinder that is NOT the wall of a hole (that is ``hole_dim``'s): a leader to its silhouette in
+    a view across its axis, or to its circle in a view along it."""
+    face_id = spec["face"][0]
+    face = ctx.geometry.face(face_id)
+    if face.kind != "cylinder" or face.radius is None:
+        msg = f"{face_id} is a {face.kind} face: diameter needs a cylindrical face (a shaft, a boss)"
+        raise ItemError(msg)
+    if any(face_id in hole.faces for hole in ctx.holes):
+        msg = f"{face_id} is the wall of a hole: dimension it with hole_dim (it takes fit and tol too)"
+        raise ItemError(msg)
+    att = attach_face(ctx, face_id, spec.get("view"), spec.get("side"))
+    diagonal = (1.0 if att.normal[0] >= 0 else -1.0, 1.0 if att.normal[1] >= 0 else -1.0)
+    rendered, extra = _toleranced(ctx, spec, 2 * face.radius, "linear", prefix="Ø")
+    ctx.record_dimension(("dia", round(2 * face.radius, 2), face_id), att.view.name)
+    round_part = ctx.geometry.round_extent()
+    if (
+        round_part is not None and abs(round_part[1] - 2 * face.radius) < 0.01
+    ):  # the outer diameter ``overall`` gives too
+        ctx.record_dimension(("dia", round(2 * face.radius, 2), OVERALL), att.view.name)
+    if att.view.derived and att.circle is None and att.kind == "surface":
+        return _section_diameter(ctx, spec, att, face.radius, rendered.text, extra)
+    ctx.add(place_leader(ctx, att.view, att.tip, diagonal, [rendered.text], spec.get("offset_mm"), asked(spec)))
+    ctx.used_view(att.view.name)
+    radius = face.radius * att.view.scale
+    if att.circle is not None:  # seen along its axis: a circle of the view
+        refs = (Ref2("circle", (att.circle[0][0], att.circle[0][1], radius)),)
+        kind = "diameter"
+    else:  # seen across its axis: the two silhouette lines, measured across (an aligned distance)
+        far = (att.tip[0] - 2 * radius * att.normal[0], att.tip[1] - 2 * radius * att.normal[1])
+        refs = (Ref2("point", att.tip), Ref2("point", far))
+        kind = "distance"
+    if not att.view.derived:
+        ctx.native(
+            NativeDim(
+                item=str(ctx.extras["current"]),
+                name="d1",
+                kind=kind,
+                view=att.view.name,
+                refs=refs,
+                label=_label_of(ctx),
+                expected=2 * face.radius,
+                text=rendered.text,
+                orient="a",
+                leader=True,
+                rect=_anchor_rect(ctx),
+            )
+        )
+    return f"{rendered.text} in the {att.view.name} view{extra}"
+
+
+def _section_diameter(ctx: Context, spec: dict[str, Any], att: Any, radius_mm: float, text: str, extra: str) -> str:
+    """The diameter of a cylinder seen across its axis in a section: a LINEAR dimension with the Ø in front of the value,
+    between its two silhouette lines, outside the view, the way a draughtsman dimensions a diameter in a section. A leader to
+    one silhouette line says nothing a shop can measure (it points at one side of a thing that has two). The extension lines
+    start at the end of the silhouette lines (the corner where that diameter stops) on the side the dimension goes to."""
+    view, n = att.view, att.normal
+    if abs(n[0]) >= 0.99:  # the silhouette lines are vertical on the page: the dimension line is horizontal
+        orient, sides = "h", ("above", "below")
+    elif abs(n[1]) >= 0.99:
+        orient, sides = "v", ("left", "right")
+    else:
+        msg = f"the cylinder is oblique in the {view.name} view: a diameter dimension across it needs its axis horizontal or vertical there"
+        raise ItemError(msg)
+    r = radius_mm * view.scale
+    tip = att.tip
+    far = (tip[0] - 2 * r * n[0], tip[1] - 2 * r * n[1])
+    ends = list(att.band) if att.band is not None else [tip, tip]
+    box = view.box
+    side = spec.get("side")
+    if side is not None and side not in sides:
+        msg = f"this diameter is {'horizontal' if orient == 'h' else 'vertical'} in the {view.name} view: side must be {' or '.join(sides)}"
+        raise ItemError(msg)
+    index = 1 if orient == "h" else 0  # the page coordinate along the axis of the cylinder
+    edges = {"above": box[3], "below": box[1], "right": box[2], "left": box[0]}
+    if side is None and orient == "h":  # above: the label of the view hangs below it
+        side = "above"
+    elif side is None:  # the end of the silhouette line nearest an edge of the view: the dimension goes out that way
+        side = min(sides, key=lambda s: min(abs(e[index] - edges[s]) for e in ends))
+    high = side in ("above", "right")
+    end = max(ends, key=lambda e: e[index]) if high else min(ends, key=lambda e: e[index])
+    dist = ctx.stack_distance(view.name, side, spec.get("offset_mm"))
+    line = edges[side] + dist if high else edges[side] - dist
+    if orient == "h":
+        a, b = (far[0], end[1]), (tip[0], end[1])
+    else:
+        a, b = (end[0], far[1]), (end[0], tip[1])
+    entities, taken = linear_dimension(a, b, orient, line, text, arrows=spec.get("arrows", "auto"))
+    ctx.add(entities)
+    ctx.reserve_dimension(entities, taken)
+    return f"{text} in the {view.name} view, between its two silhouette lines{extra}"
+
+
+def _view_looking_along_axis(ctx: Context, axis: Vec3, wanted: str | None, what: str) -> ViewInfo:
+    names = [wanted] if wanted else ["top", "front", "right"]
+    for name in names:
+        view = ctx.views.get(name)
+        if view is not None and view.looks_along(axis):
+            return view
+    msg = f"no {'selected ' if wanted else ''}view looks along the axis of {what}: it is not parallel to x, y or z"
+    raise ItemError(msg)
+
+
+def _angle(ctx: Context, spec: dict[str, Any]) -> str:
+    fa, fb = (ctx.geometry.face(i) for i in spec["faces"])
+    if fa.kind != "plane" or fb.kind != "plane" or fa.normal is None or fb.normal is None:
+        msg = "angle needs two planar faces"
+        raise ItemError(msg)
+    na, nb = unit(fa.normal), unit(fb.normal)
+    if norm(cross(na, nb)) < 1e-6:
+        msg = "the two faces are parallel: they make no angle"
+        raise ItemError(msg)
+    view = None
+    for name in [spec["view"]] if "view" in spec else ["front", "top", "right"]:
+        candidate = ctx.find_view(name)
+        if candidate is not None and candidate.shows_axis_along(na) and candidate.shows_axis_along(nb):
+            view = candidate
+            break
+    if view is None:
+        msg = "no view shows both faces edge-on (their normals must lie in the plane of a front, top or right view)"
+        raise ItemError(msg)
+    traces = []
+    for face, normal in ((fa, na), (fb, nb)):
+        nx, ny = view.axis(normal)
+        length = math.hypot(nx, ny)
+        traces.append((view.project(face.point), (-ny / length, nx / length)))
+    (p1, t1), (p2, t2) = traces
+    denom = t1[0] * t2[1] - t1[1] * t2[0]
+    s = ((p2[0] - p1[0]) * t2[1] - (p2[1] - p1[1]) * t2[0]) / denom
+    apex = (p1[0] + s * t1[0], p1[1] + s * t1[1])
+    rays = []
+    for p, t in ((p1, t1), (p2, t2)):
+        away = (p[0] - apex[0]) * t[0] + (p[1] - apex[1]) * t[1]
+        rays.append(t if away >= 0 else (-t[0], -t[1]))
+    (r1, r2) = rays
+    theta = math.degrees(math.acos(max(-1.0, min(1.0, r1[0] * r2[0] + r1[1] * r2[1]))))
+    a0, a1 = math.degrees(math.atan2(r1[1], r1[0])), math.degrees(math.atan2(r2[1], r2[0]))
+    if (a1 - a0) % 360.0 > 180.0:
+        a0, a1 = a1, a0
+    rendered, extra = _toleranced(ctx, spec, round(theta, 1), "angle", unit="°")
+    text = rendered.text
+    entities, taken = angle_dimension(apex, a0, a1, spec.get("offset_mm") or ANGLE_RADIUS_MM, text)
+    ctx.add(entities)
+    ctx.reserve(taken)
+    ctx.used_view(view.name)
+    reach = 20.0  # any two points of the trace say which line it is
+    if not view.derived:
+        ctx.native(
+            NativeDim(
+                item=str(ctx.extras["current"]),
+                name="a1",
+                kind="angle",
+                view=view.name,
+                refs=tuple(
+                    Ref2("line", (p[0], p[1], p[0] + t[0] * reach, p[1] + t[1] * reach))
+                    for p, t in ((p1, t1), (p2, t2))
+                ),
+                label=((taken[0] + taken[2]) / 2, (taken[1] + taken[3]) / 2),
+                expected=round(theta, 1),
+                text=text if sheet_tol.resolve(spec, round(theta, 1)) is not None else None,
+                rect=taken,
+            )
+        )
+    return f"{text} between {spec['faces'][0]} and {spec['faces'][1]} in the {view.name} view{extra}"
+
+
+def _chamfer(ctx: Context, spec: dict[str, Any]) -> str:
+    info = ctx.geometry.chamfer(spec["face"][0])
+    view = _view_looking_along_axis(ctx, info.edge_dir, spec.get("view"), "the chamfer edge")
+    tip = view.project(info.middle)
+    diagonal = outward_diagonal(view, tip, spec.get("side"))
+    text = f"{ctx.num(round(info.leg_a, 2))} × {ctx.num(round(info.angle_deg, 1))}°"
+    ctx.add(place_leader(ctx, view, tip, diagonal, [text], spec.get("offset_mm"), asked(spec)))
+    general = sheet_tol.general_note(ctx, "radius", info.leg_a)
+    return f"chamfer {text} in the {view.name} view (legs {ctx.num(info.leg_a)} and {ctx.num(info.leg_b)} mm){general}"
+
+
+def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
+    kind = spec["kind"]
+    steps = {"distance": _distance, "radius": _radius, "angle": _angle, "chamfer": _chamfer, "diameter": _diameter}
+    detail = steps[kind](ctx, spec)
+    return "ok", detail
+
+
+ITEMS = (
+    ItemType("overall", "o", check_overall, draw_overall, frozenset({"offset_mm"}), phase=0),
+    ItemType("dim", "d", check, draw, frozenset(CHECKS), phase=0),
+)

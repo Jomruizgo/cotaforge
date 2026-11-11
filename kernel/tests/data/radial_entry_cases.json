@@ -1,0 +1,57 @@
+{
+  "_comment": "Pins contract.geometry.radial_entry and the FreeCAD worker's geometry.radial_entry together (the worker imports nothing from cotaforge). Values derived by hand from the rule: angle 0 = u of frame_for_face(centre, axis), positive towards v = axis x u, outward = cos(a) u + sin(a) v.",
+  "cases": [
+    {
+      "name": "vertical tube, 10 mm up, angle 0",
+      "center": [0, 0, 50], "axis_origin": [0, 0, 50], "axis_dir": [0, 0, 1], "radius": 20, "position": [10, 0],
+      "axis_point": [0, 0, 60], "outward": [1, 0, 0], "surface_point": [20, 0, 60]
+    },
+    {
+      "name": "vertical tube, 5 mm down, angle 90",
+      "center": [0, 0, 50], "axis_origin": [0, 0, 50], "axis_dir": [0, 0, 1], "radius": 20, "position": [-5, 90],
+      "axis_point": [0, 0, 45], "outward": [0, 1, 0], "surface_point": [0, 20, 45]
+    },
+    {
+      "name": "axis pointing down is canonicalised to the one pointing up: same side",
+      "center": [0, 0, 50], "axis_origin": [0, 0, 50], "axis_dir": [0, 0, -1], "radius": 20, "position": [0, 90],
+      "axis_point": [0, 0, 50], "outward": [0, 1, 0], "surface_point": [0, 20, 50]
+    },
+    {
+      "name": "axis pointing down: the axial offset also follows the canonical (upward) sense",
+      "center": [0, 0, 50], "axis_origin": [0, 0, 50], "axis_dir": [0, 0, -1], "radius": 20, "position": [10, 0],
+      "axis_point": [0, 0, 60], "outward": [1, 0, 0], "surface_point": [20, 0, 60]
+    },
+    {
+      "name": "axis along -Y: Z is zero so Y decides, canonical +Y, u = X, v = -Z",
+      "center": [0, 0, 0], "axis_origin": [0, 0, 0], "axis_dir": [0, -1, 0], "radius": 10, "position": [5, 90],
+      "axis_point": [0, 5, 0], "outward": [0, 0, -1], "surface_point": [0, 5, -10]
+    },
+    {
+      "name": "axis along -X: canonical +X, u falls back to Y, angle 90 turns towards +Z",
+      "center": [0, 0, 0], "axis_origin": [0, 0, 0], "axis_dir": [-1, 0, 0], "radius": 10, "position": [4, 90],
+      "axis_point": [4, 0, 0], "outward": [0, 0, 1], "surface_point": [4, 0, 10]
+    },
+    {
+      "name": "axis along X: u falls back to world Y",
+      "center": [0, 0, 0], "axis_origin": [0, 0, 0], "axis_dir": [1, 0, 0], "radius": 10, "position": [0, 0],
+      "axis_point": [0, 0, 0], "outward": [0, 1, 0], "surface_point": [0, 10, 0]
+    },
+    {
+      "name": "axis along X, angle 90",
+      "center": [0, 0, 0], "axis_origin": [0, 0, 0], "axis_dir": [1, 0, 0], "radius": 10, "position": [0, 90],
+      "axis_point": [0, 0, 0], "outward": [0, 0, 1], "surface_point": [0, 0, 10]
+    },
+    {
+      "name": "tube leaning 30 degrees (the bench part 22 seat tube), angle 90",
+      "center": [0, -25, 43.30127018922193], "axis_origin": [0, -25, 43.30127018922193],
+      "axis_dir": [0, -0.5, 0.8660254037844386], "radius": 20, "position": [0, 90],
+      "axis_point": [0, -25, 43.30127018922193], "outward": [0, 0.8660254037844386, 0.5],
+      "surface_point": [0, -7.679491924311227, 53.30127018922193]
+    },
+    {
+      "name": "a centre off the axis is projected onto it",
+      "center": [7, 3, 50], "axis_origin": [0, 0, 50], "axis_dir": [0, 0, 1], "radius": 20, "position": [0, 0],
+      "axis_point": [0, 0, 50], "outward": [1, 0, 0], "surface_point": [20, 0, 50]
+    }
+  ]
+}

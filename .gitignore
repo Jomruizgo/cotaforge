@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+
+# local-only
+.claude/settings.local.json
+work/eval/results/
+work/experiments/**/output/
+*.FCBak
+
+# website build output
+docs-site/_build/
+docs-site/.venv/

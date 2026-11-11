@@ -1,0 +1,137 @@
+# Temas de la biblioteca técnica: cada tema es una carpeta; las líneas de abajo son sus sinónimos.
+# Se busca por lo que se necesita (roscas, ajustes...), no por el tipo de documento.
+# Añade temas y sinónimos a mano, o deja que el agente los añada al archivar un documento nuevo.
+
+roscas:
+  - rosca
+  - roscas
+  - hilo
+  - hilos
+  - threads
+  - screw threads
+
+ajustes-y-tolerancias:
+  - ajustes
+  - tolerancias
+  - ajustes y tolerancias
+  - tolerancia dimensional
+  - fits
+  - tolerances
+  - ISO 286
+
+pasadores-y-chavetas:
+  - pasadores
+  - pasador
+  - chavetas
+  - chaveta
+  - pines
+  - pasadores de registro
+  - registros
+  - dowel pins
+  - keys
+
+tornilleria:
+  - tornillos
+  - tornillo
+  - pernos
+  - tuercas
+  - arandelas
+  - tornillería
+  - sujetadores
+  - fasteners
+  - bolts
+
+rodamientos-y-ejes:
+  - rodamientos
+  - rodamiento
+  - cojinetes
+  - ejes
+  - árboles
+  - arboles
+  - bearings
+  - shafts
+
+transmision-de-potencia:
+  - transmisión de potencia
+  - transmision de potencia
+  - engranajes
+  - correas
+  - cadenas
+  - acoples
+  - acoplamientos
+  - reductores
+  - gears
+  - belts
+
+resortes:
+  - resorte
+  - muelles
+  - muelle
+  - springs
+
+materiales:
+  - material
+  - aceros
+  - aluminio
+  - metales
+  - plásticos
+  - plasticos
+  - propiedades de materiales
+  - materials
+
+soldadura:
+  - soldaduras
+  - soldar
+  - uniones soldadas
+  - welding
+
+tuberia-y-bridas:
+  - tubería y bridas
+  - tuberia y bridas
+  - tuberías
+  - tuberia
+  - tubos
+  - bridas
+  - piping
+  - flanges
+
+hidraulica-y-neumatica:
+  - hidráulica y neumática
+  - hidraulica y neumatica
+  - hidráulica
+  - hidraulica
+  - neumática
+  - neumatica
+  - cilindros
+  - válvulas
+  - valvulas
+  - fluid power
+
+dibujo-tecnico:
+  - dibujo técnico
+  - dibujo tecnico
+  - planos
+  - acotado
+  - acotación
+  - acotacion
+  - GD&T
+  - technical drawing
+
+calculo-y-diseno-de-maquinas:
+  - cálculo y diseño de máquinas
+  - calculo y diseno de maquinas
+  - diseño de máquinas
+  - diseno de maquinas
+  - cálculo de elementos de máquinas
+  - elementos de máquinas
+  - elementos de maquinas
+  - resistencia de materiales
+  - machine design
+
+seguridad-de-maquinas:
+  - seguridad de máquinas
+  - seguridad de maquinas
+  - seguridad
+  - protecciones
+  - resguardos
+  - machine safety

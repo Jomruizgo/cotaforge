@@ -1,0 +1,8 @@
+{
+  "name": "cotaforge",
+  "version": "0.1.0",
+  "description": "Mechanical design with an AI agent through a CAD program: small measured steps, hard constraints, memory of decisions and corrections, resumable native files.",
+  "author": {
+    "name": "cotaforge"
+  }
+}

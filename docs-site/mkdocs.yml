@@ -1,0 +1,107 @@
+# Site of CotaForge: MkDocs + Material, English by default and Spanish beside it.
+# Build it from this folder:  pip install -r requirements.txt && mkdocs build --strict
+# Pages are in pages/ (a page and its Spanish twin: name.md and name.es.md).
+# The full manual is NOT copied here: pages/manual*.md include ../../docs/*.md at build time.
+
+site_name: CotaForge
+site_url: https://jomruizgo.github.io/cotaforge/
+site_description: Mechanical design in FreeCAD with Claude Code. It models the part, checks it and makes the shop drawing.
+site_author: CotaForge contributors
+repo_url: https://github.com/Jomruizgo/cotaforge
+repo_name: Jomruizgo/cotaforge
+edit_uri: ""
+copyright: MIT License
+
+docs_dir: pages
+site_dir: _build
+strict: true
+
+validation:
+  links:
+    anchors: warn
+    not_found: warn
+    absolute_links: warn
+
+theme:
+  name: material
+  language: en
+  logo: assets/img/logo.png
+  favicon: assets/img/favicon.png
+  font:
+    text: IBM Plex Sans
+    code: IBM Plex Mono
+  features:
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - search.highlight
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+
+extra:
+  generator: false  # no "Made with Material for MkDocs" in the footer
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      # keep accents in anchors (like GitHub), because the Spanish manual links to them that way
+      slugify: !!python/object/apply:pymdownx.slugs.slugify {kwds: {case: lower}}
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.keys
+
+plugins:
+  - search
+  - include-markdown
+  - i18n:
+      docs_structure: suffix
+      fallback_to_default: true
+      reconfigure_material: true
+      reconfigure_search: true
+      languages:
+        - locale: en
+          default: true
+          name: English
+          build: true
+        - locale: es
+          name: Español
+          build: true
+          nav_translations:
+            What you need: Qué necesitas
+            Install: Instalar
+            Your first part: Tu primera pieza
+            How it works: Cómo funciona
+            FAQ and limits: Preguntas y límites
+            Contribute: Contribuir
+            Full manual: Manual completo
+
+nav:
+  - Home: index.md
+  - What you need: what-you-need.md
+  - Install: install.md
+  - Your first part: first-part.md
+  - How it works: how-it-works.md
+  - FAQ and limits: faq.md
+  - Contribute: contribute.md
+  - Full manual: manual.md

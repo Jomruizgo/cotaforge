@@ -1,0 +1,52 @@
+[project]
+name = "cotaforge-mcp"
+version = "0.1.0"
+description = "MCP server `cad`: one CAD adapter, one live document, action-style tools"
+requires-python = ">=3.12"
+# The SDK is pinned below 2: mcp 2 renamed FastMCP/changed the low-level API and has not been evaluated yet.
+dependencies = ["cotaforge-kernel", "mcp>=1.9,<2", "pydantic>=2.7,<3", "pypdf>=4,<6"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5"]
+
+[project.scripts]
+cotaforge-mcp = "cotaforge_mcp.server:main"
+cotaforge = "cotaforge_mcp.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# The design-space template, copied from templates/design-space by scripts/sync_template.py (a test keeps them equal).
+# Explicit patterns: a plain `*` does not match the dotfiles (.claude/, .gitkeep).
+[tool.setuptools.package-data]
+cotaforge_mcp = [
+    "data/conduct-history.json",
+    "data/design-space/CLAUDE.md",
+    "data/design-space/.claude/*",
+    "data/design-space/memory/.gitkeep",
+    "data/design-space/calculations/.gitkeep",
+    "data/design-space/assumptions-and-decisions.md",
+    # the starting topics of the technical library (never documents)
+    "data/library/topics.yaml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+asyncio_mode = "auto"
+markers = [
+    "freecad: needs the FreeCAD root",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "N", "ANN"]
+ignore = ["ANN401"]

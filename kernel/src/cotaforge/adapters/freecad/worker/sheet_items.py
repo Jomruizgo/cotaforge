@@ -1,0 +1,177 @@
+"""The registry of sheet items: what a drawing sheet is made of, and the one place a new kind of item is plugged in.
+
+A sheet is a list of items (``{"id": "h1", "type": "hole_dim", ...}``) kept as JSON on the page (``CotaforgeSpec``).
+Each item type is an ``ItemType``: a validator that reduces an agent's dict to its known, checked fields, and a drawer
+that resolves the item against the current geometry (``sheet_context.Context``) and adds entities to the sheet. The
+values on a sheet always come out of the model, never out of the item.
+
+TO ADD A KIND OF ITEM (phases P2-P4): write ``items_<name>.py`` exporting ``ITEMS: tuple[ItemType, ...]`` and add its
+module to ``MODULES`` below -- one line. Types already named but not built yet are in ``PLANNED``; they are refused
+with "not available yet" until their module lands (remove the type from ``PLANNED`` in the same change).
+"""
+
+import re
+from typing import Any
+
+import items_assembly
+import items_datum
+import items_dims
+import items_explode
+import items_finish
+import items_gdt
+import items_holes
+import items_lines
+import items_notes
+import items_views
+from sheet_context import SECTION_LABEL, Context, ItemError, ItemResult, ItemType
+
+PHASE_ON_SECTION = 5  # after the views (3) and the balloons (4)
+
+# one line per module: the item types of P1. P2 added items_gdt (datum, gdt) and items_finish (finish); tolerances are
+# fields of hole_dim / dim (sheet_tol), not an item. P3 items_assembly (parts_list, balloons) and items_explode
+# (exploded); P4 items_views (section, detail, aux_view, view_lines) and the review.
+MODULES = (
+    items_holes,
+    items_dims,
+    items_datum,
+    items_notes,
+    items_views,
+    items_gdt,
+    items_finish,
+    items_assembly,
+    items_explode,
+    items_lines,
+)
+
+REGISTRY: dict[str, ItemType] = {t.name: t for module in MODULES for t in module.ITEMS}
+
+# item types the sheet will have, and the phase that builds them
+PLANNED: dict[str, str] = {}
+
+# item types the contract takes that this CAD does not draw: refused with this text (the adapter says it in its own
+# words)
+UNSUPPORTED: dict[str, str] = {
+    "weld": (
+        "FreeCAD draws no weld symbols on a sheet, so nothing was drawn: say the weld in a note item (kind, size, "
+        "sides, all around or field)"
+    ),
+}
+
+ID_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,23}$")
+MAX_ITEMS = 200
+
+
+def all_types() -> tuple[str, ...]:
+    """Every item type name, built or planned."""
+    return tuple(sorted({*REGISTRY, *PLANNED, *UNSUPPORTED}))
+
+
+def fields_of(item_type: str) -> frozenset[str]:
+    """The field names an item type takes (the contract's table is checked against this in a test)."""
+    return REGISTRY[item_type].fields | {"type", "id"}
+
+
+def normalise(spec: Any, taken: set[str], next_number: int) -> dict[str, Any]:
+    """The validated form of one item. ``taken`` are the ids already on the sheet; an item without an id gets
+    ``<prefix><n>``. Raises ``ItemError`` with a message that says what to change."""
+    if not isinstance(spec, dict):
+        msg = 'an item is an object like {"type": "hole_dim", ...}'
+        raise ItemError(msg)
+    kind = spec.get("type")
+    if not isinstance(kind, str):
+        msg = f"an item needs a type, one of {', '.join(sorted(REGISTRY))}"
+        raise ItemError(msg)
+    if kind in UNSUPPORTED and kind not in REGISTRY:
+        raise ItemError(UNSUPPORTED[kind])
+    if kind in PLANNED and kind not in REGISTRY:
+        msg = (
+            f"item type {kind!r} is not available yet (planned for {PLANNED[kind]}); "
+            f"available: {', '.join(sorted(REGISTRY))}"
+        )
+        raise ItemError(msg)
+    if kind not in REGISTRY:
+        msg = f"unknown item type {kind!r}; available: {', '.join(sorted(REGISTRY))}"
+        raise ItemError(msg)
+    given = spec.get("id")
+    if given is not None and (not isinstance(given, str) or not ID_PATTERN.match(given)):
+        msg = f"id {given!r} must be a short name: a letter, then letters, digits, - or _ (24 characters at most)"
+        raise ItemError(msg)
+    checked = REGISTRY[kind].check({k: v for k, v in spec.items() if k != "id"})
+    item_id = given or f"{REGISTRY[kind].prefix}{next_number}"
+    while item_id in taken and given is None:
+        next_number += 1
+        item_id = f"{REGISTRY[kind].prefix}{next_number}"
+    if item_id in taken:
+        msg = f"id {item_id!r} is already on this sheet"
+        raise ItemError(msg)
+    return {"id": item_id, **checked}
+
+
+def prepare_all(ctx: Context, items: list[dict[str, Any]]) -> None:
+    """Let each item type see all its items before any is drawn (the title block needs the revisions, the notes block
+    needs to know how many lines it has)."""
+    for kind, group in _by_type(items).items():
+        prepare = REGISTRY[kind].prepare if kind in REGISTRY else None
+        if prepare is not None:
+            prepare(ctx, group)
+
+
+def draw_items(ctx: Context, items: list[dict[str, Any]]) -> list[ItemResult]:
+    """Draw every item; an item that cannot be drawn becomes an ``error`` result (and leaves nothing on the sheet), the
+    others are still drawn. Items are drawn by phase (lines and dimensions, then leaders, then free text) and in list
+    order within a phase, so a callout looks for room around the dimensions whatever the order they were added in; the
+    results come back in list order."""
+    results: list[ItemResult | None] = [None] * len(items)
+
+    def phase(position: int) -> int:
+        kind = items[position].get("type")
+        own = REGISTRY[kind].phase if kind in REGISTRY else 0
+        view = items[position].get("view")
+        # an item on a section view is drawn after the sections: the view exists once its section item has been drawn
+        return max(own, PHASE_ON_SECTION) if isinstance(view, str) and SECTION_LABEL.match(view) else own
+
+    for position in sorted(range(len(items)), key=lambda i: (phase(i), i)):
+        spec = items[position]
+        kind = spec.get("type", "?")
+        item_id = str(spec.get("id", "?"))
+        if kind not in REGISTRY:
+            results[position] = ItemResult(item_id, str(kind), "error", f"item type {kind!r} is not available")
+            continue
+        mark = (len(ctx.sheet.entities), len(ctx.occupied), dict(ctx.stacks), ctx.notes)
+        ctx.extras["current"] = item_id
+        try:
+            status, detail = REGISTRY[kind].draw(ctx, spec)
+        except ItemError as exc:
+            ctx.extras.get("anchors", {}).pop(item_id, None)
+            ctx.extras.get("placement_notes", {}).pop(item_id, None)
+            ctx.extras.get("natives", {}).pop(item_id, None)
+            if "dim_records" in ctx.extras:
+                ctx.extras["dim_records"] = [r for r in ctx.extras["dim_records"] if r[0] != item_id]
+            for users in ctx.extras.get("view_use", {}).values():
+                users.discard(item_id)
+            del ctx.sheet.entities[mark[0] :]
+            del ctx.occupied[mark[1] :]
+            ctx.stacks.clear()
+            ctx.stacks.update(mark[2])
+            ctx.notes = mark[3]
+            results[position] = ItemResult(item_id, kind, "error", str(exc))
+        else:
+            notes = ctx.extras.get("placement_notes", {}).pop(item_id, [])
+            if notes:
+                status, detail = "warning", "; ".join([detail, *notes]) if detail else "; ".join(notes)
+            results[position] = ItemResult(item_id, kind, status, detail)
+            ctx.extras.setdefault("item_slices", {})[item_id] = (mark[0], len(ctx.sheet.entities))
+    return [r for r in results if r is not None]
+
+
+def draw_all(ctx: Context, items: list[dict[str, Any]]) -> list[ItemResult]:
+    """``prepare_all`` then ``draw_items``."""
+    prepare_all(ctx, items)
+    return draw_items(ctx, items)
+
+
+def _by_type(items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for spec in items:
+        groups.setdefault(str(spec.get("type")), []).append(spec)
+    return groups

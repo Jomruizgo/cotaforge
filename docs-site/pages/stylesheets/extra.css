@@ -1,0 +1,25 @@
+/* Palette of the installer's icon: steel blue and orange. One font (IBM Plex), nothing else. */
+:root {
+  --md-primary-fg-color: #284e78;
+  --md-primary-fg-color--light: #3d6591;
+  --md-primary-fg-color--dark: #18304e;
+  --md-primary-bg-color: #ffffff;
+  --md-primary-bg-color--light: #d6e0ec;
+  --md-accent-fg-color: #b45a08; /* the icon's orange, darkened to read as text on white */
+  --md-accent-fg-color--transparent: rgba(180, 90, 8, 0.1);
+  --md-typeset-a-color: #284e78;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #18304e;
+  --md-primary-fg-color--light: #284e78;
+  --md-primary-fg-color--dark: #0f2036;
+  --md-accent-fg-color: #f28c28;
+  --md-accent-fg-color--transparent: rgba(242, 140, 40, 0.1);
+  --md-typeset-a-color: #8fb4dc;
+}
+
+.md-header__button.md-logo img { height: 1.6rem; }
+.md-typeset img { border-radius: 4px; }
+.md-typeset figure figcaption { font-size: 0.75rem; }
+.md-typeset h1 { font-weight: 600; }

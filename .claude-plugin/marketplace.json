@@ -1,0 +1,17 @@
+{
+  "name": "cotaforge",
+  "owner": {
+    "name": "cotaforge"
+  },
+  "metadata": {
+    "description": "Marketplace of the cotaforge plugin: mechanical design with an AI agent through a CAD program."
+  },
+  "plugins": [
+    {
+      "name": "cotaforge",
+      "source": "./plugin",
+      "description": "Mechanical design with an AI agent through a CAD program: small measured steps, hard constraints, memory of decisions and corrections, resumable native files.",
+      "version": "0.1.0"
+    }
+  ]
+}

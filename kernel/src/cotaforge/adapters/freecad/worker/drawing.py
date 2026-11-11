@@ -1,0 +1,2737 @@
+# ruff: noqa: E501
+"""Drawing sheets (TechDraw): build them, annotate them, render and export them. Works in the headless worker and in the
+visible one; none of it needs a sheet window.
+
+* A SHEET is a TechDraw page (an ISO 5457 template, a first-angle front / top / right group, an isometric view and the
+  overall dimensions) plus a SPEC: a JSON text on the page (``CotaforgeSpec``, so it survives save and reopen) with the
+  sheet name, the template KEY (``A3_es``: the template path is looked up again on every use, the one TechDraw stores is
+  absolute), the title-block fields and the list of ITEMS (``sheet_items``: hole callouts, dimensions, datum
+  dimensions, notes, revisions...). ``create`` makes a sheet (a name makes another one), ``annotate`` adds / removes
+  items or rebuilds the layout, ``describe`` lists, ``capture`` / ``export`` write.
+* Items are resolved against the CURRENT geometry every time the sheet is composed: change the part and the
+  dimensions follow. What is annotated lives in the spec and is composed by us, so the PDF, the PNG and the DXF show the
+  same thing; the TechDraw page mirrors it live (``sheet_mirror``): each item is made on the page when it is added, a
+  symbol of its own drawing at its own place, next to TechDraw's native views, overall dimensions and title block.
+* WAITING: TechDraw computes the projection of a view in the background (in the GUI; the headless worker computes inside
+  ``recompute``) and a step taken on a view that is still being computed is what crashed FreeCAD in real use. So every
+  entry point here returns only once every view has geometry and nothing is left touched: ``wait_views`` recomputes,
+  lets Qt deliver the "finished" signals (``gui.pump``) and polls, up to ``DRAWING_WAIT_S``, then fails naming the
+  views.
+* PDF / PNG -- ONE source for what the agent captures, what a reviewer sees and what the engineer opens. In the visible CAD
+  the sheet window's scene is that source: the PDF is TechDraw's own export of it (``TechDrawGui.exportPageAsPdf``, which
+  needs the window open: a PDF made without it came out blank) and the PNG is the same scene painted to an image (a
+  region of it, to zoom), so every object of the page appears, those the items made and those a native script added. The
+  headless CAD has no scene: the sheet is composed from data (``sheet_model``: template + each view's edges + the items),
+  written as SVG (``sheet_svg``) and rendered with Qt (``sheet_render``) for both the PDF and the PNG, and the native
+  objects it cannot draw (``sheet_output``) are listed in the reply, never left out silently. One sheet is one PDF page.
+  DXF -- our own R12 writer (``sheet_dxf``), one file per sheet.
+"""
+
+import json
+import math
+import os
+import re
+import tempfile
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import date
+from typing import Any
+
+import design_attrs
+import drawing_assembly
+import FreeCAD as App
+import geometry as g
+import gui
+import hole_colours
+import holes
+import iso286
+import Part
+import provenance as prov
+import queries
+import registry as reg
+import sheet_checks
+import sheet_collide
+import sheet_colours
+import sheet_context as sc
+import sheet_dxf
+import sheet_facts
+import sheet_hlr
+import sheet_iso
+import sheet_items
+import sheet_layout
+import sheet_mirror
+import sheet_model as model
+import sheet_native
+import sheet_output
+import sheet_project
+import sheet_render
+import sheet_review
+import sheet_svg
+import sheet_template
+import sheet_template_gen
+import sheet_thread
+import sheet_tol
+import sheet_units
+from protocol import WorkerError, error, invalid_request, not_supported
+
+SHEET = "Drawing"  # the name of the first sheet
+SPEC_PROP = "CotaforgeSpec"
+SPEC_VERSION = 1
+PROJECTIONS = ("techdraw", "hlr")  # how the standard views are made; "techdraw" is FreeCAD's own default
+SHEET_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,23}$")
+DRAWING_WAIT_S = 90.0
+ASSEMBLY_WAIT_S = 3600.0  # an assembly's views take as long as it is big: the client's liveness rule gives up first
+POLL_S = 0.05
+SETTLE_S = 0.3  # extra event-loop time after the views report ready (GUI): the last signals of a recompute
+GENERAL_TOLERANCES = "ISO 2768-mK"
+SHIPPED_TEMPLATES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+# TechDraw's own English templates (key ``A4`` / ``A3``); ours are ``A4_es`` / ``A3_es`` in ``templates/``
+TECHDRAW_TEMPLATES = {"A4": "ISO/A4_Landscape_ISO5457_minimal.svg", "A3": "ISO/A3_Landscape_ISO5457_minimal.svg"}
+SIZES = tuple(sheet_layout.PAGES_MM)
+DOCUMENT_TYPE = {"es": "Plano de fabricación", "en": "Component drawing"}
+ASSEMBLY_TYPE = {"es": "Plano de conjunto", "en": "Assembly drawing"}
+VIEW_KEYS = {"Front": "front", "Top": "top", "Right": "right"}
+DISCRETIZE_MM = 0.02  # chord deviation of the curves written as polylines
+LEGACY_ORDER = 0  # a sheet made before specs existed sorts first
+FULL_CIRCLE_DEG = 359.0  # a hole wall covers the whole circle (``list_holes`` reports the arc it covers)
+
+
+def _techdraw(op: str | None) -> Any:
+    try:
+        import TechDraw  # noqa: PLC0415 - not every FreeCAD build has the module
+    except ImportError as exc:
+        raise not_supported(f"this FreeCAD has no TechDraw module ({exc})", op) from exc
+    return TechDraw
+
+
+def activate(fc_doc: Any) -> None:
+    """Make ``fc_doc`` FreeCAD's active document. Parts of TechDraw (``makeExtentDim`` for one) create their objects in
+    ``App.ActiveDocument``, which can be ``None`` in the worker after saves, undos or closed documents even though the
+    session's document is open; every entry point therefore pins it first, as ``native_env`` does."""
+    active = App.ActiveDocument
+    if active is None or active.Name != fc_doc.Name:
+        App.setActiveDocument(fc_doc.Name)
+
+
+@contextmanager
+def _stage(what: str, op: str | None) -> Iterator[None]:
+    """Name the step a non-harness exception came from, so an ``internal`` error says what failed."""
+    try:
+        yield
+    except (WorkerError, sc.ItemError):
+        raise
+    except Exception as exc:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind
+        raise error("internal", f"drawing: {what} failed ({type(exc).__name__}: {exc})", op) from exc
+
+
+# --- templates --------------------------------------------------------------------------------------------------------
+
+
+def template_key(size: str, language: str, angle: str = "first") -> str:
+    """``A3`` + ``es`` -> ``A3_es`` (ours); English is TechDraw's own template, ``A3``; third angle adds ``_third`` (always
+    ours: ``sheet_template_gen`` makes the paper sizes and the mirrored projection symbol TechDraw's own templates lack)."""
+    base = f"{size}_es" if language == "es" else size
+    return base if angle == "first" else f"{base}_third"
+
+
+def split_key(key: str) -> tuple[str, str]:
+    """``(paper size, language)`` of a template key."""
+    size, *rest = key.split("_")
+    return size, ("es" if "es" in rest else "en")
+
+
+def key_angle(key: str) -> str:
+    """The projection angle a template key is for: ``first`` or ``third``."""
+    return "third" if "third" in key.split("_")[1:] else "first"
+
+
+def template_path(key: str, op: str | None) -> str:
+    """The template file for ``key``, looked up now (never taken from the path stored in the document)."""
+    size, language = split_key(key)
+    if size not in SIZES:
+        raise invalid_request(f"unknown template {key!r}, expected one of {', '.join(SIZES)}", op)
+    angle = key_angle(key)
+    shipped = f"{size}_es.svg"
+    if language == "es" and angle == "first" and os.path.isfile(os.path.join(SHIPPED_TEMPLATES, shipped)):
+        return os.path.join(SHIPPED_TEMPLATES, shipped)
+    if angle == "third" or language == "es" or size not in TECHDRAW_TEMPLATES:  # ours: made for this paper and angle
+        return _generated_template(key, size, language, angle, op)
+    relative = TECHDRAW_TEMPLATES[size]
+    roots = [App.getResourceDir(), App.getHomePath(), os.path.join(App.getHomePath(), "share")]
+    for root in roots:
+        path = os.path.join(root, "Mod", "TechDraw", "Templates", *relative.split("/"))
+        if os.path.isfile(path):
+            return path
+    raise not_supported(f"the TechDraw template {relative} was not found under {roots[0]}", op)
+
+
+def _generated_template(key: str, size: str, language: str, angle: str, op: str | None) -> str:
+    """The file of a template ``sheet_template_gen`` makes (a paper size or an angle the shipped ones do not cover): written
+    once to the temp folder, rewritten when its text changed. TechDraw copies the file INTO the document when the page
+    takes it (``PropertyFileIncluded``), so the sheet owns its template from then on."""
+    folder = os.path.join(tempfile.gettempdir(), "cotaforge-templates")
+    path = os.path.join(folder, f"{key}.svg")
+    text = sheet_template_gen.build(size, language, angle)
+    try:
+        os.makedirs(folder, exist_ok=True)
+        with open(path, encoding="utf-8") as handle:
+            same = handle.read() == text
+    except OSError:
+        same = False
+    if not same:
+        try:
+            with open(path, "w", encoding="utf-8", newline="") as handle:
+                handle.write(text)
+        except OSError as exc:
+            raise error("internal", f"the template {key}.svg could not be written to {folder}: {exc}", op) from exc
+    return path
+
+
+def template_text(key: str, op: str | None) -> str:
+    with open(template_path(key, op), encoding="utf-8") as handle:
+        return handle.read()
+
+
+# --- the spec on the page ---------------------------------------------------------------------------------------------
+
+
+def read_spec(page: Any) -> dict[str, Any] | None:
+    """The sheet spec stored on ``page``, or ``None`` for a sheet cotaforge did not make (or whose text is damaged)."""
+    if SPEC_PROP not in page.PropertiesList:
+        return None
+    try:
+        spec = json.loads(str(getattr(page, SPEC_PROP)))
+    except ValueError:
+        return None
+    return spec if isinstance(spec, dict) and spec.get("v") == SPEC_VERSION else None
+
+
+def write_spec(page: Any, spec: dict[str, Any]) -> None:
+    if SPEC_PROP not in page.PropertiesList:
+        page.addProperty(
+            "App::PropertyString", SPEC_PROP, "Cotaforge", "Sheet specification (JSON), written by cotaforge"
+        )
+        page.setEditorMode(SPEC_PROP, 1)
+    setattr(page, SPEC_PROP, json.dumps(spec, separators=(",", ":")))
+
+
+def spec_of(page: Any) -> dict[str, Any]:
+    """The spec of ``page``; a sheet made by an older cotaforge (or by hand) gets one worked out from the page: English,
+    TechDraw's template, the overall dimensions only."""
+    spec = read_spec(page)
+    if spec is not None:
+        return _with_english_reviewers(spec)
+    template = page.Template
+    path = os.path.basename(str(getattr(template, "Template", "")))
+    size = "A3" if "A3" in path else "A4"
+    texts = {str(k): str(v) for k, v in dict(getattr(template, "EditableTexts", {})).items()}
+    return {
+        "v": SPEC_VERSION,
+        "sheet": str(page.Name),
+        "n": LEGACY_ORDER,
+        "template": size,
+        "language": "en",
+        "scale_requested": None,
+        "body": None,
+        "fields": {k: v for k, v in texts.items() if k not in ("scale", "sheet_number")},
+        "items": [{"id": "o1", "type": "overall"}],
+        "next": 2,
+        "legacy": True,
+    }
+
+
+def _with_english_reviewers(spec: dict[str, Any]) -> dict[str, Any]:
+    """A sheet saved before 0.10 keeps its reports and the reviewer's choice under the Spanish names."""
+    reports = spec.get("reports")
+    if isinstance(reports, dict) and any(who in OLD_REVIEWERS for who in reports):
+        spec["reports"] = {OLD_REVIEWERS.get(who, who): report for who, report in reports.items()}
+    choice = spec.get("review_choice")
+    if isinstance(choice, dict) and choice.get("who") in OLD_REVIEWERS:
+        spec["review_choice"] = {**choice, "who": OLD_REVIEWERS[choice["who"]]}
+    return spec
+
+
+def pages(fc_doc: Any) -> list[Any]:
+    """Every sheet of the document in the order they were made."""
+    found = [o for o in fc_doc.Objects if str(o.TypeId) == "TechDraw::DrawPage"]
+    return sorted(found, key=lambda p: (read_spec(p) or {}).get("n", LEGACY_ORDER))
+
+
+def find_page(fc_doc: Any, sheet: str | None = None) -> Any | None:
+    """The sheet called ``sheet``, or the first one when no name is given."""
+    found = pages(fc_doc)
+    if sheet is None:
+        return found[0] if found else None
+    for page in found:
+        if sheet in (spec_of(page)["sheet"], str(page.Name), str(page.Label)):
+            return page
+    return None
+
+
+def _need_page(fc_doc: Any, sheet: str | None, op: str | None) -> Any:
+    page = find_page(fc_doc, sheet)
+    if page is not None:
+        return page
+    found = pages(fc_doc)
+    if not found:
+        raise invalid_request("the document has no drawing sheet: create it first with drawing(action=create)", op)
+    names = ", ".join(spec_of(p)["sheet"] for p in found)
+    raise invalid_request(f"the document has no drawing sheet called {sheet!r}; its sheets are: {names}", op)
+
+
+def _is_dimension(obj: Any) -> bool:
+    type_id = str(obj.TypeId)
+    return "DrawViewDimension" in type_id or "DimExtent" in type_id or type_id.endswith("DrawViewDimExtent")
+
+
+def part_views(page: Any) -> list[Any]:
+    """Every view of the page that has projected geometry (the group's items included, dimensions left out)."""
+    views: list[Any] = []
+    for obj in page.Views:
+        if str(obj.TypeId) == "TechDraw::DrawProjGroup":
+            views.extend(obj.Views)
+        elif hasattr(obj, "getVisibleEdges"):
+            views.append(obj)
+    return views
+
+
+def remove_page(fc_doc: Any, page: Any) -> None:
+    """Delete one sheet with everything it owns, in the one order FreeCAD survives: removing a page or a projection
+    group before its items crashed the process (segfault inside TechDraw), so the dimensions and loose views go first,
+    then the items through the group, then group, page and template."""
+    activate(fc_doc)
+    views = list(page.Views)
+    template = page.Template
+    dims = [v.Name for v in views if _is_dimension(v)]
+    groups = [v.Name for v in views if str(v.TypeId) == "TechDraw::DrawProjGroup"]
+    loose = [v.Name for v in views if v.Name not in dims and v.Name not in groups]
+    for name in dims + loose:
+        if fc_doc.getObject(name) is not None:
+            fc_doc.removeObject(name)
+    for name in groups:
+        group = fc_doc.getObject(name)
+        if group is not None:
+            for item in list(group.Views):
+                group.removeProjection(item.Type)
+    names = groups + [page.Name] + ([template.Name] if template is not None else [])
+    for name in names:
+        if fc_doc.getObject(name) is not None:
+            fc_doc.removeObject(name)
+
+
+def remove_sheet(fc_doc: Any) -> None:
+    """Delete every sheet (and any other TechDraw object) of the document."""
+    activate(fc_doc)
+    for page in pages(fc_doc):
+        remove_page(fc_doc, page)
+    rows = [(o.Name, str(o.TypeId)) for o in fc_doc.Objects if str(o.TypeId).startswith("TechDraw::")]
+    dims = [n for n, t in rows if "Dimension" in t or "DimExtent" in t]
+    groups = [n for n, t in rows if t == "TechDraw::DrawProjGroup"]
+    items = [n for n, t in rows if t == "TechDraw::DrawProjGroupItem"]
+    templates = [n for n, t in rows if "Template" in t]
+    taken = set(dims + groups + items + templates)
+    loose = [n for n, _ in rows if n not in taken]
+    for name in dims + loose:
+        if fc_doc.getObject(name) is not None:
+            fc_doc.removeObject(name)
+    for name in groups:
+        group = fc_doc.getObject(name)
+        if group is not None:
+            for item in list(group.Views):
+                group.removeProjection(item.Type)
+    for name in groups + templates:
+        if fc_doc.getObject(name) is not None:
+            fc_doc.removeObject(name)
+
+
+# --- waiting for the views ----------------------------------------------------------------------------------------
+
+
+def _state(obj: Any) -> list[str]:
+    return [str(s) for s in obj.State]
+
+
+def _has_geometry(view: Any) -> bool:
+    try:
+        return len(view.getVisibleEdges()) > 0
+    except Exception:  # noqa: BLE001 - a view still being computed has no geometry object to read yet
+        return False
+
+
+def wait_views(fc_doc: Any, page: Any, op: str | None, timeout_s: float = DRAWING_WAIT_S) -> float:
+    """Recompute and wait until every view of ``page`` is computed (geometry present, nothing touched, none invalid).
+
+    Returns the seconds it took. A view in error fails at once; views that are not done after ``timeout_s`` fail with
+    their names. The Qt event loop is run between polls (``gui.pump``): in the GUI the background computation reports
+    back through queued signals that only fire when events are processed."""
+    start = time.monotonic()
+    kinds = ("Assembly::AssemblyObject", "App::Part")
+    if timeout_s == DRAWING_WAIT_S and any(str(o.TypeId) in kinds for o in fc_doc.Objects):
+        timeout_s = ASSEMBLY_WAIT_S
+    fc_doc.recompute()
+    while True:
+        gui.pump()
+        views = part_views(page)
+        invalid = [v.Label for v in views if "Invalid" in _state(v)]
+        if invalid:
+            raise error(
+                "geometry_failed",
+                f"TechDraw could not compute the view(s) {', '.join(invalid)} (the part may be empty or invalid); "
+                "check it with inspect(action=properties)",
+                op,
+            )
+        if any("Touched" in _state(v) for v in views):
+            fc_doc.recompute()
+        pending = [v.Label for v in views if "Touched" in _state(v) or not _has_geometry(v)]
+        if not pending:
+            break
+        if time.monotonic() - start > timeout_s:
+            raise error(
+                "timeout",
+                f"the CAD did not finish computing the view(s) {', '.join(pending)} within {timeout_s:.0f} s: nothing "
+                "was done on them (a step on a half-computed view can crash it); try again, or a larger scale",
+                op,
+            )
+        time.sleep(POLL_S)
+    if gui.available():  # the signals of the last recompute
+        settle_until = time.monotonic() + SETTLE_S
+        while time.monotonic() < settle_until:
+            gui.pump()
+            time.sleep(POLL_S)
+    return time.monotonic() - start
+
+
+# --- the part the sheet draws -----------------------------------------------------------------------------------------
+
+
+def _bodies(doc: reg.DocumentRec, body: str | None, op: str | None) -> list[reg.BodyRec]:
+    if body is None:
+        return doc.live_bodies()
+    return [reg.resolve_body(doc, reg.handle_id(body, op, "body"), op)]
+
+
+def _sources(doc: reg.DocumentRec, body: str | None, op: str | None) -> list[Any]:
+    if body is None:
+        return queries.top_level_objects(doc)
+    objects = [doc.fc_doc.getObject(b.result_obj) for b in _bodies(doc, body, op)]
+    return [o for o in objects if o is not None]
+
+
+def _bounds(doc: reg.DocumentRec, body: str | None = None, op: str | None = None) -> dict[str, Any] | None:
+    box = None
+    for rec in _bodies(doc, body, op):
+        shape = reg.world_shape(doc, rec)
+        if not shape.isNull():
+            box = g.bbox_union(box, g.shape_bbox(shape))
+    if body is None:
+        for comp in doc.components.values():
+            shape = reg.placed_component_shape(doc, comp)
+            if not shape.isNull():
+                box = g.bbox_union(box, g.shape_bbox(shape))
+    return box
+
+
+def _extents(doc: reg.DocumentRec, body: str | None = None, op: str | None = None) -> tuple[float, float, float]:
+    box = _bounds(doc, body, op)
+    if box is None:
+        return 0.0, 0.0, 0.0
+    return tuple(float(hi) - float(lo) for lo, hi in zip(box["min"], box["max"], strict=True))  # type: ignore[return-value]
+
+
+def _shapes(doc: reg.DocumentRec, body: str | None, op: str | None) -> list[Any]:
+    shapes = [reg.world_shape(doc, rec) for rec in _bodies(doc, body, op)]
+    if body is None:
+        shapes += [reg.placed_component_shape(doc, comp) for comp in doc.components.values()]
+    return [s for s in shapes if not s.isNull()]
+
+
+# --- title block fields -----------------------------------------------------------------------------------------------
+
+
+def _initial_fields(
+    params: dict[str, Any], language: str, fallback_title: str, assembly: bool = False
+) -> dict[str, str]:
+    """The title-block values a sheet starts with, by the field names TechDraw's templates use. The material is only the one
+    given: while it is empty the title block shows the design's (``title_fields``), so it follows ``set_material``."""
+    return {
+        "title": str(params.get("title") or fallback_title),
+        "creator": str(params.get("author") or ""),
+        "date_of_issue": str(params.get("date") or date.today().isoformat()),
+        "part_material": str(params.get("material") or ""),
+        "drawing_number": str(params.get("drawing_number") or ""),
+        "revision_index": str(params.get("revision") or ""),
+        "general_tolerances": str(params.get("general_tolerances") or GENERAL_TOLERANCES),
+        "legal_owner_1": str(params.get("company") or ""),
+        "document_type": (ASSEMBLY_TYPE if assembly else DOCUMENT_TYPE)[language],
+        "language_code": language.upper(),
+    }
+
+
+def material_of(fc_doc: Any) -> str:
+    """The material the design says it is made of (``CotaforgeMaterial`` on its bodies, the document's metadata), empty
+    when none is declared: what the ``Material`` field of the title block shows while the sheet has no text of its own."""
+    meta = dict(fc_doc.Meta)
+    values = [str(meta.get(design_attrs.META_MATERIAL, "") or "")]
+    for obj in fc_doc.Objects:
+        if design_attrs.MATERIAL_PROPERTY in obj.PropertiesList:
+            values.append(str(getattr(obj, design_attrs.MATERIAL_PROPERTY) or ""))
+    found: list[str] = []
+    for value in (v.strip() for v in values):
+        if value and value not in found:
+            found.append(value)
+    return design_attrs.SEPARATOR.join(found)
+
+
+def title_fields(
+    spec: dict[str, Any],
+    names: list[str],
+    scale: float,
+    index: int,
+    count: int,
+    revisions: list[dict[str, str]],
+    material: str = "",
+) -> dict[str, str]:
+    """Every editable field of the template with its value: the stored ones, the scale and the sheet number as the sheet
+    is now, and the revision table rows (the last five revisions; the latest sets the revision field). ``material`` fills
+    the material field while the sheet's own is empty (the design's material follows ``doc(action=set_material)``)."""
+    values = {name: "" for name in names}
+    values.update({k: str(v) for k, v in spec.get("fields", {}).items() if k in values})
+    if "part_material" in values and not values["part_material"].strip() and not spec.get("assembly"):
+        values["part_material"] = material
+    if "scale" in values:
+        values["scale"] = model.fmt_scale(scale)
+    if "sheet_number" in values:
+        values["sheet_number"] = f"{index} / {count}"
+    rows = revisions[-5:]
+    if rows and "revision_index" in values:
+        values["revision_index"] = rows[-1]["index"]
+    for number, row in enumerate(rows, start=1):
+        for key in ("index", "description", "date", "by"):
+            if f"rev_{number}_{key}" in values:
+                values[f"rev_{number}_{key}"] = row.get(key, "")
+    return values
+
+
+def _revisions(spec: dict[str, Any]) -> list[dict[str, str]]:
+    return [
+        {k: str(item.get(k, "")) for k in ("index", "description", "date", "by")}
+        for item in spec.get("items", [])
+        if item.get("type") == "revision"
+    ]
+
+
+def _sync_template_fields(fc_doc: Any, op: str | None) -> None:
+    """Put the stored fields (sheet numbers, revisions) into the template objects, so the sheet window of FreeCAD shows
+    the same title block."""
+    found = pages(fc_doc)
+    for index, page in enumerate(found, start=1):
+        spec = spec_of(page)
+        try:
+            names = sheet_template.editable_fields(template_text(spec["template"], op))
+        except WorkerError:
+            continue
+        scale = _scale_of(page) or 1.0
+        page.Template.EditableTexts = title_fields(
+            spec, names, scale, index, len(found), _revisions(spec), material_of(fc_doc)
+        )
+
+
+VIEW_CHOICES = ("front", "top", "right", "iso")  # the views of a sheet, in the order they are laid out
+VIEW_ALIASES = {"isometric": "iso"}
+
+
+ANCHOR_DIRECTIONS = {  # (direction towards the viewer, x direction) of the one standard view of a sheet without a front view
+    "top": ((0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
+    "right": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+}
+ROW_FIRST_MM = 15.0  # the first baseline row: 10 mm from the view, and its text above the line
+ROW_STEP_MM = 7.0  # each further row
+CALLOUT_SPACING_MM = 34.0  # between the front view and the top / right ones when the part has holes (a callout fits)
+CALLOUT_ROOM_MM = (
+    24.0  # beside the views of a part with holes: where the leaders of their callouts end and their text goes
+)
+
+
+def anchor_of(shown: tuple[str, ...] | list[str]) -> str:
+    """The standard view the projection group hangs from: the front view, or -- on a sheet that has none -- its one top or
+    right view."""
+    if "front" in shown:
+        return "front"
+    return next((v for v in ("top", "right") if v in shown), "front")
+
+
+def _distinct(values: list[float]) -> int:
+    return len({round(v, 2) for v in values})
+
+
+def _dimension_room(
+    doc: reg.DocumentRec, spec: dict[str, Any], shown: tuple[str, ...], third: bool, op: str | None
+) -> dict[str, float]:
+    """The room (mm of paper) the baseline dimensions of the holes need beyond the views, so the layout reserves it before
+    it picks the scale: ``below_mm`` / ``above_mm`` for the rows of x values, ``left_mm`` for the rows of y values. One row
+    per distinct coordinate (holes that share one share its dimension), ``ROW_STEP_MM`` apart. Assemblies have none."""
+    if _is_assembly(doc, spec.get("body")) or AUTO_LOCATE_ID in spec.get("declined", ()):
+        return {}
+    axes = {"top": ((0, 1), (0.0, 0.0, 1.0)), "front": ((0, 2), (0.0, 1.0, 0.0)), "right": ((1, 2), (1.0, 0.0, 0.0))}
+    rows_x = {"top": 0, "front": 0, "right": 0}
+    rows_y = 0
+    found = hole_infos(doc, spec.get("body"), op)
+    for name, ((ix, iy), direction) in axes.items():
+        if name not in shown:
+            continue
+        mine = [h for h in found if sc.parallel(h.direction, direction)]
+        if mine:
+            rows_x[name] = _distinct([h.centre[ix] for h in mine])
+            rows_y = max(rows_y, _distinct([h.centre[iy] for h in mine]))
+
+    def room(rows: int, extra: int = 0) -> float:
+        return ROW_FIRST_MM + ROW_STEP_MM * (rows - 1 + extra) if rows else 0.0
+
+    out: dict[str, float] = {
+        "left_mm": room(rows_y),
+        "right_mm": CALLOUT_ROOM_MM if found else 0.0,
+        "spacing_mm": CALLOUT_SPACING_MM if found else 0.0,  # between the views: callouts of the top view go there too
+    }
+    if third:  # the top view hangs above the front one: its rows go above it
+        out["above_mm"] = room(rows_x["top"])
+        out["below_mm"] = room(rows_x["front"], 1)
+    else:  # the top view hangs below the front one: its rows go below it; the front one's go above (next to the overall)
+        out["below_mm"] = room(rows_x["top"])
+        out["above_mm"] = room(rows_x["front"], 1)
+    return {k: v for k, v in out.items() if v}
+
+
+def views_of(spec: dict[str, Any]) -> tuple[str, ...]:
+    """The views the sheet has, in layout order: ``spec["views"]`` when it says, else all four (the isometric one unless
+    the sheet was made without it)."""
+    given = spec.get("views")
+    if given is None:
+        return tuple(v for v in VIEW_CHOICES if v != "iso" or spec.get("isometric", True))
+    return tuple(v for v in VIEW_CHOICES if v in given)
+
+
+def normalise_views(wanted: Any, op: str | None) -> list[str]:
+    """``views=["front", "top", "iso"]`` as the spec keeps it: known names only, ``isometric`` taken for ``iso``. The
+    projection group hangs from ONE standard view and the overall dimensions are measured on it: the front view, or, on a
+    sheet of a single standard view (a plate seen from above: ``["top"]``), that one."""
+    names = [VIEW_ALIASES.get(str(v), str(v)) for v in wanted]
+    unknown = [n for n in names if n not in VIEW_CHOICES]
+    if unknown:
+        raise invalid_request(f"unknown view(s) {', '.join(unknown)}: the views are {', '.join(VIEW_CHOICES)}", op)
+    standard = [n for n in names if n != "iso"]
+    if "front" not in names and len(set(standard)) != 1:
+        raise invalid_request(
+            "a sheet has its front view, or exactly ONE other standard view (top or right: a plate seen from above) "
+            "that the isometric one may join",
+            op,
+        )
+    return [v for v in VIEW_CHOICES if v in names]
+
+
+def projection_of(spec: dict[str, Any]) -> str:
+    """How the sheet's standard views are made: ``techdraw`` (FreeCAD's own default, view objects on the page) or
+    ``hlr`` (projected by us, no view objects)."""
+    return "hlr" if spec.get("projection") == "hlr" else "techdraw"
+
+
+def _scale_of(page: Any) -> float | None:
+    spec = read_spec(page)
+    if spec is not None and projection_of(spec) == "hlr":
+        return float(spec["hlr"]["scale"])
+    views = part_views(page)
+    return float(views[0].getScale()) if views else None
+
+
+# --- creating ---------------------------------------------------------------------------------------------------------
+
+
+def _build(
+    doc: reg.DocumentRec, spec: dict[str, Any], op: str | None
+) -> tuple[Any, sheet_layout.Layout, float, list[str]]:
+    """Make the TechDraw objects of the sheet ``spec`` describes (replacing the sheet of that name, if any), wait for
+    them and store the spec on the page. Returns (page, layout, seconds waited, warnings)."""
+    td = _techdraw(op)
+    fc_doc = doc.fc_doc
+    name = spec["sheet"]
+    size, _ = split_key(spec["template"])
+    sources = _sources(doc, spec.get("body"), op)
+    if not sources:
+        raise invalid_request("the document has no body to draw", op)
+    box = _bounds(doc, spec.get("body"), op)
+    width, depth, height = (
+        tuple(float(hi) - float(lo) for lo, hi in zip(box["min"], box["max"], strict=True)) if box else (0.0, 0.0, 0.0)
+    )
+    if min(width, depth, height) <= 0:
+        raise invalid_request("the part has no volume to draw (check it with inspect(action=properties))", op)
+    page_w, page_h = sheet_layout.PAGES_MM[size]
+    requested = spec.get("scale_requested")
+    reserve = None
+    if _is_assembly(doc, spec.get("body")):  # room for the parts list: one row per distinct part, and its header
+        parts = len({_group_key(doc, c) for c in doc.components.values()})
+        reserve = (sheet_layout.TITLE_BLOCK_WIDTH_MM, sheet_layout.PARTS_ROW_MM * (parts + 1) + 4.0)
+    shown = views_of(spec)
+    with_iso = "iso" in shown
+    anchor = anchor_of(shown)
+    third = key_angle(spec["template"]) == "third"
+    room = _dimension_room(doc, spec, shown, third, op)
+    across, up = {"front": (width, height), "top": (width, depth), "right": (depth, height)}[anchor]
+    layout = sheet_layout.plan(
+        across if anchor != "front" else width,
+        depth if anchor == "front" else 0.0,
+        up if anchor != "front" else height,
+        page_w,
+        page_h,
+        float(requested) if requested else None,
+        reserve,
+        with_iso,
+        "top" in shown and anchor == "front",
+        "right" in shown and anchor == "front",
+        third=third,
+        iso_dims=(width, depth, height),
+        **room,
+    )
+    warnings: list[str] = []
+    if not layout.standard:
+        warnings.append(f"no standard scale fits the sheet: drawn at {model.fmt_scale(layout.scale)}; try A3")
+    if not layout.fits:
+        warnings.append(f"at {model.fmt_scale(layout.scale)} the views do not fit the sheet: use a smaller scale or A3")
+
+    activate(fc_doc)
+    names = sheet_template.editable_fields(template_text(spec["template"], op))
+    hlr = projection_of(spec) == "hlr"
+    if hlr:  # the layout is kept in the spec: there are no view objects to read it from
+        spec["hlr"] = _hlr_record(spec, layout, (width, depth, height), box, page_h)
+    with _stage("creating the sheet and its template", op):
+        old = find_page(fc_doc, name)
+        if old is not None:
+            remove_page(fc_doc, old)
+        page = fc_doc.addObject("TechDraw::DrawPage", name)
+        base = str(page.Name)
+        template = fc_doc.addObject("TechDraw::DrawSVGTemplate", f"{base}Template")
+        template.Template = template_path(spec["template"], op)
+        page.Template = template
+        write_spec(page, spec)
+        index = pages(fc_doc).index(page) + 1
+        template.EditableTexts = title_fields(
+            spec, names, layout.scale, index, len(pages(fc_doc)), _revisions(spec), material_of(fc_doc)
+        )
+
+    if hlr:
+        try:
+            waited = _project_views(doc, spec, op)  # made now (and kept): the sheet is ready on return
+        except Exception:
+            remove_page(fc_doc, page)  # a sheet that cannot be drawn is not left behind
+            raise
+        _sync_template_fields(fc_doc, op)
+        waited += wait_views(fc_doc, page, op)  # no views to wait for: leaves nothing touched
+        return page, layout, waited, warnings
+
+    def centre_y(y_down: float) -> float:  # SVG page y (down) -> TechDraw y (up)
+        return page_h - y_down
+
+    with _stage("creating the front / top / right views", op):
+        group = fc_doc.addObject("TechDraw::DrawProjGroup", f"{base}Views")
+        page.addView(group)
+        group.Source = sources
+        group.ProjectionType = "Third angle" if third else "First angle"
+        group.ScaleType = "Custom"
+        group.Scale = layout.scale
+        group.spacingX = group.spacingY = layout.spacing
+        group.X, group.Y = layout.front[0], centre_y(layout.front[1])
+        fc_doc.recompute()
+        for view_name in ("Front", "Top", "Right"):
+            if view_name == "Front" or (anchor == "front" and view_name.lower() in shown):
+                added = group.addProjection(view_name)
+                if (
+                    view_name == "Front" and anchor != "front"
+                ):  # the one view of the sheet is the anchor, looked at from its side
+                    added.Direction = App.Vector(*ANCHOR_DIRECTIONS[anchor][0])
+                    added.XDirection = App.Vector(*ANCHOR_DIRECTIONS[anchor][1])
+        for item in group.Views:  # the names the page keeps for its views (contract of ``sheet_native``)
+            key = anchor if str(item.Type) == "Front" else VIEW_KEYS[str(item.Type)]
+            item.Label = sheet_native.VIEW_LABELS[key]
+            sheet_native.tag_view(item, f"view:{key}", name)
+
+    if with_iso:
+        with _stage("creating the isometric view", op):
+            iso = fc_doc.addObject("TechDraw::DrawViewPart", f"{base}Isometric")
+            page.addView(iso)
+            iso.Label = sheet_native.VIEW_LABELS["isometric"]
+            sheet_native.tag_view(iso, "view:isometric", name)
+            iso.Source = sources
+            iso.Direction = App.Vector(*sheet_layout.ISO_DIRECTION)
+            iso.XDirection = App.Vector(*sheet_layout.ISO_XDIRECTION)
+            iso.ScaleType = "Custom"
+            iso.Scale = layout.scale
+            iso.X, iso.Y = layout.iso[0], centre_y(layout.iso[1])
+
+    waited = wait_views(fc_doc, page, op)  # the dimensions refer to finished views
+
+    with _stage("adding the overall dimensions", op):
+        overall_id = next((str(i["id"]) for i in spec.get("items", []) if i.get("type") == "overall"), "o1")
+        members = {str(item.Type): item for item in group.Views}
+        depth_view, depth_direction = (members["Top"], 1) if "Top" in members else (members.get("Right"), 0)
+        wanted = [("width", members["Front"], 0), ("height", members["Front"], 1)]
+        if (
+            depth_view is not None
+        ):  # the depth is seen on the top view, else along the right view (a sheet of one standard
+            wanted.append(("depth", depth_view, depth_direction))  # view has neither: its thickness is a note)
+        for label, view, direction in wanted:
+            dim = td.makeExtentDim(view, [], direction)
+            dim.Label = f"Dim {label}"
+            sheet_mirror.tag_native(dim, f"overall:{label}", str(view.Name), overall_id, name)
+    _sync_template_fields(fc_doc, op)
+    waited += wait_views(
+        fc_doc, page, op
+    )  # also leaves nothing touched: a later in-place edit refuses a touched object
+    return page, layout, waited, warnings
+
+
+def _hlr_record(
+    spec: dict[str, Any],
+    layout: sheet_layout.Layout,
+    size: tuple[float, float, float],
+    box: dict[str, Any] | None,
+    page_h: float,
+) -> dict[str, object]:
+    """The layout of an ``hlr`` sheet as the spec keeps it (page y UP): the scale, the place of the front and isometric
+    views, the size of the part and the model point every group view has at its origin (the centre of the part's box,
+    like TechDraw's projection group)."""
+    assert box is not None  # a part with a volume has a box
+    centre = tuple((float(lo) + float(hi)) / 2 for lo, hi in zip(box["min"], box["max"], strict=True))
+    iso = (layout.iso[0], page_h - layout.iso[1]) if spec.get("isometric", True) else None
+    return sheet_hlr.record(
+        layout.scale,
+        layout.spacing,
+        (layout.front[0], page_h - layout.front[1]),
+        iso,
+        size,
+        centre,  # type: ignore[arg-type]
+    )
+
+
+def _project_views(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None) -> float:
+    """Project the standard views of an ``hlr`` sheet (they are kept for the next composition); seconds it took."""
+    start = time.monotonic()
+    geometry = LiveGeometry(doc, _shapes(doc, spec.get("body"), op), op)
+    try:
+        sheet_hlr.compose_views(geometry, spec["hlr"])
+    except sc.ItemError as exc:
+        raise error("geometry_failed", f"the part could not be projected: {exc}", op) from exc
+    return time.monotonic() - start
+
+
+def _is_assembly(doc: reg.DocumentRec, body: Any) -> bool:
+    """Whether the sheet draws an assembly: an assembly document with components, all of it (no ``body``)."""
+    return doc.kind == "assembly" and bool(doc.components) and body is None
+
+
+def _group_key(doc: reg.DocumentRec, comp: reg.ComponentRec) -> str:
+    return drawing_assembly.group_key(doc, comp)
+
+
+def _name_for(fc_doc: Any, wanted: str | None, op: str | None) -> str:
+    if wanted is None:
+        first = pages(fc_doc)
+        return spec_of(first[0])["sheet"] if first else SHEET
+    if not SHEET_NAME.match(wanted):
+        raise invalid_request(
+            f"sheet name {wanted!r} must be a short name: a letter, then letters, digits or _ (24 characters at most)",
+            op,
+        )
+    return wanted
+
+
+CARRIED_KEYS = ("declined", "answers", "review_choice", "review_request", "reports", "report_n")
+# what a sheet remembers beyond its items, and a rebuild keeps: the defaults the engineer took off, the answers to the
+# review, who he chose to review it, the reports of the reviewers
+FLAT_RATIO = 0.35  # a round part is a disc (its length is a thickness) when it is at most this fraction of its diameter
+
+
+def _stated(params: dict[str, Any], old: dict[str, Any]) -> dict[str, Any]:
+    """``params`` with what the caller did not state (``unset``) taken from the sheet that is being rebuilt: a rebuild to
+    take a view off must not also change the paper, the language or the scale."""
+    out = dict(params)
+    size, language = split_key(old["template"])
+    values = {
+        "template": size,
+        "language": language,
+        "angle": key_angle(old["template"]),
+        "scale": old.get("scale_requested"),
+        "projection": projection_of(old),
+        "body": old.get("body"),
+    }
+    for name in params.get("unset") or ():
+        if name in values:
+            out[name] = values[name]
+    return out
+
+
+def _rebuilt_fields(
+    old: dict[str, str], new: dict[str, str], language: str, defaults: dict[str, str]
+) -> dict[str, str]:
+    """The title block of a rebuilt sheet: what the engineer or the agent set stays, unless the caller states another value
+    (a value equal to what a sheet starts with is not a statement). The approval is cleared by the rebuild itself."""
+    out = dict(old)
+    changed = language.upper() != old.get("language_code", language.upper())  # another language: its own wording too
+    for key, value in new.items():
+        if key not in old or value != defaults.get(key) or (changed and key in ("document_type", "language_code")):
+            out[key] = value
+    out[APPROVER_FIELD] = ""
+    return out
+
+
+def _views_for_part(doc: reg.DocumentRec, body: Any, op: str | None) -> tuple[list[str], bool, str] | None:
+    """The views a part is drawn in when the caller does not say: ``(views, section through the axis, why)`` for a body of
+    revolution, ``None`` for any other part (all the standard views, as always). A revolved part with a bore has everything
+    in the view that looks along its axis (what is cut, where) and the section through the axis (the profile, the bore, the
+    threads); a solid one, the one view that shows its profile."""
+    found = LiveGeometry(doc, _shapes(doc, body, op), op).round_extent()
+    if found is None:
+        return None
+    axis = found[0]
+    index = max(range(3), key=lambda i: abs(axis[i]))
+    name = "xyz"[index]
+    bored = any(sc.parallel(h.direction, axis) for h in hole_infos(doc, body, op))
+    if bored:
+        along = ("right", "front", "top")[index]
+        return [along], True, f"revolved about {name} with a bore: the {along} view and a section A-A through the axis"
+    profile = ("front", "top", "front")[index]
+    return [profile], False, f"revolved about {name}: the {profile} view, which shows its profile"
+
+
+def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
+    """Build the sheet (a new one when ``sheet`` names none that exists). A sheet of that name that exists is REBUILT, and
+    what is still valid in it stays: its items (placed again on the new views), the answers to its review, who reviews it,
+    the title block; the reply lists what did not resolve. ``fresh`` starts it from scratch and says what it threw away."""
+    op = params.get("operation_id")
+    fc_doc = doc.fc_doc
+    name = _name_for(fc_doc, params.get("sheet"), op)
+    old = find_page(fc_doc, name)
+    old_spec = read_spec(old) if old is not None else None
+    fresh = bool(params.get("fresh"))
+    carried = old_spec if old_spec is not None and not fresh else None
+    if carried is not None:
+        params = _stated(params, carried)
+    key = str(params.get("template") or "A4")
+    if key not in SIZES:
+        raise invalid_request(f"unknown template {key!r}, expected one of {sorted(SIZES)}", op)
+    language = str(params.get("language") or "es")
+    if language not in ("es", "en"):
+        raise invalid_request(f"unknown language {language!r}, expected es or en", op)
+    body = params.get("body")
+    body = body["id"] if isinstance(body, dict) else body
+    others = [read_spec(p) for p in pages(fc_doc) if p is not old]
+    order = (
+        old_spec["n"]
+        if old_spec
+        else (LEGACY_ORDER if old is not None else 1 + max([s["n"] for s in others if s] + [0]))
+    )
+    angle = str(params.get("angle") or "first")
+    if angle not in ANGLES:
+        raise invalid_request(f"unknown angle {angle!r}, expected first or third", op)
+    fallback = str(doc.name or fc_doc.Label or fc_doc.Name)
+    assembly = _is_assembly(doc, body)
+    fields = _initial_fields(params, language, fallback, assembly)
+    if carried is not None:
+        fields = _rebuilt_fields(
+            dict(carried.get("fields", {})), fields, language, _initial_fields({}, language, fallback, assembly)
+        )
+    spec = {
+        "v": SPEC_VERSION,
+        "sheet": name,
+        "n": order,
+        "template": template_key(key, language, angle),
+        "language": language,
+        "scale_requested": params.get("scale"),
+        "body": body,
+        "fields": fields,
+        "items": [dict(i) for i in carried["items"]] if carried is not None else [{"id": "o1", "type": "overall"}],
+        "next": int(carried.get("next", 2)) if carried is not None else 2,
+    }
+    if carried is not None:
+        for kept_key in CARRIED_KEYS:
+            if kept_key in carried:
+                spec[kept_key] = json.loads(json.dumps(carried[kept_key]))
+        spec["edits"] = int(
+            carried.get("edits", 0)
+        )  # the rebuild below counts as one more change (``_clear_approval``)
+    if assembly:
+        spec["assembly"] = True
+    if params.get("iso_colour"):  # the convention of the harness; a sheet without the key stays a line drawing
+        spec["iso_colour"] = True
+    projection = str(params.get("projection") or "techdraw")
+    if projection not in PROJECTIONS:
+        raise invalid_request(f"unknown projection {projection!r}, expected one of {', '.join(PROJECTIONS)}", op)
+    if projection == "hlr":  # the default (FreeCAD's own) leaves the spec exactly as it always was
+        spec["projection"] = "hlr"
+        if angle != "first":
+            raise invalid_request("angle=third needs projection=techdraw: an hlr sheet is made in first angle", op)
+    warnings: list[str] = []
+    section_wanted = False
+    if params.get("views") is not None:
+        chosen = normalise_views(params["views"], op)
+        if projection == "hlr" and set(chosen) != set(views_of(spec)):
+            raise invalid_request("views choose the views of a techdraw sheet: an hlr sheet always has all of them", op)
+        spec["views"] = chosen
+        if params.get("isometric") is False:  # a part sheet keeps the isometric view and its spec as it was
+            spec["isometric"] = False
+    elif carried is not None:  # a rebuild that names no views keeps the ones the sheet has
+        if "views" in carried:
+            spec["views"] = list(carried["views"])
+        if carried.get("isometric") is False or params.get("isometric") is False:
+            spec["isometric"] = False
+    else:
+        if params.get("isometric") is False:
+            spec["isometric"] = False
+        picked = _views_for_part(doc, body, op) if projection == "techdraw" and not assembly else None
+        if picked is not None:
+            spec["views"], section_wanted, why = picked
+            spec["isometric"] = False
+            warnings.append(f"views chosen from the part ({why}); views=[...] states others")
+    apply_title_block(spec, params.get("title_block"), op)
+    _sync_auto_items(doc, spec, op)
+    if section_wanted:
+        taken = {str(i["id"]) for i in spec["items"]}
+        spec["items"].append(sheet_items.normalise({"type": "section", "holes": "axis"}, taken, spec["next"]))
+        spec["next"] += 1
+    if carried is not None:
+        _clear_approval(spec)
+    page, layout, waited, built = _build(doc, spec, op)
+    result = _result(doc, page, layout.scale, waited, [*warnings, *built], op)
+    result.update(_rebuild_report(old_spec, carried, spec, result["items"], fresh))
+    return result
+
+
+def _rebuild_report(
+    old: dict[str, Any] | None,
+    carried: dict[str, Any] | None,
+    spec: dict[str, Any],
+    rows: list[dict[str, str]],
+    fresh: bool,
+) -> dict[str, list[str]]:
+    """What a rebuild kept, what no longer resolves, and -- when ``fresh`` -- what it threw away, as lines for the reply."""
+
+    def own(items: list[dict[str, Any]]) -> list[str]:
+        return [str(i["id"]) for i in items if not (i.get("auto") and str(i["id"]) in AUTO_IDS)]
+
+    def memory(source: dict[str, Any]) -> list[str]:
+        lines = []
+        if source.get("answers"):
+            lines.append(f"{len(source['answers'])} answer(s) to the review")
+        if (source.get("review_choice") or {}).get("who"):
+            lines.append(f"the chosen reviewer ({source['review_choice']['who']})")
+        if source.get("reports"):
+            lines.append(f"{len(source['reports'])} reviewer report(s)")
+        if source.get("declined"):
+            lines.append(f"the default items taken off ({', '.join(source['declined'])})")
+        return lines
+
+    out: dict[str, list[str]] = {"kept": [], "unresolved": [], "discarded": []}
+    if carried is not None:
+        ids = own(carried["items"])
+        if ids:
+            out["kept"].append(f"items {', '.join(ids)} (placed again on the new views)")
+        out["kept"] += memory(carried)
+        out["unresolved"] = [
+            f"{r['id']} ({r['type']}): {r['detail']}" for r in rows if r["status"] == "error" and r["id"] in ids
+        ]
+    elif fresh and old is not None:
+        ids = own(old["items"])
+        if ids:
+            out["discarded"].append(f"items {', '.join(ids)}")
+        out["discarded"] += memory(old)
+    return out
+
+
+COMPUTED_FIELDS = ("scale", "sheet_number", "revision_index", "approval_person")
+# the sheet writes these itself (and the revision rows); ``Aprobó`` is the engineer's, only ``approve`` fills it
+
+
+def apply_title_block(spec: dict[str, Any], given: Any, op: str | None) -> None:
+    """Set title-block fields of ``spec`` by the name the template gives them (an empty text clears one). A name the
+    template does not have, or one the sheet writes itself, is refused with the names that can be set."""
+    if not given:
+        return
+    names = sheet_template.editable_fields(template_text(spec["template"], op))
+    settable = [n for n in names if n not in COMPUTED_FIELDS and not n.startswith("rev_")]
+    unknown = sorted(k for k in given if k not in settable)
+    if unknown:
+        raise invalid_request(
+            f"the title block has no settable field {', '.join(unknown)}; it has: {', '.join(settable)}", op
+        )
+    spec.setdefault("fields", {}).update({str(k): str(v) for k, v in given.items()})
+
+
+def update(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild the sheet after the part changed: the views are laid out again for the new size (the scale asked for at
+    creation is kept, or the largest standard one that fits again) and every item is kept. ``title_block`` sets fields of
+    the title block."""
+    op = params.get("operation_id")
+    page = _need_page(doc.fc_doc, params.get("sheet"), op)
+    spec = spec_of(page)
+    spec.pop("legacy", None)
+    if params.get("iso_colour") is not None:  # the convention in force now (colour or line drawing)
+        if params["iso_colour"]:
+            spec["iso_colour"] = True
+        else:
+            spec.pop("iso_colour", None)
+    apply_title_block(spec, params.get("title_block"), op)
+    _sync_auto_items(doc, spec, op)
+    _clear_approval(spec)
+    page, layout, waited, warnings = _build(doc, spec, op)
+    return _result(doc, page, layout.scale, waited, warnings, op)
+
+
+AUTO_LOCATE_ID = "loc"  # the default location of the holes (a datum_dims with auto)
+AUTO_THICKNESS_ID = "tn"  # the thickness note of a sheet of one view
+AUTO_ISO286_ID = "n286"  # the ISO 286 transcription note, in the notes block
+AUTO_IDS = (AUTO_LOCATE_ID, AUTO_THICKNESS_ID, AUTO_ISO286_ID)
+ANGLES = ("first", "third")
+
+
+def _has_thickness(doc: reg.DocumentRec, body: str | None, view: str, op: str | None) -> bool:
+    """Whether the length of the part along the line of sight of its one view is a thickness a note can state: any part but
+    a round one, which has it only when the view looks along its axis and it is a disc (a shaft seen from the side, a
+    sleeve seen end-on: its length is no thickness)."""
+    found = LiveGeometry(doc, _shapes(doc, body, op), op).round_extent()
+    if found is None:
+        return True
+    axis, diameter = found
+    direction = {"front": (0.0, 1.0, 0.0), "top": (0.0, 0.0, 1.0), "right": (1.0, 0.0, 0.0)}[view]
+    if not sc.parallel(direction, axis):
+        return False
+    length = sum(abs(a) * e for a, e in zip(axis, _extents(doc, body, op), strict=True))
+    return length <= FLAT_RATIO * diameter
+
+
+def _sync_auto_items(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None) -> None:
+    """Keep the items every sheet carries by itself in step with the part and the views: the baseline location of the holes
+    (``loc``) when the part has holes, the thickness note (``tn``) when the sheet has ONE standard view, the ISO 286
+    transcription note (``n286``) while a fit is on the sheet. The engineer may take one off with ``remove`` (it is then
+    ``declined`` and never comes back); the rest come and go with their reason."""
+    items = spec["items"]
+    declined = set(spec.get("declined", ()))
+    standard = [v for v in views_of(spec) if v != "iso"]
+    assembly = _is_assembly(doc, spec.get("body"))
+    wanted: dict[str, dict[str, Any]] = {}
+    if not assembly and hole_infos(doc, spec.get("body"), op):
+        wanted[AUTO_LOCATE_ID] = {"id": AUTO_LOCATE_ID, "type": "datum_dims", "auto": True}
+    if not assembly and len(standard) == 1 and _has_thickness(doc, spec.get("body"), standard[0], op):
+        wanted[AUTO_THICKNESS_ID] = {"id": AUTO_THICKNESS_ID, "type": "note", "auto": "thickness"}
+    fits = any("fit" in i and i.get("type") in ("hole_dim", "dim") for i in items)
+    if fits and iso286.SHOW_TRANSCRIPTION_NOTE:
+        wanted[AUTO_ISO286_ID] = {"id": AUTO_ISO286_ID, "type": "note", "auto": "iso286"}
+    have = {str(i["id"]) for i in items}
+    for key, item in wanted.items():
+        if key not in declined and key not in have:
+            items.append(item)
+    spec["items"] = [
+        i for i in items if not (i.get("auto") and str(i["id"]) in AUTO_IDS and str(i["id"]) not in wanted)
+    ]
+
+
+# --- the finished drawing: answers and the engineer's approval -----------------------------------------------------------
+
+APPROVER_FIELD = "approval_person"  # "Aprobó" of the title block: written by ``approve`` and by nothing else
+PENDING_SHOWN = 12
+
+
+def _clear_approval(spec: dict[str, Any]) -> None:
+    """The sheet changed: whoever approved it approved another drawing. ``Aprobó`` goes empty again. ``edits`` counts
+    the changes, so a report can say at which one it was made; a change does NOT make a report old."""
+    spec.pop("approval", None)
+    spec["edits"] = int(spec.get("edits", 0)) + 1  # shown next to a report's ``edit``; it gates nothing
+    if spec.get("fields", {}).get(APPROVER_FIELD):
+        spec["fields"][APPROVER_FIELD] = ""
+
+
+REVIEWERS = ("fabricator", "engineer")
+REPORT_PREFIX = {"fabricator": "fab", "engineer": "eng"}
+OLD_REVIEWERS = {"fabricante": "fabricator", "ingeniero": "engineer"}
+"""The Spanish names of the reviewers in a sheet saved before 0.10 and in a call that still uses them."""
+
+
+def _report_rows(spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """The last report of each reviewer, with ``edit``: the sheet's change counter when it was recorded."""
+    return {
+        who: {
+            "n": int(report["n"]),
+            "by": who,
+            "at": float(report.get("at", 0.0)),
+            "remarks": list(report.get("remarks", [])),
+            "edit": int(report.get("edits", 0)),
+        }
+        for who, report in spec.get("reports", {}).items()
+        if who in REVIEWERS
+    }
+
+
+def _request_row(spec: dict[str, Any]) -> dict[str, Any] | None:
+    request = spec.get("review_request")
+    if not request:
+        return None
+    return {"at": float(request["at"])}
+
+
+def review_report_action(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
+    """Store a reviewer's report in the sheet spec (the last one of each reviewer is kept). Its remarks get the ids
+    ``fab<n>.<i>`` / ``eng<n>.<i>``, which ``answer`` accepts. Does not change the sheet."""
+    op = params.get("operation_id")
+    who = str(params.get("by") or "")
+    who = OLD_REVIEWERS.get(who, who)
+    if who not in REVIEWERS:
+        raise invalid_request(f"review_report needs by: {' | '.join(REVIEWERS)}", op)
+    page = _need_page(doc.fc_doc, params.get("sheet"), op)
+    spec = spec_of(page)
+    spec.pop("legacy", None)
+    number = int(spec.get("report_n", 0)) + 1
+    prefix = f"{REPORT_PREFIX[who]}{number}"
+    remarks = []
+    for position, raw in enumerate(params.get("remarks") or (), start=1):
+        remark = {k: " ".join(str(raw.get(k, "")).split()) for k in ("kind", "where", "text", "fix")}
+        remark["kind"] = remark["kind"] or "other"
+        remarks.append({"id": f"{prefix}.{position}", **remark})
+    spec["report_n"] = number
+    spec.setdefault("reports", {})[who] = {
+        "n": number,
+        "at": float(params.get("at") or 0.0),
+        "edits": int(spec.get("edits", 0)),
+        "remarks": remarks,
+    }
+    write_spec(page, spec)
+    return {"sheet": spec["sheet"], "changed": [r["id"] for r in remarks]}
+
+
+def request_review_action(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
+    """Record when the engineer was asked who reviews this sheet (it stays through the changes of the sheet)."""
+    op = params.get("operation_id")
+    if params.get("at") is None:
+        raise invalid_request("request_review needs at", op)
+    page = _need_page(doc.fc_doc, params.get("sheet"), op)
+    spec = spec_of(page)
+    spec.pop("legacy", None)
+    spec["review_request"] = {"at": float(params["at"])}
+    write_spec(page, spec)
+    return {"sheet": spec["sheet"], "changed": []}
+
+
+def review_choice_action(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
+    """Record who the engineer chose to review this sheet (``by``: engineer | fabricator); it stays through changes."""
+    op = params.get("operation_id")
+    who = str(params.get("by") or "")
+    who = OLD_REVIEWERS.get(who, who)
+    if who not in REVIEWERS:
+        raise invalid_request(f"review_choice needs by: {' | '.join(REVIEWERS)}", op)
+    page = _need_page(doc.fc_doc, params.get("sheet"), op)
+    spec = spec_of(page)
+    spec.pop("legacy", None)
+    spec["review_choice"] = {"who": who}
+    write_spec(page, spec)
+    return {"sheet": spec["sheet"], "changed": []}
+
+
+def _choice_row(spec: dict[str, Any]) -> str:
+    choice = spec.get("review_choice")
+    if choice and choice.get("who") in REVIEWERS:
+        return str(choice["who"])
+    return ""
+
+
+def _remark_ids(spec: dict[str, Any]) -> list[str]:
+    return [str(r["id"]) for report in spec.get("reports", {}).values() for r in report.get("remarks", [])]
+
+
+def answer(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
+    """Store the answer to one finding, question or review remark in the sheet spec (so it survives save and reopen). The
+    id must be one the review lists now, unless ``memory`` says the caller (who read the memory entry) named an entry."""
+    op = params.get("operation_id")
+    item_id = str(params.get("id") or "").strip()
+    verdict = params.get("verdict")
+    text = " ".join(str(params.get("text") or "").split())
+    if not item_id or verdict not in ("applies", "not_applies") or not text:
+        raise invalid_request("answer needs id, verdict (applies | not_applies) and text", op)
+    ((page, spec, number, total),) = _all_sheets(doc, params.get("sheet") or spec_name_of_first(doc, op), op)
+    if not params.get("memory"):
+        findings, questions = review_report(doc, page, spec, number, total, op)
+        known = [r["id"] for r in findings] + [q["id"] for q in questions] + _remark_ids(spec)
+        if item_id not in known:
+            pending = [r["id"] for r in findings if not r["answer"]] + [q["id"] for q in questions if not q["answer"]]
+            shown = ", ".join(pending[:PENDING_SHOWN]) + (
+                f" (+{len(pending) - PENDING_SHOWN})" if len(pending) > PENDING_SHOWN else ""
+            )
+            raise invalid_request(
+                f"sheet {spec['sheet']} has no finding or question {item_id!r} now (a finding that was fixed is gone); "
+                f"pending: {shown or 'none'}",
+                op,
+            )
+    spec.pop("legacy", None)
+    spec.setdefault("answers", {})[item_id] = {"verdict": str(verdict), "text": text}
+    write_spec(page, spec)
+    return {"sheet": spec["sheet"], "changed": [item_id]}
+
+
+def approve(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
+    """Put the engineer's name in the title block (``Aprobó``) with the words he approved it with. The one place that
+    field is written; any later change of the sheet empties it again."""
+    op = params.get("operation_id")
+    by = " ".join(str(params.get("by") or "").split())
+    reason = " ".join(str(params.get("text") or "").split())
+    if not by or not reason:
+        raise invalid_request("approve needs by (the engineer) and text (his words)", op)
+    page = _need_page(doc.fc_doc, params.get("sheet"), op)
+    activate(doc.fc_doc)
+    spec = spec_of(page)
+    spec.pop("legacy", None)
+    spec.setdefault("fields", {})[APPROVER_FIELD] = by
+    spec["approval"] = {"by": by, "reason": reason, "date": date.today().isoformat()}
+    write_spec(page, spec)
+    _sync_template_fields(doc.fc_doc, op)
+    wait_views(doc.fc_doc, page, op)
+    return {"sheet": spec["sheet"], "changed": []}
+
+
+# --- items ------------------------------------------------------------------------------------------------------------
+
+
+def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
+    """``add`` / ``remove`` items of a sheet, or ``update`` its layout. An item that cannot be drawn against the part is
+    reported in the result and NOT stored (the others are)."""
+    op = params.get("operation_id")
+    action = str(params.get("action", ""))
+    fc_doc = doc.fc_doc
+    if action == "update":
+        return update(doc, params)
+    if action == "answer":
+        return answer(doc, params)
+    if action == "approve":
+        return approve(doc, params)
+    if action == "review_report":
+        return review_report_action(doc, params)
+    if action == "request_review":
+        return request_review_action(doc, params)
+    if action == "review_choice":
+        return review_choice_action(doc, params)
+    if action in ("add_view", "remove_view"):
+        return _change_view(doc, params, action, op)
+    if action not in ("add", "remove", "remove_sheet"):
+        raise invalid_request(
+            f"unknown drawing action {action!r}, expected add, remove, remove_sheet, update, add_view, remove_view, "
+            "answer, approve, request_review, review_choice or review_report",
+            op,
+        )
+    page = _need_page(fc_doc, params.get("sheet"), op)
+    activate(fc_doc)
+    spec = spec_of(page)
+    spec.pop("legacy", None)
+    items = [dict(i) for i in spec.get("items", [])]
+    if action == "remove_sheet":
+        remove_page(fc_doc, page)
+        _sync_template_fields(fc_doc, op)
+        fc_doc.recompute()
+        remaining = pages(fc_doc)
+        return {"sheet": spec["sheet"], "removed": True, "sheets": [spec_of(p)["sheet"] for p in remaining]}
+    if action == "remove":
+        wanted = [str(i) for i in (params.get("ids") or ())]
+        if not wanted:
+            raise invalid_request(
+                "remove needs the ids of the items to take off (remove_sheet deletes the whole sheet)", op
+            )
+        ids = {i["id"] for i in items}
+        missing = [r for r in wanted if r not in ids]
+        if missing:
+            raise invalid_request(
+                f"no item {', '.join(missing)} on sheet {spec['sheet']}; it has: {', '.join(sorted(ids))}", op
+            )
+        items = [i for i in items if i["id"] not in set(wanted)]
+        spec["items"] = items
+        taken_off = [r for r in wanted if r in AUTO_IDS]
+        if taken_off:  # the engineer does not want it: it does not come back
+            spec["declined"] = sorted({*spec.get("declined", ()), *taken_off})
+        _sync_auto_items(doc, spec, op)
+        _clear_approval(spec)
+        write_spec(page, spec)
+        _sync_template_fields(fc_doc, op)
+        return _result(doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), [], op, changed=tuple(wanted))
+    requested = list(params.get("items") or ())
+    if not requested:
+        raise invalid_request('add needs items: a list like [{"type": "hole_dim", "all": true}]', op)
+    if len(items) + len(requested) > sheet_items.MAX_ITEMS:
+        raise invalid_request(f"a sheet takes at most {sheet_items.MAX_ITEMS} items", op)
+    taken = {i["id"] for i in items}
+    added: list[dict[str, Any]] = []
+    for position, raw in enumerate(requested, start=1):
+        try:
+            done = sheet_items.normalise(raw, taken, spec["next"])
+        except sc.ItemError as exc:
+            raise invalid_request(f"item {position} of {len(requested)}: {exc}", op) from exc
+        spec["next"] += 1
+        taken.add(done["id"])
+        added.append(done)
+    waited = wait_views(fc_doc, page, op)
+    refused = _refused(doc, page, spec, items, added, op)
+    keep = [a for a in added if a["id"] not in refused]
+    spec["items"] = items + keep
+    _sync_auto_items(doc, spec, op)
+    if keep:
+        _clear_approval(spec)
+    write_spec(page, spec)
+    _sync_template_fields(fc_doc, op)
+    waited += wait_views(fc_doc, page, op)
+    return _result(
+        doc, page, _scale_of(page) or 1.0, waited, [], op, refused=refused, changed=tuple(a["id"] for a in keep)
+    )
+
+
+def _change_view(doc: reg.DocumentRec, params: dict[str, Any], action: str, op: str | None) -> dict[str, Any]:
+    """``add_view`` / ``remove_view``: the sheet is laid out again with the views it has now, over all the room, at the
+    largest standard scale that fits (a scale asked for at creation is given up: the point of taking a view off is the room
+    it frees). The items are kept; one that cannot be drawn without the view says so in its row, and the result carries
+    the scale before and after."""
+    page = _need_page(doc.fc_doc, params.get("sheet"), op)
+    spec = spec_of(page)
+    spec.pop("legacy", None)
+    if projection_of(spec) == "hlr":
+        raise invalid_request(
+            "add_view / remove_view choose the views of a techdraw sheet: an hlr sheet has all of them", op
+        )
+    view = VIEW_ALIASES.get(str(params.get("view")), str(params.get("view")))
+    if view not in VIEW_CHOICES:
+        raise invalid_request(f"unknown view {view!r}: the views are {', '.join(VIEW_CHOICES)}", op)
+    have = list(views_of(spec))
+    if action == "remove_view":
+        if view not in have:
+            raise invalid_request(f"the sheet has no {view} view (it has {', '.join(have)})", op)
+        have.remove(view)
+        if view == "front" and len([v for v in have if v != "iso"]) != 1:
+            raise invalid_request(
+                "the front view can only go when exactly ONE other standard view stays (a plate seen from above: take "
+                "the others off first): the views are laid out from it",
+                op,
+            )
+    else:
+        if view in have:
+            raise invalid_request(f"the sheet already has the {view} view", op)
+        have.append(view)
+    before = _scale_of(page) or 1.0
+    clean = _collision_count(doc, page, spec, op)
+    spec["views"] = normalise_views(have, op)
+    spec["scale_requested"] = None
+    spec["isometric"] = "iso" in spec["views"]
+    _sync_auto_items(doc, spec, op)
+    _clear_approval(spec)
+    page, layout, waited, warnings = _build(doc, spec, op)
+    # the largest standard scale at which what the sheet carries still fits: a scale that puts a dimension off the sheet or
+    # on another object is not the one that fits, so the next smaller one is tried, never below the scale it had
+    smaller = [s for s in sheet_layout.STANDARD_SCALES if before <= s < layout.scale - 1e-9]
+    while _collision_count(doc, page, spec, op) > clean and smaller:
+        spec["scale_requested"] = smaller.pop(0)
+        page, layout, extra, warnings = _build(doc, spec, op)
+        waited += extra
+    spec["isometric"] = "iso" in spec["views"]
+    note = (
+        f"{'taken off' if action == 'remove_view' else 'added'}: {view}; "
+        f"scale {model.fmt_scale(before)} -> {model.fmt_scale(layout.scale)}"
+    )
+    result = _result(doc, page, layout.scale, waited, [note, *warnings], op)
+    failing = [f"{r['id']} ({r['type']}): {r['detail']}" for r in result["items"] if r["status"] == "error"]
+    if failing:
+        result["warnings"] = [*result["warnings"], "items that cannot be drawn on these views: " + "; ".join(failing)]
+    return result
+
+
+def _collision_count(doc: reg.DocumentRec, page: Any, spec: dict[str, Any], op: str | None) -> int:
+    """How many collisions (and objects off the drawing area) the sheet has as it is composed now."""
+    found = pages(doc.fc_doc)
+    _, _, ctx = compose(doc, page, spec_of(page), found.index(page) + 1, len(found), op)
+    return len(ctx.extras.get("collisions", []))
+
+
+def _refused(
+    doc: reg.DocumentRec,
+    page: Any,
+    spec: dict[str, Any],
+    existing: list[dict[str, Any]],
+    added: list[dict[str, Any]],
+    op: str | None,
+) -> dict[str, tuple[str, str]]:
+    """Draw the sheet with the new items and drop (by id, with its type and the reason) the ones that fail; the rest are
+    drawn again without them, since a refused item must not leave its dimension slot taken."""
+    refused: dict[str, tuple[str, str]] = {}
+    trial = added
+    for _ in range(len(added) + 1):
+        trial_spec = dict(spec, items=existing + trial)
+        _, results = compose_sheet(doc, page, trial_spec, 1, 1, op)
+        failed = {r.id: (r.type, r.detail) for r in results if r.status == "error" and r.id in {a["id"] for a in trial}}
+        if not failed:
+            break
+        refused.update(failed)
+        trial = [a for a in trial if a["id"] not in failed]
+    return refused
+
+
+# --- composing --------------------------------------------------------------------------------------------------------
+
+
+def _page_position(page: Any, view: Any) -> tuple[float, float]:
+    """Centre of a view on the page (TechDraw coordinates, y up): a projection item sits relative to its group."""
+    if str(view.TypeId) == "TechDraw::DrawProjGroupItem":
+        for obj in page.Views:
+            if str(obj.TypeId) == "TechDraw::DrawProjGroup" and view.Name in [item.Name for item in obj.Views]:
+                return float(obj.X) + float(view.X), float(obj.Y) + float(view.Y)
+    return float(view.X), float(view.Y)
+
+
+def _view_box(view: Any) -> Any:
+    """The box of the view's visible edges in the view's own coordinates (TechDraw keeps them y DOWN, like Qt)."""
+    return Part.Compound(view.getVisibleEdges()).optimalBoundingBox(False, False)
+
+
+def view_key(view: Any) -> str | None:
+    """The name (``front`` / ``top`` / ``right``) a view of the projection group goes by: the key the sheet tagged it with
+    (the anchor of a sheet without a front view is the top or the right one; a label cannot say, FreeCAD makes it unique in
+    the document), else the group's own name for it."""
+    tagged = str(getattr(view, sheet_native.PROP_VIEWKEY, ""))
+    if tagged in ("front", "top", "right"):
+        return tagged
+    return VIEW_KEYS.get(str(getattr(view, "Type", "")))
+
+
+def view_infos(page: Any) -> dict[str, sc.ViewInfo]:
+    """The front / top / right views as the items see them (the isometric one carries no dimensions)."""
+    infos: dict[str, sc.ViewInfo] = {}
+    for view in part_views(page):
+        if str(view.TypeId) != "TechDraw::DrawProjGroupItem":
+            continue
+        key = view_key(view)
+        if key is None:
+            continue
+        x, y = _page_position(page, view)
+        box = _view_box(view)
+        scale = float(view.getScale())
+        infos[key] = sc.ViewInfo(
+            key,
+            x,
+            y,
+            scale,
+            g.vec(view.Direction),
+            g.vec(view.XDirection),
+            g.vec(view.getGeometricCenter()),
+            (x + box.XMin, y - box.YMax, x + box.XMax, y - box.YMin),
+            vertices=tuple(
+                (x + float(v.X) * scale, y + float(v.Y) * scale)
+                for v in sheet_native._scan(view.getVertexByIndex)  # noqa: SLF001
+            ),
+        )
+    return infos
+
+
+def hand_marks(page: Any) -> dict[str, int]:
+    """How many dimensions and balloons of the TechDraw page that the mirror did not make (the engineer's own) sit on
+    each view, by the name the review uses (front / top / right / isometric): plain data for ``sheet_review``. A
+    dimension belongs to the view its first 2D reference points at, a balloon to its source view."""
+    names: dict[str, str] = {}
+    for view in part_views(page):
+        key = view_key(view) if str(view.TypeId) == "TechDraw::DrawProjGroupItem" else None
+        if key is None and str(view.Label) == sheet_native.VIEW_LABELS["isometric"]:
+            key = "isometric"
+        if key is not None:
+            names[str(view.Name)] = key
+    found: dict[str, int] = {}
+    for obj in page.Views:
+        kind = str(obj.TypeId)
+        if sheet_mirror.PROP_KEY in obj.PropertiesList or not kind.endswith(("DrawViewDimension", "DrawViewBalloon")):
+            continue
+        try:
+            if kind.endswith("DrawViewBalloon"):
+                on = obj.SourceView
+            else:
+                first = obj.References2D[0]
+                on = first[0] if isinstance(first, (list, tuple)) else first
+        except (IndexError, TypeError, AttributeError):
+            continue
+        key = names.get(str(getattr(on, "Name", "")))
+        if key is not None:
+            found[key] = found.get(key, 0) + 1
+    return found
+
+
+def iso_info(page: Any) -> sc.ViewInfo | None:
+    """The isometric view of the sheet as an item sees it (balloons can be placed on it); ``None`` when it is gone."""
+    for view in part_views(page):
+        if str(view.TypeId) == "TechDraw::DrawViewPart" and str(view.Label) == sheet_native.VIEW_LABELS["isometric"]:
+            x, y = _page_position(page, view)
+            box = _view_box(view)
+            return sc.ViewInfo(
+                "isometric",
+                x,
+                y,
+                float(view.getScale()),
+                g.vec(view.Direction),
+                g.vec(view.XDirection),
+                g.vec(view.getGeometricCenter()),
+                (x + box.XMin, y - box.YMax, x + box.XMax, y - box.YMin),
+            )
+    return None
+
+
+def view_rects(page: Any) -> list[sc.Rect]:
+    """The page rectangle of the geometry of EVERY view of the sheet (isometric included), y up: where a derived view
+    must not land."""
+    rects: list[sc.Rect] = []
+    for view in part_views(page):
+        x, y = _page_position(page, view)
+        box = _view_box(view)
+        rects.append((x + box.XMin, y - box.YMax, x + box.XMax, y - box.YMin))
+    return rects
+
+
+def _edge_entities(edge: Any, x0: float, y0: float, layer: str) -> list[model.Entity]:
+    """One edge of a view as sheet entities at the view's place ``(x0, y0)`` on the page (y up). TechDraw keeps the
+    edges of a view in Qt's orientation, y DOWN, so every y is negated here (verified on an asymmetric part)."""
+    kind = type(edge.Curve).__name__
+    if kind == "Line":
+        a, b = edge.valueAt(edge.FirstParameter), edge.valueAt(edge.LastParameter)
+        return [model.Line(x0 + a.x, y0 - a.y, x0 + b.x, y0 - b.y, layer)]
+    if kind == "Circle":
+        centre = edge.Curve.Center
+        cx, cy = x0 + centre.x, y0 - centre.y
+        if edge.isClosed():
+            return [model.Circle(cx, cy, float(edge.Curve.Radius), layer)]
+        first, last = edge.FirstParameter, edge.LastParameter
+        a, m, b = edge.valueAt(first), edge.valueAt((first + last) / 2), edge.valueAt(last)
+
+        def angle(p: Any) -> float:
+            return math.degrees(math.atan2(-(p.y - centre.y), p.x - centre.x)) % 360.0
+
+        start, mid, end = angle(a), angle(m), angle(b)
+        if (mid - start) % 360.0 > (end - start) % 360.0:  # the middle is not on the counter-clockwise way: swap ends
+            start, end = end, start
+        return [model.Arc(cx, cy, float(edge.Curve.Radius), start, end, layer)]
+    points = edge.discretize(Deflection=DISCRETIZE_MM)
+    return [model.Polyline(tuple((x0 + p.x, y0 - p.y) for p in points), layer, closed=bool(edge.isClosed()))]
+
+
+def view_entities(page: Any) -> list[model.Entity]:
+    """The visible edges of every view of the page, at their place (the contour layer)."""
+    out: list[model.Entity] = []
+    for view in part_views(page):
+        x, y = _page_position(page, view)
+        for edge in view.getVisibleEdges():
+            out += _edge_entities(edge, x, y, model.CONTOUR)
+    return out
+
+
+SYMMETRY_TOL = 1e-5  # the mirror image shares this fraction of the volume with the part: it is the same part
+SYMMETRY_MAX_FACES = 400  # a part with more faces is not tested (a boolean on it is slow): it says no symmetry
+SYMMETRY_CACHE = 16
+SPAN_SAMPLES = 80  # places along a cylinder at which its surface is looked for
+SPAN_TOL_MM = 0.02
+_SYMMETRY: dict[tuple[Any, ...], dict[str, float]] = {}
+
+
+def _symmetry_of(shape: Any) -> dict[str, float]:
+    """The model axes whose middle plane of the part's box is a plane of symmetry of the shape: the shape mirrored in it
+    shares its whole volume with the shape. Measured, never assumed; empty when the part is too complex to test or the
+    boolean fails."""
+    volume = float(shape.Volume)
+    if volume <= 0 or len(shape.Faces) > SYMMETRY_MAX_FACES:
+        return {}
+    box = shape.BoundBox
+    found: dict[str, float] = {}
+    for name, low, high, normal in (
+        ("x", box.XMin, box.XMax, App.Vector(1, 0, 0)),
+        ("y", box.YMin, box.YMax, App.Vector(0, 1, 0)),
+        ("z", box.ZMin, box.ZMax, App.Vector(0, 0, 1)),
+    ):
+        plane = (low + high) / 2
+        base = App.Vector(plane * normal.x, plane * normal.y, plane * normal.z)
+        try:
+            common = shape.common(shape.mirror(base, normal))
+            same = abs(float(common.Volume) - volume) <= SYMMETRY_TOL * volume
+        except Exception:  # noqa: BLE001 - OCC raises plain exceptions of every kind
+            continue
+        if same:
+            found[name] = plane
+    return found
+
+
+class LiveGeometry(drawing_assembly.AssemblyRays, sc.Geometry):
+    """The lookups items make into the model, on the live document."""
+
+    def __init__(self, doc: reg.DocumentRec, shapes: list[Any], op: str | None) -> None:
+        self.doc = doc
+        self.op = op
+        self._shapes = shapes
+        self._boundary: Any = None
+        self._projections: dict[Any, sc.Projection] = {}
+
+    # faces and edges by id
+    def _face(self, face_id: str) -> tuple[Any, Any]:
+        try:
+            rec, comp = reg.resolve_face(self.doc, face_id, self.op)
+        except WorkerError as exc:
+            raise sc.ItemError(f"{face_id} is not a face of the part (inspect(action=faces) lists them)") from exc
+        if comp is not None:
+            return reg.placed_component_shape(self.doc, comp).Faces[rec.index], reg.placed_component_shape(
+                self.doc, comp
+            )
+        solid = reg.world_shape(self.doc, reg.resolve_body(self.doc, rec.body, self.op))
+        return solid.Faces[rec.index], solid
+
+    def face(self, face_id: str) -> sc.FaceInfo:
+        face, _ = self._face(face_id)
+        kind = g.surface_kind(face)
+        point = g.vec(face.CenterOfMass)
+        if kind == "plane":
+            return sc.FaceInfo(face_id, kind, point, normal=prov.outward_normal(face))
+        if kind == "cylinder":
+            surf = face.Surface
+            u, v = prov.mid_params(face)
+            return sc.FaceInfo(
+                face_id,
+                kind,
+                point,
+                radius=float(surf.Radius),
+                axis_point=g.vec(surf.Center),
+                axis_dir=g.unit(g.vec(surf.Axis)),
+                surface_point=g.vec(face.valueAt(u, v)),
+            )
+        return sc.FaceInfo(face_id, kind, point)
+
+    def edge(self, edge_id: str) -> sc.EdgeInfo:
+        try:
+            rec, comp = reg.resolve_edge(self.doc, edge_id, self.op)
+        except WorkerError as exc:
+            raise sc.ItemError(f"{edge_id} is not an edge of the part (inspect(action=edges) lists them)") from exc
+        solid = (
+            reg.placed_component_shape(self.doc, comp)
+            if comp is not None
+            else reg.world_shape(self.doc, reg.resolve_body(self.doc, rec.body, self.op))
+        )
+        edge = solid.Edges[rec.index]
+        kind = g.curve_kind(edge)
+        if kind == "line":
+            a, b = prov.edge_ends(edge)
+            return sc.EdgeInfo(edge_id, "line", start=a, end=b)
+        if kind == "circle":
+            curve = edge.Curve
+            return sc.EdgeInfo(
+                edge_id,
+                "circle",
+                centre=g.vec(curve.Center),
+                radius=float(curve.Radius),
+                axis_dir=g.unit(g.vec(curve.Axis)),
+            )
+        return sc.EdgeInfo(edge_id, kind)
+
+    def on_part(self, p: sc.Vec3) -> sc.Vec3 | None:
+        if self._boundary is None:
+            self._boundary = Part.Compound([f for shape in self._shapes for f in shape.Faces])
+        if self._boundary.isNull():
+            return None
+        distance, solutions, _ = self._boundary.distToShape(Part.Vertex(g.fcvec(p)))
+        if distance > sc.POSITION_TOL_MM:
+            return None
+        return g.vec(solutions[0][0])
+
+    def projection(
+        self, centre: sc.Vec3, xdir: sc.Vec3, direction: sc.Vec3, cut: tuple[sc.Vec3, sc.Vec3] | None = None
+    ) -> sc.Projection:
+        key = (centre, xdir, direction, cut)
+        if key not in self._projections:
+            with _stage("projecting the part for a derived view", self.op):
+                self._projections[key] = sheet_project.project(self._shapes, centre, xdir, direction, cut)
+        return self._projections[key]
+
+    def view_projection(self, centre: sc.Vec3, xdir: sc.Vec3, direction: sc.Vec3) -> sc.Projection:
+        poses = tuple(shape.hashCode() for shape in self._shapes)  # the same shapes seen the same way: one projection
+        key = ("view", self.doc.id, poses, centre, xdir, direction)
+        with _stage("projecting the part for a standard view", self.op):
+            return sheet_project.project_view(key, self._shapes, centre, xdir, direction)
+
+    def face_outline(self, face_id: str, centre: sc.Vec3, xdir: sc.Vec3, direction: sc.Vec3) -> list[list[sc.Point]]:
+        face, _ = self._face(face_id)
+        return sheet_project.face_loops(face, centre, xdir, direction)
+
+    def faces_at(self, p: sc.Vec3, face_ids: list[str]) -> list[str]:
+        found = []
+        for face_id in face_ids:
+            try:
+                face, _ = self._face(face_id)
+            except sc.ItemError:
+                continue
+            if face.distToShape(Part.Vertex(g.fcvec(p)))[0] <= sc.POSITION_TOL_MM:
+                found.append(face_id)
+        return found
+
+    def round_extent(self) -> tuple[sc.Vec3, float] | None:
+        boxes = [shape.BoundBox for shape in self._shapes]
+        if not boxes:
+            return None
+        low = (min(b.XMin for b in boxes), min(b.YMin for b in boxes), min(b.ZMin for b in boxes))
+        high = (max(b.XMax for b in boxes), max(b.YMax for b in boxes), max(b.ZMax for b in boxes))
+        size = tuple(h - lo for h, lo in zip(high, low, strict=True))
+        for shape in self._shapes:
+            for face in shape.Faces:
+                if g.surface_kind(face) != "cylinder":
+                    continue
+                surf = face.Surface
+                axis = g.unit(g.vec(surf.Axis))
+                index = next((i for i in range(3) if abs(abs(axis[i]) - 1.0) < 1e-6), None)
+                if index is None:
+                    continue
+                diameter = 2.0 * float(surf.Radius)
+                across = [size[i] for i in range(3) if i != index]
+                if any(abs(extent - diameter) > 0.01 for extent in across):
+                    continue
+                u, v = prov.mid_params(face)
+                radial = g.sub(g.vec(face.valueAt(u, v)), g.vec(surf.Center))
+                if g.dot(g.vec(face.normalAt(u, v)), radial) > 0:  # an outer cylinder, not a bore of a square block
+                    return axis, diameter
+        return None
+
+    def symmetry(self) -> dict[str, float]:
+        if len(self._shapes) != 1:
+            return {}
+        shape = self._shapes[0]
+        key = (self.doc.id, shape.hashCode())
+        if key not in _SYMMETRY:
+            if len(_SYMMETRY) >= SYMMETRY_CACHE:
+                _SYMMETRY.clear()
+            with _stage("testing the part for planes of symmetry", self.op):
+                _SYMMETRY[key] = _symmetry_of(shape)
+        return dict(_SYMMETRY[key])
+
+    def cylinder_span(self, face_id: str, across: sc.Vec3) -> tuple[float, float] | None:
+        face, _ = self._face(face_id)
+        if g.surface_kind(face) != "cylinder":
+            return None
+        surf = face.Surface
+        axis, origin, radius = g.unit(g.vec(surf.Axis)), g.vec(surf.Center), float(surf.Radius)
+        side = g.sub(across, g.scale(axis, g.dot(across, axis)))
+        if g.length(side) < 1e-6:
+            return None
+        side = g.unit(side)
+        box = face.BoundBox
+        reach = [
+            g.dot(g.sub((x, y, z), origin), axis)
+            for x in (box.XMin, box.XMax)
+            for y in (box.YMin, box.YMax)
+            for z in (box.ZMin, box.ZMax)
+        ]
+        low, high = min(reach), max(reach)
+        step = (high - low) / SPAN_SAMPLES
+        runs: list[tuple[float, float]] = []
+        start: float | None = None
+        for n in range(SPAN_SAMPLES + 1):
+            s = low + n * step
+            point = tuple(o + a * s + d * radius for o, a, d in zip(origin, axis, side, strict=True))
+            here = face.distToShape(Part.Vertex(g.fcvec(point)))[0] <= SPAN_TOL_MM
+            if here and start is None:
+                start = s
+            if not here and start is not None:
+                runs.append((start, s - step))
+                start = None
+        if start is not None:
+            runs.append((start, high))
+        runs = [r for r in runs if r[1] > r[0]]
+        return max(runs, key=lambda r: r[1] - r[0]) if runs else None
+
+    def chamfer(self, face_id: str) -> sc.ChamferInfo:
+        face, solid = self._face(face_id)
+        if g.surface_kind(face) != "plane":
+            raise sc.ItemError(f"{face_id} is not flat: only a flat chamfer can be dimensioned (use a note otherwise)")
+        straight = []
+        for edge in face.Edges:
+            if g.curve_kind(edge) != "line":
+                continue
+            a, b = prov.edge_ends(edge)
+            neighbours = [f for f in solid.ancestorsOfType(edge, Part.Face) if not f.isSame(face)]
+            if len(neighbours) == 1 and g.surface_kind(neighbours[0]) == "plane":
+                straight.append((edge, g.unit(g.sub(b, a)), neighbours[0]))
+        if not straight:
+            raise sc.ItemError(f"{face_id} has no straight edge shared with a flat face: it is not a flat chamfer")
+        longest = max(straight, key=lambda s: s[0].Length)
+        pair = [s for s in straight if sc.parallel(s[1], longest[1])]
+        if len(pair) != 2:
+            raise sc.ItemError(
+                f"{face_id} is not a chamfer between two flat faces (it has {len(pair)} edges along its length)"
+            )
+        (edge_a, direction, face_a), (edge_b, _, face_b) = pair
+        n_a, n_b = prov.outward_normal(face_a), prov.outward_normal(face_b)
+        d_a = g.dot(n_a, g.vec(face_a.CenterOfMass))
+        d_b = g.dot(n_b, g.vec(face_b.CenterOfMass))
+        u = g.cross(n_a, n_b)
+        uu = g.dot(u, u)
+        if uu < 1e-9:
+            raise sc.ItemError(f"the faces next to {face_id} are parallel: it is not a chamfer")
+        corner = g.scale(g.add(g.scale(g.cross(n_b, u), d_a), g.scale(g.cross(u, n_a), d_b)), 1.0 / uu)
+        legs = []
+        for edge in (edge_a, edge_b):
+            a, b = prov.edge_ends(edge)
+            mid = g.scale(g.add(a, b), 0.5)
+            legs.append(g.length(g.cross(g.sub(mid, corner), g.unit(u))))
+        leg_a, leg_b = legs
+        gamma = math.pi - math.acos(max(-1.0, min(1.0, g.dot(n_a, n_b))))
+        if leg_b > leg_a:  # the longer leg is the one the angle is measured from
+            leg_a, leg_b = leg_b, leg_a
+        angle = math.degrees(math.atan2(leg_b * math.sin(gamma), leg_a - leg_b * math.cos(gamma)))
+        return sc.ChamferInfo(face_id, leg_a, leg_b, angle, direction, g.vec(face.CenterOfMass))
+
+
+def hole_infos(doc: reg.DocumentRec, body: str | None, op: str | None) -> list[sc.HoleInfo]:
+    """The holes of the part with what a callout needs; the thread comes from the ``hole`` feature that made the hole
+    (found through the provenance of its faces), a hole made any other way is geometry only (``declared`` False)."""
+    params: dict[str, Any] = {"operation_id": op or "drawing"}
+    if body is not None:
+        params["body"] = {"id": body}
+    # a partial cylinder (the round end of a slot, a half hole) is not a hole to call out: only full circles are
+    found = [h for h in holes.list_holes(doc, params)["holes"] if float(h["arc_deg"]) >= FULL_CIRCLE_DEG]
+    features = {f.id: f for f in doc.features}
+    out: list[sc.HoleInfo] = []
+    for index, hole in enumerate(found):
+        face_ids = tuple(str(f["id"]) for f in hole["faces"])
+        declared, thread, made_by, fit, made_class, grade = False, None, None, None, None, None
+        for face_id in face_ids:
+            try:
+                rec, comp = reg.resolve_face(doc, face_id, op)
+            except WorkerError:
+                continue
+            feature = features.get(rec.created_by) if comp is None else None
+            if feature is not None and made_by is None:
+                made_by = feature.id
+            given = (
+                hole_colours.declarations(doc, feature) if feature is not None else None
+            )  # a pattern copy: its seed's
+            if given is not None:
+                declared = True
+                fit, made_class, grade, spec = given
+                if isinstance(spec, dict) and spec.get("size"):
+                    depth = spec.get("depth_mm")
+                    thread = (str(spec["size"]), float(depth) if depth is not None else None)
+                break
+        axis = hole["axis"]
+        out.append(
+            sc.HoleInfo(
+                index,
+                tuple(float(c) for c in axis["origin"]),  # type: ignore[arg-type]
+                tuple(float(c) for c in axis["direction"]),  # type: ignore[arg-type]
+                float(hole["diameter_mm"]),
+                float(hole["depth_mm"]),
+                hole["through"],
+                face_ids,
+                thread,
+                declared,
+                made_by,
+                fit,
+                made_class,
+                grade,
+            )
+        )
+    return out
+
+
+def compose_sheet(
+    doc: reg.DocumentRec, page: Any, spec: dict[str, Any], index: int, count: int, op: str | None
+) -> tuple[model.Sheet, list[sc.ItemResult]]:
+    """The sheet as it is now (title block, views, items) as a ``sheet_model.Sheet``, and what each item did."""
+    sheet, results, _ = compose(doc, page, spec, index, count, op)
+    return sheet, results
+
+
+MAX_PLACEMENT_PASSES = 6  # the sheet is composed again at most this many times to clear its collisions
+MAX_NUDGES = 5  # and an item is moved away from a collision at most this many times
+PATIENCE_PASSES = 3  # passes in a row that clear no collision before the best one is kept
+
+
+def compose(
+    doc: reg.DocumentRec, page: Any, spec: dict[str, Any], index: int, count: int, op: str | None
+) -> tuple[model.Sheet, list[sc.ItemResult], sc.Context]:
+    """``compose_sheet`` and the context the items were drawn in (the review reads what they left in it).
+
+    The placement pass: the sheet is composed, every object's ink is checked against every other's
+    (``sheet_collide``), and each item that lies on an earlier one is moved farther away (``Context.nudge``) before the
+    sheet is composed again, until nothing collides or an item cannot be moved more. What still collides is in
+    ``ctx.extras["collisions"]`` (the review names the items) and in the result of the item."""
+    cache: dict[str, Any] = {}
+    nudges: dict[str, int] = {}
+    best: tuple[int, tuple[model.Sheet, list[sc.ItemResult], sc.Context], dict[str, int]] | None = None
+    stale = 0
+    for _ in range(MAX_PLACEMENT_PASSES):
+        drawn = _compose_pass(doc, page, spec, index, count, op, dict(nudges), cache)
+        found = drawn[2].extras.get("collisions", [])
+        score = len(found) + sum(1 for c in found if c.kind == "outside_frame")  # off the sheet counts twice
+        if best is None or score < best[0]:
+            best, stale = (score, drawn, dict(nudges)), 0
+        else:
+            stale += 1
+        movers = _movers(drawn[2], nudges)
+        if score == 0 or not movers or stale >= PATIENCE_PASSES:
+            break
+        for item in movers:
+            nudges[item] = nudges.get(item, 0) + 1
+    assert best is not None
+    sheet, results, ctx = best[1]
+    ctx.extras["nudges"] = best[2]
+    _report_collisions(ctx, results)
+    return sheet, results, ctx
+
+
+def _item_ranks(ctx: sc.Context) -> dict[str, tuple[int, int]]:
+    """(phase, position) of every item of the sheet: the later one of two that collide is the one that gives way."""
+    return {
+        str(i["id"]): (sheet_items.REGISTRY[str(i["type"])].phase if str(i["type"]) in sheet_items.REGISTRY else 0, n)
+        for n, i in enumerate(ctx.extras.get("items", []))
+    }
+
+
+def _movers(ctx: sc.Context, nudges: dict[str, int]) -> set[str]:
+    """The items to move away: of each pair that collides, the later-drawn one, unless it has been moved enough."""
+    ranks = _item_ranks(ctx)
+    movers: set[str] = set()
+    for c in ctx.extras.get("collisions", []):
+        able = [k for k in (c.a, c.b) if k in ranks and nudges.get(k, 0) < MAX_NUDGES]
+        if able:
+            movers.add(max(able, key=lambda k: ranks[k]))
+    return movers
+
+
+def _report_collisions(ctx: sc.Context, results: list[sc.ItemResult]) -> None:
+    """Say, in the result of the items that still collide, what they lie on."""
+    said: dict[str, list[str]] = {}
+    for c in ctx.extras.get("collisions", []):
+        said.setdefault(c.a, []).append(f"{c.what} ({c.b})")
+        said.setdefault(c.b, []).append(f"{c.what} ({c.a})")
+    for position, r in enumerate(results):
+        if r.id in said and r.status != "error":
+            more = ctx.say("se solapa con", "overlaps") + " " + "; ".join(said[r.id][:2])
+            results[position] = sc.ItemResult(r.id, r.type, "warning", f"{r.detail}; {more}" if r.detail else more)
+
+
+def _compose_pass(
+    doc: reg.DocumentRec,
+    page: Any,
+    spec: dict[str, Any],
+    index: int,
+    count: int,
+    op: str | None,
+    nudges: dict[str, int],
+    cache: dict[str, Any],
+) -> tuple[model.Sheet, list[sc.ItemResult], sc.Context]:
+    """One drawing of the whole sheet with the items nudged as ``nudges`` says (what does not change between passes -- the
+    part, its holes, the views -- is kept in ``cache``)."""
+    key = spec["template"]
+    size, language = split_key(key)
+    text = template_text(key, op)
+    names = sheet_template.editable_fields(text)
+    page_w, page_h = sheet_layout.PAGES_MM[size]
+    scale = _scale_of(page) or 1.0
+    left, top, right, bottom = sheet_layout.drawing_area(page_w, page_h)
+    fields = spec.get("fields", {})
+    sheet = model.Sheet(page_w, page_h, str(fields.get("title") or page.Label))
+    hlr = projection_of(spec) == "hlr"
+    if "geometry" not in cache:
+        cache["geometry"] = LiveGeometry(doc, _shapes(doc, spec.get("body"), op), op)
+        cache["holes"] = hole_infos(doc, spec.get("body"), op)
+        cache["facts"] = (
+            None
+            if _is_assembly(doc, spec.get("body"))
+            else sheet_facts.collect(doc, _bodies(doc, spec.get("body"), op))
+        )
+        cache["views"] = {} if hlr else view_infos(page)
+        cache["view_entities"] = [] if hlr else view_entities(page)
+    geometry = cache["geometry"]
+    ctx = sc.Context(
+        sheet=sheet,
+        views=cache["views"],
+        holes=cache["holes"],
+        geometry=geometry,
+        area=(left, page_h - bottom, right, page_h - top),
+        language=language,
+    )
+    ctx.extras["nudges"] = nudges
+    ctx.extras["facts"] = cache["facts"]  # the rounds and whole cylinders of the part (None: an assembly)
+    hlr_views = None
+    if hlr:
+        try:
+            hlr_views = sheet_hlr.compose_views(geometry, spec["hlr"])
+        except sc.ItemError as exc:
+            raise error("geometry_failed", f"the part could not be projected: {exc}", op) from exc
+        sheet_hlr.apply(ctx, hlr_views, _is_assembly(doc, spec.get("body")))
+    else:
+        ctx.extras["view_boxes"] = view_rects(page)
+    ctx.extras["main_scale"] = scale
+    ctx.extras["angle"] = key_angle(key)
+    if "extent" not in cache:
+        cache["extent"] = _extents(doc, spec.get("body"), op)
+        box = _bounds(doc, spec.get("body"), op)
+        cache["model_box"] = (tuple(box["min"]), tuple(box["max"])) if box else None
+    ctx.extras["extent_mm"] = cache[
+        "extent"
+    ]  # width (x), depth (y), height (z) of the part: the thickness note needs it
+    if "symmetry" not in cache:
+        wanted = bool(cache["holes"]) and not _is_assembly(doc, spec.get("body"))
+        cache["symmetry"] = geometry.symmetry() if wanted else {}
+    ctx.extras["symmetry"] = cache["symmetry"]  # the planes the part is symmetric across: a hole on one is located
+    if cache["model_box"] is not None and not _is_assembly(doc, spec.get("body")):
+        ctx.extras["model_box"] = cache["model_box"]  # the silhouette a position is counted from (see items_datum)
+    if _is_assembly(doc, spec.get("body")):
+        ctx.assembly = drawing_assembly.assembly_info(doc, language)
+        iso = None if hlr else iso_info(page)
+        if iso is not None:
+            ctx.extras["views_extra"] = {"isometric": iso}
+            ctx.extras["iso_box"] = iso.box
+    ctx.extras["general_tolerances"] = str(fields.get("general_tolerances") or "")
+    ctx.extras["fields"] = dict(fields)
+    items: list[dict[str, Any]] = []
+    results: list[sc.ItemResult] = []
+    taken: set[str] = set()
+    for position, raw in enumerate(spec.get("items", []), start=1):
+        try:
+            done = sheet_items.normalise(raw, taken, position)
+        except sc.ItemError as exc:
+            results.append(
+                sc.ItemResult(
+                    str(raw.get("id", "?")) if isinstance(raw, dict) else "?",
+                    str(raw.get("type", "?")) if isinstance(raw, dict) else "?",
+                    "error",
+                    str(exc),
+                )
+            )
+            continue
+        taken.add(done["id"])
+        items.append(done)
+    ctx.extras["items"] = items
+    sheet_items.prepare_all(ctx, items)
+    shown_fields = title_fields(spec, names, scale, index, count, ctx.revisions, material_of(doc.fc_doc))
+    ctx.extras["fields"]["part_material"] = shown_fields.get(
+        "part_material", ""
+    )  # the design's, while the sheet has none
+    _, _, template_entities = sheet_template.parse(text, shown_fields)
+    sheet.extend(template_entities)
+    ctx.extras["title_block"] = sheet_template.title_block_rect(template_entities, page_w)
+    if spec.get("iso_colour") and "iso" in views_of(spec) and not _is_assembly(doc, spec.get("body")):
+        if "iso_shade" not in cache:  # the picture under the lines of the isometric view (see ``sheet_iso``)
+            iso_view = ctx.extras.get("views_extra", {}).get("isometric") or (None if hlr else iso_info(page))
+            cache["iso_shade"], cache["iso_notes"] = (
+                sheet_iso.shade(doc, _bodies(doc, spec.get("body"), op), iso_view, op)
+                if iso_view is not None
+                else ([], [])
+            )
+        sheet.underlay = list(cache["iso_shade"])
+        ctx.extras["iso_notes"] = [ctx.say(es, en) for es, en in cache["iso_notes"]]  # for the reply
+    views_start = len(sheet.entities)
+    sheet.extend(hlr_views.entities if hlr_views is not None else cache["view_entities"])
+    ctx.extras["view_ink"] = sheet.entities[views_start:]
+    start = len(sheet.entities)
+    sheet.extend(sheet_thread.thread_entities(ctx))
+    ranges = {"threads": (start, len(sheet.entities))}
+    results += sheet_items.draw_items(ctx, items)
+    start = len(sheet.entities)
+    if not any(i.get("auto") == "iso286" for i in items) and AUTO_ISO286_ID not in spec.get("declined", ()):
+        sheet_tol.footnotes(ctx)  # a sheet made before the note had its place in the notes block
+    ranges["iso286"] = (start, len(sheet.entities))
+    native = {
+        i["id"]: dict(ctx.extras.get("overall_dims", {})) for i in items if i["type"] == "overall" and not hlr
+    }  # TechDraw's own dimension objects, put on the lines the sheet draws
+    ctx.extras["units"] = sheet_units.collect(
+        sheet.entities,
+        items,
+        ctx.extras.get("item_slices", {}),
+        {r.id: r.status for r in results},
+        ranges,
+        hlr_views.groups if hlr_views is not None else None,
+        native,
+        None if hlr else ctx.extras.get("natives"),  # an hlr sheet has no TechDraw views to measure in
+    )
+    ctx.extras["collisions"] = _collisions(ctx)
+    return sheet, results, ctx
+
+
+def _collisions(ctx: sc.Context) -> list[sheet_collide.Collision]:
+    """Where the ink of one item lies on the ink of another (items in the order of their drawing, the later one is ``a``)
+    or a text lies on the outline of a view."""
+    order = {str(i["id"]): n for n, i in enumerate(ctx.extras.get("items", []))}
+    units = sorted(
+        (u for u in ctx.extras["units"] if u.kind != sheet_units.KIND_VIEW),
+        key=lambda u: order.get(u.key, -1),
+    )
+    inks = [sheet_collide.ink_of(u.key, u.entities) for u in units]
+    views = [sheet_collide.ink_of("views", ctx.extras.get("view_ink", []))]
+    found = sheet_collide.collisions(inks, views)
+    left, low, right, top = ctx.area
+    frame = (left - sc.AREA_SLACK_MM, low, right + sc.AREA_SLACK_MM, top + sc.AREA_SLACK_MM)
+    for u, ink in zip(units, inks, strict=True):  # an item off the drawing area (past the frame, over the title block)
+        if u.item_type not in ("parts_list",) and u.key in order and (ink.texts or ink.lines):
+            x0, y0, x1, y1 = sheet_collide.extent(ink)  # an item of centre lines only has no ink to be off the sheet
+            if x0 < frame[0] or y0 < frame[1] or x1 > frame[2] or y1 > frame[3]:
+                found.append(
+                    sheet_collide.Collision(
+                        u.key, "sheet", "outside_frame", ((x0 + x1) / 2, (y0 + y1) / 2), "outside the drawing area"
+                    )
+                )
+    return found
+
+
+def _all_sheets(doc: reg.DocumentRec, wanted: str | None, op: str | None) -> list[tuple[Any, dict[str, Any], int, int]]:
+    """The sheets in scope as (page, spec, number, total); every one is waited for first (the model may have changed
+    since the sheet was built)."""
+    activate(doc.fc_doc)
+    found = pages(doc.fc_doc)
+    if not found:
+        raise invalid_request("the document has no drawing sheet: create it first with drawing(action=create)", op)
+    chosen = [_need_page(doc.fc_doc, wanted, op)] if wanted else found
+    for page in chosen:
+        wait_views(doc.fc_doc, page, op)
+    return [(page, spec_of(page), found.index(page) + 1, len(found)) for page in chosen]
+
+
+# --- results ----------------------------------------------------------------------------------------------------------
+
+
+def _item_rows(results: list[sc.ItemResult], refused: dict[str, tuple[str, str]] | None = None) -> list[dict[str, str]]:
+    rows = [{"id": r.id, "type": r.type, "status": r.status, "detail": r.detail} for r in results]
+    for item_id, (kind, why) in (refused or {}).items():
+        rows.append({"id": item_id, "type": kind, "status": "refused", "detail": f"not stored: {why}"})
+    return rows
+
+
+def _result(
+    doc: reg.DocumentRec,
+    page: Any,
+    scale: float,
+    waited: float,
+    warnings: list[str],
+    op: str | None,
+    refused: dict[str, tuple[str, str]] | None = None,
+    changed: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    spec = spec_of(page)
+    size, language = split_key(spec["template"])
+    found = pages(doc.fc_doc)
+    sheet, results, ctx = compose(doc, page, spec, found.index(page) + 1, len(found), op)
+    window, failed = mirror(doc, page, ctx, sheet)
+    warnings = [*warnings, *ctx.extras.get("iso_notes", []), *failed]
+    width, depth, height = _extents(doc, spec.get("body"), op)
+    rows = _item_rows(results, refused)
+    return {
+        "changed": [*changed, *(item_id for item_id in (refused or {}) if item_id not in changed)],
+        "window": window,
+        "sheet": spec["sheet"],
+        "template": size,
+        "language": language,
+        "page_mm": list(sheet_layout.PAGES_MM[size]),
+        "scale": scale,
+        "views": ["isometric" if v == "iso" else v for v in views_of(spec)],
+        "dimensions": [
+            f"width {model.fmt(width)} mm",
+            f"height {model.fmt(height)} mm",
+            f"depth {model.fmt(depth)} mm",
+        ],
+        "sheets": [spec_of(p)["sheet"] for p in found],
+        "items": rows,
+        "waited_s": round(waited, 3),
+        "warnings": warnings,
+        "projection": projection_of(spec),
+        "angle": key_angle(spec["template"]),
+    }
+
+
+def mirror(doc: reg.DocumentRec, page: Any, ctx: sc.Context, sheet: model.Sheet) -> tuple[str, list[str]]:
+    """Make the page show what was just composed (``sheet_mirror``); (what it did, warnings). The PDF and the DXF do not
+    depend on it, so a failure here is a warning, never an error."""
+    units = ctx.extras["units"]
+    try:
+        report = sheet_mirror.sync(doc.fc_doc, page, units, sheet.height, spec_of(page)["sheet"])
+        wait_views(doc.fc_doc, page, None)  # the symbols are computed, nothing is left touched
+    except Exception as exc:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind
+        return "", [
+            f"the sheet window could not be updated ({type(exc).__name__}: {exc}); the PDF and the DXF are right"
+        ]
+    notes = [
+        f"{key}: TechDraw's own objects could not be made ({'; '.join(why)}): it is drawn as a symbol of our drawing"
+        for key, why in report.fallbacks.items()
+    ]
+    return report.line(), notes
+
+
+def page_objects(page: Any) -> list[list[Any]]:
+    """The mirror objects of ``page`` as [name, type, label, unit key, x, y] rows (a test reads what the window holds)."""
+    return [
+        [o.Name, str(o.TypeId).split("::")[-1], str(o.Label), key, round(float(o.X), 3), round(float(o.Y), 3)]
+        for key, objects in sheet_mirror.owned(page).items()
+        for o in objects
+    ]
+
+
+def centre_mark_problems(doc: reg.DocumentRec, sheet: str | None, op: str | None) -> list[str]:
+    """Every centre-mark cross of the sheet against the projected centre of its hole, in the sheet model AND in the
+    TechDraw objects (where the window puts them), to 0.01 mm: a cross with no hole centre under it, a hole seen as a
+    circle whose cross the page lacks while the sheet has it, are all reported. Empty: the marks are at the centres."""
+    page = _need_page(doc.fc_doc, sheet, op)
+    found = pages(doc.fc_doc)
+    composed, _, ctx = compose(doc, page, spec_of(page), found.index(page) + 1, len(found), op)
+    tol = sheet_mirror.CROSS_TOL_MM
+    in_model = sheet_mirror.crosses(
+        [(e.x1, e.y1, e.x2, e.y2) for e in composed.entities if isinstance(e, model.Line) and e.layer == model.AXES]
+    )
+    on_page = sheet_mirror.page_crosses(page, composed.height)
+    expected = [
+        (view.name, hole, view.project(hole.centre))
+        for hole in ctx.holes
+        for view in ctx.views.values()
+        if view.looks_along(hole.direction)
+    ]
+    problems: list[str] = []
+
+    def near(point: tuple[float, float], points: list[tuple[float, float]]) -> bool:
+        return any(abs(point[0] - p[0]) <= tol and abs(point[1] - p[1]) <= tol for p in points)
+
+    for name, hole, centre in expected:
+        sheet_has, page_has = near(centre, in_model), near(centre, on_page)
+        if sheet_has and not page_has:
+            problems.append(
+                f"hole D{hole.diameter:g} in the {name} view: the sheet has its centre mark, the page does not"
+            )
+    centres = [c for _, _, c in expected]
+    for label, points in (("sheet", in_model), ("page", on_page)):
+        for point in points:
+            if not near(point, centres):
+                problems.append(
+                    f"a centre mark of the {label} at ({point[0]:.3f}, {point[1]:.3f}) is not at the centre of any hole"
+                )
+    return problems
+
+
+def centre_mark_pixels(doc: reg.DocumentRec, sheet: str | None, op: str | None) -> list[list[Any]]:
+    """Test-only (visible worker): for every hole seen as a circle, [view, diameter, offset in mm of the centre mark the
+    window paints from the projected centre]."""
+    page = _need_page(doc.fc_doc, sheet, op)
+    found = pages(doc.fc_doc)
+    composed, _, ctx = compose(doc, page, spec_of(page), found.index(page) + 1, len(found), op)
+    expected = [
+        (view.name, hole.diameter, view.project(hole.centre))
+        for hole in ctx.holes
+        for view in ctx.views.values()
+        if view.looks_along(hole.direction)
+    ]
+    offsets = gui.measure_bars(page, [e[2] for e in expected], composed.width)
+    return [[name, diameter, offset] for (name, diameter, _), offset in zip(expected, offsets, strict=True)]
+
+
+def quality_metrics(doc: reg.DocumentRec, sheet: str | None, op: str | None) -> dict[str, Any]:
+    """Test-only: what the quality floor measures on the sheet as composed now -- per hole whether the sheet gives its x and
+    its y (and the values), the pairs of leaders that cross, the leaders that cut the outline more than once, the dimensions
+    inside an outline, the material field of the title block and the notes block."""
+    import sheet_quality  # noqa: PLC0415
+
+    page = _need_page(doc.fc_doc, sheet, op)
+    found = pages(doc.fc_doc)
+    composed, results, ctx = compose(doc, page, spec_of(page), found.index(page) + 1, len(found), op)
+    spec = spec_of(page)
+    items = [sheet_items.normalise(i, set(), 1) for i in spec.get("items", [])]
+    data = sheet_review.ReviewInput(items, {r.id: r for r in results}, ctx, composed, feature_infos(doc))
+    quality = sheet_quality.check(data)
+    positions = ctx.extras.get("positions", {})
+    return {
+        "holes": {
+            str(h.index): {"diameter": h.diameter, **{k: v for k, v in positions.get(h.index, {}).items()}}
+            for h in ctx.holes
+        },
+        "findings": [[f.code, list(f.items), f.severity] for f in quality],
+        "leaders": len(ctx.extras.get("leaders", [])),
+        "material": str(ctx.extras.get("fields", {}).get("part_material", "")),
+        "texts": composed.texts(),
+        "scale": _scale_of(page),
+        "views": sorted(ctx.views),
+    }
+
+
+def compare_window(doc: reg.DocumentRec, sheet: str | None, op: str | None) -> list[str]:
+    """What differs between the objects of the sheet's page and the sheet as composed (empty: window and PDF agree)."""
+    page = _need_page(doc.fc_doc, sheet, op)
+    found = pages(doc.fc_doc)
+    composed, _, ctx = compose(doc, page, spec_of(page), found.index(page) + 1, len(found), op)
+    return sheet_mirror.compare(page, ctx.extras["units"], composed.height)
+
+
+def feature_infos(doc: reg.DocumentRec) -> list[sheet_review.FeatureInfo]:
+    """The features of the part the review looks at (cuts, chamfers, fillets) with the faces and edges they made."""
+    out = []
+    for feature in doc.features:
+        if feature.kind in ("cut", "chamfer", "fillet"):
+            label = str(feature.label or feature.kind)
+            out.append(
+                sheet_review.FeatureInfo(
+                    feature.id, feature.kind, label, list(feature.created_faces), list(feature.created_edges)
+                )
+            )
+    return out
+
+
+def review_report(
+    doc: reg.DocumentRec, page: Any, spec: dict[str, Any], number: int, total: int, op: str | None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The review of one sheet: (findings, questions of judgement), each with the id an answer names and the answer the
+    sheet holds for it (``None``: pending)."""
+    findings, ctx = review_findings(doc, page, spec, number, total, op)
+    answers = spec.get("answers", {})
+    for row in findings:
+        row["answer"] = answers.get(row["id"])
+    questions = [
+        {"id": q.id, "text": q.text, "answer": answers.get(q.id)} for q in sheet_checks.judgement(_last_input(ctx))
+    ]
+    return findings, questions
+
+
+def _last_input(ctx: sc.Context) -> sheet_review.ReviewInput:
+    """The review input the last ``review_findings`` built (the questions read the same context)."""
+    return ctx.extras["review_input"]
+
+
+def review_findings(
+    doc: reg.DocumentRec, page: Any, spec: dict[str, Any], number: int, total: int, op: str | None
+) -> tuple[list[dict[str, Any]], sc.Context]:
+    """The findings of one sheet as rows (``sheet_review``), with their ids, and the context they were found in."""
+    sheet, results, ctx = compose(doc, page, spec, number, total, op)
+    items: list[dict[str, Any]] = []
+    taken: set[str] = set()
+    for position, raw in enumerate(spec.get("items", []), start=1):
+        try:
+            done = sheet_items.normalise(raw, taken, position)
+        except sc.ItemError:
+            continue
+        taken.add(done["id"])
+        items.append(done)
+    data = sheet_review.ReviewInput(items, {r.id: r for r in results}, ctx, sheet, feature_infos(doc))
+    ctx.extras["review_input"] = data
+    ctx.extras["hand_marks"] = hand_marks(page)  # what the engineer put on the TechDraw page by hand
+    findings = [
+        {
+            "code": f.code,
+            "severity": f.severity,
+            "message": f.message,
+            "items": [*f.items],
+            "features": [*f.features],
+            "key": f.key,
+        }
+        for f in sheet_review.review(data)
+    ]
+    held = sheet_mirror.owned(page)
+    for unit in ctx.extras["units"]:  # an item that asked for TechDraw's own objects and is drawn as a symbol instead
+        if unit.natives and held.get(unit.key) and not sheet_native.made(unit, held[unit.key]):
+            findings.append(
+                {
+                    "code": "native_fallback",
+                    "severity": "info",
+                    "message": ctx.say(
+                        f"{unit.key} no tiene objetos nativos de TechDraw (los valores no coincidían o falta una arista): "
+                        "se dibuja como símbolo y el ingeniero no lo puede editar en FreeCAD.",
+                        f"{unit.key} has no native TechDraw objects (the values did not match or an edge is missing): it is "
+                        "drawn as a symbol and the engineer cannot edit it in FreeCAD.",
+                    ),
+                    "items": [unit.key],
+                    "features": [],
+                }
+            )
+    unread = sheet_output.native_rows(page)
+    if unread:  # on the page, in the PDF and in the capture, but not in the composed sheet the review reads
+        shown = "; ".join(sheet_output.listed(unread)[:5]) + (f" (+{len(unread) - 5})" if len(unread) > 5 else "")
+        findings.append(
+            {
+                "code": "native_unread",
+                "severity": "warning",
+                "message": ctx.say(
+                    f"La hoja tiene {len(unread)} objeto(s) nativos de TechDraw que esta revisión no puede leer (sus cotas, "
+                    f"rayados y tipos de línea no se comprueban): {shown}. Se ven en la captura de la hoja y en el PDF; "
+                    "revísalos mirando la captura (con región para acercar); no los des por comprobados.",
+                    f"The sheet holds {len(unread)} native TechDraw object(s) this review cannot read (their dimensions, "
+                    f"hatching and line types are not checked): {shown}. They show in the sheet capture and in the PDF; "
+                    "look at them in the capture (with a region to zoom), do not take them as checked.",
+                ),
+                "items": [],
+                "features": [],
+                "key": "",
+            }
+        )
+    differs = sheet_mirror.compare(page, ctx.extras["units"], sheet.height)
+    if differs:  # the window must show what the PDF shows: a difference is an error of ours, never of the drawing
+        shown = "; ".join(differs[:3]) + (f" (+{len(differs) - 3})" if len(differs) > 3 else "")
+        text = ctx.say(
+            f"La ventana de FreeCAD no muestra lo mismo que el PDF: {shown}. Exportar o añadir un ítem la redibuja.",
+            f"The FreeCAD window does not show what the PDF shows: {shown}. Exporting or adding an item redraws it.",
+        )
+        findings.append({"code": "window_differs", "severity": "warning", "message": text, "items": [], "features": []})
+    sheet_checks.assign_ids(findings)
+    return findings, ctx
+
+
+MAX_PRINTED = 160
+
+
+def _printed(sheet: model.Sheet) -> list[str]:
+    """The texts the sheet prints, in the order it draws them and without repeats: dimension values, callouts, notes,
+    title block. What a reader who only has the drawing can read, as text."""
+    seen: dict[str, None] = {}
+    for text in sheet.texts():
+        clean = " ".join(str(text).split())
+        if clean:
+            seen.setdefault(clean, None)
+    return list(seen)[:MAX_PRINTED]
+
+
+def describe(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
+    """Every sheet (or the one asked for) with its title-block fields and its items as stored, each with what it does
+    now against the part; with ``review`` also the findings of the review."""
+    op = params.get("operation_id")
+    sheets = []
+    for page, spec, number, total in _all_sheets(doc, params.get("sheet"), op):
+        composed, results = compose_sheet(doc, page, spec, number, total, op)
+        by_id = {r.id: r for r in results}
+        size, language = split_key(spec["template"])
+        row: dict[str, Any] = {
+            "sheet": spec["sheet"],
+            "template": size,
+            "language": language,
+            "page_mm": list(sheet_layout.PAGES_MM[size]),
+            "scale": _scale_of(page) or 1.0,
+            "body": spec.get("body"),
+            "projection": projection_of(spec),
+            "angle": key_angle(spec["template"]),
+            "views": ["isometric" if v == "iso" else v for v in views_of(spec)],
+            "fields": {k: v for k, v in spec.get("fields", {}).items() if v},
+            "items": [
+                {
+                    "id": item["id"],
+                    "type": item["type"],
+                    "status": by_id[item["id"]].status if item["id"] in by_id else "error",
+                    "detail": by_id[item["id"]].detail if item["id"] in by_id else "not drawn",
+                    "spec": item,
+                }
+                for item in spec.get("items", [])
+            ],
+        }
+        row["answers"] = {str(k): dict(v) for k, v in spec.get("answers", {}).items()}
+        row["approved_by"] = str(spec.get("fields", {}).get("approval_person", ""))
+        row["edits"] = int(spec.get("edits", 0))
+        row["reports"] = _report_rows(spec)
+        row["review_request"] = _request_row(spec)
+        row["review_choice"] = _choice_row(spec)
+        row["printed"] = _printed(composed)
+        row["native"] = sheet_output.listed(sheet_output.native_rows(page))
+        if params.get("review"):
+            row["findings"], row["questions"] = review_report(doc, page, spec, number, total, op)
+        sheets.append(row)
+    return {"sheets": sheets}
+
+
+# --- rendering and exporting ------------------------------------------------------------------------------------------
+
+
+def _render_failure(exc: Exception, op: str | None, what: str) -> WorkerError:
+    if isinstance(exc, WorkerError):
+        return exc
+    return error("internal", f"{what}: {type(exc).__name__}: {exc}", op)
+
+
+MIN_REGION_MM = 2.0
+
+
+def _region(value: Any, sheet: model.Sheet, op: str | None) -> tuple[float, float, float, float] | None:
+    """The zoom a capture asks for (``x0, y0, x1, y1`` in page mm, origin at the lower left), inside the sheet."""
+    if value is None:
+        return None
+    try:
+        x0, y0, x1, y1 = (float(v) for v in value)
+    except (TypeError, ValueError) as exc:
+        raise invalid_request("region needs four numbers: x0, y0, x1, y1 (mm on the sheet)", op) from exc
+    if not (0.0 <= x0 <= x1 <= sheet.width and 0.0 <= y0 <= y1 <= sheet.height):
+        raise invalid_request(
+            f"region {x0:g},{y0:g},{x1:g},{y1:g} is not inside the sheet: it is {sheet.width:g} x {sheet.height:g} mm, "
+            "x to the right and y up from the lower left corner",
+            op,
+        )
+    if x1 - x0 < MIN_REGION_MM or y1 - y0 < MIN_REGION_MM:
+        raise invalid_request(f"region must be at least {MIN_REGION_MM:g} mm on each side", op)
+    return x0, y0, x1, y1
+
+
+def _bounds_of_ink(entities: Any) -> tuple[float, float, float, float] | None:
+    """The box of what a unit draws with lines (its texts are left out: the PDF check looks for strokes)."""
+    return sheet_units.bounds([e for e in entities if not isinstance(e, model.Text)])
+
+
+def sheet_views(page: Any, ctx: sc.Context, spec: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
+    """The views the sheet holds, each with its box on the page (mm, y up) -- the standard ones, the native ones a script
+    added and the derived ones the items made (section, detail, auxiliary) -- and the notes where the page differs from
+    what the items say: a view the items count that the page lacks (the engineer may have deleted it in the window), or a
+    view the items do not know of."""
+    found: list[dict[str, Any]] = []
+    notes: list[str] = []
+    standard: set[str] = set()
+    if projection_of(spec) == "hlr":
+        rects = ctx.extras.get("view_boxes", [])
+        names = [*sheet_hlr.GROUP, *(["isometric"] if len(rects) > len(sheet_hlr.GROUP) else [])]
+        for name, rect in zip(names, rects, strict=False):
+            found.append({"name": name, "rect": list(rect), "kind": "standard"})
+            standard.add(name)
+    else:
+        for view in part_views(page):
+            try:
+                x, y = _page_position(page, view)
+                box = _view_box(view)
+            except Exception as exc:  # noqa: BLE001 - a view with no geometry has no box to look for ink in
+                notes.append(f"view {view.Label} has no geometry to measure ({type(exc).__name__}: {exc})")
+                continue
+            rect = [x + box.XMin, y - box.YMax, x + box.XMax, y - box.YMin]
+            if str(view.TypeId) == "TechDraw::DrawProjGroupItem":
+                name = view_key(view) or str(view.Label)
+            elif str(view.Label) == sheet_native.VIEW_LABELS["isometric"]:
+                name = "isometric"
+            else:
+                found.append({"name": str(view.Label), "rect": rect, "kind": "native"})
+                continue
+            found.append({"name": name, "rect": rect, "kind": "standard"})
+            standard.add(name)
+    for unit in ctx.extras.get("units", []):
+        if unit.item_type in ("section", "detail", "aux_view"):
+            rect = _bounds_of_ink(unit.entities)
+            if rect is not None:
+                found.append({"name": f"{unit.item_type} {unit.key}", "rect": list(rect), "kind": "derived"})
+    wanted = {"isometric" if v == "iso" else v for v in views_of(spec)}
+    if wanted - standard:
+        notes.append(
+            f"the sheet's views are {', '.join(sorted(wanted))} and the page has no {', '.join(sorted(wanted - standard))}"
+        )
+    return found, notes
+
+
+def _prepare(
+    doc: reg.DocumentRec, page: Any, spec: dict[str, Any], number: int, total: int, op: str | None
+) -> tuple[model.Sheet, sc.Context, list[str]]:
+    """Everything ``capture`` and ``export`` share, so both write the same thing: the colours TechDraw's PDF writer cannot
+    print are normalised (``sheet_colours``), the sheet is composed, and the page is made to show it (``mirror``). Returns
+    the composed sheet, its context and the notes for the reply."""
+    notes = sheet_colours.repair(part_views(page))
+    if notes:
+        for view in part_views(page):
+            view.touch()
+        doc.fc_doc.recompute()
+        gui.pump()
+    sheet, _, ctx = compose(doc, page, spec, number, total, op)
+    _, warnings = mirror(doc, page, ctx, sheet)  # the window shows what is about to be written
+    return sheet, ctx, [*notes, *ctx.extras.get("iso_notes", []), *warnings]
+
+
+def _outcome(
+    page: Any,
+    ctx: sc.Context,
+    spec: dict[str, Any],
+    sheet: model.Sheet,
+    renderer: str,
+    warnings: list[str],
+) -> dict[str, Any]:
+    """The part of the reply that says what the file holds: the views with their boxes, the native objects on the page and,
+    when the renderer is not the scene itself, which of them it did not draw."""
+    rows = sheet_output.native_rows(page)
+    views, notes = sheet_views(page, ctx, spec)
+    return {
+        "renderer": renderer,
+        "page_mm": [sheet.width, sheet.height],
+        "views": views,
+        "native": sheet_output.listed(rows),
+        "unrendered": [] if renderer == "techdraw" else sheet_output.not_drawn(rows),
+        "warnings": [*warnings, *notes],
+    }
+
+
+def capture(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
+    """The sheet as a PNG, from the same source as the PDF (``gui.render_png`` paints the scene the PDF is written from;
+    the headless CAD renders the composed sheet): every object of the page, native ones included, or the reply lists
+    the ones it could not draw. ``region`` zooms into part of the sheet."""
+    op = params.get("operation_id")
+    path = str(params.get("path", ""))
+    if not path:
+        raise invalid_request("capture_drawing needs a path", op)
+    ((page, spec, number, total),) = _all_sheets(doc, params.get("sheet") or spec_name_of_first(doc, op), op)
+    width = int(params.get("width") or 1400)
+    renderer = "compositor"
+    try:
+        sheet, ctx, warnings = _prepare(doc, page, spec, number, total, op)
+        region = _region(params.get("region"), sheet, op)
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        size: tuple[int, int] = (0, 0)
+        if gui.available():
+            try:
+                size = gui.render_png(page, path, width, (sheet.width, sheet.height), region)
+                renderer = "techdraw"
+            except Exception as exc:  # noqa: BLE001 - the image is still the same sheet, less what only the scene draws
+                warnings.append(
+                    f"the sheet window could not be painted ({type(exc).__name__}: {exc}); the image is CotaForge's own "
+                    "rendering of the sheet"
+                )
+        if renderer != "techdraw":
+            size = sheet_render.render_png(sheet_svg.to_svg(sheet), path, width, sheet.width, sheet.height, region)
+    except Exception as exc:  # noqa: BLE001
+        raise _render_failure(exc, op, "rendering the sheet failed") from exc
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        raise error("internal", f"the sheet image was not written at {path}", op)
+    out = _outcome(page, ctx, spec, sheet, renderer, warnings)
+    out["size_px"] = list(size)
+    out["region"] = list(region) if region is not None else None
+    return out
+
+
+def spec_name_of_first(doc: reg.DocumentRec, op: str | None) -> str:
+    return spec_of(_need_page(doc.fc_doc, None, op))["sheet"]
+
+
+def export(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
+    """ONE sheet as a PDF or a DXF at ``path``: one drawing, one sheet, one file. ``sheet`` names it; without it the
+    document must have exactly one (with several the error lists them). Returns the file written."""
+    op = params.get("operation_id")
+    path = str(params.get("path", ""))
+    fmt = str(params.get("format", ""))
+    if not path:
+        raise invalid_request("export_drawing needs a path", op)
+    if fmt not in ("pdf", "dxf"):
+        raise invalid_request(f"unknown drawing format {fmt!r}, expected pdf or dxf", op)
+    wanted = params.get("sheet")
+    if not wanted:
+        names = [spec_of(p)["sheet"] for p in pages(doc.fc_doc)]
+        if len(names) > 1:
+            raise invalid_request(
+                f"the document has {len(names)} sheets ({', '.join(names)}): an export writes ONE sheet to ONE file; "
+                "name it with sheet=",
+                op,
+            )
+    ((page, spec, number, total),) = _all_sheets(doc, wanted, op)
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    renderer = "compositor"
+    try:
+        sheet, ctx, warnings = _prepare(doc, page, spec, number, total, op)
+        if fmt == "pdf":
+            if gui.available():  # the PDF is TechDraw's own: the page the engineer sees and edits
+                try:
+                    renderer = gui.export_pdf(page, path)
+                except Exception as exc:  # noqa: BLE001 - never lose the export: ours is the same sheet
+                    warnings.append(
+                        f"TechDraw's own PDF export failed ({type(exc).__name__}: {exc}); the PDF is written by CotaForge"
+                    )
+            if renderer != "techdraw":
+                sheet_render.render_pdf(sheet_svg.to_svg(sheet), path, sheet.width, sheet.height, sheet.title)
+        else:
+            with open(path, "wb") as handle:
+                handle.write(sheet_dxf.to_dxf(sheet))
+    except Exception as exc:  # noqa: BLE001
+        raise _render_failure(exc, op, f"writing the {fmt} failed") from exc
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        raise error("internal", f"the {fmt} was not written at {path}", op)
+    out = _outcome(page, ctx, spec, sheet, renderer if fmt == "pdf" else "compositor", warnings)
+    return {"paths": [path], **out}

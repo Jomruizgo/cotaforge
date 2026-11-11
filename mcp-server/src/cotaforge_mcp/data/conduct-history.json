@@ -1,0 +1,191 @@
+{
+  "versions": [
+    {
+      "sha256": "8177f2ebfe0a6965fc8b975067999d66370b196854b50dcae9009ff787c62c8e",
+      "since": "0.1.0",
+      "commit": "42b006949"
+    },
+    {
+      "sha256": "4c506a2f17dd2b0a0cdf0cee153761351161e6b9fc9305486697b4e093a25dff",
+      "since": "0.2.0",
+      "commit": "78d74178d"
+    },
+    {
+      "sha256": "0135285993685c14b649efdf9c210dc533db9f7a88cfe64146e537ce1bb70132",
+      "since": "0.2.0",
+      "commit": "117ebe8c8"
+    },
+    {
+      "sha256": "b010f3755e588964d519998867f57cdd730fbb4065aa5a400dcb8e1f9696a6e0",
+      "since": "0.2.0",
+      "commit": "395ec58e0"
+    },
+    {
+      "sha256": "71d8015820a1b7732e4c151318b2faa53bd53c4ea8c55e5cc392892b4208775d",
+      "since": "0.2.0",
+      "commit": "950ae9f65"
+    },
+    {
+      "sha256": "9f58789cbb3c60263e373996087434d1e43b6bf63700c0a4a9d0709415047084",
+      "since": "0.2.0",
+      "commit": "ec39dbbd7"
+    },
+    {
+      "sha256": "1f75d238c09932490298cab790220122aa7370e3e887561ac271393c3c8d04e7",
+      "since": "0.2.0",
+      "commit": "c2c6c2b53"
+    },
+    {
+      "sha256": "8fe828a96c580dad6377cb72aecf6f51b1b14f48fa5e6fc74549d7085cba9cdb",
+      "since": "0.6.0",
+      "commit": "2b01c1309"
+    },
+    {
+      "sha256": "d48992e0db8b3d1708b38eabdb3934b7d31f7cb696486265ed7dff8822cf49fe",
+      "since": "0.6.0",
+      "commit": "8d1ac8a8b"
+    },
+    {
+      "sha256": "f1239d6b8b612d589e8a41e2c7a5a3994b7d9138778091b68126baf93c0a0eba",
+      "since": "0.6.0",
+      "commit": "e7f9f94ab"
+    },
+    {
+      "sha256": "6939bbadc7d6090fe07af1fa6be306f1cc355a734d561c387b6e77758b04d7aa",
+      "since": "0.6.0",
+      "commit": "2318cd810"
+    },
+    {
+      "sha256": "6f5d1be97d345b77c357f45df3f2261665c3ea7570c5c01d971323b928b493e6",
+      "since": "0.6.0",
+      "commit": "c9f8ebee4"
+    },
+    {
+      "sha256": "f7375315a66f0755a1d88d7bba84dd2c62e58ed64978693a11a1f091b2b3beb9",
+      "since": "0.6.0",
+      "commit": "d47c8c317"
+    },
+    {
+      "sha256": "fb4cfb6c5cebd16a6d0241b0598ca2c386ff76c8cd2ec545d5879815a05e6af1",
+      "since": "0.6.0",
+      "commit": "a82d51e10"
+    },
+    {
+      "sha256": "13bfb2f5925290e10be9c181effc222047cfab0efd643e3ddda8b3d5b3c6b68e",
+      "since": "0.6.0",
+      "commit": "b9e29056f"
+    },
+    {
+      "sha256": "ffc78c1687ee9aa34d867f5e366ea020c449a64859716e85ebc500e5d6f9ee79",
+      "since": "0.6.0",
+      "commit": "700d1a033"
+    },
+    {
+      "sha256": "dd159f637abc6c39ec87b66aad51a7eb4b075062871afcb35b303a761894af6c",
+      "since": "0.6.0",
+      "commit": "7ecf6df1f"
+    },
+    {
+      "sha256": "685e78dfa99442fca4722d81b428e1d395b266a06d216f99f6a46304bd7f5bb4",
+      "since": "0.6.0",
+      "commit": "1ab6d3ef2"
+    },
+    {
+      "sha256": "1cdeb6c050dc2869b5172a16eceb6d55dd93aad6de26e2a7ad8002467b59efdd",
+      "since": "0.7.0",
+      "commit": "222d8ca37"
+    },
+    {
+      "sha256": "21cdab5062eae23dc02248e0eb8a70ac019fac993765234117126f420cc555f8",
+      "since": "0.7.0",
+      "commit": "a1deccfe8"
+    },
+    {
+      "sha256": "d8f0321650ca69e0d49c9164b3046099a094116b6828c28cfe20e7f8f4f34a81",
+      "since": "0.9.0",
+      "commit": "d22165290"
+    },
+    {
+      "sha256": "5f8349c35d4967e95a63f8e3e632ce6f5bb70f10ab5e20e1073005016f3dc862",
+      "since": "0.9.0",
+      "commit": "e62454734"
+    },
+    {
+      "sha256": "5dcd5102ce860ade558d8d4f4bf092c22706d68b8d4f45c178b1693e8dbbe9e0",
+      "since": "0.9.0",
+      "commit": "5eedaddad"
+    },
+    {
+      "sha256": "d84c97a2dee658cdebeb5d517ccc3529fda342af846321beb7e27aaad0e89504",
+      "since": "0.9.0",
+      "commit": "99dbf8f1b"
+    },
+    {
+      "sha256": "6a642dbdbea2fa912805fe4abb12fb0492c59d9109e24bed23f12c24116ff989",
+      "since": "0.9.0",
+      "commit": "039c289de"
+    },
+    {
+      "sha256": "67b09ba77e31e9b598b11e4a2b4fa988249d874793f6cd0002b107d3507bac34",
+      "since": "0.9.0",
+      "commit": "ed5601394"
+    },
+    {
+      "sha256": "3c5d8dfc2b3a376800455f38215ee5498e5a1877e4ad9adb397708768d9de472",
+      "since": "0.9.0",
+      "commit": "0eeba7bfe"
+    },
+    {
+      "sha256": "31a4ad59083e2fe4f563a477d53e13ad3ce3cff3905a5f04aa9336c86a24c632",
+      "since": "0.9.0",
+      "commit": "88b9ee3c4"
+    },
+    {
+      "sha256": "631835528ddb84c7fd0dc872d498291d38ee72efc1f14258980f10355e468b3f",
+      "since": "0.9.0",
+      "commit": "f9c1d5c9d"
+    },
+    {
+      "sha256": "cd338d63f28fb059f90a44a50b5698c64657448434ce6c41b81155eaa2a47487",
+      "since": "0.9.0",
+      "commit": "7148fcf11"
+    },
+    {
+      "sha256": "8691c563950eeba31e1ddd074ee1a588241d80a37580721b01a373970e08f75f",
+      "since": "0.9.0",
+      "commit": "b1f855037"
+    },
+    {
+      "sha256": "7687f3d51d3eeb053dbaa8b9438fc35792196c4ae2d96d41a90c96d546a9ff5c",
+      "since": "0.9.0",
+      "commit": "b07a067d3"
+    },
+    {
+      "sha256": "6d48f286277d8bd1f6abb28d0f9261c423fea9c9b51bef69296b84a46b72bcd1",
+      "since": "0.9.0",
+      "commit": "d8d8dfee6"
+    },
+    {
+      "sha256": "944bbd6992c41904ffb80fd481ec1db224e3783af4f48d2288a1a321b29c0b04",
+      "since": "0.9.0",
+      "commit": "0307f725a"
+    },
+    {
+      "sha256": "e1e15978965066f4dceaae2faa4270124a4e7e59799d5e8cbc13a0060dc48318",
+      "since": "dev",
+      "commit": "9d9c6bfcc"
+    },
+    {
+      "sha256": "f973ab08dbead661b611a7867480981870e7f2b63603524829a699633bd9ceee",
+      "since": "0.9.0"
+    },
+    {
+      "sha256": "737caaa91aabad7a399d9ac695abe797d57953083f29423f385a50c8ef5f6857",
+      "since": "0.9.0"
+    },
+    {
+      "sha256": "825592437f883849c6c4389d20fbf3309bab7125d9f3e385576889665c691d59",
+      "since": "0.10.0"
+    }
+  ]
+}

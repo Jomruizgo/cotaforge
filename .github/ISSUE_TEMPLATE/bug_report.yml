@@ -1,0 +1,59 @@
+name: Bug report
+description: Something does not work as it should
+labels: ["type:bug", "status:needs-review"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Do not attach confidential part files. For security problems, use the Security tab instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you asked the agent, what you expected, what you got.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The shortest sequence that shows it.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: cotaforge version
+      description: "Output of `cotaforge version`."
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Windows, FreeCAD and Claude Code versions
+      description: For example "Windows 11, FreeCAD 1.1.3, Claude Code 2.x (terminal)".
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How it was installed
+      options:
+        - Windows installer
+        - From source
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and tool replies
+      description: The exact error or tool reply, and the relevant part of `friction.md` (`friccion.md` in a project made before 0.10) if you have one.
+      render: text
+  - type: checkboxes
+    id: ai
+    attributes:
+      label: Checks
+      options:
+        - label: I searched the existing issues first.
+          required: true

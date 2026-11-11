@@ -1,0 +1,40 @@
+[project]
+name = "cotaforge-kernel"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["pydantic>=2.7,<3", "pyyaml>=6"]
+
+[project.optional-dependencies]
+# ezdxf only reads back the DXF files the tests write (the writer itself is ours): never a runtime dependency
+dev = ["pytest>=8", "ruff>=0.5", "ezdxf>=1.3"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# The Spanish drawing templates (A4_es, A3_es) are read by the FreeCAD worker from its own folder.
+[tool.setuptools.package-data]
+"cotaforge.adapters.freecad.worker" = ["templates/*.svg"]
+"cotaforge.memory" = ["base/*.md", "base/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "freecad: needs the FreeCAD root",
+    "visible: needs a display (DISPLAY / WAYLAND_DISPLAY): the FreeCAD GUI worker; run these serially, never with xdist",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["src", "tests"]
+# The run_native corpus files are fragments for the preloaded namespace (doc, App, Part, ...), not modules.
+extend-exclude = ["tests/integration/freecad/native_corpus"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "N", "ANN"]
+ignore = ["ANN401"]

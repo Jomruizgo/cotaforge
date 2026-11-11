@@ -1,0 +1,11 @@
+# expect: ok
+# about: Triangle sketch left under-constrained (a legal state)
+sk = doc.addObject("Sketcher::SketchObject", "Triangle")
+sk.addGeometry(Part.LineSegment(Vector(0, 0, 0), Vector(20, 0, 0)), False)
+sk.addGeometry(Part.LineSegment(Vector(20, 0, 0), Vector(10, 15, 0)), False)
+sk.addGeometry(Part.LineSegment(Vector(10, 15, 0), Vector(0, 0, 0)), False)
+sk.addConstraint(Sketcher.Constraint("Coincident", 0, 2, 1, 1))
+sk.addConstraint(Sketcher.Constraint("Coincident", 1, 2, 2, 1))
+sk.addConstraint(Sketcher.Constraint("Coincident", 2, 2, 0, 1))
+doc.recompute()
+print("free degrees of freedom:", sk.solve())

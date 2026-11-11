@@ -1,0 +1,205 @@
+name: windows-installer
+
+# Builds the Windows installer, installs it on the runner (silently), checks it and uninstalls it.
+# On a version tag it also leaves a DRAFT release with the .exe attached; publishing it is a human decision.
+
+on:
+  pull_request:
+    paths:
+      - "kernel/**"
+      - "mcp-server/**"
+      - "plugin/**"
+      - "packaging/**"
+      - ".claude-plugin/**"
+      - "docs/manual-usuario.md"
+      - "docs/user-manual.md"
+      - ".github/workflows/windows-installer.yml"
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: windows-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write # only used to create the draft release on tags
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests (no FreeCAD)
+        run: |
+          python -m pip install --disable-pip-version-check -e "kernel[dev]" -e "mcp-server[dev]"
+          Push-Location kernel
+          python -m pytest tests/unit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+          Push-Location mcp-server
+          python -m pytest tests/unit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+
+      - name: Plugin and marketplace validate (Claude Code)
+        run: |
+          # `claude plugin validate` needs the CLI; it is a read-only check, so it is skipped when it cannot be installed.
+          npm install --global @anthropic-ai/claude-code
+          if ($LASTEXITCODE -ne 0) { Write-Warning "claude CLI not installed: validate skipped"; exit 0 }
+          claude plugin validate --strict .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          claude plugin validate --strict plugin
+
+      - name: Inno Setup
+        run: |
+          $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+          if (-not $iscc -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Build the installer
+        run: |
+          # A hashtable, not an array: splatting an array into a script binds "-Version" positionally as a value.
+          $buildArgs = @{}
+          if ("${{ github.ref_type }}" -eq "tag") {
+            # The tag decides the version: v0.7.0 -> 0.7.0. The build fails if the packages say otherwise.
+            $buildArgs.Version = "${{ github.ref_name }}".TrimStart("v")
+          }
+          ./packaging/windows/build.ps1 @buildArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $setup = Get-ChildItem dist -Filter "cotaforge-*-setup.exe"
+          if (@($setup).Count -ne 1) { throw "expected exactly one installer in dist, found $(@($setup).Count)" }
+          "SETUP=$($setup.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install silently
+        run: |
+          # Neither FreeCAD nor Claude Code is on the runner: the installer must not wait for anyone.
+          $log = Join-Path $env:RUNNER_TEMP "setup.log"
+          $process = Start-Process -FilePath $env:SETUP -Wait -PassThru -ArgumentList @(
+            "/VERYSILENT", "/LANG=spanish", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/SP-", "/LOG=$log")
+          if ($process.ExitCode -ne 0) { Get-Content $log; throw "setup exited with $($process.ExitCode)" }
+          $app = Join-Path $env:LOCALAPPDATA "Programs\cotaforge"
+          if (-not (Test-Path "$app\python\python.exe")) { Get-Content $log; throw "python.exe was not installed" }
+          "APP=$app" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Check the installed program
+        run: |
+          $python = Join-Path $env:APP "python\python.exe"
+          & $python -I -m cotaforge_mcp.cli version
+          if ($LASTEXITCODE -ne 0) { throw "version failed" }
+          $info = Get-Content (Join-Path $env:APP "install.json") -Raw | ConvertFrom-Json
+          Write-Host "install.json: version $($info.version)"
+          if (-not $info.version) { throw "install.json has no version" }
+          if (-not (Test-Path (Join-Path $env:APP "marketplace\.claude-plugin\marketplace.json"))) { throw "marketplace missing" }
+          if (-not (Test-Path (Join-Path $env:APP "marketplace\plugin\.claude-plugin\plugin.json"))) { throw "plugin missing" }
+          if (Test-Path (Join-Path $env:APP "python\Scripts")) { throw "the Scripts launchers must not be installed" }
+          foreach ($notice in "LICENSE", "THIRD_PARTY_NOTICES.md", "python\LICENSE.txt") {
+            if (-not (Test-Path (Join-Path $env:APP $notice))) { throw "license file missing: $notice" }
+          }
+
+          # A design space in a folder with a space in its name, made with the installed program.
+          $space = Join-Path $env:RUNNER_TEMP "design space"
+          & $python -I -m cotaforge_mcp.cli init $space --adapter fake
+          if ($LASTEXITCODE -ne 0) { throw "init failed" }
+          $declared = (Get-Content (Join-Path $space ".mcp.json") -Raw | ConvertFrom-Json).mcpServers.cad.command
+          if ($declared -ne $python) { throw ".mcp.json points at '$declared', expected '$python'" }
+
+          # The server starts from the installed Python and the hook command runs in Git Bash.
+          $bash = "C:\Program Files\Git\bin\bash.exe"
+          & $python -I (Join-Path $PWD "packaging/windows/smoke.py") --adapter fake --hook-shell $bash
+          if ($LASTEXITCODE -ne 0) { throw "smoke failed" }
+
+          # The launcher without windows (the shortcuts run the same code with dialogs).
+          & $python -I -m cotaforge_mcp.cli new --folder (Join-Path $env:RUNNER_TEMP "project from launcher")
+          if ($LASTEXITCODE -ne 0) { throw "new failed" }
+          foreach ($manual in "manual-usuario.md", "user-manual.md") {
+            if (-not (Test-Path (Join-Path $env:APP "docs\$manual"))) { throw "missing manual: $manual" }
+          }
+
+          # The shortcuts exist in the Start menu.
+          $menu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\cotaforge"
+          foreach ($name in "Crear proyecto nuevo (CotaForge)", "Abrir proyecto existente (CotaForge)", "Manual de CotaForge", "Desinstalar CotaForge") {
+            if (-not (Test-Path (Join-Path $menu "$name.lnk"))) { throw "missing shortcut: $name" }
+          }
+
+      - name: Update over a running server
+        run: |
+          # What a real update meets: a Claude session keeps the installed python.exe running, so its files are in use.
+          $python = Join-Path $env:APP "python\python.exe"
+          $busy = Start-Process -FilePath $python -ArgumentList @("-c", "import time; time.sleep(900)") -PassThru
+          Start-Sleep -Seconds 2
+          $log = Join-Path $env:RUNNER_TEMP "update.log"
+          $process = Start-Process -FilePath $env:SETUP -Wait -PassThru -ArgumentList @(
+            "/VERYSILENT", "/LANG=english", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/SP-", "/LOG=$log")
+          if ($process.ExitCode -ne 0) { Get-Content $log; throw "update exited with $($process.ExitCode)" }
+          if (-not $busy.HasExited) { Stop-Process -Id $busy.Id -Force; throw "the update left the running server alive" }
+          & $python -I -m cotaforge_mcp.cli version
+          if ($LASTEXITCODE -ne 0) { Get-Content $log; throw "the updated program does not run" }
+          Write-Host "updated over a running server; it was closed by its PID"
+
+      - name: Check the English install
+        run: |
+          # The update ran in English: the language of the install, the shortcuts and the commands follow it.
+          $info = Get-Content (Join-Path $env:APP "install.json") -Raw | ConvertFrom-Json
+          if ($info.language -ne "en") { throw "install.json language is '$($info.language)', expected 'en'" }
+          $menu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\cotaforge"
+          foreach ($name in "Create new project (CotaForge)", "Open existing project (CotaForge)", "CotaForge manual", "Uninstall CotaForge") {
+            if (-not (Test-Path (Join-Path $menu "$name.lnk"))) { throw "missing shortcut: $name" }
+          }
+          if (Test-Path (Join-Path $menu "Crear proyecto nuevo (CotaForge).lnk")) { throw "a Spanish shortcut was left behind" }
+          $python = Join-Path $env:APP "python\python.exe"
+          $english = Join-Path $env:RUNNER_TEMP "english project"
+          & $python -I -m cotaforge_mcp.cli new --folder $english
+          if ($LASTEXITCODE -ne 0) { throw "new (english) failed" }
+          foreach ($name in "memory", "calculations", "assumptions-and-decisions.md", "CLAUDE.md") {
+            if (-not (Test-Path (Join-Path $english $name))) { throw "the English project lacks $name" }
+          }
+
+      - name: Uninstall silently
+        run: |
+          $uninstaller = Get-ChildItem $env:APP -Filter "unins*.exe" | Select-Object -First 1
+          if (-not $uninstaller) { throw "no uninstaller in $env:APP" }
+          # A server left running must not stop the uninstall either.
+          $busy = Start-Process -FilePath (Join-Path $env:APP "python\python.exe") -ArgumentList @("-c", "import time; time.sleep(900)") -PassThru
+          Start-Sleep -Seconds 2
+          Start-Process -FilePath $uninstaller.FullName -Wait -ArgumentList @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART")
+          # The uninstaller hands over to a temporary copy of itself and returns early: wait for the folder to go.
+          $deadline = (Get-Date).AddSeconds(180)
+          while ((Test-Path $env:APP) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+          if (Test-Path $env:APP) { throw "$env:APP is still there after the uninstall" }
+          if (-not $busy.HasExited) { Stop-Process -Id $busy.Id -Force; throw "the uninstall left the running server alive" }
+          # Projects are never touched by an uninstall.
+          if (-not (Test-Path (Join-Path $env:RUNNER_TEMP "design space\.mcp.json"))) { throw "the design space was removed" }
+          Write-Host "uninstalled; the design space is intact"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cotaforge-windows-installer
+          path: dist/cotaforge-*-setup.exe
+          if-no-files-found: error
+
+      - name: Draft release (tags only; never published here)
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # A second copy without the version in its name: .../releases/latest/download/cotaforge-setup.exe
+          # always points at the newest published release (a draft is never "latest").
+          $latest = Join-Path (Split-Path $env:SETUP) "cotaforge-setup.exe"
+          Copy-Item $env:SETUP $latest
+          gh release create "${{ github.ref_name }}" $env:SETUP $latest --draft --verify-tag --title "CotaForge ${{ github.ref_name }}" --generate-notes
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
