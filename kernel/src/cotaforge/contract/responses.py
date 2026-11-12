@@ -338,6 +338,9 @@ class DrawingAnswer(BaseModel, frozen=True):
 
     verdict: Literal["applies", "not_applies"]
     text: str
+    ordered_by: str = ""
+    """The engineer who ordered a ``not_applies`` the harness would not accept on its own (a measured finding or
+    requirement): his name; his words are quoted in ``text``. Empty: the agent answered by itself."""
 
 
 class DrawingFinding(BaseModel, frozen=True):
@@ -425,6 +428,10 @@ class DrawingSheetInfo(BaseModel, frozen=True):
     """Who the engineer chose to review this sheet (empty: no answer yet); it stays through the changes of the sheet."""
     printed: tuple[str, ...] = ()
     """The texts the sheet prints (dimensions, callouts, notes, title block): what a reader without the model has."""
+    facts: dict[str, int] = {}
+    """With ``review``: what the CAD measured on the part and found on the sheet that the table of requirements of
+    a drawing reads (``cotaforge_mcp.drawing_requirements``): a count per fact name (threaded holes, fit holes, notes
+    found, weld items...). Empty: this CAD does not report them and no requirement is evaluated."""
     native: tuple[str, ...] = ()
     """The objects on the page that no item made (a view, a dimension, a note, a hatch added by a native script): they
     show in the capture and the PDF, but the review does not read them."""

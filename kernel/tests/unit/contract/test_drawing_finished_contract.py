@@ -26,8 +26,10 @@ def test_an_answer_names_what_it_answers_and_says_how() -> None:
             AnnotateDrawingRequest(operation_id="a", action="answer", **fields)
     with pytest.raises(ValidationError):
         AnnotateDrawingRequest(operation_id="a", action="answer", id="q", verdict="maybe", text="t")
-    with pytest.raises(ValidationError, match="answer takes no by"):
-        AnnotateDrawingRequest(operation_id="a", action="answer", id="q", verdict="applies", text="t", by="Ana")
+    ordered = AnnotateDrawingRequest(
+        operation_id="a", action="answer", id="q", verdict="not_applies", text="t", by="Ana"
+    )  # the engineer who ordered a does-not-apply the harness would not take on the agent's word
+    assert ordered.by == "Ana"
 
 
 def test_approve_is_the_engineer_naming_himself_and_quoting_his_words() -> None:

@@ -333,7 +333,7 @@ def test_the_questions_of_judgement_keep_only_what_no_memory_principle_asks_and_
     data = review.ReviewInput([], {}, ctx, ctx.sheet)
     assert [q.id for q in checks.judgement(data)] == base
     ctx.extras["facts"] = checks.PartFacts(sheet_metal=True)
-    assert [q.id for q in checks.judgement(data)] == [*base, "q.sheet_metal"]
+    assert [q.id for q in checks.judgement(data)] == base  # the bends are a row of the table of requirements
     english = views_context([])
     english.language = "en"
     assert (

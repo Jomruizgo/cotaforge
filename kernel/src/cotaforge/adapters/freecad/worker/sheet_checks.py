@@ -753,11 +753,10 @@ def judgement(data: Any) -> list[Question]:
     """The questions no program answers AND no drawing principle of the memory already asks, in the sheet's language. Views,
     sections, dimensions, tolerances and fabrication notes are the base set's ``dibujo-*`` principles (one question
     each is one too many: answering the same thing twice makes the answers rote). What is left has no counterpart:
-    callouts, line weights, the assembly and the sheet metal. Each is answered with ``applies: <how, here>`` or
-    ``no aplica: <why>``."""
+    callouts, line weights and the assembly. Each is answered with ``applies: <how, here>`` or ``no aplica: <why>``.
+    What a sheet must CARRY (the sheet metal's bends included) is the table of requirements of the server, not a question."""
     ctx = data.ctx
     say = ctx.say
-    facts: PartFacts | None = ctx.extras.get("facts")
     out = [
         Question(
             "q.callouts",
@@ -790,19 +789,7 @@ def judgement(data: Any) -> list[Question]:
                 ),
             )
         )
-    if facts is not None and facts.sheet_metal:
-        out.append(
-            Question(
-                "q.sheet_metal",
-                say(
-                    "¿Las líneas de doblez llevan sentido y ángulo («hacia abajo 90°»), el desarrollo sus cotas y el calibre "
-                    "está en una nota?",
-                    "Do the bend lines carry direction and angle ('down 90°'), does the flat pattern have its dimensions and "
-                    "is the gauge in a note?",
-                ),
-            )
-        )
-    return out
+    return out  # the sheet metal is a row of the table of requirements (``req.bent_sheet``), not a question here
 
 
 __all__ = [
