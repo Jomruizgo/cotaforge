@@ -637,6 +637,7 @@ def redundant_views(views: Sequence[ViewUse]) -> list[RedundantView]:
 # --- the paper a sheet leaves blank -----------------------------------------------------------------------------------------
 
 LOW_COVERAGE = 0.35  # the views and their dimensions cover less than this share of the free drawing area: too small
+LOW_INK = 0.3  # the views THEMSELVES (not their dimensions, not the gaps) cover less than this share of it: too small
 CORNER_RATIO = 3.0  # the free room on one side is more than this many times the other ...
 CORNER_MIN_MM = 60.0  # ... and bigger than this: the block of views sits in a corner
 FIT_MARGIN_MM = 2.0  # a larger scale / a smaller paper must leave this much room round the block to be proposed
@@ -658,6 +659,9 @@ class Underused:
     side: str = ""  # corner: the side with the free room (left | right | above | below)
     free_mm: float = 0.0  # corner: how much room is there
     opposite_mm: float = 0.0  # corner: how much on the opposite side
+    ink: float = 0.0  # small: the share of the area the views themselves cover
+    fewer: str = ""  # small: what to take off so a larger standard scale fits ("views=[top]")
+    fewer_scale: float | None = None  # ... and the scale it would take
 
 
 def _hull(rects: Sequence[Rect]) -> Rect | None:
@@ -674,6 +678,8 @@ def sheet_underused(
     corner: bool = True,
     scales: Sequence[float] = (),
     papers: Mapping[str, tuple[float, float]] | None = None,
+    views: Sequence[Rect] = (),
+    fewer: Sequence[tuple[str, float]] = (),
 ) -> Underused | None:
     """Whether the views of a sheet, with their dimensions (``rects``: the rectangles of the views and of the dimension
     strips, y up), waste the free drawing ``area``: ``None`` when the sheet is balanced.
@@ -682,6 +688,10 @@ def sheet_underused(
       ``scales``) would still fit it, or a smaller paper (from ``papers``: name -> (width, height) of its free area, at the
       scale the block has; ``page`` is the free area of the paper the sheet is on) would hold it. The block is judged as it is, not redrawn: a sheet whose scale was asked for and is already the
       largest that fits is not small, it is a small part.
+    * ``small`` also when the views themselves (``views``: their rectangles, no dimension strips and no gaps) cover less
+      than ``LOW_INK`` of the area and fewer views would take a larger standard scale (``fewer``: ``(what to take off, the
+      scale it allows)``, the caller's layout arithmetic): a plate drawn in four views at 1:1 on A3 has a block that spans the
+      sheet and views that are a fifth of it, and one view at 2:1 is the same drawing read better.
     * ``corner`` (only when ``corner``: an assembly keeps room for its parts list and the exploded view): the free room on one
       side of the hull is more than ``CORNER_RATIO`` times the opposite one and bigger than ``CORNER_MIN_MM``."""
     hull = _hull(rects)
@@ -701,8 +711,18 @@ def sheet_underused(
     ]
     smaller_paper = _smaller_paper(width, height, page, papers or {})
     block, free = (round(width, 1), round(height, 1)), (round(area_w, 1), round(area_h, 1))
+    ink = sum(max(0.0, v[2] - v[0]) * max(0.0, v[3] - v[1]) for v in views) / (area_w * area_h) if views else coverage
+    gain = next(((what, s) for what, s in fewer if s > scale * (1 + 1e-9)), None)
     if coverage < LOW_COVERAGE and (larger or smaller_paper):
-        return Underused("small", coverage, block, free, max(larger) if larger else None, smaller_paper)
+        return Underused(
+            "small", coverage, block, free, max(larger) if larger else None, smaller_paper, ink=ink,
+            fewer=gain[0] if gain else "", fewer_scale=gain[1] if gain else None,
+        )  # fmt: skip
+    if ink < LOW_INK and gain is not None:
+        return Underused(
+            "small", coverage, block, free, max(larger) if larger else None, smaller_paper, ink=ink,
+            fewer=gain[0], fewer_scale=gain[1],
+        )  # fmt: skip
     if not corner:
         return None
     gaps = {

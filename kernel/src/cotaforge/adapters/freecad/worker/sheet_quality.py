@@ -154,6 +154,7 @@ def _partly_located(data: ReviewInput) -> list[Finding]:
         # the default location: the axes it positioned each hole along (a datum edge or the plane of symmetry)
         for index, axes in ctx.extras.get("loc_axes", {}).items():
             axes_of.setdefault(index, set()).update(axes)
+    _aligned_centres(data, axes_of, full)
     chained = {f.key for f in sheet_checks._hole_references(data)}  # noqa: SLF001 - hole_no_reference says it already
     out: list[Finding] = []
     for hole in ctx.holes:
@@ -171,6 +172,40 @@ def _partly_located(data: ReviewInput) -> list[Finding]:
         text += ask_reference(ctx, {hole.index})
         out.append(Finding("hole_partly_located", "warning", text, ids, key=sheet_checks.hole_key([hole])))
     return out
+
+
+ALIGNED_MM = 0.1  # two hole centres this close across a dimension share that coordinate
+
+
+def _aligned_centres(data: ReviewInput, axes_of: dict[int, set[str]], full: set[int]) -> None:
+    """A bolt pattern is dimensioned centre to centre: a distance between two holes along x also places the second one
+    along y when their centres share y (a row) and the first is located along y -- the dimension runs along the row, and
+    the row's position is the first hole's. Adds those axes to ``axes_of``, until nothing more follows, so a pattern
+    located from one corner is not called partly located hole by hole."""
+    ctx = data.ctx
+    by_index = {h.index: h for h in ctx.holes}
+    plane_of = {h.index: _plane_axes(h) for h in ctx.holes}
+
+    def known(index: int) -> set[str]:
+        return set(plane_of[index] or ()) if index in full else axes_of.get(index, set())
+
+    links = [(m.axis, a, b) for m in _measure(data) for a in m.holes[0] for b in m.holes[1] if a != b]
+    changed = True
+    while changed:
+        changed = False
+        for axis, a, b in links:
+            ha, hb = by_index.get(a), by_index.get(b)
+            plane = plane_of.get(a)
+            if ha is None or hb is None or not plane or plane != plane_of.get(b):
+                continue
+            for other in plane - {axis}:
+                at = "xyz".index(other)
+                if abs(ha.centre[at] - hb.centre[at]) > ALIGNED_MM:
+                    continue
+                for source, target in ((a, b), (b, a)):
+                    if other in known(source) and other not in known(target) and target not in full:
+                        axes_of.setdefault(target, set()).add(other)
+                        changed = True
 
 
 def _ok(data: ReviewInput, spec: dict[str, object]) -> bool:

@@ -59,6 +59,44 @@ def _footprint(ctx: Context) -> list[rules.Rect]:
     return out  # type: ignore[return-value]
 
 
+def _view_boxes(ctx: Context) -> list[rules.Rect]:
+    """The rectangles of the views alone (no dimension strips): what the part itself takes of the sheet."""
+    boxes: list[rules.Rect] = list(ctx.extras.get("view_boxes", [])) or [v.box for v in ctx.views.values()]
+    boxes += [v.box for v in ctx.extras.get("sections", {}).values()]
+    boxes += [v.box for v in ctx.extras.get("views_extra", {}).values()]
+    return [tuple(b) for b in boxes]  # type: ignore[misc]
+
+
+def _fewer_views(ctx: Context) -> list[tuple[str, float]]:
+    """``(views=[...], scale)`` for each set of FEWER standard views the part could be drawn in on this paper, with the
+    largest standard scale the layout arithmetic gives it (fewest views dropped first): what to take off to make the views
+    larger. Empty for an assembly or when the size of the part is not known."""
+    import itertools  # noqa: PLC0415
+
+    import sheet_layout  # noqa: PLC0415 - the layout arithmetic that chose the scale in the first place
+
+    extent = ctx.extras.get("extent_mm")
+    names = [n for n in ctx.views if n in ("front", "top", "right")]
+    if extent is None or ctx.assembly is not None or "front" not in names:
+        return []
+    iso = "isometric" in ctx.extras.get("views_extra", {}) or len(ctx.extras.get("view_boxes", [])) > len(names)
+    now = {"top": "top" in names, "right": "right" in names, "iso": iso}
+    w, d, h = (float(v) for v in extent)
+    third = ctx.extras.get("angle") == "third"
+    found: list[tuple[int, str, float]] = []
+    held = [k for k, v in now.items() if v]
+    for size in range(len(held) - 1, -1, -1):
+        for keep in itertools.combinations(held, size):
+            chosen = ["front", *[k for k in ("top", "right", "iso") if k in keep]]
+            layout = sheet_layout.plan(
+                w, d, h, ctx.sheet.width, ctx.sheet.height, None, None, "iso" in keep, "top" in keep, "right" in keep,
+                third=third, iso_dims=(w, d, h),
+            )  # fmt: skip
+            found.append((len(chosen), "views=[" + ", ".join(chosen) + "]", layout.scale))
+    found.sort(key=lambda row: -row[0])
+    return [(what, scale) for _, what, scale in found]
+
+
 def _underused(data: ReviewInput) -> list[Finding]:
     """The views and their dimensions cover too little of the free drawing area (a larger standard scale or a smaller paper
     holds them), or sit in a corner with most of the room on one side. Style: listed and answerable, never holds an
@@ -86,6 +124,8 @@ def _underused(data: ReviewInput) -> list[Finding]:
         corner=ctx.assembly is None,
         scales=sheet_layout.STANDARD_SCALES,
         papers=papers,
+        views=_view_boxes(ctx),
+        fewer=_fewer_views(ctx),
     )
     if found is None:
         return []
@@ -97,6 +137,9 @@ def _underused(data: ReviewInput) -> list[Finding]:
     if found.paper is not None:
         fix_es.append(f"cabe en una hoja menor (template={found.paper})")
         fix_en.append(f"it fits a smaller sheet (template={found.paper})")
+    if found.fewer and found.fewer_scale is not None:
+        fix_es.append(f"con menos vistas ({found.fewer}) cabe la escala {fmt_scale(found.fewer_scale)}")
+        fix_en.append(f"with fewer views ({found.fewer}) the scale {fmt_scale(found.fewer_scale)} fits")
     if fix_es:
         advice = ctx.say("; ".join(fix_es), "; ".join(fix_en))
     else:
@@ -106,7 +149,16 @@ def _underused(data: ReviewInput) -> list[Finding]:
             "the layout is the automatic one and no larger standard scale or smaller sheet fits: if the gap is "
             "deliberate, answer with the reason (not_applies: <why>)",
         )
-    if found.reason == "small":
+    if found.reason == "small" and found.ink < rules.LOW_INK <= found.coverage:
+        text = ctx.say(
+            f"El bloque de vistas y cotas abarca la hoja ({ctx.num(found.block[0])} x {ctx.num(found.block[1])} mm de "
+            f"{ctx.num(found.area[0])} x {ctx.num(found.area[1])} mm), pero las vistas en sí ocupan solo el "
+            f"{ctx.num(round(found.ink * 100))} % del área de dibujo: la hoja desperdicia papel; {advice}.",
+            f"The block of views and dimensions spans the sheet ({ctx.num(found.block[0])} x {ctx.num(found.block[1])} mm of "
+            f"{ctx.num(found.area[0])} x {ctx.num(found.area[1])} mm), but the views themselves take only "
+            f"{ctx.num(round(found.ink * 100))}% of the drawing area: the sheet wastes paper; {advice}.",
+        )
+    elif found.reason == "small":
         text = ctx.say(
             f"Las vistas y sus cotas ocupan solo el {ctx.num(round(found.coverage * 100))} % del área de dibujo "
             f"({ctx.num(found.block[0])} x {ctx.num(found.block[1])} mm de {ctx.num(found.area[0])} x {ctx.num(found.area[1])} mm): "

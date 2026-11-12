@@ -60,8 +60,10 @@ def _rule(page: str, scale: float, rects: list[vr.Rect], corner: bool = True) ->
     )
 
 
-def test_the_a3_sheet_of_a_100_by_60_plate_at_1_to_1_is_balanced() -> None:
-    """The real example: the block (views and dimensions, 380 x 170 mm) centred in the area, a larger scale does not fit."""
+def test_the_block_of_a_100_by_60_plate_at_1_to_1_on_a3_spans_the_sheet_so_the_block_alone_is_balanced() -> None:
+    """The block (views and dimensions, 380 x 170 mm) centred in the area, a larger scale does not fit: judged by the block
+    alone the sheet is balanced. The views themselves are a fifth of the sheet: that is judged with their rectangles and the
+    fewer-view alternatives (``test_sheet_reqfacts``), and there that same sheet IS flagged."""
     assert _rule("A3", 1.0, [_centred(_area("A3"), 380.0, 170.0)]) is None
     assert _found("A3", 1.0, [_centred(_area("A3"), 380.0, 170.0)]) == []
 
