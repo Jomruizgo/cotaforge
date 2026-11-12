@@ -59,6 +59,8 @@ class PartFacts:
     rounds: list[RoundFace] = field(default_factory=list)
     bosses: list[Boss] = field(default_factory=list)
     sheet_metal: bool = False
+    keyways: int = 0  # slots with parallel walls along the axis of a cylindrical face (``sheet_keyway``)
+    thread_features: int = 0  # features named as a thread that no ``hole`` operation made (an external thread)
 
 
 # --- ids ------------------------------------------------------------------------------------------------------------------

@@ -56,7 +56,7 @@ async def make_shaft(cad: Cad) -> None:
     await cad.ok("op", name="hole", id="dowel", params=fitted)
     slot = [{"kind": "rect", "name": "k", "center": [0, 12], "width": 4, "height": 6}]
     await cad.ok("op", name="sketch", id="key_sk", params={"on": TOP, "entities": slot})
-    await cad.ok("op", name="cut", id="keyway", params={"sketch": "key_sk", "depth_mm": 6}, intent="keyway of the shaft")
+    await cad.ok("op", name="cut", id="slot1", params={"sketch": "key_sk", "depth_mm": 6}, intent="slot in the end of the shaft")
 
 
 def rows_of(text: str) -> dict[str, str]:
@@ -150,6 +150,7 @@ async def test_a_threaded_fitted_shaft_activates_measured_rows_that_only_the_eng
         out.say("create (shaft)", created)
         listing = rows_of(created)
         assert listing["req.thread"] == "MISSING" and listing["req.fit_class"] in ("MISSING", "met") and "req.keyway" in listing
+        assert "[measured]" in created.split("req.keyway")[1].splitlines()[0]  # the slot is found by its walls, not by its name
         assert "[measured]" in created.split("req.thread")[1].splitlines()[0]
         refused = await cad.err("export", action="pdf", path="eje.pdf")
         assert "req.thread" in refused and "req.keyway" in refused

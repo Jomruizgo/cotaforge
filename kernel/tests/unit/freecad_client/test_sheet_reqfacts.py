@@ -138,6 +138,21 @@ def test_a_keyway_is_named_by_the_feature_that_made_it() -> None:
     assert facts_of(titled(views_context([])), {"type": "overall"}, features=features)["keyways"] == 1
 
 
+def test_a_keyway_the_shape_shows_is_measured_and_the_name_is_the_fallback() -> None:
+    ctx = titled(views_context([]))
+    ctx.extras["facts"] = checks.PartFacts(keyways=1)
+    found = facts_of(ctx, {"type": "overall"})
+    assert found["keyways"] == 1 and found["keyways_measured"] == 1
+    named = facts_of(titled(views_context([])), {"type": "overall"}, features=[review.FeatureInfo("k", "cut", "keyway", ["f"])])
+    assert named["keyways"] == 1 and named["keyways_measured"] == 0  # by name: the agent may say why it does not apply
+
+
+def test_an_external_thread_is_a_feature_named_so_that_no_hole_made() -> None:
+    ctx = titled(views_context([]))
+    ctx.extras["facts"] = checks.PartFacts(thread_features=2)
+    assert facts_of(ctx, {"type": "overall"})["thread_features"] == 2
+
+
 # --- fix: a bolt pattern dimensioned centre to centre is located -----------------------------------------------------------------
 
 

@@ -46,6 +46,8 @@ FACT_NAMES = (
     "weld_marked_on_sheet",
     "weld_class_on_sheet",
     "keyways",
+    "keyways_measured",
+    "thread_features",
     "title_material",
     "title_general_tolerance",
     "title_scale",
@@ -176,7 +178,10 @@ def facts(data: Any) -> dict[str, int]:
         "weld_items": len(sheet_review._of(data, "weld")),
         "weld_marked_on_sheet": len(sheet_review._of(data, "weld")) + (1 if WELD_NOTE.search("\n".join(notes)) else 0),
         "weld_class_on_sheet": 1 if WELD_CLASS.search(printed) else 0,
-        "keyways": sum(1 for f in data.features if KEYWAY.search(f"{f.id} {f.label}")),
+        "keyways": (part.keyways if part is not None else 0)
+        or sum(1 for f in data.features if KEYWAY.search(f"{f.id} {f.label}")),  # by geometry, else by name
+        "keyways_measured": part.keyways if part is not None else 0,
+        "thread_features": part.thread_features if part is not None else 0,
         "title_material": 1 if material else 0,
         "title_general_tolerance": 1 if str(fields.get("general_tolerances", "")).strip() else 0,
         "title_scale": 1 if float(ctx.extras.get("main_scale") or 0.0) > 0 else 0,

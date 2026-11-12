@@ -102,6 +102,8 @@ def test_a_threaded_fitted_shaft_activates_its_rows_and_they_are_measured() -> N
     assert any("fit holes with no callout" in text for text in active["req.fit_class"].lacking)
     assert any("2 steps with no diameter dimension" in text for text in active["req.turned_part"].lacking)
     assert active["req.keyway"].state == dr.NEEDS_ANSWER and not active["req.keyway"].measured  # named, not measured
+    assert rows({**SHAFT, "keyways_measured": 1})["req.keyway"].measured  # by the shape of the part: measured
+    assert "req.thread" in rows({**PLATE, "thread_features": 1})  # an external thread, named so, activates the row
 
 
 def test_a_row_is_met_when_the_sheet_carries_what_it_needs() -> None:
