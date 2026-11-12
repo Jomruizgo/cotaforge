@@ -24,7 +24,7 @@ from typing import Any, ClassVar, TypeVar
 from pydantic import BaseModel, ValidationError
 
 import cotaforge.adapters.freecad.rpc as freecad_rpc
-from cotaforge.adapters.freecad import numberformat
+from cotaforge.adapters.freecad import external_thread, numberformat
 from cotaforge.adapters.freecad.fileunits import declared_length_unit
 from cotaforge.adapters.freecad.pathlimit import path_length_problem
 from cotaforge.adapters.freecad.rpc import (
@@ -94,6 +94,7 @@ from cotaforge.contract import (
     ExportDxfRequest,
     ExportMeshRequest,
     ExportRequest,
+    ExtensionRequest,
     ExtrudeRequest,
     FaceInfo,
     FaceRequest,
@@ -134,6 +135,7 @@ from cotaforge.contract import (
     OpenDocumentRequest,
     OpenDocumentResult,
     OperationResult,
+    OperationSpec,
     PersistentRef,
     PlaceComponentRequest,
     ProgressListener,
@@ -869,6 +871,18 @@ class FreeCADAdapter(Adapter):
     def set_design_attributes(self, request: SetDesignAttributesRequest) -> DesignAttributes:
         """Store them: a ``CotaforgeMaterial`` property on every live body and keys in ``Document.Meta``."""
         return self._call("set_design_attributes", request, DesignAttributes)
+
+    def extra_operations(self) -> tuple[OperationSpec, ...]:
+        """What FreeCAD offers beyond the common vocabulary: the cosmetic thread of a shaft end."""
+        return (external_thread.spec(),)
+
+    def external_thread(self, request: ExtensionRequest) -> OperationResult:
+        """The numbers of the size (major, pitch, basic minor) travel with it: the worker has no thread table of its own
+        for this, and the sheet reads them back from the record."""
+        numbers = external_thread.record(str(request.params["size"]))
+        return self._call(
+            "external_thread", request.model_copy(update={"params": {**request.params, **numbers}}), OperationResult
+        )
 
     def box(self, request: BoxRequest) -> OperationResult:
         return self._call("box", request, OperationResult)
