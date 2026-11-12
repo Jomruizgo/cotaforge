@@ -46,6 +46,7 @@ import ops_joints
 import ops_native
 import ops_primitives
 import ops_sheetmetal
+import ops_threads
 import overlap
 import persist
 import queries
@@ -80,6 +81,7 @@ MUTATING_METHODS = frozenset(
         "revolve",
         "sweep",
         "hole",
+        "external_thread",
         "linear_pattern",
         "circular_pattern",
         "chamfer",
@@ -277,6 +279,7 @@ class Worker:
             "revolve": lambda p: ops_features.revolve(d(p), p),
             "sweep": lambda p: ops_features.sweep(d(p), p),
             "hole": lambda p: ops_features.hole(d(p), p),
+            "external_thread": lambda p: ops_threads.external_thread(d(p), p),
             "linear_pattern": lambda p: ops_features.linear_pattern(d(p), p),
             "circular_pattern": lambda p: ops_features.circular_pattern(d(p), p),
             "chamfer": lambda p: ops_features.chamfer(d(p), p),
