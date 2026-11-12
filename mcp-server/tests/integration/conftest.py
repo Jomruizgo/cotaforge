@@ -73,7 +73,11 @@ async def running_server(
         yield Cad(session), init
 
 
-FINDING_LINE = re.compile(r"^  (?:warning|info) (\S+?)(?: \[[^\]]*\])?: ", re.M)
+FINDING_LINE = re.compile(r"^  (?:warning|info) (\S+?)(?: \[[^\]]*\])?(?: \(row [^)]*\))?: ", re.M)
+ROW_LINE = re.compile(r"^  \[(?:MISSING|NEEDS AN ANSWER)\] (req\.\S+) ", re.M)
+ORDER = {"by": "la prueba", "reason": "la prueba trata de otra cosa que este punto; el ingeniero lo ordena así"}
+"""What an engineer who orders a point closed says: a test about something else than the finished drawing plays him, so
+the measured points (which an agent may not dismiss on its own word) close like the rest."""
 QUESTION_LINE = re.compile(r"^  (q\.\S+): ", re.M)
 MEMORY_LINE = re.compile(r"^  (\S+) — recognize: ", re.M)
 
@@ -85,6 +89,12 @@ async def pending_points(cad: Cad, sheet: str | None = None) -> tuple[list[str],
     return FINDING_LINE.findall(text), QUESTION_LINE.findall(text), MEMORY_LINE.findall(text)
 
 
+async def pending_rows(cad: Cad, sheet: str | None = None) -> list[str]:
+    """The rows of the table of requirements of ``sheet`` that are missing or need an answer."""
+    arguments = {"sheet": sheet} if sheet else {}
+    return ROW_LINE.findall(await cad.ok("drawing", action="review", **arguments))
+
+
 async def finish_drawing(
     cad: Cad, sheet: str | None = None, reason: str = "no aplica: la prueba trata de otra cosa que este requisito"
 ) -> int:
@@ -94,12 +104,13 @@ async def finish_drawing(
     Memory entries are read first, as the server requires. Returns how many points it answered."""
     await cad.ok("memory", action="brief", drawing_review="propio", text="la prueba trata de otra cosa que la revisión")
     findings, questions, memory = await pending_points(cad, sheet)
+    rows = await pending_rows(cad, sheet)
     arguments = {"sheet": sheet} if sheet else {}
     for entry in memory:
         await cad.ok("memory", action="get", id=entry)
-    for point in [*findings, *questions, *memory]:
-        await cad.ok("drawing", action="answer", id=point, text=reason, **arguments)
-    return len(findings) + len(questions) + len(memory)
+    for point in [*findings, *questions, *memory, *rows]:
+        await cad.ok("drawing", action="answer", id=point, text=reason, **ORDER, **arguments)
+    return len(findings) + len(questions) + len(memory) + len(rows)
 
 
 @pytest.fixture
@@ -131,10 +142,11 @@ async def close_findings(
 ) -> int:
     """Answer only the findings of the CAD (they hold the export in every mode but ``ninguno``). Returns how many."""
     findings, _, _ = await pending_points(cad, sheet)
+    rows = await pending_rows(cad, sheet)
     arguments = {"sheet": sheet} if sheet else {}
-    for point in findings:
-        await cad.ok("drawing", action="answer", id=point, text=reason, **arguments)
-    return len(findings)
+    for point in [*findings, *rows]:
+        await cad.ok("drawing", action="answer", id=point, text=reason, **ORDER, **arguments)
+    return len(findings) + len(rows)
 
 
 @pytest.fixture(autouse=True)

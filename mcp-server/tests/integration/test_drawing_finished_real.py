@@ -65,11 +65,13 @@ async def make_plate(cad: Cad, dowel_fit: str | None = None) -> None:
 
 
 async def declare_references(cad: Cad) -> None:
-    """What the engineer says of this plate: it is symmetric across x (the sheet counts x from that plane by itself) but not
-    across y, so the positions along y are counted from the front face. Without a reference the default location asks."""
+    """What the engineer says of this plate: its design is symmetric (``symmetry=true``: the sheet counts x from the plane of
+    symmetry the shape has across x by itself; the shape is never taken for intent) but not across y, so the positions along
+    y are counted from the front face. Without a reference the default location asks."""
     faces = await cad.ok("inspect", action="faces", op="base")
     front = next(line.split()[0] for line in faces.splitlines() if "n(0, -1, 0)" in line)
     await cad.ok("drawing", action="add", items=[{"type": "datum", "id": "dC", "letter": "C", "face": front}])
+    await cad.ok("drawing", action="update", symmetry=True)
 
 
 class Transcript:
