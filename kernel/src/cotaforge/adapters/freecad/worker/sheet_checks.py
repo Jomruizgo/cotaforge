@@ -59,6 +59,9 @@ class PartFacts:
     rounds: list[RoundFace] = field(default_factory=list)
     bosses: list[Boss] = field(default_factory=list)
     sheet_metal: bool = False
+    keyways: int = 0  # slots with parallel walls along the axis of a cylindrical face (``sheet_keyway``)
+    keyway_slots: list[Any] = field(default_factory=list)  # the same slots with their faces (``sheet_keyway.Slot``)
+    thread_features: int = 0  # features named as a thread that no ``hole`` operation made (an external thread)
 
 
 # --- ids ------------------------------------------------------------------------------------------------------------------
@@ -220,17 +223,31 @@ def _toleranced_holes(data: Any) -> set[int]:
     return done
 
 
+def _called_holes(data: Any) -> set[int]:
+    """The holes some ``hole_dim`` calls out (a callout without a fit of its own prints the one the hole declared)."""
+    done: set[int] = set()
+    for spec in sheet_review._of(data, "hole_dim"):
+        try:
+            done |= {h.index for h in select_callout_holes(data.ctx, spec)}
+        except ItemError:
+            continue
+    return done
+
+
 def _fit_holes(data: Any) -> list[Any]:
     """A plain hole of a dowel / reamer size with no tolerance on its callout: a fit hole needs its class (H7) and, with
     ``hole_not_located``, its position. A hole that is not one of those sizes is never flagged here: the memory principle ``drawing-general-tolerance-declared``
     asks about bearing seats and the like."""
     ctx = data.ctx
     toleranced = _toleranced_holes(data)
+    called = _called_holes(data)
     out: list[Any] = []
     for stack in _stack_list(ctx):
         hole = stack[0]
         if hole.thread is not None or hole.index in toleranced:
             continue
+        if hole.fit and hole.index in called:
+            continue  # the hole operation declared its fit and a callout prints it: the class is on the sheet
         if not any(abs(hole.diameter - size) <= DOWEL_TOL_MM for size in DOWEL_SIZES_MM):
             continue
         name = " + ".join(sheet_review._label(h, ctx) for h in stack)
@@ -753,11 +770,10 @@ def judgement(data: Any) -> list[Question]:
     """The questions no program answers AND no drawing principle of the memory already asks, in the sheet's language. Views,
     sections, dimensions, tolerances and fabrication notes are the base set's ``dibujo-*`` principles (one question
     each is one too many: answering the same thing twice makes the answers rote). What is left has no counterpart:
-    callouts, line weights, the assembly and the sheet metal. Each is answered with ``applies: <how, here>`` or
-    ``no aplica: <why>``."""
+    callouts, line weights and the assembly. Each is answered with ``applies: <how, here>`` or ``no aplica: <why>``.
+    What a sheet must CARRY (the sheet metal's bends included) is the table of requirements of the server, not a question."""
     ctx = data.ctx
     say = ctx.say
-    facts: PartFacts | None = ctx.extras.get("facts")
     out = [
         Question(
             "q.callouts",
@@ -790,19 +806,7 @@ def judgement(data: Any) -> list[Question]:
                 ),
             )
         )
-    if facts is not None and facts.sheet_metal:
-        out.append(
-            Question(
-                "q.sheet_metal",
-                say(
-                    "¿Las líneas de doblez llevan sentido y ángulo («hacia abajo 90°»), el desarrollo sus cotas y el calibre "
-                    "está en una nota?",
-                    "Do the bend lines carry direction and angle ('down 90°'), does the flat pattern have its dimensions and "
-                    "is the gauge in a note?",
-                ),
-            )
-        )
-    return out
+    return out  # the sheet metal is a row of the table of requirements (``req.bent_sheet``), not a question here
 
 
 __all__ = [

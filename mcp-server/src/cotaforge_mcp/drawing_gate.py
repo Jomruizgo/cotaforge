@@ -29,6 +29,12 @@ honest and leaves the answers to every point in the sheet, where the engineer re
 
 The answers live in the sheet, inside the document, so they survive save, close and reopen. ``Aprobó`` in the title
 block is the engineer's: ``approve`` is a gate action like ``memory(approve)``.
+
+Besides the findings and the reviewer's remarks, the export waits for the REQUIREMENTS of the sheet
+(``drawing_requirements``: what the standards ask a sheet to carry, activated by what the part has): every row that applies
+is met or answered (``met: where on the sheet`` / ``does not apply: why``). The findings that are measurements and the rows
+the harness measured as applying cannot be dismissed with ``does not apply`` unless the engineer ordered it (``by``,
+``reason``): the answer is then marked with his name and his words. This holds in every mode but ``none``.
 """
 
 import math
@@ -50,6 +56,7 @@ from cotaforge.memory import MemoryEntry
 from pydantic import ValidationError
 
 from cotaforge_mcp import design_memory, recovery
+from cotaforge_mcp import drawing_requirements as reqs
 from cotaforge_mcp.reply import ToolError
 from cotaforge_mcp.session import Session
 
@@ -90,10 +97,19 @@ class Missing:
     """What to do now to get the review that is missing (empty when the review is there)."""
     remarks: list[tuple[str, DrawingRemark]] = field(default_factory=list)
     """``(who, remark)`` of the report that counts, without an answer."""
+    requirements: list[reqs.Requirement] = field(default_factory=list)
+    """The rows of the table of requirements that apply to this sheet and are neither met nor answered."""
 
     @property
     def count(self) -> int:
-        return len(self.findings) + len(self.questions) + len(self.memory) + len(self.remarks) + bool(self.next_steps)
+        return (
+            len(self.findings)
+            + len(self.questions)
+            + len(self.memory)
+            + len(self.remarks)
+            + len(self.requirements)
+            + bool(self.next_steps)
+        )
 
 
 # --- the setting --------------------------------------------------------------------------------------------------------
@@ -243,11 +259,130 @@ def missing(session: Session, sheet: DrawingSheetInfo, now: float | None = None)
     found = review_status(
         brief.drawing_review, brief.drawing_review_wait_min, sheet, clock() if now is None else now, brief.lang
     )
-    found.findings = [f for f in sheet.findings if f.blocking and f.answer is None]
+    rows = sheet_requirements(session, sheet)
+    found.requirements = [r for r in rows if not r.closed]
+    claimed = reqs.claimed_codes(rows)  # a row takes in its findings: they are shown and closed under it
+    found.findings = [
+        f for f in sheet.findings if f.blocking and not reqs.finding_closed(f) and f.code not in claimed
+    ]
     if brief.drawing_review == "own":
         found.questions = [q for q in sheet.questions if q.answer is None]
         found.memory = [e for e in design_memory.drawing_entries(session) if e.id not in sheet.answers]
     return found
+
+
+def sheet_requirements(session: Session, sheet: DrawingSheetInfo) -> list[reqs.Requirement]:
+    """The rows of the table of requirements that apply to ``sheet`` with their state (none when the CAD reports no
+    facts): the facts of the review, the findings it made, the answers the sheet holds and the intent file of the part."""
+    if not sheet.facts:
+        return []
+    intent = reqs.find_intent(session.settings.workspace, session.doc_name)
+    return reqs.evaluate(
+        dict(sheet.facts), sheet.findings, dict(sheet.answers), intent, {item.id for item in sheet.items}
+    )
+
+
+def determine(session: Session, info: DrawingSheetInfo) -> tuple[DrawingSheetInfo, list[reqs.Addition]]:
+    """The harness puts on the sheet what it is SURE the sheet needs: the rows whose whole content is already known from
+    the model or the intent file (callouts that print the declared thread and fit, the centre lines, a note with the
+    intent file's own words) are met by an item it adds itself, placed by the normal layout rules; the rows that need a
+    decision stay questions. Returns the sheet as it is after and what was added. Nothing in mode ``none``."""
+    if mode_of(session) == "none" or not info.facts or "annotate_drawing" not in session.capabilities.tools:
+        return info, []
+    adds = reqs.plan_additions(sheet_requirements(session, info), list(info.items))
+    if not adds:
+        return info, []
+    try:
+        session.adapter.annotate_drawing(
+            AnnotateDrawingRequest(
+                operation_id="drawing_auto", action="add", sheet=info.sheet, items=tuple(a.item for a in adds)
+            )
+        )
+    except (AdapterError, ValidationError):
+        return info, []  # the list says what is missing: the agent adds it
+    session.dirty = True
+    fresh = sheet_info(session, info.sheet, review=True)
+    if fresh is None:
+        return info, []
+    broken = {i.id for i in fresh.items if i.id in {a.item["id"] for a in adds} and i.status == "error"}
+    if broken:  # an item that cannot be drawn is not left on the sheet
+        session.adapter.annotate_drawing(
+            AnnotateDrawingRequest(operation_id="drawing_auto", action="remove", sheet=info.sheet, ids=tuple(sorted(broken)))
+        )
+        fresh = sheet_info(session, info.sheet, review=True) or fresh
+    return fresh, [a for a in adds if a.item["id"] not in broken]
+
+
+def added_lines(adds: list[reqs.Addition]) -> list[str]:
+    """What the harness added by itself, for the reply (empty: nothing)."""
+    if not adds:
+        return []
+    return [
+        "added automatically (the model or the intent file already says it; the drafter may move these items, and "
+        "removes one only with a reason: drawing(action=remove, items=[id], reason=)):",
+        *(f"  - {a.item['id']}: {a.what} (meets {', '.join(a.rows)})" for a in adds),
+    ]
+
+
+def hand_over(session: Session, sheet: str | None, items: list[Any]) -> list[str]:
+    """The agent adds a callout or centre lines of its own: the ones the harness added come off first (never two of
+    them on the sheet). Returns the line that says so."""
+    kinds = {i.get("type") for i in items if isinstance(i, dict)}
+    mine = {"hole_dim": reqs.CALLOUTS_ID, "view_lines": reqs.VIEW_LINES_ID}
+    wanted = [item_id for kind, item_id in mine.items() if kind in kinds]
+    if not wanted or "describe_drawing" not in session.capabilities.tools:
+        return []
+    info = sheet_info(session, sheet)
+    if info is None:
+        return []
+    there = [i for i in wanted if i in {item.id for item in info.items}]
+    if not there:
+        return []
+    session.adapter.annotate_drawing(
+        AnnotateDrawingRequest(operation_id="drawing_auto", action="remove", sheet=info.sheet, ids=tuple(there))
+    )
+    return [f"replaced the automatic {', '.join(there)} by yours"]
+
+
+def guard_removal(session: Session, sheet: str | None, ids: list[str], reason: str | None, by: str | None) -> list[str]:
+    """Items the harness added come off only with a reason, which is recorded (as the answer of the rows they met); if a
+    row was measured the engineer's order is needed too (by): the same rule as an answer. Returns the rows to record."""
+    auto = [i for i in ids if i.startswith(reqs.AUTO_PREFIX)]
+    if not auto:
+        return []
+    if not (reason and reason.strip()):
+        raise ToolError(
+            f"{', '.join(auto)} was added by the harness because the model or the intent file already says it: it is "
+            "removed only with a reason (reason=<why the sheet does not need it>), and the reason is recorded",
+            code="invalid_input",
+            field_name="reason",
+            usage='drawing(action="remove", items=["rq_callouts"], reason="why")',
+        )
+    info = sheet_info(session, sheet, review=True)
+    rows = [r for r in (sheet_requirements(session, info) if info is not None else []) if r.row.auto and any(reqs.owns(r.row, i) for i in auto)]
+    if any(r.model_measured for r in rows) and not (by and by.strip()):
+        raise ToolError(
+            MEASURED_REFUSAL.format(what=', '.join(auto), why=', '.join(r.why for r in rows if r.model_measured)),
+            code="measured_not_dismissable",
+            field_name="by",
+            usage=ANSWER_USAGE,
+        )
+    return [r.id for r in rows]
+
+
+def record_removal(session: Session, sheet: str | None, rows: list[str], ids: list[str], reason: str, by: str | None) -> None:
+    """The reason an automatic item came off is the answer of the rows it met (the engineer reads it in the review)."""
+    said = " ".join(reason.split())
+    for row in rows:
+        text = f"no aplica: {said} (automatic item {', '.join(i for i in ids if i.startswith(reqs.AUTO_PREFIX))} removed)"
+        who = by.strip() if by and by.strip() else "the drafter, with a reason"  # an intent file's note: his reason is enough
+        text += f" [removed by {who}]"
+        given = AnnotateDrawingRequest(
+            operation_id="drawing_answer", action="answer", sheet=sheet, id=row, verdict="not_applies", text=text, by=who
+        )
+        session.adapter.annotate_drawing(given)
+        recovery.note(session, given)
+    session.dirty = True
 
 
 def _recognise(entry: MemoryEntry) -> str:
@@ -261,7 +396,8 @@ def _verdict(answer: Any) -> str:
         if text.lower().startswith(prefix):
             text = text[len(prefix) :].strip()
             break
-    return f"{'APPLIES' if answer.verdict == 'applies' else 'DOES NOT APPLY'}: {text}"
+    by = f" (ordered by {answer.ordered_by})" if getattr(answer, "ordered_by", "") else ""
+    return f"{'APPLIES' if answer.verdict == 'applies' else 'DOES NOT APPLY'}: {text}{by}"
 
 
 def _remark_line(who: str, remark: DrawingRemark) -> str:
@@ -289,10 +425,14 @@ def review_lines(session: Session, sheet: DrawingSheetInfo) -> list[str]:
         warnings = sum(f.severity == "warning" for f in pending)
         tail = f", {len(done)} answered" if done else ""
         lines.append(f"review: {warnings} warning(s), {len(pending) - warnings} to confirm{tail}")
+    rows = sheet_requirements(session, sheet) if brief.drawing_review != "none" else []
+    owner = {c: r.id for r in rows for c in r.row.codes}
     for f in pending:
         refs = ", ".join([*f.items, *f.features])
-        lines.append(f"  {f.severity} {finding_id(f)}{' [' + refs + ']' if refs else ''}: {f.message}")
-    lines += _answered_lines(session, sheet, done)
+        under = f" (row {owner[f.code]})" if f.code in owner else ""
+        lines.append(f"  {f.severity} {finding_id(f)}{' [' + refs + ']' if refs else ''}{under}: {f.message}")
+    lines += _requirement_lines(rows, brief.lang)
+    lines += _answered_lines(session, sheet, done, rows)
     if brief.drawing_review == "own":
         lines += _question_lines(sheet)
         lines += _memory_lines(session, sheet)
@@ -307,7 +447,8 @@ def review_lines(session: Session, sheet: DrawingSheetInfo) -> list[str]:
     elif miss.count:
         lines.append(
             f"export of this sheet is REFUSED: {miss.count} pending ({len(miss.findings)} findings, {len(miss.questions)} "
-            f"questions, {len(miss.memory)} memory entries, {len(miss.remarks)} reviewer remarks"
+            f"questions, {len(miss.memory)} memory entries, {len(miss.remarks)} reviewer remarks, "
+            f"{len(miss.requirements)} requirements"
             f"{', the review itself' if miss.next_steps else ''}). Fix a point (it is gone on the next review) or answer it: {ANSWER_USAGE}"
         )
     else:
@@ -337,8 +478,60 @@ def _report_lines(sheet: DrawingSheetInfo, miss: Missing) -> list[str]:
     return lines
 
 
-def _answered_lines(session: Session, sheet: DrawingSheetInfo, done: list[Any]) -> list[str]:
+def _requirement_lines(rows: list[reqs.Requirement], language: str) -> list[str]:
+    """The table of requirements as it applies to this sheet: what it must carry, the state of each row, what to ask."""
+    if not rows:
+        return []
+    open_rows = sum(not r.closed for r in rows)
+    lines = [
+        f"this sheet must carry ({len(rows)} requirement(s) apply to this part, {open_rows} open; standards are named by "
+        "number, no clause is quoted until it is checked against the standard):"
+    ]
+    for r in rows:
+        lines += reqs.line(r, language)
+    if open_rows:
+        lines.append(
+            "  to close a row: ask what it lacks BEFORE you draw it (the designer through the channel, or the engineer), "
+            'put it on the sheet, then drawing(action=answer, id="req....", text="met: where on the sheet" | "does not '
+            "apply: why\"); a measured row only on the engineer's order (by=, reason=: his words)"
+        )
+    return lines
+
+
+def requirements_report(session: Session, sheet: str | None) -> str:
+    """``drawing(action=requirements)``: what the sheet must carry, row by row, and the questions to put before drawing: the
+    rows whose data is neither in the intent file nor on the sheet, each with a proposed answer (the engineer's language)."""
+    brief = _brief(session)
+    info = sheet_info(session, sheet, review=True)
+    if info is None:
+        raise ToolError(
+            'the document has no drawing sheet: drawing(action="create") makes one; its reply lists the requirements',
+            code="invalid_input",
+            field_name="sheet",
+        )
+    info, adds = determine(session, info)
+    return "\n".join([*added_lines(adds), *requirements_lines(session, info, brief.lang)])
+
+
+def requirements_lines(session: Session, info: DrawingSheetInfo, language: str) -> list[str]:
+    """The block ``requirements_report`` and ``drawing(action=create)`` print for one sheet."""
+    if not info.facts:
+        return [f"sheet {info.sheet}: this CAD reports no facts of the part and the sheet: no requirement is evaluated"]
+    rows = sheet_requirements(session, info)
+    intent = reqs.find_intent(session.settings.workspace, session.doc_name)
+    lines = [
+        f"sheet {info.sheet}: "
+        + (f"intent file {intent.path}" if intent.path else "no intent file found for this part (drawings/<part>-intent.md)")
+    ]
+    lines += _requirement_lines(rows, language) or ["no requirement applies to this sheet"]
+    return lines
+
+
+def _answered_lines(
+    session: Session, sheet: DrawingSheetInfo, done: list[Any], rows_in: list[reqs.Requirement] | None = None
+) -> list[str]:
     rows = [(finding_id(f), f.answer) for f in done]
+    rows += [(r.id, r.answer) for r in (rows_in or []) if r.answer is not None and not r.refused_answer]
     rows += [(q.id, q.answer) for q in sheet.questions if q.answer is not None]
     if mode_of(session) == "own":
         rows += [
@@ -418,6 +611,7 @@ def require_finished(session: Session, sheet: str | None, action: str) -> str | 
         return sheet  # export says it better
     if mode == "none":
         return info.sheet
+    info, _ = determine(session, info)  # what the harness is sure of is on the sheet that is written
     miss = missing(session, info)
     if not miss.count:
         return info.sheet
@@ -428,6 +622,10 @@ def require_finished(session: Session, sheet: str | None, action: str) -> str | 
     if miss.findings:
         block.append("  findings (fix them, or answer them):")
         block += [f"    - {finding_id(f)}: {_short(f.message)}" for f in miss.findings]
+    if miss.requirements:
+        block.append("  requirements the sheet must carry (met, or answered; drawing(action=requirements) lists them all):")
+        for requirement in miss.requirements:
+            block += reqs.line(requirement, _brief(session).lang)
     if miss.remarks:
         block.append(
             "  remarks of the reviewer (fix the sheet and answer corregido: ..., or answer no aplica: ...; a report stays valid through the fixes it asked for):"
@@ -614,7 +812,63 @@ def review_report(session: Session, sheet: str | None, by: str | None, items: li
 # --- answer and approve -------------------------------------------------------------------------------------------------
 
 
-def answer(session: Session, sheet: str | None, item_id: str | None, text: str | None) -> str:
+MEASURED_REFUSAL = (
+    "{what} was MEASURED by the harness ({why}): 'does not apply' is not accepted on the agent's word. Put it on the sheet "
+    "and answer 'met: where on the sheet'; if the ENGINEER orders that it does not apply, answer again with by=<his name> and "
+    "reason=<his words, quoted>: the answer is then marked with his name and he reads it in the review"
+)
+
+
+def _guard_answer(session: Session, sheet: str | None, item_id: str, verdict: str, ordered: bool) -> None:
+    """A row that is not active on this sheet cannot be answered; a ``does not apply`` on a row the harness measured, or on
+    a finding that is a measurement, is refused unless the engineer ordered it."""
+    if "describe_drawing" not in session.capabilities.tools:
+        return
+    info = sheet_info(session, sheet, review=True)
+    if info is None:
+        return
+    rows = {r.id: r for r in sheet_requirements(session, info)}
+    if item_id.startswith(reqs.PREFIX):
+        row = rows.get(item_id)
+        if row is None:
+            raise ToolError(
+                f"{item_id!r} is not a requirement that applies to sheet {info.sheet} now; the rows that apply: "
+                f"{', '.join(rows) or 'none'} (drawing(action=requirements) lists them)",
+                code="unknown_entry",
+                field_name="id",
+                usage=ANSWER_USAGE,
+            )
+        if verdict == reqs.NOT_APPLIES and row.measured and not ordered:
+            raise ToolError(
+                MEASURED_REFUSAL.format(what=row.id, why=row.why),
+                code="measured_not_dismissable",
+                field_name="text",
+                usage=ANSWER_USAGE,
+            )
+        return
+    finding = next((f for f in info.findings if finding_id(f) == item_id), None)
+    if (
+        finding is not None
+        and verdict == reqs.NOT_APPLIES
+        and finding.code in reqs.MEASURED_FINDINGS
+        and not ordered
+    ):
+        raise ToolError(
+            MEASURED_REFUSAL.format(what=item_id, why=finding.message),
+            code="measured_not_dismissable",
+            field_name="text",
+            usage=ANSWER_USAGE,
+        )
+
+
+def answer(
+    session: Session,
+    sheet: str | None,
+    item_id: str | None,
+    text: str | None,
+    by: str | None = None,
+    reason: str | None = None,
+) -> str:
     if not item_id or not text:
         raise ToolError(
             "answer needs id (from drawing(action=review)) and text",
@@ -634,6 +888,19 @@ def answer(session: Session, sheet: str | None, item_id: str | None, text: str |
             usage=ANSWER_USAGE,
         )
     verdict, said = design_memory.checked_answer(session, item_id if is_memory else None, text)
+    ordered = ""
+    if (by and by.strip()) or (reason and reason.strip()):
+        if not (by and by.strip()) or not (reason and reason.strip()):
+            raise ToolError(
+                "an answer the engineer ordered needs both by (his name) and reason (his words, quoted)",
+                code="invalid_input",
+                field_name="by",
+                usage=ANSWER_USAGE,
+            )
+        ordered = by.strip()
+        said = f"{said} [ordered by {ordered}: «{' '.join(reason.split())}»]"
+    if not is_memory:
+        _guard_answer(session, sheet, item_id, verdict, bool(ordered))
     given = AnnotateDrawingRequest(
         operation_id="drawing_answer",
         action="answer",
@@ -642,6 +909,7 @@ def answer(session: Session, sheet: str | None, item_id: str | None, text: str |
         verdict=verdict,  # type: ignore[arg-type]
         text=said,
         memory=is_memory,
+        by=ordered or None,
     )
     result = session.adapter.annotate_drawing(given)
     recovery.note(session, given.model_copy(update={"sheet": result.sheet}))  # outside the document too: a crash
@@ -649,7 +917,7 @@ def answer(session: Session, sheet: str | None, item_id: str | None, text: str |
     if is_memory:  # the same answer closes the entry at the milestone: memory(review) does not ask it a second time
         stage = design_memory.current_stage(session).value
         session.mem.answers[item_id] = {"verdict": verdict, "text": said, "stage": stage}
-    kind = "memory entry" if is_memory else "point of the review"
+    kind = "memory entry" if is_memory else "requirement" if item_id.startswith(reqs.PREFIX) else "point of the review"
     return (
         f"answered: {item_id} ({'applies' if verdict == 'applies' else 'does not apply'}) on sheet {result.sheet} "
         f"({kind}); it is kept in the sheet and the engineer reads it in the review. drawing(action=review) lists what "

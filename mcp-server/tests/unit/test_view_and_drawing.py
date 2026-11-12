@@ -151,6 +151,7 @@ def test_the_drawing_tool_only_exists_when_the_cad_can_make_sheets(make: MakeSes
         "list",
         "read",
         "review",
+        "requirements",
         "capture",
     ]
     export = input_schema(TOOLS_BY_NAME["export"], with_sheets)["properties"]["action"]["enum"]

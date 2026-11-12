@@ -77,6 +77,8 @@ class DrawingFake(FakeAdapter):
         self.refuse: set[str] = set()
         self.findings: tuple[Any, ...] = ()  # what a review of any sheet finds
         self.questions: tuple[Any, ...] = ()  # the questions of judgement of any sheet
+        self.facts: dict[str, int] = {}  # what the review counts for the table of requirements (empty: none)
+        self.on_add: Any = None  # called with the items an add stored: a test makes the sheet carry what they print
         self.pdf: bytes | None = None  # the bytes the next PDF export writes (default: a sound one-page PDF)
         self.output: dict[str, Any] = {}  # fields of the capture / export result (views, native, unrendered...)
         self.rebuilt: dict[str, tuple[str, ...]] | None = None  # kept / unresolved / discarded of the next create
@@ -187,10 +189,12 @@ class DrawingFake(FakeAdapter):
         if request.action == "answer":
             known = {f.id or f.code for f in self.findings} | {q.id for q in self.questions}
             known |= {r.id for rep in sheet["reports"].values() for r in rep["remarks"]}
-            if not request.memory and request.id not in known:
+            if not request.memory and request.id not in known and not request.id.startswith("req."):
                 message = f"sheet {name} has no finding or question {request.id!r} now"
                 raise AdapterError(ErrorInfo(code=ErrorCode.invalid_request, message=message, recoverable=True))
-            sheet.setdefault("answers", {})[request.id] = DrawingAnswer(verdict=request.verdict, text=request.text)
+            sheet.setdefault("answers", {})[request.id] = DrawingAnswer(
+                verdict=request.verdict, text=request.text, ordered_by=request.by or ""
+            )
             return self._drawing_result(name, changed=(request.id,))
         if request.action == "approve":
             sheet["approved_by"] = request.by
@@ -223,6 +227,8 @@ class DrawingFake(FakeAdapter):
             sheet["items"].append({**item, "id": item.get("id") or f"{item['type'][0]}{sheet['next']}"})
             added.append(sheet["items"][-1]["id"])
             sheet["next"] += 1
+        if self.on_add is not None:
+            self.on_add(self, [i for i in sheet["items"] if i["id"] in added])
         return self._drawing_result(name, refused=tuple(refused), changed=tuple(added))
 
     def describe_drawing(self, request: Any) -> Any:
@@ -281,6 +287,7 @@ class DrawingFake(FakeAdapter):
                     if request.review
                     else (),
                     answers=answers(n),
+                    facts=dict(self.facts) if request.review else {},
                     approved_by=self.drawings[n].get("approved_by", ""),
                     edits=self.drawings[n]["edits"],
                     reports=reports(n),

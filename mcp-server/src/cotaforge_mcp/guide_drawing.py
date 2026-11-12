@@ -9,11 +9,12 @@ from collections.abc import Collection
 SHEET_RULES = (
     "drawing(action=create, template=A4|A3|A2|A1|A0|Letter, angle=first|third, title?, author?, date?, material?, "
     "scale?, language?, drawing_number?, revision?, general_tolerances?, company?, title_block?, sheet?, body?, "
-    "isometric?, views?, projection?, fresh?) builds a sheet "
+    "isometric?, views?, projection?, symmetry?, fresh?) builds a sheet "
     "(an existing sheet of that name is rebuilt keeping its items, answers and reviewer; fresh=true starts over): "
     "front, top and right views (first angle by "
     "default) plus an isometric one, the overall width / height / depth dimensions and the title block (ISO 7200, in "
-    "project language by default; language=es|en changes). Paper and projection are the engineer's choice. Title "
+    "project language by default; language=es|en changes). Projection is the engineer's choice; no paper stated: "
+    "it is chosen from the part (the reply says). Title "
     "defaults to the document name, date to today, material to "
     "the document's (it follows doc set_material while you leave it empty), "
     "general_tolerances to ISO 2768-mK. scale is a ratio (1:2, 2:1, 0.5); omitted, the largest standard one that fits. "
@@ -77,9 +78,8 @@ WINDOW_LINE = (
     "views (projection=techdraw), the overall dimensions and the title block / revision texts are TechDraw's own "
     "objects; every item you add (callouts, dimensions, datum triangles, GD&T frames, finish symbols, tables, notes, "
     "sections, thread arcs) is a TechDraw SYMBOL object made from the same drawing the PDF is written from, at the "
-    "same place, so the window and the PDF/DXF show the same thing (drawing(action=review) says window_differs if "
-    "they ever do not). The window is for watching: edit the sheet only through drawing(...); a change made by hand "
-    "in the window is put back by the next add, remove or export."
+    "same place, so the window and the PDF/DXF show the same thing. The window is for watching: edit the sheet only "
+    "through drawing(...); a change made by hand in the window is put back by the next add, remove or export."
 )
 
 ITEM_INTRO = (
@@ -240,7 +240,7 @@ ITEM_LINES = (
 
 DONE_LINES = (
     "A DRAWING IS FINISHED when somebody other than the agent that drew it has looked at the sheet and every point they "
-    "and the CAD raised is closed. The harness does not decide that a drawing is good: it forces the review. "
+    "and the CAD raised is closed (the harness forces the review, it does not judge the drawing). "
     "export(action=pdf|dxf) of a sheet is REFUSED until then, and the refusal says which case the sheet is in, what to "
     "do next and what is missing. One drawing = one sheet = one file (a bigger paper if it does not fit; several drawings "
     "are independent files). There is no draft PDF: the draft is the TechDraw sheet of the document. The DXF of a face cut "
@@ -259,10 +259,9 @@ DONE_LINES = (
     "(or «sin observaciones») and you record them with drawing(action=review_report, sheet, by=engineer, items=[...]), "
     "zero items allowed; what he selects on the sheet you read with view(action=selection) and put in `where`. (3) "
     "«manufacturer», or no answer in time: review_choice by=fabricator (if he said it) and launch the agent `fabricator` "
-    "for that sheet. If the timer wakes you and he already answered, ignore it. The server keeps the clock, not the "
-    "timer: the export says which case applies and how many minutes are left. The choice belongs to the SHEET: once made "
-    "(or the manufacturer assumed) it stays through the changes of the sheet; asking again only says who reviews. Modes "
-    "fabricator / engineer skip the choice.",
+    "for that sheet. If the timer wakes you and he already answered, ignore it (the server keeps the clock). The choice "
+    "belongs to the SHEET: once made "
+    "(or the manufacturer assumed) it stays through the changes of the sheet; asking again only says who reviews.",
     "THE FABRICATOR AGENT is a machinist / welder / assembler who gets ONLY the drawing (the sheet image, the texts it "
     "prints, the title block: drawing read and capture), never the model. It records its report with drawing(action="
     "review_report, sheet, by=fabricator, items=[{kind: missing|ambiguous|costly|other, where, text, fix}]): can it make "
@@ -270,54 +269,62 @@ DONE_LINES = (
     "item gets an id (fab1.1, eng2.3...). EVERY item of the latest report must be answered before the export: FIX the "
     "sheet and answer drawing(action=answer, id, text='corregido: <what you changed>'), or text='no aplica: <why it is not "
     "a problem>'. If a manufacturer reads it wrong, another will: fix it or add a note. The report stays valid through "
-    "the fixes it asked for (the export shows 'reviewed at edit 3, sheet now at edit 5': it gates nothing). A NEW review "
-    "only if the engineer asks or you decide the sheet changed beyond the remarks: launch the reviewer again (or ask "
-    "the engineer); the newest report supersedes. The server cannot prove WHO recorded a report (any agent can call the tool): record only the "
-    "report you got, never one of your own.",
-    "FINDINGS, found by the CAD on the real geometry and the real sheet, hold the export in every mode but ninguno: "
-    "hole_not_located (a hole with no position), hole_no_reference (positioned only from other holes: start from a face, "
-    "an edge or datum_dims), fit_hole_no_tolerance (a fit hole needs hole_dim fit='H7' "
-    "and its position), round_no_dimension, centre_mark_missing / cylinder_no_axis (add view_lines), "
-    "text_over_part, notes_* (material, edges, heat treatment, coating, roughness, marking), "
-    "material_title_block_empty | material_inconsistent, hidden_dense, hidden_feature_no_section (use a section), "
-    "thread_no_representation, tolerance_finer_than_it6, and more. They are checked again on every export. "
-    "Close one by FIXING it (it is gone on the next review) or by ANSWERING it.",
-    "ANSWER: drawing(action=answer, sheet?, id=<id from review>, text='applies: <how, in this part>' | 'no aplica: <why this "
-    "part does not need it>'), one id per call, at least three words after the colon (not 'yes', not 'ok'). The answers are stored in the "
-    "sheet inside the document (they survive save, close and reopen) and the ENGINEER READS THEM: a 'no aplica' with no "
-    "real reason is a false statement to him, never a way through. An answer is NOT printed on the drawing: what the "
-    "shop must read (material, 'sin tratamiento térmico', edges) goes in a note item.",
-    "IN propio you ask yourself: (1) the QUESTIONS OF JUDGEMENT no memory principle covers (q.callouts, q.line_weights; "
-    "q.assembly, q.sheet_metal where they apply: views, sections, dimensions, tolerances and fabrication notes are the "
-    "drawing principles of the memory, asked once) and (2) the MEMORY ENTRIES the export calls for: read each with "
-    "memory(action=get, id) BEFORE answering it; answering one also closes it at memory(review). In the other modes the "
-    "reviewer uses the entries as his checklist; you are not asked them.",
+    "the fixes it asked for. A NEW review only if the engineer asks or you decide the sheet changed beyond the remarks: "
+    "launch the reviewer again (or ask the engineer); the newest report supersedes. The server cannot prove WHO recorded a "
+    "report (any agent can call the tool): record only the report you got, never one of your own.",
+    "FINDINGS, found by the CAD on the real geometry and sheet, hold the export in every mode but none and are checked "
+    "again on every export: FIX one (it is gone on the next review) or ANSWER it. A measurement (hole_not_located, a thread "
+    "with no callout, an item that cannot be drawn...) cannot be answered 'no aplica' on your word: only the engineer's "
+    "order closes it (by=<him>, reason=<his words>). One that stands for a missing requirement is listed under its row.",
+    "REQUIREMENTS: what the standards ask a sheet to carry is a table, not prose: drawing(action=requirements) (also in "
+    "create and review) lists the rows that apply to THIS part (thread, fits, tolerance, title block, texture, edges, treatments, "
+    "locations, welds, parts list...), each added automatically, met, or a question, with its standard. What the model or "
+    "the intent file already says the HARNESS adds (items rq_...: callouts with the declared thread and fit, centre lines, "
+    "a note in the designer's words): move them, remove one only with reason=. Ask what needs a decision BEFORE drawing it "
+    "(the designer through the channel or the engineer, one question at a time, with the proposed answer). The export waits until each "
+    "row is met or answered ('met: where on the sheet' | 'no aplica: why'); one the harness measured (a thread exists, a "
+    "fit is declared, the intent file says so) is dismissed only on the engineer's order (by=, reason=).",
+    "ANSWER: drawing(action=answer, sheet?, id=<id from review>, text='applies: <how, in this part>' | 'no aplica: <why>'), "
+    "one id per call, at least three words after the colon. The answers are stored in the sheet and the ENGINEER READS "
+    "THEM: a 'no aplica' with no real reason is a false statement to him. What the shop must read goes in a note item.",
+    "IN own you ask yourself: (1) the QUESTIONS OF JUDGEMENT no memory principle covers (q.callouts, q.line_weights; "
+    "q.assembly where it applies) and (2) the MEMORY ENTRIES the export calls for: read each with memory(action=get, id) "
+    "BEFORE answering it (answering one also closes it at memory(review)). In the other modes the reviewer uses the entries "
+    "as his checklist.",
     "APPROVAL: 'Aprobó' in the title block is the engineer's and only he fills it: drawing(action=approve, sheet=, by="
-    "<him>, reason=<his words, quoted>), only on his explicit instruction (like memory approve). Any later change of the "
+    "<him>, reason=<his words, quoted>), only on his explicit instruction. Any later change of the "
     "sheet (an item, a view, update) empties it again: he approved that drawing, not the next one.",
 )
 
 QUALITY_LINES = (
+    "WHAT THE SHEET MUST CARRY is not in this guide: drawing(action=requirements) lists the rows of the table that apply "
+    "to THIS part, each met, missing or needing an answer, with the question to ask (create and review print it; the "
+    "export waits for it). This guide is HOW it is drawn.",
     "THE QUALITY FLOOR (every sheet, without asking): reference drawings set a floor, not a style. Paper "
     "(template=A4|A3|A2|A1|A0|Letter), projection (angle=first|third: the symbol in the title block, the views "
     "placed the other way round) and the title block are the engineer's choice; what a machinist can make the part "
     "from is not.",
+    "TITLE BLOCK: the template is a TechDraw template kept in the document (FreeCAD edits the same fields). "
+    'create or update(title_block={"document_type": ..., "legal_owner_2": ..., "fixed_note_1": ...}) sets '
+    "any field by name (document_type, drawing_number, fixed_note_1..3: the standing statements beside the "
+    "projection symbol); scale, sheet number and the revision rows are the sheet's own. A logo is not supported.",
     "LOCATION OF THE HOLES: a sheet whose part has holes carries the item loc (datum_dims with auto=true) from "
     "create on. A number on a sheet must have a function: loc never counts from the corner of the part's box. In each "
     "direction of the view it counts from a reference the sheet HAS: (1) the datums you declared (the first datum items "
     "whose face is seen edge-on across x and across y: baseline dimensions stacked outside the part 7 mm apart, nearest "
     "first, one per distinct value, a centre line joining the holes that share it), else (2) the part's plane of "
-    "symmetry across that direction (measured on the shape): a hole on it has no dimension at all, the holes either "
-    "side are ONE dimension between each pair, and the plane is drawn as a centre line. With neither it draws nothing "
+    "symmetry across that direction, ONLY when the intent declares the part symmetric (symmetry=true on create / "
+    "update; never from the shape): a hole on it has no dimension at all, the holes either side are ONE dimension "
+    "between each pair, and the plane is drawn as a centre line. With neither it draws nothing "
     "for that direction and says so (loc is a warning: 'no reference along x ...'; the review says hole_not_located / "
     "hole_partly_located with the same words): ASK THE ENGINEER which face or edge the positions are counted from "
     "(do not pick one for him), declare it with a datum item (face) and the location follows. Holes you locate "
-    "yourself (a datum_dims of your own, a dim distance on a hole) are left to you. drawing(action=remove, "
+    "yourself are left to you. drawing(action=remove, "
     'items=["loc"]) takes the default off for good (the review then asks for the positions).',
     "REPEATED DIMENSIONS: the same size in two views (ISO 129: the length 50 on the front view and again on a section) "
     "is flagged dimension_repeated (info, it does not hold the export): keep the one in the view that shows it best.",
     "WHERE A DIMENSION STANDS: on the side of the feature it measures, where its extension lines cross the least of the "
-    "part (a spigot at the bottom is dimensioned below). review says dimension_side (no hold) with the side (side=). On a "
+    "part. review says dimension_side (no hold) with the side (side=). On a "
     "short dimension whose text and two arrows do not fit the arrows go outside: dim arrows=auto|inside|outside "
     "(arrows_inside_short). A text over another dimension's text, line, arrow or extension line is a collision, accepted "
     "only when no free place exists (the finding names the free side) and then answered as a deliberate choice "
@@ -325,14 +332,12 @@ QUALITY_LINES = (
     "A VIEW THAT ONLY CARRIES A CUTTING LINE goes when another view that stays sees the plane edge-on and can carry it "
     "(a turned part: the line on the circular view, the section carries diameters and lengths); so does a view whose "
     "dimensions other views all repeat. review says view_redundant (no hold) with the view to drop.",
-    "THE SCHEME OF EVERY DIMENSION (lengths, steps, slots, shoulders, faces, angles, hole positions) tells the shop what is "
-    "critical: from a datum, that distance; a chain, each link; between two features, their relation. Choose it by what "
-    "mates or locates there, not by habit, and state it; when the handoff file does not say which relation is critical "
-    "and from what, ask the designer.",
-    "ASSEMBLY OR WELDED SHEET: a sub-part with its own sheet gets here only the dimensions that place it (position and "
-    "orientation from the assembly datums), the weld symbols and what is done after joining (a bore reamed after "
-    "welding, with its note); its form dimensions stay on its own sheet, never repeated. A feature machined after "
-    "welding is drawn on the welded sheet, and the part sheet shows it as before welding (with the allowance).",
+    "THE SCHEME OF EVERY DIMENSION tells the shop what is critical (from a datum: that distance; a chain: each link; "
+    "between two features: their relation): chosen by what mates or locates there, stated, and asked when the intent file "
+    "does not say.",
+    "ASSEMBLY OR WELDED SHEET: a sub-part with its own sheet gets here only the dimensions that place it and what is done "
+    "after joining (a bore reamed after welding, with its note); its form dimensions stay on its own sheet. A feature "
+    "machined after welding is drawn on the welded sheet; the part sheet shows it as before welding (with the allowance).",
     "A SECTION WITH SEVERAL BODIES: tell the bodies apart by hatch ANGLE (45 against 135 degrees) and/or SPACING, never by "
     "PATTERN: it is the material's. The harness alternates the angle of touching bodies (review: hatch_same_as_neighbour, "
     "hatch_pattern_differs).",
@@ -340,23 +345,17 @@ QUALITY_LINES = (
     "clean, never crosses another leader, cuts the outline once, and its text lies outside the part, off the "
     "dimension lines; review says leader_crossing / leader_crosses_part when it cannot. Dowel or registration holes: "
     "hole_dim fit=H7 dowel=true -> ◎ 4× Ø6 H7 (+0.012/0) through and a ring round each hole; review asks "
-    "(dowel_unmarked: it does not hold the export; q.callouts, asked in drawing_review=own, covers it) for a through hole of 25 mm or less with a hole fit of grade 8 or finer.",
+    "(dowel_unmarked: no hold) for a through hole of 25 mm or less with a hole fit of grade 8 or finer.",
     "NOTES: numbered in the NOTAS block, the thickness first ('19 de espesor': the sheet writes it when it has ONE "
     "standard view), yours in the order added, the ISO 286 transcription note last (it goes in the block, never "
-    "floating). Part-specific fabrication notes ('fabricar de lámina rectificada', 'tratamiento térmico...') go there "
-    "too. A note that sends the reader to the title block ('material según rótulo') while that field is empty is "
-    "material_title_block_empty: set the material (doc set_material) or drop the note.",
-    "VIEWS OF A REVOLVED PART: without views, a body of revolution about x, y or z is not drawn in three orthographic "
-    "views: with a bore it gets the view that looks along its axis and a section A-A through the axis (item section "
-    "holes=axis), solid the one view that shows its profile; the reply says it chose, and views=[front, top, right, "
-    "iso] gives all four. Any other part gets the four. A rebuild without views keeps the sheet's.",
+    "floating). Part-specific fabrication notes go there too (which ones the part needs: the requirements).",
+    "VIEWS OF A REVOLVED PART: without views, a body of revolution about x, y or z gets, with a bore, the view along its "
+    "axis and a section A-A through it (item section holes=axis), solid the one view that shows its profile; the reply "
+    "says it chose, and views=[front, top, right, iso] gives all four. Any other part gets the four. A rebuild without "
+    "views keeps the sheet's.",
     'ONE VIEW: a plate or flat part whose holes go through its thickness needs one view: create(views=["top"]) (or '
     "remove_view front on a sheet that has one other standard view). review says single_view_enough (no hold: the memory principle drawing-sufficient-views covers it) when the "
     "other views add nothing. The sheet then gives width and height on that view and the thickness as a note.",
-    "TITLE BLOCK: the template is a TechDraw template kept in the document (FreeCAD edits the same fields). "
-    'create or update(title_block={"document_type": ..., "legal_owner_2": ..., "fixed_note_1": ...}) sets '
-    "any field by name (document_type, drawing_number, fixed_note_1..3: the standing statements beside the "
-    "projection symbol); scale, sheet number and the revision rows are the sheet's own. A logo is not supported.",
 )
 
 WELD_LINE = (
@@ -367,6 +366,12 @@ WELD_LINE = (
     "(sides=both) already means both sides of the joint; a second weld item on the same joint is a duplicate "
     "(weld_duplicate). A welded sheet carries a parts list (the weldment cut list) and a balloon per body, numbered as "
     "the list: review says weld_list_missing, item_without_balloon and balloon_not_in_list."
+)
+
+KEYWAY_LINE = (
+    "keyway_dims (no fields): the dimensions of the keyways the walls of the part show -- width, depth as the standards give "
+    "it (d - t1 on a shaft, d + t2 in a hub), length, position -- as dim items <id>_w, _t, _l, _p. The harness adds them "
+    "itself (rq_keyway); only the width's fit class is asked."
 )
 
 SPANISH_LINE = (
@@ -456,9 +461,8 @@ INDEX_LINE = (
     "dimensions, position dimensions, tolerances | drawing:marks datums, GD&T frames, finish, notes, hidden / centre "
     "lines | drawing:views section, detail, auxiliary view, review | drawing:assembly parts list, balloons, exploded | "
     "drawing:output how export(action=pdf|dxf) writes the sheet, DXF layers, line weights, projection=hlr | "
-    "drawing:quality the quality floor: default location of the holes, callouts, dowels, notes, title block, one view, "
-    "papers and third angle | "
-    "drawing:done WHEN A DRAWING MAY BE EXPORTED: who reviews it, answer, approve. Look at the "
+    "drawing:quality the quality floor: location of the holes, callouts, dowels, notes, title block, one view | "
+    "drawing:done WHEN A DRAWING MAY BE EXPORTED: requirements, who reviews it, answer, approve. Look at the "
     "sheet (drawing capture) before you write it."
 )
 
@@ -468,7 +472,7 @@ def drawing_text(tools: Collection[str], part: str = "") -> str:
     if part:
         groups = {
             TOPIC_ITEMS: [ITEM_INTRO[0], *ITEM_LINES[0:4]],
-            TOPIC_MARKS: [*ITEM_LINES[4:9], WELD_LINE],
+            TOPIC_MARKS: [*ITEM_LINES[4:9], WELD_LINE, KEYWAY_LINE],
             TOPIC_VIEWS: [*ITEM_LINES[9:12], ITEM_LINES[13]],
             TOPIC_ASSEMBLY: [ITEM_LINES[12]],
             TOPIC_OUTPUT: [SHEET_RULES[2], PROJECTION_LINE, VIEW_LINE],

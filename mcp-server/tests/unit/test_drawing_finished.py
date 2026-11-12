@@ -129,8 +129,8 @@ def test_an_answer_closes_a_point_and_the_export_goes_through_when_all_are_close
     fake.findings, fake.questions = (NOT_LOCATED,), (CALLOUTS,)
     call.err("export", action="pdf")
     call.ok(
-        "drawing", action="answer", id="hole_not_located:@20,20,8", text="no aplica: es un agujero de paso sin ajuste"
-    )
+        "drawing", action="answer", id="hole_not_located:@20,20,8", text="corregido: ubicado con datum_dims en la vista top"
+    )  # a hole with no position is a measurement: only a fix closes it (see test_drawing_requirements)
     call.ok("drawing", action="answer", id="q.callouts", text="applies: una placa con un solo tipo de agujero")
     pending = call.err("export", action="pdf")
     assert "- hole_not_located" not in pending and "- q.callouts" not in pending and "- plano-del-taller" in pending

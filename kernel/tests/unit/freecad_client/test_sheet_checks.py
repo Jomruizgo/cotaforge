@@ -68,6 +68,14 @@ def test_a_plain_hole_of_a_dowel_size_asks_for_its_fit() -> None:
     assert 'fit="H7"' in named[0].message
 
 
+def test_a_callout_prints_the_fit_the_hole_declared_so_it_closes_the_finding_too() -> None:
+    declared = [sc.HoleInfo(0, (20.0, 20.0, 8.0), (0.0, 0.0, -1.0), 6.0, 8.0, True, ("face:h0",), None, True, None, "H7", "precision", 8)]
+    bare = run_review(views_context(declared), {"type": "overall"})
+    assert found("fit_hole_no_tolerance", bare)  # nothing calls it out yet
+    called = run_review(views_context(declared), {"type": "overall"}, {"type": "hole_dim", "all": True})
+    assert found("fit_hole_no_tolerance", called) == []
+
+
 def test_a_toleranced_callout_closes_the_fit_finding() -> None:
     findings = run_review(views_context(dowels()), {"type": "overall"}, {"type": "hole_dim", "all": True, "fit": "H7"})
     assert found("fit_hole_no_tolerance", findings) == []
@@ -333,7 +341,7 @@ def test_the_questions_of_judgement_keep_only_what_no_memory_principle_asks_and_
     data = review.ReviewInput([], {}, ctx, ctx.sheet)
     assert [q.id for q in checks.judgement(data)] == base
     ctx.extras["facts"] = checks.PartFacts(sheet_metal=True)
-    assert [q.id for q in checks.judgement(data)] == [*base, "q.sheet_metal"]
+    assert [q.id for q in checks.judgement(data)] == base  # the bends are a row of the table of requirements
     english = views_context([])
     english.language = "en"
     assert (

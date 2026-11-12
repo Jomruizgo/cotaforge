@@ -58,6 +58,7 @@ import sheet_dxf
 import sheet_facts
 import sheet_hlr
 import sheet_iso
+import sheet_keyway
 import sheet_items
 import sheet_layout
 import sheet_mirror
@@ -66,6 +67,7 @@ import sheet_native
 import sheet_output
 import sheet_project
 import sheet_render
+import sheet_reqfacts
 import sheet_review
 import sheet_svg
 import sheet_template
@@ -843,7 +845,7 @@ def _name_for(fc_doc: Any, wanted: str | None, op: str | None) -> str:
     return wanted
 
 
-CARRIED_KEYS = ("declined", "answers", "review_choice", "review_request", "reports", "report_n")
+CARRIED_KEYS = ("declined", "answers", "review_choice", "review_request", "reports", "report_n", "symmetry")
 # what a sheet remembers beyond its items, and a rebuild keeps: the defaults the engineer took off, the answers to the
 # review, who he chose to review it, the reports of the reviewers
 FLAT_RATIO = 0.35  # a round part is a disc (its length is a thickness) when it is at most this fraction of its diameter
@@ -915,6 +917,7 @@ def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     if carried is not None:
         params = _stated(params, carried)
     key = str(params.get("template") or "A4")
+    paper_wanted = carried is None and "template" in (params.get("unset") or ())  # nobody chose a paper: the part's own
     if key not in SIZES:
         raise invalid_request(f"unknown template {key!r}, expected one of {sorted(SIZES)}", op)
     language = str(params.get("language") or "es")
@@ -959,6 +962,7 @@ def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         )  # the rebuild below counts as one more change (``_clear_approval``)
     if assembly:
         spec["assembly"] = True
+    _declare_symmetry(spec, params.get("symmetry"))
     if params.get("iso_colour"):  # the convention of the harness; a sheet without the key stays a line drawing
         spec["iso_colour"] = True
     projection = str(params.get("projection") or "techdraw")
@@ -990,6 +994,16 @@ def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
             spec["views"], section_wanted, why = picked
             spec["isometric"] = False
             warnings.append(f"views chosen from the part ({why}); views=[...] states others")
+    if paper_wanted and not section_wanted:  # the views known: the paper is chosen for the sheet that will be drawn
+        # (a part with a section view keeps the default paper: the layout reserves no room for that view yet)
+        chosen = _auto_paper(doc, spec, params, op)
+        if chosen is not None:
+            key = chosen[0]
+            spec["template"] = template_key(key, language, angle)
+            warnings.append(
+                f"paper chosen from the part: {key} at {model.fmt_scale(chosen[1])} (A4 or A3 at full size or larger, "
+                "else the smallest paper not below 1:2); template=... states another"
+            )
     apply_title_block(spec, params.get("title_block"), op)
     _sync_auto_items(doc, spec, op)
     if section_wanted:
@@ -1064,6 +1078,71 @@ def apply_title_block(spec: dict[str, Any], given: Any, op: str | None) -> None:
     spec.setdefault("fields", {}).update({str(k): str(v) for k, v in given.items()})
 
 
+def _auto_paper(
+    doc: reg.DocumentRec, spec: dict[str, Any], params: dict[str, Any], op: str | None
+) -> tuple[str, float] | None:
+    """The paper and scale ``sheet_layout.auto_paper`` gives the part of a new sheet whose paper nobody chose, for the views
+    the sheet will have (``None``: the part has no volume to measure, or it is an assembly, which keeps its own room for
+    the parts list)."""
+    body = spec.get("body")
+    if _is_assembly(doc, body):
+        return None
+    box = _bounds(doc, body, op)
+    if not box:
+        return None
+    width, depth, height = (float(hi) - float(lo) for lo, hi in zip(box["min"], box["max"], strict=True))
+    if min(width, depth, height) <= 0:
+        return None
+    shown = views_of(spec)
+    anchor = anchor_of(shown)
+    across, up = {"front": (width, height), "top": (width, depth), "right": (depth, height)}[anchor]
+    return sheet_layout.auto_paper(  # the arguments ``_build`` gives the layout of the same sheet
+        width if anchor == "front" else across,
+        depth if anchor == "front" else 0.0,
+        height if anchor == "front" else up,
+        "iso" in shown,
+        "top" in shown and anchor == "front",
+        "right" in shown and anchor == "front",
+        third=str(params.get("angle") or "first") == "third",
+        iso_dims=(width, depth, height),
+    )
+
+
+def _expand_keyway_dims(
+    doc: reg.DocumentRec, spec: dict[str, Any], requested: list[Any], op: str | None
+) -> list[Any]:
+    """``keyway_dims`` is not an item of its own: it is the dimensions of the keyways of the part (width, depth as the
+    standards give it, length, position), made now from the faces of the model as ``dim`` items with their own ids
+    (``<id>_w``, ``_t``, ``_l``, ``_p``), so the sheet keeps plain dimensions that follow the normal rules."""
+    if not any(isinstance(i, dict) and i.get("type") == "keyway_dims" for i in requested):
+        return requested
+    slots = sheet_facts.collect(doc, _bodies(doc, spec.get("body"), op)).keyway_slots
+    shown = tuple(views_of(spec))
+    out: list[Any] = []
+    for item in requested:
+        if not (isinstance(item, dict) and item.get("type") == "keyway_dims"):
+            out.append(item)
+            continue
+        prefix = str(item.get("id") or "keyway")
+        made = [dim for number, slot in enumerate(slots, start=1) for dim in sheet_keyway.dimension_specs(slot, prefix if len(slots) == 1 else f"{prefix}{number}", shown)]
+        if not made:
+            raise invalid_request("the part has no keyway whose walls can be dimensioned (keyway_dims)", op)
+        out.extend(made)
+    return out
+
+
+def _declare_symmetry(spec: dict[str, Any], declared: Any) -> None:
+    """The design intent says the part is symmetric (``True``) or not (``False``); ``None`` leaves the sheet as it was. It
+    is never taken from the shape: a plate can be symmetric by chance, and a plane of symmetry that is not the designer's
+    would become a reference the holes are counted from and a centre line on the sheet."""
+    if declared is None:
+        return
+    if declared:
+        spec["symmetry"] = True
+    else:
+        spec.pop("symmetry", None)
+
+
 def update(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     """Rebuild the sheet after the part changed: the views are laid out again for the new size (the scale asked for at
     creation is kept, or the largest standard one that fits again) and every item is kept. ``title_block`` sets fields of
@@ -1078,6 +1157,7 @@ def update(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         else:
             spec.pop("iso_colour", None)
     apply_title_block(spec, params.get("title_block"), op)
+    _declare_symmetry(spec, params.get("symmetry"))
     _sync_auto_items(doc, spec, op)
     _clear_approval(spec)
     page, layout, waited, warnings = _build(doc, spec, op)
@@ -1243,9 +1323,13 @@ def _remark_ids(spec: dict[str, Any]) -> list[str]:
     return [str(r["id"]) for report in spec.get("reports", {}).values() for r in report.get("remarks", [])]
 
 
+REQUIREMENT_PREFIX = "req."  # the ids of the rows of the table of requirements: the caller (the server) evaluated them
+
+
 def answer(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     """Store the answer to one finding, question or review remark in the sheet spec (so it survives save and reopen). The
-    id must be one the review lists now, unless ``memory`` says the caller (who read the memory entry) named an entry."""
+    id must be one the review lists now, unless ``memory`` says the caller (who read the memory entry) named an entry or
+    it is a row of the table of requirements (``req.``), which the caller evaluated against the facts of this review."""
     op = params.get("operation_id")
     item_id = str(params.get("id") or "").strip()
     verdict = params.get("verdict")
@@ -1253,7 +1337,7 @@ def answer(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     if not item_id or verdict not in ("applies", "not_applies") or not text:
         raise invalid_request("answer needs id, verdict (applies | not_applies) and text", op)
     ((page, spec, number, total),) = _all_sheets(doc, params.get("sheet") or spec_name_of_first(doc, op), op)
-    if not params.get("memory"):
+    if not params.get("memory") and not item_id.startswith(REQUIREMENT_PREFIX):
         findings, questions = review_report(doc, page, spec, number, total, op)
         known = [r["id"] for r in findings] + [q["id"] for q in questions] + _remark_ids(spec)
         if item_id not in known:
@@ -1267,7 +1351,11 @@ def answer(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
                 op,
             )
     spec.pop("legacy", None)
-    spec.setdefault("answers", {})[item_id] = {"verdict": str(verdict), "text": text}
+    stored = {"verdict": str(verdict), "text": text}
+    ordered_by = " ".join(str(params.get("by") or "").split())
+    if ordered_by:  # the engineer who ordered an answer the harness would not take on the agent's word
+        stored["ordered_by"] = ordered_by
+    spec.setdefault("answers", {})[item_id] = stored
     write_spec(page, spec)
     return {"sheet": spec["sheet"], "changed": [item_id]}
 
@@ -1354,7 +1442,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         write_spec(page, spec)
         _sync_template_fields(fc_doc, op)
         return _result(doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), [], op, changed=tuple(wanted))
-    requested = list(params.get("items") or ())
+    requested = _expand_keyway_dims(doc, spec, list(params.get("items") or ()), op)
     if not requested:
         raise invalid_request('add needs items: a list like [{"type": "hole_dim", "all": true}]', op)
     if len(items) + len(requested) > sheet_items.MAX_ITEMS:
@@ -2073,10 +2161,11 @@ def _compose_pass(
     ctx.extras["extent_mm"] = cache[
         "extent"
     ]  # width (x), depth (y), height (z) of the part: the thickness note needs it
-    if "symmetry" not in cache:
+    declared = bool(spec.get("symmetry"))  # the intent says so; the shape alone never makes a plane a reference
+    if declared and "symmetry" not in cache:
         wanted = bool(cache["holes"]) and not _is_assembly(doc, spec.get("body"))
         cache["symmetry"] = geometry.symmetry() if wanted else {}
-    ctx.extras["symmetry"] = cache["symmetry"]  # the planes the part is symmetric across: a hole on one is located
+    ctx.extras["symmetry"] = cache["symmetry"] if declared else {}  # the planes the design says it is symmetric across
     if cache["model_box"] is not None and not _is_assembly(doc, spec.get("body")):
         ctx.extras["model_box"] = cache["model_box"]  # the silhouette a position is counted from (see items_datum)
     if _is_assembly(doc, spec.get("body")):
@@ -2378,6 +2467,21 @@ def review_report(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """The review of one sheet: (findings, questions of judgement), each with the id an answer names and the answer the
     sheet holds for it (``None``: pending)."""
+    findings, questions, _ = review_bundle(doc, page, spec, number, total, op, with_facts=False)
+    return findings, questions
+
+
+def review_bundle(
+    doc: reg.DocumentRec,
+    page: Any,
+    spec: dict[str, Any],
+    number: int,
+    total: int,
+    op: str | None,
+    with_facts: bool = True,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
+    """``review_report`` and, with ``with_facts``, the facts the table of requirements of a drawing reads
+    (``sheet_reqfacts``), counted on the same composed sheet."""
     findings, ctx = review_findings(doc, page, spec, number, total, op)
     answers = spec.get("answers", {})
     for row in findings:
@@ -2385,7 +2489,8 @@ def review_report(
     questions = [
         {"id": q.id, "text": q.text, "answer": answers.get(q.id)} for q in sheet_checks.judgement(_last_input(ctx))
     ]
-    return findings, questions
+    facts = sheet_reqfacts.facts(_last_input(ctx)) if with_facts else {}
+    return findings, questions, facts
 
 
 def _last_input(ctx: sc.Context) -> sheet_review.ReviewInput:
@@ -2524,7 +2629,7 @@ def describe(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         row["printed"] = _printed(composed)
         row["native"] = sheet_output.listed(sheet_output.native_rows(page))
         if params.get("review"):
-            row["findings"], row["questions"] = review_report(doc, page, spec, number, total, op)
+            row["findings"], row["questions"], row["facts"] = review_bundle(doc, page, spec, number, total, op)
         sheets.append(row)
     return {"sheets": sheets}
 

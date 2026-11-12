@@ -147,6 +147,7 @@ def test_the_drawing_title_is_a_property_the_schema_still_names(make: MakeSessio
         "list",
         "read",
         "review",
+        "requirements",
         "capture",
     ]
 

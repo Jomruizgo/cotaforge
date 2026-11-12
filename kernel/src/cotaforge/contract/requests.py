@@ -616,6 +616,10 @@ class DrawingRequest(Request):
     fresh: bool = False
     """A sheet of that name that exists is replaced from scratch: its items, its answers and its chosen reviewer are
     thrown away (the reply says which)."""
+    symmetry: bool | None = None
+    """The design intent declares the part symmetric: the plane of symmetry is then a reference the positions of the
+    holes are counted from and its centre line is drawn. Never inferred from the shape: a plate can be symmetric by
+    chance. ``None`` leaves a rebuilt sheet as it was (no symmetry on a new one)."""
     unset: tuple[str, ...] = ()
     """On a rebuild: the settings the caller did not state (``template``, ``angle``, ``language``, ``scale``,
     ``projection``, ``body``), which stay as the sheet has them instead of taking the default."""
@@ -642,7 +646,8 @@ class AnnotateDrawingRequest(Request):
     ``answer`` stores in the sheet (so it survives save and reopen) the answer ``text`` (``verdict`` applies |
     not_applies) to the finding or question ``id`` of the review; ``memory`` says ``id`` names a memory entry the
     caller checked itself. ``approve`` puts the engineer ``by`` in the title block, quoting his words in ``text``: the
-    one way that field is written, and any later change of the sheet empties it.
+    one way that field is written, and any later change of the sheet empties it. An ``answer`` may carry ``by`` too: the
+    engineer who ordered a ``not_applies`` the harness does not accept on its own (his words are in ``text``).
 
     ``review_report`` stores a reviewer's report in the sheet (``by``: fabricator | engineer; ``remarks``: the points,
     possibly none; ``at``: epoch seconds, the server's clock); ``request_review`` stores when the engineer was asked
@@ -673,6 +678,8 @@ class AnnotateDrawingRequest(Request):
     view: Literal["front", "top", "right", "iso", "isometric"] | None = None
     title_block: dict[str, str] = {}
     """``update`` only: title-block fields to set by name (see ``DrawingRequest.title_block``); "" clears one."""
+    symmetry: bool | None = None
+    """``update`` only: whether the part's symmetry is part of the design intent (see ``DrawingRequest.symmetry``)."""
     id: str | None = Field(default=None, min_length=1)
     verdict: Literal["applies", "not_applies"] | None = None
     text: str | None = Field(default=None, min_length=1)
@@ -691,6 +698,9 @@ class AnnotateDrawingRequest(Request):
     def _check_items(self) -> "AnnotateDrawingRequest":
         if self.title_block and self.action != "update":
             msg = f"{self.action} takes no title_block (create and update do)"
+            raise ValueError(msg)
+        if self.symmetry is not None and self.action != "update":
+            msg = f"{self.action} takes no symmetry (create and update do)"
             raise ValueError(msg)
         self._check_review_fields()
         if self.action == "add":
@@ -755,9 +765,6 @@ class AnnotateDrawingRequest(Request):
                 raise ValueError(msg)
         elif any((self.id, self.verdict, self.text, self.by, self.memory)):
             msg = f"{self.action} takes no id, verdict, text, by or memory"
-            raise ValueError(msg)
-        if self.action == "answer" and self.by is not None:
-            msg = "answer takes no by"
             raise ValueError(msg)
         if self.remarks and self.action != "review_report":
             msg = f"{self.action} takes no remarks"

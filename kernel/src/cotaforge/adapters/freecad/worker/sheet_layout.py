@@ -307,5 +307,40 @@ def plan(
     return Layout(scale=scale, standard=standard, fits=fits, front=front, iso=iso_centre, spacing=spec.spacing)
 
 
+AUTO_PAPERS = ("A4", "A3", "A2", "A1", "A0")
+FULL_SIZE_PAPERS = 2  # a part is first tried at full size on the papers a shop prints every day: A4 and A3
+HALF_SIZE = 0.5  # ... then at the largest paper that does not make it smaller than 1:2
+
+
+def auto_paper(
+    w: float,
+    d: float,
+    h: float,
+    isometric: bool = True,
+    has_top: bool = True,
+    has_right: bool = True,
+    *,
+    third: bool = False,
+    iso_dims: tuple[float, float, float] | None = None,
+) -> tuple[str, float]:
+    """The paper and the standard scale (ISO 5455) a sheet gets when nobody chose a paper, so the views fill it instead of
+    floating on a sheet too big for them or shrinking on one too small: the smallest of A4 and A3 on which the automatic
+    layout reaches full size or an enlargement; else the smallest paper on which it does not go below 1:2; else (a part of
+    several metres) the paper with the largest scale, the smaller one on a tie. ``w`` / ``d`` / ``h`` are the sizes of the
+    views as ``plan`` takes them."""
+    scales = {
+        name: plan(w, d, h, *PAGES_MM[name], None, None, isometric, has_top, has_right, third=third, iso_dims=iso_dims).scale
+        for name in AUTO_PAPERS
+    }
+    for name in AUTO_PAPERS[:FULL_SIZE_PAPERS]:
+        if scales[name] >= 1.0 - 1e-9:
+            return name, scales[name]
+    for name in AUTO_PAPERS:
+        if scales[name] >= HALF_SIZE - 1e-9:
+            return name, scales[name]
+    best = max(AUTO_PAPERS, key=lambda name: (round(scales[name], 9), -AUTO_PAPERS.index(name)))
+    return best, scales[best]
+
+
 def _fits(needed: tuple[float, float], area_w: float, area_h: float) -> bool:
     return needed[0] <= area_w + 1e-9 and needed[1] <= area_h + 1e-9
