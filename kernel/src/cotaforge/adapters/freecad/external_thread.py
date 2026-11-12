@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """``external_thread``: a cosmetic ISO metric thread on the outside cylinder of a shaft end (an operation this adapter adds
 to the common vocabulary, through ``Adapter.extra_operations``).
 
@@ -76,14 +77,17 @@ def spec() -> OperationSpec:
             "Use it for the threaded end of a shaft or pin, the way `hole` threads a hole: model the cylinder at the "
             "nominal diameter of the thread (a thread M12 is a Ø12 cylinder), then `external_thread` with the cylinder, "
             "its end face, `size` and `length_mm`. It adds no geometry and the part keeps its volume: the thread is "
-            "stored in the document and the drawing draws the ISO 6410 representation (thin line at the minor "
-            "diameter, 3/4 arc end on) and asks for its callout. It refuses a cylinder whose diameter is not the "
-            "thread's major diameter, a bore, an end face that is not at an end of the cylinder, and a length longer "
-            "than the cylinder. A thread undercut or a chamfer at the end are separate features."
+            "stored in the document and the drawing draws the ISO 6410 representation by itself (thin line at the minor "
+            "diameter, 3/4 arc end on). Its callout is the diameter dimension of that cylinder: `drawing` item "
+            "`dim` kind `diameter` on the cylinder face writes `M12 long. util 20` instead of the plain Ø (it takes no "
+            "fit or tolerance: the thread class is part of its size). It refuses a cylinder whose diameter is not "
+            "the thread's major diameter, a bore, an end face that is not at an end of the cylinder (a chamfer's "
+            "width past it is fine), and a length longer than the shaft from the end face. A thread undercut and the "
+            "chamfer at the end are separate features."
         ),
         method="external_thread",
         example={
-            "face": {"kind": "face", "from_op": "shaft", "select": {"normal": [1, 0, 0]}},
+            "face": {"kind": "face", "from_op": "shaft", "select": {"surface": "cylinder"}},
             "size": "M12",
             "length_mm": 20,
             "end": {"kind": "face", "from_op": "shaft", "select": {"normal": [0, 0, 1]}},

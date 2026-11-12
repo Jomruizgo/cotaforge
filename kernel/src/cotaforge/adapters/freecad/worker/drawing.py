@@ -73,6 +73,7 @@ import sheet_template_gen
 import sheet_thread
 import sheet_tol
 import sheet_units
+import thread_records
 from protocol import WorkerError, error, invalid_request, not_supported
 
 SHEET = "Drawing"  # the name of the first sheet
@@ -2037,6 +2038,11 @@ def _compose_pass(
     if "geometry" not in cache:
         cache["geometry"] = LiveGeometry(doc, _shapes(doc, spec.get("body"), op), op)
         cache["holes"] = hole_infos(doc, spec.get("body"), op)
+        cache["threads"] = (
+            []
+            if _is_assembly(doc, spec.get("body"))
+            else sheet_thread.external_threads(thread_records.read_threads(doc.fc_doc))
+        )
         cache["facts"] = (
             None
             if _is_assembly(doc, spec.get("body"))
@@ -2052,6 +2058,7 @@ def _compose_pass(
         geometry=geometry,
         area=(left, page_h - bottom, right, page_h - top),
         language=language,
+        threads=cache["threads"],
     )
     ctx.extras["nudges"] = nudges
     ctx.extras["facts"] = cache["facts"]  # the rounds and whole cylinders of the part (None: an assembly)

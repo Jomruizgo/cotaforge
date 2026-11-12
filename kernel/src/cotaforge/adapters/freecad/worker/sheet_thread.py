@@ -6,12 +6,14 @@ threaded, whether or not a ``hole_dim`` item names it.
 """
 
 import importlib.util
+import math
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
-from sheet_context import Context
-from sheet_model import THREAD, Arc, Entity
+from sheet_context import Context, ThreadInfo, dot, parallel, sub, unit
+from sheet_model import THREAD, Arc, Entity, Line
 
 _SIZE = re.compile(r"^M(\d+(?:\.\d+)?)")
 
@@ -92,4 +94,92 @@ def thread_entities(ctx: Context) -> list[Entity]:
                 continue
             cx, cy = view.project(hole.centre)
             out.append(Arc(cx, cy, major / 2 * view.scale, OPEN_FROM_DEG, OPEN_TO_DEG, THREAD))
+    out += external_entities(ctx)
+    return out
+
+
+# --- external threads (the ``external_thread`` operation): ISO 6410 on a shaft end --------------------------------------
+
+EXTERNAL_RADIUS_TOL_MM = 0.05
+EXTERNAL_AXIS_TOL_MM = 0.05
+
+
+def external_threads(found: list[dict[str, Any]]) -> list[ThreadInfo]:
+    """The ``ThreadInfo`` of the records ``thread_records.read_threads`` read from the document."""
+    return [
+        ThreadInfo(
+            size=str(r["size"]),
+            major=float(r["major_mm"]),
+            minor=float(r["minor_mm"]),
+            length=float(r["length_mm"]),
+            start=(float(r["start"][0]), float(r["start"][1]), float(r["start"][2])),
+            direction=unit((float(r["direction"][0]), float(r["direction"][1]), float(r["direction"][2]))),
+            cylinder=str(r.get("cylinder", "")),
+            pitch=float(r.get("pitch_mm", 0.0)),
+            name=str(r.get("name", "")),
+        )
+        for r in found
+    ]
+
+
+def threads_on_face(ctx: Context, face_id: str, face: Any) -> list[ThreadInfo]:
+    """The external threads of the cylinder ``face_id``: the ones made on that face, else (a face renamed by a later edit)
+    the ones on the same axis and diameter. ``face`` is its ``FaceInfo``."""
+    named = [t for t in ctx.threads if t.cylinder == face_id]
+    if named:
+        return named
+    if face.radius is None or face.axis_dir is None or face.axis_point is None:
+        return []
+    found = []
+    for t in ctx.threads:
+        if abs(2 * face.radius - t.major) > EXTERNAL_RADIUS_TOL_MM or not parallel(face.axis_dir, t.direction):
+            continue
+        axis = unit(face.axis_dir)
+        offset = sub(t.start, face.axis_point)
+        along = dot(offset, axis)
+        radial = math.dist(offset, (axis[0] * along, axis[1] * along, axis[2] * along))
+        if radial <= EXTERNAL_AXIS_TOL_MM:
+            found.append(t)
+    return found
+
+
+def external_callout(ctx: Context, threads: list[ThreadInfo]) -> list[str]:
+    """The callout lines of the threads on one cylinder: ``M12 long. útil 20`` (equal ones share a count: ``2× M12 ...``)."""
+    groups: dict[tuple[str, float], int] = {}
+    for t in threads:
+        key = (t.size, round(t.length, 3))
+        groups[key] = groups.get(key, 0) + 1
+    lines = []
+    for (size, length), count in groups.items():
+        shown = size.replace(".", ",") if ctx.comma else size
+        line = f"{shown} {ctx.say('long. útil', 'useful length')} {ctx.num(length)}"
+        lines.append(f"{count}× {line}" if count > 1 else line)
+    return lines
+
+
+def external_entities(ctx: Context) -> list[Entity]:
+    """ISO 6410 for a thread on a shaft: in a view across the axis the thin line at the minor diameter along the thread
+    (the thick lines at the major diameter are the cylinder, TechDraw draws them); in a view along the axis the thin arc of
+    about three quarters of a circle at the minor diameter."""
+    out: list[Entity] = []
+    for t in ctx.threads:
+        end = (
+            t.start[0] + t.direction[0] * t.length,
+            t.start[1] + t.direction[1] * t.length,
+            t.start[2] + t.direction[2] * t.length,
+        )
+        for view in ctx.views.values():
+            if view.looks_along(t.direction):
+                cx, cy = view.project(t.start)
+                out.append(Arc(cx, cy, t.minor / 2 * view.scale, OPEN_FROM_DEG, OPEN_TO_DEG, THREAD))
+            elif view.shows_axis_along(t.direction):
+                a, b = view.project(t.start), view.project(end)
+                size = math.dist(a, b)
+                if size < 0.5:
+                    continue
+                u = ((b[0] - a[0]) / size, (b[1] - a[1]) / size)
+                r = t.minor / 2 * view.scale
+                for sign in (1.0, -1.0):
+                    n = (-u[1] * sign * r, u[0] * sign * r)
+                    out.append(Line(a[0] + n[0], a[1] + n[1], b[0] + n[0], b[1] + n[1], THREAD))
     return out

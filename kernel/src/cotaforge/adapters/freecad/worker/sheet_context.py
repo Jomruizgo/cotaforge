@@ -163,6 +163,23 @@ class HoleInfo:
         return radial <= tol
 
 
+@dataclass
+class ThreadInfo:
+    """A cosmetic external thread of the part (``external_thread``): ``size`` the ISO designation (``M12``, ``M45x1.5``),
+    ``major`` / ``minor`` the diameters (mm), ``length`` how far it runs from ``start`` (the centre of the end face, on the
+    axis) along the unit ``direction`` (into the shaft); ``cylinder`` is the face it was made on."""
+
+    size: str
+    major: float
+    minor: float
+    length: float
+    start: Vec3
+    direction: Vec3
+    cylinder: str = ""
+    pitch: float = 0.0
+    name: str = ""
+
+
 def hole_stacks(holes: list[HoleInfo]) -> list[list[HoleInfo]]:
     """Holes on one axis (a counterbore is two holes there), each stack ordered by diameter."""
     stacks: list[list[HoleInfo]] = []
@@ -379,6 +396,7 @@ class Context:
     warnings: list[str] = field(default_factory=list)
     extras: dict[str, Any] = field(default_factory=dict)
     assembly: Assembly | None = None
+    threads: list[ThreadInfo] = field(default_factory=list)  # the cosmetic external threads of the part
 
     @property
     def comma(self) -> bool:
