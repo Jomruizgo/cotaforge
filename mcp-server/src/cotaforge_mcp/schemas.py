@@ -235,6 +235,8 @@ class MemoryArgs(Strict):
 
     action: Literal["index", "get", "search", "save", "deactivate", "approve", "answer", "review", "brief"]
     id: str | None = Field(default=None, description="entry id")
+    ids: list[str] | None = Field(default=None, description="get: several")
+    answers: dict[str, str] | None = Field(default=None, description="answer: {id: text, ...}")
     text: str | None = Field(
         default=None,
         description="search: words; answer: 'applies: how, here' | 'does not apply: why'; approve: quote; index: 'all_cad' adds other software's",

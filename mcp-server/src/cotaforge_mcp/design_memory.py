@@ -473,7 +473,10 @@ def push(session: "Session", op: str, roles: frozenset[str]) -> list[str]:
     lines = [push_line(entry) for entry in hits[:MAX_PUSH_LINES]]
     if len(hits) > MAX_PUSH_LINES:
         lines.append(f"memory: +{len(hits) - MAX_PUSH_LINES} more: {', '.join(e.id for e in hits[MAX_PUSH_LINES:])}")
-    lines.append("memory: read the entry (memory get id=...) and answer at the milestone with memory(action=answer)")
+    lines.append(
+        "memory: read the entries (memory get, ids=[...] takes several) and answer at the milestone with "
+        "memory(action=answer, answers={id: text} takes several)"
+    )
     return lines
 
 
