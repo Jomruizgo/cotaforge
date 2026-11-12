@@ -1958,6 +1958,7 @@ class Session:
                 *lines,
                 *after_lines,
                 *hole_hint,
+                *hints.widened_holes(self, step_id, name),
                 *remembered,
                 *self._convention_lines(name, operation),
             ]
