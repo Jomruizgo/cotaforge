@@ -481,7 +481,7 @@ def _answer(session: "Session", args: MemoryArgs) -> Reply:
             'memory(action="answer", id="x", text="applies: welded plate s3 carries the hole pattern")',
         )
     with session.lock:
-        line = design_memory.record_answer(session, args.id, args.text)
+        line = design_memory.record_answer(session, args.id, args.text, args.by)
         session.dirty = True  # the answer is saved with the next doc save
     return ok(line)
 

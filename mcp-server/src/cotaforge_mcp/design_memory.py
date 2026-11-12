@@ -28,7 +28,7 @@ from cotaforge.memory import (
     triggered_at_milestone,
 )
 
-from cotaforge_mcp import rules
+from cotaforge_mcp import measured_alerts, rules
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.reply import ToolError
 
@@ -296,6 +296,9 @@ class MemState:
     """Entries the agent read with ``memory get`` in this server session (never saved)."""
     pushed: set[str] = field(default_factory=set)
     """``entry|op`` already pushed in this server session: the same line is not repeated for the same op (never saved)."""
+    measured: dict[str, list[str]] | None = None
+    """The measured violations read during the tool call in progress (``measured_alerts.live``): one call reads the
+    model once however many times it asks. ``tools.call_tool`` empties it before every call; never saved."""
 
     def to_json(self) -> dict[str, Any]:
         return {"stage": self.stage, "answers": self.answers, "ops_seen": sorted(self.ops_seen)}
@@ -559,7 +562,11 @@ def drawing_entries(session: "Session") -> list[MemoryEntry]:
     ]
 
 
-def record_answer(session: "Session", entry_id: str, text: str) -> str:
+def record_answer(session: "Session", entry_id: str, text: str, by: str | None = None) -> str:
+    """Record the answer to an entry. An entry whose trigger the harness MEASURED on the model (``measured_alerts``) and
+    that still fires is closed only by the engineer's order (``by`` his name; the ``text`` after the prefix is his
+    words, quoted): any answer of the agent alone is refused, and the model changes (the violation is fixed) when it
+    must be closed otherwise."""
     entries = {entry.id: entry for entry in active_entries(session.settings)}
     if entry_id not in entries:
         raise ToolError(
@@ -568,16 +575,53 @@ def record_answer(session: "Session", entry_id: str, text: str) -> str:
             field_name="id",
         )
     verdict, said = checked_answer(session, entry_id, text)
-    session.mem.answers[entry_id] = {"verdict": verdict, "text": said, "stage": current_stage(session).value}
-    return f"answered: {entry_id} ({'applies' if verdict == 'applies' else 'does not apply'}) at stage {current_stage(session).value}"
+    name = (by or "").strip()
+    answer = {"verdict": verdict, "text": said, "stage": current_stage(session).value}
+    firing = measured_alerts.live(session).get(entry_id, []) if measured_alerts.is_measured(entry_id) else []
+    if firing and not name:
+        raise ToolError(
+            measured_alerts.REFUSAL.format(entry=entry_id, lines=" | ".join(firing)),
+            code="measured_not_dismissable",
+            field_name="text",
+        )
+    if name:
+        prefix = next(p for p in (*APPLIES_PREFIXES, *NOT_APPLIES_PREFIXES) if said.lower().startswith(p))
+        answer["text"] = f"{said} [ordered by {name}]"
+        answer["ordered_by"] = name
+        answer["order"] = said[len(prefix) :].strip()
+        answer["measured"] = measured_alerts.SEPARATOR.join(firing)
+    session.mem.answers[entry_id] = answer
+    said_verdict = "applies" if verdict == "applies" else "does not apply"
+    kept = f" (ordered by {name}; it covers what is measured now: {len(firing)} violation(s))" if name else ""
+    return f"answered: {entry_id} ({said_verdict}) at stage {current_stage(session).value}{kept}"
+
+
+def _measured_pending(session: "Session", entry_id: str, lines: list[str]) -> str:
+    read = "read" if entry_id in session.mem.read else "NOT read: memory(action=get) first"
+    return (
+        f"- {entry_id} — MEASURED on the model, still fires: {' | '.join(lines)} [{read}]; it closes only when the "
+        "model is fixed (the harness measures again) or the ENGINEER orders it kept: memory(action=answer, id, "
+        "by=<his name>, text=\"does not apply: <his words, quoted>\")"
+    )
 
 
 def review(session: "Session", stage: Stage) -> tuple[list[str], list[str]]:
-    """``(answered lines, pending lines)`` for the entries triggered in ``stage``."""
+    """``(answered lines, pending lines)`` for the entries triggered in ``stage``, and for every entry whose trigger the
+    harness measures on the model and that fires now (whatever the stage: the violation is there)."""
     session.mem.stage = stage.value
     answered: list[str] = []
     pending: list[str] = []
+    fired = measured_alerts.live(session)
+    for entry_id, lines in fired.items():
+        given = session.mem.answers.get(entry_id)
+        if measured_alerts.covered(given, lines):
+            assert given is not None
+            answered.append(f"- {entry_id}: ORDERED KEPT, measured: {' | '.join(lines)}: {given['text']}")
+        else:
+            pending.append(_measured_pending(session, entry_id, lines))
     for entry in triggered_for(session, stage):
+        if entry.id in fired:
+            continue
         given = session.mem.answers.get(entry.id)
         if given is not None and given.get("stage") == stage.value:
             label = "APPLIES" if given["verdict"] == "applies" else "DOES NOT APPLY"
