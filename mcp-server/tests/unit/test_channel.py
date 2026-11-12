@@ -272,6 +272,60 @@ def test_a_lock_held_by_a_live_writer_is_waited_for_and_then_reported(tmp_path: 
     assert caught.value.code == "busy" and lock.exists(), "a lock that is not ours stays"
 
 
+def test_a_lock_that_windows_refuses_to_open_is_waited_for_not_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On Windows a lock that was just deleted (delete pending) or is still open by its owner is not "exists": opening it
+    is ``PermissionError``. It is the lock being busy: wait, and take it when it frees."""
+    lock = tmp_path / "drawings" / f"{NAME}-questions.lock"
+    real_open = os.open
+    refusals = []
+
+    def open_refusing_twice(path: object, flags: int, *more: object) -> int:
+        if len(refusals) < 2:
+            refusals.append(path)
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, flags, *more)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "open", open_refusing_twice)
+    with channel_tools._locked(lock):
+        assert lock.exists()
+    assert len(refusals) == 2 and not lock.exists()
+
+
+def test_a_folder_that_cannot_be_written_is_reported_as_it_is_not_as_a_held_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock = tmp_path / "drawings" / f"{NAME}-questions.lock"
+
+    def never(path: object, flags: int, *more: object) -> int:
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(os, "open", never)
+    with pytest.raises(PermissionError), channel_tools._locked(lock, wait_s=0.2):
+        pass
+
+
+def test_a_lock_that_cannot_be_deleted_yet_is_deleted_when_it_can(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The release too: Windows refuses to delete a file somebody has open (a session checking whether it is stale)."""
+    lock = tmp_path / "held.lock"
+    lock.write_text("1", encoding="utf-8")
+    real_unlink = Path.unlink
+    refusals = []
+
+    def unlink_refusing_twice(self: Path, missing_ok: bool = False) -> None:
+        if self == lock and len(refusals) < 2:
+            refusals.append(1)
+            raise PermissionError(13, "Permission denied", str(self))
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink_refusing_twice)
+    channel_tools._release(lock)
+    assert len(refusals) == 2 and not lock.exists()
+
+
 # --- an answer is not a decision --------------------------------------------------------------------------------
 
 
