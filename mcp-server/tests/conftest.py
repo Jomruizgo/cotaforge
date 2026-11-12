@@ -78,6 +78,7 @@ class DrawingFake(FakeAdapter):
         self.findings: tuple[Any, ...] = ()  # what a review of any sheet finds
         self.questions: tuple[Any, ...] = ()  # the questions of judgement of any sheet
         self.facts: dict[str, int] = {}  # what the review counts for the table of requirements (empty: none)
+        self.on_add: Any = None  # called with the items an add stored: a test makes the sheet carry what they print
         self.pdf: bytes | None = None  # the bytes the next PDF export writes (default: a sound one-page PDF)
         self.output: dict[str, Any] = {}  # fields of the capture / export result (views, native, unrendered...)
         self.rebuilt: dict[str, tuple[str, ...]] | None = None  # kept / unresolved / discarded of the next create
@@ -226,6 +227,8 @@ class DrawingFake(FakeAdapter):
             sheet["items"].append({**item, "id": item.get("id") or f"{item['type'][0]}{sheet['next']}"})
             added.append(sheet["items"][-1]["id"])
             sheet["next"] += 1
+        if self.on_add is not None:
+            self.on_add(self, [i for i in sheet["items"] if i["id"] in added])
         return self._drawing_result(name, refused=tuple(refused), changed=tuple(added))
 
     def describe_drawing(self, request: Any) -> Any:

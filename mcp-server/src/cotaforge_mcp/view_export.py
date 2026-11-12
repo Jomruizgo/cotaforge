@@ -467,7 +467,8 @@ def _requirements_block(session: Session, sheet: str) -> list[str]:
         info = drawing_gate.sheet_info(session, sheet, review=True)
         if info is None or not info.facts or drawing_gate.mode_of(session) == "none":
             return []
-        return drawing_gate.requirements_lines(session, info, session.language)
+        info, adds = drawing_gate.determine(session, info)
+        return [*drawing_gate.added_lines(adds), *drawing_gate.requirements_lines(session, info, session.language)]
     except Exception:  # noqa: BLE001 - the list is help, not part of the create
         return []
 
@@ -521,6 +522,12 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
         if action in ("add", "remove", "remove_sheet", "update", "add_view", "remove_view"):
             session.need("annotate_drawing", f"drawing {action}")
             items = list(args.items or [])
+            auto_rows: list[str] = []
+            handed: list[str] = []
+            if action == "add":
+                handed = drawing_gate.hand_over(session, args.sheet, items)
+            elif action == "remove":
+                auto_rows = drawing_gate.guard_removal(session, args.sheet, [_item_id(i) for i in items], args.reason, args.by)
             usage = (
                 'drawing(action="add", items=[{"type":"hole_dim","all":true}]) | drawing(action="remove", items=["h2"]) '
                 '| drawing(action="remove_sheet", sheet="Drawing")'
@@ -558,10 +565,13 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                 ) from exc
             result = session.adapter.annotate_drawing(request)
             session.dirty = True
+            if action == "remove" and args.reason:
+                drawing_gate.record_removal(session, args.sheet, auto_rows, [_item_id(i) for i in items], args.reason, args.by)
             if result.removed:
                 return ok(f"drawing {result.sheet}: sheet removed; sheets left: {', '.join(result.sheets) or 'none'}")
             lines = [
                 *_sheet_summary(result, brief=action != "update"),
+                *handed,
                 *[f"warning: {w}" for w in result.warnings],
                 "next: the engineer sees it in the sheet window; fix a placement with offset_mm / side, or remove + add; "
                 "add the next few items",
@@ -582,6 +592,13 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                 for sheet in described.sheets:
                     lines += _sheet_as_read(sheet)
                 return ok("\n".join(lines), limit=REVIEW_REPLY_CHARS)
+            added: dict[str, list[Any]] = {}
+            if action == "review":  # what the harness is sure of goes on the sheet before the agent reads the review
+                determined = []
+                for sheet in described.sheets:
+                    sheet, added[sheet.sheet] = drawing_gate.determine(session, sheet)
+                    determined.append(sheet)
+                described = described.model_copy(update={"sheets": tuple(determined)})
             for sheet in described.sheets:
                 fields = ", ".join(f"{k}={v}" for k, v in sheet.fields.items())
                 lines.append(
@@ -604,6 +621,7 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                         "them; the capture shows them): " + " | ".join(sheet.native)
                     )
                 if action == "review":
+                    lines += drawing_gate.added_lines(added.get(sheet.sheet, []))
                     lines += drawing_gate.review_lines(session, sheet)
             return ok("\n".join(lines), limit=REVIEW_REPLY_CHARS)
         if action in ("answer", "approve", "request_review", "review_choice", "review_report"):

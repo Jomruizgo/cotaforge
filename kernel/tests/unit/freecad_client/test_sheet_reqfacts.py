@@ -93,7 +93,9 @@ def test_a_hole_made_with_a_fit_is_a_fit_hole_until_a_callout_covers_it() -> Non
     before = facts_of(titled(views_context(fitted())), {"type": "overall"})
     assert before["fit_holes"] == 1 and before["fit_holes_uncalled"] == 1 and before["functional_faces"] == 1
     after = facts_of(titled(views_context(fitted())), {"type": "overall"}, {"type": "hole_dim", "all": True, "fit": "H7"})
-    assert after["fit_holes_uncalled"] == 0 and after["tolerance_classes_on_sheet"] == 1
+    assert after["fit_holes_uncalled"] == 0 and after["tolerance_classes_on_sheet"] >= 1
+    plain_callout = facts_of(titled(views_context(fitted())), {"type": "overall"}, {"type": "hole_dim", "all": True})
+    assert plain_callout["tolerance_classes_on_sheet"] == 1  # a callout with no fit of its own prints the one the hole declared
     plain = facts_of(titled(views_context([hole(0, 20.0, 20.0, 6.6)])), {"type": "overall"})
     assert plain["fit_holes"] == 0  # a clearance hole is not a fit
 

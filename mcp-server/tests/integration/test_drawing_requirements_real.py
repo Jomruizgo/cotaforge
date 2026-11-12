@@ -8,6 +8,7 @@ symmetry is a reference only when the intent declares it.
 Set ``COTAFORGE_TEST_SHOTS`` to a folder to keep the transcript.
 """
 
+import base64
 import os
 import re
 from pathlib import Path
@@ -59,6 +60,39 @@ async def make_shaft(cad: Cad) -> None:
     await cad.ok("op", name="cut", id="slot1", params={"sketch": "key_sk", "depth_mm": 6}, intent="slot in the end of the shaft")
 
 
+SHAFT_INTENT = """# Intención: eje
+
+## Tratamientos y acabado
+- Temple y revenido a 40 HRC.
+- Sin recubrimiento.
+- Romper aristas vivas 0,5 mm; sin rebabas.
+- Rugosidad general Ra 3,2.
+
+## Proceso
+- Cantidad: 10 pzas; proceso: torneado y fresado.
+"""
+PLATE_INTENT = """# Intención: placa
+
+## Tratamientos y acabado
+- Romper aristas vivas 0,3 mm; sin rebabas.
+- Sin tratamiento térmico.
+"""
+
+
+def write_intent(workspace: Path, part: str, text: str) -> None:
+    (workspace / "drawings").mkdir(exist_ok=True)
+    (workspace / "drawings" / f"{part}-intent.md").write_text(text, encoding="utf-8")
+
+
+async def snapshot(cad: Cad, out: Transcript, name: str) -> None:
+    """The sheet as the engineer sees it, kept as a PNG beside the transcript (and checked to be one)."""
+    reply = await cad("drawing", action="capture")
+    assert not reply.is_error and reply.images, reply.text
+    data = base64.b64decode(reply.images[0].data)
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    (out.folder / name).write_bytes(data)
+
+
 def rows_of(text: str) -> dict[str, str]:
     """``{row id: state}`` of the rows a review or a create lists."""
     return {row: state for state, row in re.findall(r"^  \[([^\]]+)\] (req\.\w+) ", text, re.M)}
@@ -73,17 +107,21 @@ async def test_a_plate_lists_its_rows_and_the_symmetry_is_a_reference_only_when_
     out = transcript(tmp_path)
     async with running_server(workspace) as (cad, _):
         await cad.ok("memory", action="brief", drawing_review="propio", text="la prueba: el agente revisa el plano por su cuenta")
+        write_intent(workspace, "placa", PLATE_INTENT)
         await make_plate(cad)
         created = await cad.ok("drawing", action="create", views=["top"], title="Placa")
         out.say("create (no paper stated, no symmetry declared)", created)
         assert "paper chosen from the part" in created and "this sheet must carry" in created
+        assert "added automatically" in created and "rq_callouts" in created and "rq_edge_state" in created and "rq_heat_treatment" in created
         listing = rows_of(created)
-        assert listing["req.dimensions"] == "MISSING" and listing["req.surface_texture"] == "MISSING"
-        assert listing["req.title_block"] == "met" and listing["req.general_tolerance"] == "met" and listing["req.centre_lines"] == "met"
+        assert listing["req.edge_state"] == "added automatically" and listing["req.heat_treatment"] == "added automatically"
+        assert listing["req.dimensions"] == "MISSING" and listing["req.surface_texture"] == "MISSING"  # no Ra anywhere: a question
+        assert listing["req.title_block"] in ("met", "added automatically") and listing["req.general_tolerance"] in ("met", "added automatically")
+        assert listing["req.centre_lines"] in ("met", "added automatically")
         assert "req.thread" not in listing and "req.fit_class" not in listing  # a plate with clearance holes has neither
         assert "no reference to count the position" in created  # the plate is symmetric by shape; nobody said so: no centre line, asked
 
-        await cad.ok("drawing", action="add", items=[{"type": "hole_dim", "all": True}])
+        await snapshot(cad, out, "d2_plate_automatic.png")
         stated = await cad.ok("drawing", action="update", symmetry=True)  # the design intent says it is symmetric
         out.say("update symmetry=true", stated)
         review = await cad.ok("drawing", action="review")
@@ -99,13 +137,13 @@ async def test_a_plate_lists_its_rows_and_the_symmetry_is_a_reference_only_when_
             action="add",
             items=[
                 {"type": "note", "text": "Material: AISI 1045, lámina de 8 mm. Cantidad: 10 pzas, corte láser.", "at_mm": [30, 60]},
-                {"type": "note", "text": "Romper aristas vivas 0,3 mm; sin rebabas. Sin tratamiento térmico ni recubrimiento. Marcado: número de plano grabado.", "at_mm": [30, 50]},
+                {"type": "note", "text": "Sin recubrimiento. Marcado: número de plano grabado.", "at_mm": [30, 50]},
                 {"type": "note", "text": "Rugosidad general Ra 3,2.", "at_mm": [30, 45]},
             ],
         )
         after = await cad.ok("drawing", action="requirements")
         out.say("requirements after the notes", after)
-        assert not [state for state in rows_of(after).values() if state != "met"]
+        assert not [state for state in rows_of(after).values() if state not in ("met", "added automatically")]
         await finish_drawing(cad)
         exported = await cad.ok("export", action="pdf", path="placa.pdf")
         out.say("export", exported)
@@ -145,26 +183,36 @@ async def test_a_threaded_fitted_shaft_activates_measured_rows_that_only_the_eng
     out = transcript(tmp_path)
     async with running_server(workspace) as (cad, _):
         await cad.ok("memory", action="brief", drawing_review="propio", text="la prueba: el agente revisa el plano por su cuenta")
+        write_intent(workspace, "eje", SHAFT_INTENT)
         await make_shaft(cad)
         created = await cad.ok("drawing", action="create", title="Eje", views=["front", "top"])
         out.say("create (shaft)", created)
         listing = rows_of(created)
-        assert listing["req.thread"] == "MISSING" and listing["req.fit_class"] in ("MISSING", "met") and "req.keyway" in listing
-        assert "[measured]" in created.split("req.keyway")[1].splitlines()[0]  # the slot is found by its walls, not by its name
-        assert "[measured]" in created.split("req.thread")[1].splitlines()[0]
+        assert "added automatically" in created and "rq_callouts" in created
+        assert listing["req.thread"] == "added automatically" and listing["req.fit_class"] == "added automatically"
+        assert listing["req.heat_treatment"] == "added automatically" and listing["req.surface_texture"] == "added automatically"
+        assert listing["req.keyway"] == "NEEDS AN ANSWER" and listing["req.marking"] == "MISSING"  # no value known: questions
+        await snapshot(cad, out, "d2_shaft_automatic.png")
+        text = await cad.ok("drawing", action="list")
+        assert "M8" in text and "H7" in text  # the callout prints the thread and the declared fit; nobody asked
+        assert "[measured]" in created.split("] req.keyway")[1].splitlines()[0]  # the slot is found by its walls, not by its name
+        assert "[measured]" in created.split("] req.thread")[1].splitlines()[0]
         refused = await cad.err("export", action="pdf", path="eje.pdf")
-        assert "req.thread" in refused and "req.keyway" in refused
+        assert "req.keyway" in refused and "req.marking" in refused and "req.thread" not in refused  # the harness met the thread
 
+        no_reason = await cad.err("drawing", action="remove", items=["rq_callouts"])
+        assert "removed only with a reason" in no_reason
+        measured = await cad.err("drawing", action="remove", items=["rq_callouts"], reason="no hacen falta las llamadas")
+        out.say("a measured automatic item removed on the agent's word", measured)
+        assert "measured_not_dismissable" in measured and "threaded holes" in measured
         no = await cad.err("drawing", action="answer", id="req.thread", text="no aplica: el eje no lleva rosca de verdad")
-        out.say("a measured row dismissed on the agent's word", no)
-        assert "measured_not_dismissable" in no and "threaded holes" in no
-        ordered = await cad.ok(
-            "drawing", action="answer", id="req.thread", text="no aplica: la rosca la hace el cliente", by="Ana", reason="Ana: la rosca la mecaniza el cliente, quítala del plano"
-        )
-        out.say("the engineer's order", ordered)
+        assert "measured_not_dismissable" in no
+        await cad.ok("drawing", action="remove", items=["rq_callouts"], reason="Ana: las llamadas van en una hoja aparte", by="Ana")
         review = await cad.ok("drawing", action="review")
-        out.say("review (shaft)", review)
-        assert "answered: DOES NOT APPLY: la rosca la hace el cliente" in review and "(ordered by Ana)" in review
+        out.say("review after the engineer's order (shaft)", review)
+        assert "answered: DOES NOT APPLY" in review and "(ordered by Ana)" in review
+        assert "rq_callouts" not in await cad.ok("drawing", action="list")  # answered: it is not added again
+        await cad.ok("drawing", action="add", items=[{"type": "hole_dim", "all": True}])  # the drafter puts them back as his own
 
         assert "measured_not_dismissable" in await cad.err("drawing", action="answer", id="req.keyway", text="no aplica: el chavetero lo ejecuta el montador")
         await cad.ok(

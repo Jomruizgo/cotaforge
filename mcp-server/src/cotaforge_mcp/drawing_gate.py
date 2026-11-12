@@ -277,7 +277,112 @@ def sheet_requirements(session: Session, sheet: DrawingSheetInfo) -> list[reqs.R
     if not sheet.facts:
         return []
     intent = reqs.find_intent(session.settings.workspace, session.doc_name)
-    return reqs.evaluate(dict(sheet.facts), sheet.findings, dict(sheet.answers), intent)
+    return reqs.evaluate(
+        dict(sheet.facts), sheet.findings, dict(sheet.answers), intent, {item.id for item in sheet.items}
+    )
+
+
+def determine(session: Session, info: DrawingSheetInfo) -> tuple[DrawingSheetInfo, list[reqs.Addition]]:
+    """The harness puts on the sheet what it is SURE the sheet needs: the rows whose whole content is already known from
+    the model or the intent file (callouts that print the declared thread and fit, the centre lines, a note with the
+    intent file's own words) are met by an item it adds itself, placed by the normal layout rules; the rows that need a
+    decision stay questions. Returns the sheet as it is after and what was added. Nothing in mode ``none``."""
+    if mode_of(session) == "none" or not info.facts or "annotate_drawing" not in session.capabilities.tools:
+        return info, []
+    adds = reqs.plan_additions(sheet_requirements(session, info), list(info.items))
+    if not adds:
+        return info, []
+    try:
+        session.adapter.annotate_drawing(
+            AnnotateDrawingRequest(
+                operation_id="drawing_auto", action="add", sheet=info.sheet, items=tuple(a.item for a in adds)
+            )
+        )
+    except (AdapterError, ValidationError):
+        return info, []  # the list says what is missing: the agent adds it
+    session.dirty = True
+    fresh = sheet_info(session, info.sheet, review=True)
+    if fresh is None:
+        return info, []
+    broken = {i.id for i in fresh.items if i.id in {a.item["id"] for a in adds} and i.status == "error"}
+    if broken:  # an item that cannot be drawn is not left on the sheet
+        session.adapter.annotate_drawing(
+            AnnotateDrawingRequest(operation_id="drawing_auto", action="remove", sheet=info.sheet, ids=tuple(sorted(broken)))
+        )
+        fresh = sheet_info(session, info.sheet, review=True) or fresh
+    return fresh, [a for a in adds if a.item["id"] not in broken]
+
+
+def added_lines(adds: list[reqs.Addition]) -> list[str]:
+    """What the harness added by itself, for the reply (empty: nothing)."""
+    if not adds:
+        return []
+    return [
+        "added automatically (the model or the intent file already says it; the drafter may move these items, and "
+        "removes one only with a reason: drawing(action=remove, items=[id], reason=)):",
+        *(f"  - {a.item['id']}: {a.what} (meets {', '.join(a.rows)})" for a in adds),
+    ]
+
+
+def hand_over(session: Session, sheet: str | None, items: list[Any]) -> list[str]:
+    """The agent adds a callout or centre lines of its own: the ones the harness added come off first (never two of
+    them on the sheet). Returns the line that says so."""
+    kinds = {i.get("type") for i in items if isinstance(i, dict)}
+    mine = {"hole_dim": reqs.CALLOUTS_ID, "view_lines": reqs.VIEW_LINES_ID}
+    wanted = [item_id for kind, item_id in mine.items() if kind in kinds]
+    if not wanted or "describe_drawing" not in session.capabilities.tools:
+        return []
+    info = sheet_info(session, sheet)
+    if info is None:
+        return []
+    there = [i for i in wanted if i in {item.id for item in info.items}]
+    if not there:
+        return []
+    session.adapter.annotate_drawing(
+        AnnotateDrawingRequest(operation_id="drawing_auto", action="remove", sheet=info.sheet, ids=tuple(there))
+    )
+    return [f"replaced the automatic {', '.join(there)} by yours"]
+
+
+def guard_removal(session: Session, sheet: str | None, ids: list[str], reason: str | None, by: str | None) -> list[str]:
+    """Items the harness added come off only with a reason, which is recorded (as the answer of the rows they met); if a
+    row was measured the engineer's order is needed too (by): the same rule as an answer. Returns the rows to record."""
+    auto = [i for i in ids if i.startswith(reqs.AUTO_PREFIX)]
+    if not auto:
+        return []
+    if not (reason and reason.strip()):
+        raise ToolError(
+            f"{', '.join(auto)} was added by the harness because the model or the intent file already says it: it is "
+            "removed only with a reason (reason=<why the sheet does not need it>), and the reason is recorded",
+            code="invalid_input",
+            field_name="reason",
+            usage='drawing(action="remove", items=["rq_callouts"], reason="why")',
+        )
+    info = sheet_info(session, sheet, review=True)
+    rows = [r for r in (sheet_requirements(session, info) if info is not None else []) if r.row.auto and reqs.auto_item_id(r.row) in auto]
+    if any(r.model_measured for r in rows) and not (by and by.strip()):
+        raise ToolError(
+            MEASURED_REFUSAL.format(what=', '.join(auto), why=', '.join(r.why for r in rows if r.model_measured)),
+            code="measured_not_dismissable",
+            field_name="by",
+            usage=ANSWER_USAGE,
+        )
+    return [r.id for r in rows]
+
+
+def record_removal(session: Session, sheet: str | None, rows: list[str], ids: list[str], reason: str, by: str | None) -> None:
+    """The reason an automatic item came off is the answer of the rows it met (the engineer reads it in the review)."""
+    said = " ".join(reason.split())
+    for row in rows:
+        text = f"no aplica: {said} (automatic item {', '.join(i for i in ids if i.startswith(reqs.AUTO_PREFIX))} removed)"
+        who = by.strip() if by and by.strip() else "the drafter, with a reason"  # an intent file's note: his reason is enough
+        text += f" [removed by {who}]"
+        given = AnnotateDrawingRequest(
+            operation_id="drawing_answer", action="answer", sheet=sheet, id=row, verdict="not_applies", text=text, by=who
+        )
+        session.adapter.annotate_drawing(given)
+        recovery.note(session, given)
+    session.dirty = True
 
 
 def _recognise(entry: MemoryEntry) -> str:
@@ -404,7 +509,8 @@ def requirements_report(session: Session, sheet: str | None) -> str:
             code="invalid_input",
             field_name="sheet",
         )
-    return "\n".join(requirements_lines(session, info, brief.lang))
+    info, adds = determine(session, info)
+    return "\n".join([*added_lines(adds), *requirements_lines(session, info, brief.lang)])
 
 
 def requirements_lines(session: Session, info: DrawingSheetInfo, language: str) -> list[str]:
@@ -505,6 +611,7 @@ def require_finished(session: Session, sheet: str | None, action: str) -> str | 
         return sheet  # export says it better
     if mode == "none":
         return info.sheet
+    info, _ = determine(session, info)  # what the harness is sure of is on the sheet that is written
     miss = missing(session, info)
     if not miss.count:
         return info.sheet

@@ -261,8 +261,7 @@ DONE_LINES = (
     "«manufacturer», or no answer in time: review_choice by=fabricator (if he said it) and launch the agent `fabricator` "
     "for that sheet. If the timer wakes you and he already answered, ignore it (the server keeps the clock). The choice "
     "belongs to the SHEET: once made "
-    "(or the manufacturer assumed) it stays through the changes of the sheet; asking again only says who reviews. Modes "
-    "fabricator / engineer skip the choice.",
+    "(or the manufacturer assumed) it stays through the changes of the sheet; asking again only says who reviews.",
     "THE FABRICATOR AGENT is a machinist / welder / assembler who gets ONLY the drawing (the sheet image, the texts it "
     "prints, the title block: drawing read and capture), never the model. It records its report with drawing(action="
     "review_report, sheet, by=fabricator, items=[{kind: missing|ambiguous|costly|other, where, text, fix}]): can it make "
@@ -278,16 +277,16 @@ DONE_LINES = (
     "with no callout, an item that cannot be drawn...) cannot be answered 'no aplica' on your word: only the engineer's "
     "order closes it (by=<him>, reason=<his words>). One that stands for a missing requirement is listed under its row.",
     "REQUIREMENTS: what the standards ask a sheet to carry is a table, not prose: drawing(action=requirements) (also in "
-    "create and review) lists the rows that apply to THIS part (thread, fit class, general tolerance, title block, surface "
-    "texture, edges, treatments, location of every feature, welds, parts list, quantity and process...), each met, missing "
-    "or needing an answer, with its standard and the question to ask. Ask what is missing BEFORE drawing it (the designer "
-    "through the channel or the engineer, one question at a time, with the proposed answer). The export waits until each "
+    "create and review) lists the rows that apply to THIS part (thread, fits, tolerance, title block, texture, edges, treatments, "
+    "locations, welds, parts list...), each added automatically, met, or a question, with its standard. What the model or "
+    "the intent file already says the HARNESS adds (items rq_...: callouts with the declared thread and fit, centre lines, "
+    "a note in the designer's words): move them, remove one only with reason=. Ask what needs a decision BEFORE drawing it "
+    "(the designer through the channel or the engineer, one question at a time, with the proposed answer). The export waits until each "
     "row is met or answered ('met: where on the sheet' | 'no aplica: why'); one the harness measured (a thread exists, a "
     "fit is declared, the intent file says so) is dismissed only on the engineer's order (by=, reason=).",
     "ANSWER: drawing(action=answer, sheet?, id=<id from review>, text='applies: <how, in this part>' | 'no aplica: <why>'), "
-    "one id per call, at least three words after the colon. The answers are stored in the sheet (they survive save, close "
-    "and reopen) and the ENGINEER READS THEM: a 'no aplica' with no real reason is a false statement to him. An answer is "
-    "NOT printed on the drawing: what the shop must read goes in a note item.",
+    "one id per call, at least three words after the colon. The answers are stored in the sheet and the ENGINEER READS "
+    "THEM: a 'no aplica' with no real reason is a false statement to him. What the shop must read goes in a note item.",
     "IN own you ask yourself: (1) the QUESTIONS OF JUDGEMENT no memory principle covers (q.callouts, q.line_weights; "
     "q.assembly where it applies) and (2) the MEMORY ENTRIES the export calls for: read each with memory(action=get, id) "
     "BEFORE answering it (answering one also closes it at memory(review)). In the other modes the reviewer uses the entries "

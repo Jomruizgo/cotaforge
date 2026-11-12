@@ -222,17 +222,31 @@ def _toleranced_holes(data: Any) -> set[int]:
     return done
 
 
+def _called_holes(data: Any) -> set[int]:
+    """The holes some ``hole_dim`` calls out (a callout without a fit of its own prints the one the hole declared)."""
+    done: set[int] = set()
+    for spec in sheet_review._of(data, "hole_dim"):
+        try:
+            done |= {h.index for h in select_callout_holes(data.ctx, spec)}
+        except ItemError:
+            continue
+    return done
+
+
 def _fit_holes(data: Any) -> list[Any]:
     """A plain hole of a dowel / reamer size with no tolerance on its callout: a fit hole needs its class (H7) and, with
     ``hole_not_located``, its position. A hole that is not one of those sizes is never flagged here: the memory principle ``drawing-general-tolerance-declared``
     asks about bearing seats and the like."""
     ctx = data.ctx
     toleranced = _toleranced_holes(data)
+    called = _called_holes(data)
     out: list[Any] = []
     for stack in _stack_list(ctx):
         hole = stack[0]
         if hole.thread is not None or hole.index in toleranced:
             continue
+        if hole.fit and hole.index in called:
+            continue  # the hole operation declared its fit and a callout prints it: the class is on the sheet
         if not any(abs(hole.diameter - size) <= DOWEL_TOL_MM for size in DOWEL_SIZES_MM):
             continue
         name = " + ".join(sheet_review._label(h, ctx) for h in stack)

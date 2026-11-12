@@ -24,6 +24,7 @@ what the intent file of the part declares (``intent.<row id>``, read here). A CA
 
 import re
 import unicodedata
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -74,6 +75,12 @@ class Row:
     """What in those sections declares it; a hit also makes the row measured (the designer said so)."""
     clause: str = ""
     """The clause or table of ``standard`` this comes from, ONLY when it was checked against the text of the standard."""
+    auto: str = ""
+    """How the harness meets the row ITSELF when everything it needs is already known (a DETERMINED row; empty: the row needs
+    a DECISION, nobody knows the value, so it is a question): ``callouts`` (a callout of every hole: the thread and the fit
+    the hole operations declared print by themselves), ``view_lines`` (the centre lines), ``intent_note`` (a note with the
+    line of the intent file that declares it, in the designer's own words) or ``title`` (the title block ``create`` fills:
+    material, general tolerance, scale, projection)."""
 
 
 def _n(fact: str, es: str, en: str) -> Need:
@@ -84,6 +91,7 @@ def _n(fact: str, es: str, en: str) -> Need:
 ROWS: tuple[Row, ...] = (
     Row(
         id="req.thread",
+        auto="callouts",
         title=("Designación de rosca", "Thread designation"),
         must=(
             "cada rosca lleva su designación (tamaño, paso y la clase de tolerancia si importa) y se dibuja como la norma indica",
@@ -107,6 +115,7 @@ ROWS: tuple[Row, ...] = (
     ),
     Row(
         id="req.fit_class",
+        auto="callouts",
         title=("Clase de tolerancia en los ajustes", "Tolerance class on fits"),
         must=(
             "todo agujero o eje con ajuste, y toda cara que acople con una pieza comercial, lleva su clase de tolerancia (H7, g6...) en la cota",
@@ -131,6 +140,7 @@ ROWS: tuple[Row, ...] = (
     ),
     Row(
         id="req.general_tolerance",
+        auto="title",
         title=("Tolerancia general", "General tolerance"),
         must=(
             "la tolerancia general (ISO 2768 o ISO 22081; ISO 13920 en una construcción soldada) en el rótulo",
@@ -147,6 +157,7 @@ ROWS: tuple[Row, ...] = (
     ),
     Row(
         id="req.title_block",
+        auto="title",
         title=("Rótulo: material, escala y proyección", "Title block: material, scale and projection"),
         must=(
             "el rótulo lleva el material (y su forma de partida), la escala y el símbolo del método de proyección",
@@ -171,6 +182,7 @@ ROWS: tuple[Row, ...] = (
     ),
     Row(
         id="req.surface_texture",
+        auto="intent_note",
         title=("Textura superficial", "Surface texture"),
         must=(
             "la textura superficial (Ra) de las caras funcionales y la rugosidad general de la hoja",
@@ -194,6 +206,7 @@ ROWS: tuple[Row, ...] = (
     ),
     Row(
         id="req.edge_state",
+        auto="intent_note",
         title=("Estado de aristas", "Edge state"),
         must=(
             "el estado de las aristas (romper aristas vivas, sin rebabas, o la cota del chaflán)",
@@ -215,6 +228,7 @@ ROWS: tuple[Row, ...] = (
     ),
     Row(
         id="req.heat_treatment",
+        auto="intent_note",
         title=("Tratamiento térmico", "Heat treatment"),
         must=(
             "el tratamiento térmico con su dureza, o «sin tratamiento térmico»",
@@ -233,6 +247,7 @@ ROWS: tuple[Row, ...] = (
     ),
     Row(
         id="req.coating",
+        auto="intent_note",
         title=("Recubrimiento", "Coating"),
         must=("el recubrimiento o la pintura, o «sin recubrimiento»", "the coating or paint, or 'no coating'"),
         standard="",
@@ -248,6 +263,7 @@ ROWS: tuple[Row, ...] = (
     ),
     Row(
         id="req.marking",
+        auto="intent_note",
         title=("Marcado", "Marking"),
         must=(
             "el marcado o la identificación de la pieza (grabado, etiqueta, número de plano)",
@@ -264,6 +280,7 @@ ROWS: tuple[Row, ...] = (
     ),
     Row(
         id="req.dimensions",
+        auto="callouts",
         title=("Tamaño y posición de cada rasgo", "Size and location of every feature"),
         must=(
             "cada agujero, rasgo y radio lleva su tamaño y su posición desde una referencia de la hoja, una vez",
@@ -294,6 +311,7 @@ ROWS: tuple[Row, ...] = (
     ),
     Row(
         id="req.centre_lines",
+        auto="view_lines",
         title=("Ejes y marcas de centro", "Centre lines and centre marks"),
         must=(
             "cada agujero y cada rasgo redondo lleva su marca de centro o su eje",
@@ -390,6 +408,7 @@ ROWS: tuple[Row, ...] = (
     ),
     Row(
         id="req.welds",
+        auto="intent_note",
         title=("Soldaduras", "Welds"),
         must=(
             "un símbolo de soldadura por unión (tamaño, lados, todo alrededor o intermitente) y la clase de tolerancia general de soldadura",
@@ -444,6 +463,7 @@ ROWS: tuple[Row, ...] = (
     ),
     Row(
         id="req.quantity_process",
+        auto="intent_note",
         title=("Cantidad y proceso", "Quantity and process"),
         must=(
             "la cantidad y el proceso de fabricación en el rótulo o en una nota",
@@ -645,10 +665,19 @@ class Requirement:
     answer: Any
     closed: bool
     refused_answer: bool
+    auto_items: tuple[str, ...] = ()
+    """The items of the sheet the harness added for this row (``rq_...``): they are on the sheet now."""
+    model_measured: bool = False
+    """The activation is a measurement of the MODEL (a thread, a declared fit...), not only the intent file's words."""
 
     @property
     def id(self) -> str:
         return self.row.id
+
+    @property
+    def added(self) -> bool:
+        """Met by what the harness itself put on the sheet (an item it added, or the title block ``create`` filled)."""
+        return self.state == MET and (bool(self.auto_items) or self.row.auto == "title")
 
 
 def answer_counts(answer: Any, measured: bool) -> bool:
@@ -675,6 +704,7 @@ def evaluate(
     findings: tuple[Any, ...] | list[Any],
     answers: dict[str, Any],
     intent: Intent,
+    item_ids: Collection[str] = (),
 ) -> list[Requirement]:
     """The rows that apply to this sheet, in table order, each with its state. ``facts`` empty (the CAD reports none): no
     rows. ``findings`` are the review's, ``answers`` the sheet's by id. What it says is for the agent: English."""
@@ -722,9 +752,80 @@ def evaluate(
                 answer=answer,
                 closed=state == MET or counts,
                 refused_answer=answer is not None and not counts,
+                auto_items=tuple(i for i in (auto_item_id(row),) if i and i in item_ids),
+                model_measured=row.always_measured or any(merged.get(m, 0) > 0 for m in row.measured),
             )
         )
     return out
+
+
+AUTO_PREFIX = "rq_"
+"""The id of every item the harness adds for a row starts with it."""
+CALLOUTS_ID = AUTO_PREFIX + "callouts"
+VIEW_LINES_ID = AUTO_PREFIX + "view_lines"
+CALLOUT_CODES = frozenset({"thread_no_callout", "hole_no_callout", "fit_hole_no_tolerance"})
+
+
+def auto_item_id(row: Row) -> str:
+    """The id of the item the harness adds to meet ``row`` (empty: it adds none for this row)."""
+    if row.auto == "callouts":
+        return CALLOUTS_ID
+    if row.auto == "view_lines":
+        return VIEW_LINES_ID
+    if row.auto == "intent_note":
+        return AUTO_PREFIX + row.id.removeprefix(PREFIX)
+    return ""
+
+
+def rows_of_item(item_id: str) -> list[Row]:
+    """The rows an item the harness added stands for (the callouts stand for several)."""
+    return [r for r in ROWS if item_id and auto_item_id(r) == item_id]
+
+
+@dataclass(frozen=True)
+class Addition:
+    """An item the harness adds to the sheet by itself because the model or the intent file already says everything it
+    needs: ``rows`` are the rows it meets, ``item`` the item as ``drawing(action=add)`` takes it, ``what`` how it is said."""
+
+    rows: tuple[str, ...]
+    item: dict[str, Any]
+    what: str
+
+
+def plan_additions(rows: list[Requirement], items: list[Any]) -> list[Addition]:
+    """What the harness adds to the sheet for the DETERMINED rows that are not met: callouts of every hole when the part has
+    threaded or fitted holes nobody called out (the thread and the fit come from the hole operations), the centre lines, and
+    a note carrying the line of the intent file that declares what the row asks for. A row that was answered (the item was
+    removed with a reason) is never added again, and the agent's own items come first: callouts are not added while the
+    sheet has a ``hole_dim`` of its own."""
+    have = {i.id for i in items}
+    kinds = {i.type for i in items}
+    out: dict[str, Addition] = {}
+    for r in rows:
+        row = r.row
+        item_id = auto_item_id(row)
+        if not item_id or r.state == MET or r.answer is not None or item_id in have:
+            continue
+        wants_callouts = bool(CALLOUT_CODES & set(r.codes)) or any("no callout" in text for text in r.lacking)
+        if row.auto == "callouts" and (not wants_callouts or "hole_dim" in kinds):
+            continue
+        if row.auto == "view_lines" and (not r.codes or "view_lines" in kinds):
+            continue
+        if row.auto == "intent_note" and not r.intent_line:
+            continue
+        if item_id in out:
+            out[item_id] = Addition((*out[item_id].rows, row.id), out[item_id].item, out[item_id].what)
+            continue
+        if row.auto == "callouts":
+            item: dict[str, Any] = {"type": "hole_dim", "id": item_id, "all": True}
+            what = "a callout of every hole: the thread and the fit the hole operations declared print with it"
+        elif row.auto == "view_lines":
+            item, what = {"type": "view_lines", "id": item_id}, "the centre lines and marks of every hole and cylinder"
+        else:
+            item = {"type": "note", "id": item_id, "text": r.intent_line}
+            what = f"a note with the intent file's own words: «{r.intent_line}»"
+        out[item_id] = Addition((row.id,), item, what)
+    return list(out.values())
 
 
 def claimed_codes(rows: list[Requirement]) -> frozenset[str]:
@@ -755,7 +856,9 @@ def line(req: Requirement, language: str = "es") -> list[str]:
     one line: the listing is read whole, and what is open is what the agent needs."""
     row = req.row
     tag = (
-        "met"
+        "added automatically"
+        if req.added
+        else "met"
         if req.state == MET
         else "answered"
         if req.closed
@@ -763,6 +866,14 @@ def line(req: Requirement, language: str = "es") -> list[str]:
     )
     standard = f" ({row.standard}{', ' + row.clause if row.clause else ''})" if row.standard else ""
     head = f"  [{tag}] {row.id} — {row.title[1]}{standard}; active: {req.why}" + (" [measured]" if req.measured else "")
+    if req.added:
+        how = (
+            f"item {', '.join(req.auto_items)} (the harness added it from what the model or the intent file says; move it "
+            "if it is in the way, remove it only with a reason)"
+            if req.auto_items
+            else "in the title block (create fills it)"
+        )
+        return [head, f"      added by the harness: {how}"]
     if req.state == MET:
         return [head]
     out = [head]

@@ -162,7 +162,7 @@ def facts(data: Any) -> dict[str, int]:
         "threaded_holes": sum(1 for s in stacks if any(h.thread is not None for h in s)),
         "fit_holes": len(fit),
         "fit_holes_uncalled": sum(1 for s in fit if not {h.index for h in s} & called),
-        "tolerance_classes_on_sheet": toleranced,
+        "tolerance_classes_on_sheet": toleranced + sum(1 for s in fit if {h.index for h in s} & called),  # a callout shows the declared fit
         "thread_designation_on_sheet": 1 if THREAD_PRINTED.search(printed) else 0,
         "functional_faces": len(fit) + toleranced + gdt,
         "surface_texture_on_sheet": finishes + roughness_note,
