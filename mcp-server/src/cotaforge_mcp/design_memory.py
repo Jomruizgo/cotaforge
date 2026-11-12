@@ -400,13 +400,16 @@ _cache: dict[str, Any] = {}
 
 def _signature(settings: Settings) -> tuple[Any, ...]:
     store = rules.memory_store(settings)
-    rows: list[tuple[str, int]] = []
+    rows: list[tuple[str, int, int, int]] = []
     for scope in (Scope.project, Scope.user, Scope.base):
         directory = store.directory(scope)
         if directory is None or not directory.is_dir():
             continue
         with os.scandir(directory) as scan:
-            rows.extend((entry.path, entry.stat().st_mtime_ns) for entry in scan if entry.name.endswith(".md"))
+            for entry in scan:
+                if entry.name.endswith(".md"):  # size and inode too: two writes in one clock tick share a time
+                    stat = entry.stat()
+                    rows.append((entry.path, stat.st_mtime_ns, stat.st_size, stat.st_ino))
     return tuple(sorted(rows))
 
 
