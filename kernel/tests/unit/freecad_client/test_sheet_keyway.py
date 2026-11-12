@@ -35,6 +35,10 @@ def test_a_shaft_and_the_hub_on_it_count_the_one_keyway_once() -> None:
     assert kw.count_keyways([SHAFT, kw.Cylinder(Z, (0.0, 0.0, 0.0), 15.0, True, 0.0, 80.0)], flats) == 1
 
 
+def test_a_slot_a_little_off_the_axis_is_still_a_keyway() -> None:
+    assert kw.count_keyways([SHAFT], walls(4.0, 12.0, shift=-0.4)) == 1  # the sketch was placed from a face centre
+
+
 def test_two_keyways_on_two_sides_are_two() -> None:
     other = [kw.Flat((1.0, 0.0, 0.0), (3.0, -13.0, 40.0)), kw.Flat((-1.0, 0.0, 0.0), (-3.0, -13.0, 40.0))]
     assert kw.count_keyways([SHAFT], [*walls(6.0, 13.0), *other]) == 2

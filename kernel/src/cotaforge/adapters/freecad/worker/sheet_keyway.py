@@ -17,7 +17,7 @@ PARALLEL = 0.02  # |cos| of a wall's normal with the axis: it is parallel to the
 SAME_PLANE = 0.98  # |cos| of the normals of the two walls: they are parallel
 MIN_WIDTH_MM = 1.0
 MAX_WIDTH_RATIO = 1.2  # the width between the walls, over the radius of the cylinder
-SYMMETRY_MM = 0.3  # the slot is centred on the axis within this, plus a tenth of its width
+SYMMETRY_MM = 0.5  # the slot is centred on the axis within this, plus 15 % of its width (a sketch is placed by hand)
 AXIAL_SLACK_MM = 0.5
 FACES_LIMIT = 4000  # a part with more faces is not read: the pairs would cost more than the fact is worth
 
@@ -72,7 +72,7 @@ def _walls(c: Cylinder, a: Flat, b: Flat) -> bool:
     width = abs(side_a - side_b)
     if not MIN_WIDTH_MM <= width <= MAX_WIDTH_RATIO * c.radius:
         return False
-    if abs(side_a + side_b) > SYMMETRY_MM + 0.1 * width:
+    if abs(side_a + side_b) > SYMMETRY_MM + 0.15 * width:
         return False  # the plane half way between the walls does not hold the axis
     lateral = _cross(c.axis, a.normal)
     if abs(_dot(_sub(a.centre, b.centre), lateral)) > 1.0 + 0.1 * width:

@@ -166,7 +166,10 @@ async def test_a_threaded_fitted_shaft_activates_measured_rows_that_only_the_eng
         out.say("review (shaft)", review)
         assert "answered: DOES NOT APPLY: la rosca la hace el cliente" in review and "(ordered by Ana)" in review
 
-        await cad.ok("drawing", action="answer", id="req.keyway", text="no aplica: el chavetero lo ejecuta el montador, no se fabrica aquí")
+        assert "measured_not_dismissable" in await cad.err("drawing", action="answer", id="req.keyway", text="no aplica: el chavetero lo ejecuta el montador")
+        await cad.ok(
+            "drawing", action="answer", id="req.keyway", text="no aplica: el chavetero lo ejecuta el montador", by="Ana", reason="Ana: el chavetero lo hace el montador"
+        )
         pending, _, _ = await pending_points(cad)
         out.say("what is still open", f"findings {pending}; rows {await pending_rows(cad)}")
         await finish_drawing(cad)
