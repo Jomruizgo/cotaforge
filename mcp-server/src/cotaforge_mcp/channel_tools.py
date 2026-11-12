@@ -99,20 +99,32 @@ def _checked_name(name: str | None) -> str:
 @contextlib.contextmanager
 def _locked(lock: Path, wait_s: float = LOCK_WAIT_S, stale_s: float = LOCK_STALE_S) -> Iterator[None]:
     """One writer at a time across processes: the lock is a file made with ``O_EXCL``. A lock whose file is older than
-    ``stale_s`` belongs to a process that died inside the section: it is taken over."""
+    ``stale_s`` belongs to a process that died inside the section: it is taken over.
+
+    On Windows a file that was just deleted stays in the folder, "delete pending", until every handle to it is closed
+    (another session looking at it, a virus scanner, the indexer), and so does a file its owner still has open. Opening,
+    reading or deleting such a file does not fail with "exists" or "not found": it fails with ``PermissionError``. That
+    is the lock being busy, not a refusal, so it is waited for like any held lock. A ``PermissionError`` that lasts
+    (a folder that cannot be written) still ends as itself when the wait is over, not as a lock held by someone."""
     lock.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + wait_s
     while True:
         try:
             descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
+        except (FileExistsError, PermissionError) as refused:
             try:
                 if time.time() - lock.stat().st_mtime > stale_s:
                     lock.unlink()
                     continue
             except FileNotFoundError:
+                if time.monotonic() > deadline:
+                    raise refused from None  # nothing holds it and it still cannot be made
                 continue  # its holder just let go
+            except PermissionError:
+                pass  # delete pending or still open: look again
             if time.monotonic() > deadline:
+                if isinstance(refused, PermissionError) and not _is_there(lock):
+                    raise
                 raise ToolError(
                     f"{lock.name} is held by another session for too long; try again", code="busy"
                 ) from None
@@ -124,8 +136,29 @@ def _locked(lock: Path, wait_s: float = LOCK_WAIT_S, stale_s: float = LOCK_STALE
     try:
         yield
     finally:
-        with contextlib.suppress(FileNotFoundError):
+        _release(lock)
+
+
+def _is_there(path: Path) -> bool:
+    """Whether the file is in the folder; a file that cannot even be looked at (delete pending) is."""
+    try:
+        return path.exists()
+    except OSError:
+        return True
+
+
+def _release(lock: Path) -> None:
+    """Delete the lock. On Windows the delete is refused while someone has the file open (a session that is checking
+    whether it is stale, a scanner): try again for a moment. A lock that stays is taken over as stale later."""
+    for _ in range(100):
+        try:
             lock.unlink()
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            time.sleep(0.02)
+        else:
+            return
 
 
 def read_events(log: Path) -> list[dict[str, Any]]:
