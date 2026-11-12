@@ -164,6 +164,7 @@ class DrawingArgs(Strict):
         "list",
         "read",
         "review",
+        "requirements",
         "capture",
         "answer",
         "approve",
@@ -194,11 +195,12 @@ class DrawingArgs(Strict):
     projection: Literal["techdraw", "hlr"] = Field(
         default="techdraw", description="create: hlr = own (engineer's choice)"
     )
+    symmetry: bool | None = None  # create, update: only when the design intent declares the part symmetric
     items: list[Any] | None = Field(default=None, description="add: items; remove: ids; review_report: remarks")
     region: list[float] | None = Field(default=None, description="capture: zoom x0,y0,x1,y1 mm")
     id: str | None = None  # answer / approve / review_*: see cad_guide(topic="drawing:done")
     text: str | None = None
-    by: str | None = Field(default=None, description="approve: engineer; review_*: engineer|fabricator")
+    by: str | None = Field(default=None, description="approve, answer: engineer; review_*: engineer|fabricator")
     reason: str | None = None
 
 
@@ -412,7 +414,7 @@ def _drawing_actions(session: "Session") -> list[str]:
                 "review_report",
             ),
         ),
-        ("describe_drawing", ("list", "read", "review")),
+        ("describe_drawing", ("list", "read", "review", "requirements")),
         ("capture_drawing", ("capture",)),
     )
     return [action for tool, actions in pairs if tool in t for action in actions]
@@ -479,16 +481,17 @@ TOOLS: tuple[ToolDef, ...] = (
         "objects the engineer edits; values come from the model; a few per call) | add_view / remove_view | "
         "remove_sheet | update (lay out again after the part changed) | list | read (texts the sheet prints only) | "
         "capture (the PDF's own image; region "
-        "zooms) | review (findings) | "
-        "answer (id, text) | request_review, review_choice, review_report (by, items: who reviews it) | approve (the "
+        "zooms) | review (findings) | requirements (what the standards ask this part's sheet to carry, with the "
+        "questions to ask) | "
+        "answer (id, text; by, reason: the engineer's order) | request_review, review_choice, review_report (by, items: who reviews it) | approve (the "
         "ENGINEER's gate: by, reason). export(pdf|dxf) writes ONE sheet, refused until its review is done. Items, "
         'finishing: cad_guide(topic="drawing" | "drawing:done").',
         DrawingArgs,
-        "drawing(action=create|add|remove|remove_sheet|update|add_view|remove_view|list|read|review|capture|answer|approve|"
-        "request_review|review_choice|review_report, "
+        "drawing(action=create|add|remove|remove_sheet|update|add_view|remove_view|list|read|review|requirements|capture|"
+        "answer|approve|request_review|review_choice|review_report, "
         "sheet?, items?, template?, angle?, title?, author?, date?, material?, scale?, language?, drawing_number?, "
-        "revision?, general_tolerances?, company?, title_block?, body?, isometric?, views?, projection?, region?, id?, "
-        "text?, by?, reason?)",
+        "revision?, general_tolerances?, company?, title_block?, body?, isometric?, views?, projection?, symmetry?, "
+        "region?, id?, text?, by?, reason?)",
         'drawing(action="add", items=[{"type":"hole_dim","all":true}])',
         _drawing_actions,
         lambda session: bool(_drawing_actions(session)),

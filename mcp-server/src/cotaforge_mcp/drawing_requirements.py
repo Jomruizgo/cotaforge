@@ -1,0 +1,793 @@
+# ruff: noqa: E501
+"""What the standards ask a shop sheet to carry, activated by what the part has.
+
+The agent that draws knows the standards; what it does is OMIT what applies. So this is not prose to read: it is a table
+(``ROWS``, data) and a mechanism, the same one the memory has for its entries (an entry is activated by what is recognised
+in the model and must be answered before the milestone). Each row says
+
+* what ACTIVATES it (a fact the CAD measured on the part, or one the design's intent file declares);
+* what the sheet must then CARRY, and the standard it comes from (the number: ``clause`` stays empty until somebody has the
+  text of the standard open and checks it -- a clause is never written from memory);
+* what shows it is MET (facts counted on the sheet, or review findings that stand for "missing");
+* the QUESTION to ask when it is not, with a proposed answer.
+
+``evaluate`` lists the rows that apply to THIS part with their state: ``met`` (the sheet carries it), ``missing`` (it is
+absent) or ``needs_answer`` (nothing the harness can read says, somebody must). The export waits until every active row is
+met or answered. An answer is ``met: <where on the sheet>`` or ``does not apply: <why>``; a ``does not apply`` on a row the
+harness MEASURED as applying (a thread exists, a fit is declared, the intent says so) is not accepted unless the engineer
+ordered it, with his words quoted (``drawing(action=answer, by=, reason=)``). The same hardening holds for the review
+findings that are measurements (``MEASURED_FINDINGS``).
+
+The facts come from the CAD's review (``DrawingSheetInfo.facts``; the FreeCAD worker's ``sheet_reqfacts`` fills them) plus
+what the intent file of the part declares (``intent.<row id>``, read here). A CAD that reports no facts gets no rows.
+"""
+
+import re
+import unicodedata
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from cotaforge.language import say
+
+PREFIX = "req."
+"""Every row id starts with it: ``drawing(action=answer, id="req.thread", ...)``."""
+
+MET, MISSING, NEEDS_ANSWER = "met", "missing", "needs_answer"
+
+
+@dataclass(frozen=True)
+class Need:
+    """A fact of the sheet and what it says in words (Spanish, English)."""
+
+    fact: str
+    es: str
+    en: str
+
+
+@dataclass(frozen=True)
+class Row:
+    id: str
+    title: tuple[str, str]
+    must: tuple[str, str]
+    """What the sheet must carry (Spanish, English)."""
+    standard: str
+    question: tuple[str, str]
+    proposal: tuple[str, str]
+    triggers: tuple[str, ...] = ()
+    """Facts that activate the row (any of them above 0); none: it applies to every sheet that passes ``only``."""
+    only: str = ""
+    """``part`` or ``assembly``: the row applies only to that kind of sheet."""
+    needs: tuple[Need, ...] = ()
+    """Facts of the sheet that must be above 0 for the row to be met."""
+    lacks: tuple[Need, ...] = ()
+    """Facts that count what is wrong and must be 0 (a fit hole with no callout)."""
+    codes: tuple[str, ...] = ()
+    """Review findings that stand for this row being missing: the row takes them in (they are shown under it and one answer
+    closes them)."""
+    measured: tuple[str, ...] = ()
+    """Facts that, when above 0, make the activation a MEASUREMENT: the row cannot be dismissed without the engineer's order."""
+    always_measured: bool = False
+    intent: tuple[str, ...] = ()
+    """Sections of the intent file that can declare this row."""
+    intent_pattern: str = ""
+    """What in those sections declares it; a hit also makes the row measured (the designer said so)."""
+    clause: str = ""
+    """The clause or table of ``standard`` this comes from, ONLY when it was checked against the text of the standard."""
+
+
+def _n(fact: str, es: str, en: str) -> Need:
+    return Need(fact, es, en)
+
+
+# The standards are named by number only: no clause is written here until it is verified against the standard's text.
+ROWS: tuple[Row, ...] = (
+    Row(
+        id="req.thread",
+        title=("Designación de rosca", "Thread designation"),
+        must=(
+            "cada rosca lleva su designación (tamaño, paso y la clase de tolerancia si importa) y se dibuja como la norma indica",
+            "every thread carries its designation (size, pitch, tolerance class where it matters) and is drawn as the standard shows",
+        ),
+        standard="ISO 6410",
+        question=(
+            "¿Qué rosca lleva (designación, paso, clase de tolerancia) y qué longitud útil tiene?",
+            "Which thread is it (designation, pitch, tolerance class) and what usable length does it have?",
+        ),
+        proposal=(
+            "M<tamaño> de paso grueso, 6H en el agujero / 6g en el eje, longitud útil igual a la profundidad del taladro",
+            "M<size> coarse pitch, 6H in a hole / 6g on a shaft, usable length equal to the drilled depth",
+        ),
+        triggers=("threaded_holes", "intent.req.thread"),
+        needs=(_n("thread_designation_on_sheet", "una designación de rosca impresa (M6, M8x1,25...)", "a printed thread designation (M6, M8x1.25...)"),),
+        codes=("thread_no_callout", "thread_no_representation"),
+        measured=("threaded_holes",),
+        intent=("fits", "mating", "process", "function"),
+        intent_pattern=r"rosca|thread|(?<![A-Za-z0-9])M\d{1,3}(?:[x×,.]\d+)?(?![A-Za-z0-9])",
+    ),
+    Row(
+        id="req.fit_class",
+        title=("Clase de tolerancia en los ajustes", "Tolerance class on fits"),
+        must=(
+            "todo agujero o eje con ajuste, y toda cara que acople con una pieza comercial, lleva su clase de tolerancia (H7, g6...) en la cota",
+            "every hole or shaft with a fit, and every face that mates with a commercial part, carries its tolerance class (H7, g6...) on the dimension",
+        ),
+        standard="ISO 286-1, ISO 286-2",
+        question=(
+            "¿Qué ajuste lleva cada agujero o eje de unión (clase y con qué pieza acopla)?",
+            "Which fit does each coupling hole or shaft carry (class, and which part it mates with)?",
+        ),
+        proposal=(
+            "H7 en el agujero y g6 / h6 en el eje, o la clase que pida el catálogo del componente comercial",
+            "H7 on the hole and g6 / h6 on the shaft, or the class the catalogue of the commercial component asks for",
+        ),
+        triggers=("fit_holes", "intent.req.fit_class"),
+        needs=(_n("tolerance_classes_on_sheet", "una cota con su clase de tolerancia", "a dimension with its tolerance class"),),
+        lacks=(_n("fit_holes_uncalled", "agujeros con ajuste sin llamada", "fit holes with no callout"),),
+        codes=("fit_hole_no_tolerance",),
+        measured=("fit_holes",),
+        intent=("fits", "mating"),
+        intent_pattern=r"(?<![A-Za-z0-9])[A-Za-z]{1,2}\d{1,2}(?![A-Za-z0-9])|ajuste|(?<![a-z])fit(?![a-z])|rodamiento|bearing|comercial|commercial|pasador|dowel|retén|seal",
+    ),
+    Row(
+        id="req.general_tolerance",
+        title=("Tolerancia general", "General tolerance"),
+        must=(
+            "la tolerancia general (ISO 2768 o ISO 22081; ISO 13920 en una construcción soldada) en el rótulo",
+            "the general tolerance (ISO 2768 or ISO 22081; ISO 13920 for a welded construction) in the title block",
+        ),
+        standard="ISO 2768-1, ISO 22081 (ISO 2768-2 is withdrawn), ISO 13920",
+        question=(
+            "¿Qué tolerancia general lleva la hoja (ISO 2768-mK por defecto; clase ISO 13920 si es soldada)?",
+            "Which general tolerance does the sheet carry (ISO 2768-mK by default; an ISO 13920 class if it is welded)?",
+        ),
+        proposal=("ISO 2768-mK (soldada: ISO 13920 clase B)", "ISO 2768-mK (welded: ISO 13920 class B)"),
+        needs=(_n("title_general_tolerance", "la tolerancia general en el rótulo", "the general tolerance in the title block"),),
+        always_measured=True,
+    ),
+    Row(
+        id="req.title_block",
+        title=("Rótulo: material, escala y proyección", "Title block: material, scale and projection"),
+        must=(
+            "el rótulo lleva el material (y su forma de partida), la escala y el símbolo del método de proyección",
+            "the title block carries the material (and its starting form), the scale and the projection symbol",
+        ),
+        standard="ISO 7200, ISO 5455, ISO 128",
+        question=(
+            "¿De qué material y forma de partida se fabrica (barra, lámina, tocho)?",
+            "Which material and starting form is it made from (bar, plate, billet)?",
+        ),
+        proposal=(
+            "el material del documento y la forma de partida del archivo de intención",
+            "the material of the document and the starting form from the intent file",
+        ),
+        needs=(
+            _n("title_material", "el material en el rótulo", "the material in the title block"),
+            _n("title_scale", "la escala", "the scale"),
+            _n("title_projection", "el símbolo de proyección", "the projection symbol"),
+        ),
+        codes=("notes_material", "material_title_block_empty", "material_inconsistent"),
+        always_measured=True,
+    ),
+    Row(
+        id="req.surface_texture",
+        title=("Textura superficial", "Surface texture"),
+        must=(
+            "la textura superficial (Ra) de las caras funcionales y la rugosidad general de la hoja",
+            "the surface texture (Ra) of the functional faces and the general roughness of the sheet",
+        ),
+        standard="ISO 21920-1 / ISO 1302",
+        question=(
+            "¿Qué caras mecanizadas son funcionales y qué Ra lleva cada una (y la rugosidad general)?",
+            "Which machined faces are functional and which Ra does each carry (and the general roughness)?",
+        ),
+        proposal=(
+            "Ra 1,6 en asientos y caras de ajuste, Ra 3,2 general",
+            "Ra 1.6 on seats and fit faces, Ra 3.2 general",
+        ),
+        only="part",
+        needs=(_n("surface_texture_on_sheet", "un símbolo de acabado o una nota de rugosidad", "a finish symbol or a roughness note"),),
+        codes=("notes_roughness",),
+        measured=("functional_faces",),
+        intent=("treatments", "fits", "mating"),
+        intent_pattern=r"\bRa\b|rugosidad|roughness|acabado superficial|surface (?:finish|texture)",
+    ),
+    Row(
+        id="req.edge_state",
+        title=("Estado de aristas", "Edge state"),
+        must=(
+            "el estado de las aristas (romper aristas vivas, sin rebabas, o la cota del chaflán)",
+            "the state of the edges (break sharp edges, no burrs, or the size of the chamfer)",
+        ),
+        standard="ISO 13715",
+        question=(
+            "¿Qué estado de aristas lleva la pieza (romper 0,3 a 0,5 mm, aristas vivas, chaflán acotado)?",
+            "Which edge state does the part carry (break 0.3 to 0.5 mm, sharp edges, a dimensioned chamfer)?",
+        ),
+        proposal=(
+            "«Romper aristas vivas 0,3 a 0,5 mm; sin rebabas» en una placa cortada; en una pieza torneada o fresada se pregunta",
+            "'Break sharp edges 0.3 to 0.5 mm; no burrs' on a cut plate; on a turned or milled part it is asked",
+        ),
+        only="part",
+        codes=("notes_edges",),
+        intent=("treatments", "process", "function"),
+        intent_pattern=r"rebab|desbarb|arista|borde|deburr|edge|chafl|chamfer|burr",
+    ),
+    Row(
+        id="req.heat_treatment",
+        title=("Tratamiento térmico", "Heat treatment"),
+        must=(
+            "el tratamiento térmico con su dureza, o «sin tratamiento térmico»",
+            "the heat treatment with its hardness, or 'no heat treatment'",
+        ),
+        standard="",
+        question=(
+            "¿Lleva tratamiento térmico (cuál, con qué dureza y en qué zonas) o ninguno?",
+            "Does it carry a heat treatment (which, with what hardness and where) or none?",
+        ),
+        proposal=("«Sin tratamiento térmico» si el archivo de intención no dice otra cosa", "'No heat treatment' unless the intent file says otherwise"),
+        only="part",
+        codes=("notes_heat_treatment",),
+        intent=("treatments", "process", "material"),
+        intent_pattern=r"tratamiento\s+t[eé]rmico|temple|revenid|normaliz|recocid|cementad|nitrur|dureza|\bHRC\b|\bHV\b|heat[\s-]*treat|harden|anneal|temper|stress[\s-]*reliev",
+    ),
+    Row(
+        id="req.coating",
+        title=("Recubrimiento", "Coating"),
+        must=("el recubrimiento o la pintura, o «sin recubrimiento»", "the coating or paint, or 'no coating'"),
+        standard="",
+        question=(
+            "¿Lleva recubrimiento o pintura (cuál, espesor, qué zonas se enmascaran) o ninguno?",
+            "Does it carry a coating or paint (which, thickness, which areas are masked) or none?",
+        ),
+        proposal=("«Sin recubrimiento» si el archivo de intención no dice otra cosa", "'No coating' unless the intent file says otherwise"),
+        only="part",
+        codes=("notes_coating",),
+        intent=("treatments", "process", "material"),
+        intent_pattern=r"recubrimiento|pintura|pintad|anodiz|galvaniz|zincad|cromad|n[ií]quel|pavonad|fosfat|coating|paint|plating|anodi[sz]|galvani[sz]|powder",
+    ),
+    Row(
+        id="req.marking",
+        title=("Marcado", "Marking"),
+        must=(
+            "el marcado o la identificación de la pieza (grabado, etiqueta, número de plano)",
+            "the marking or identification of the part (engraving, label, drawing number)",
+        ),
+        standard="",
+        question=(
+            "¿Cómo se marca o identifica la pieza (grabado, etiqueta, número de plano) o no se marca?",
+            "How is the part marked or identified (engraving, label, drawing number) or is it not marked?",
+        ),
+        proposal=("el número de plano grabado o en etiqueta", "the drawing number engraved or on a label"),
+        only="part",
+        codes=("notes_marking",),
+    ),
+    Row(
+        id="req.dimensions",
+        title=("Tamaño y posición de cada rasgo", "Size and location of every feature"),
+        must=(
+            "cada agujero, rasgo y radio lleva su tamaño y su posición desde una referencia de la hoja, una vez",
+            "every hole, feature and radius carries its size and its location from a reference the sheet has, once",
+        ),
+        standard="ISO 129-1",
+        question=(
+            "¿Desde qué cara, arista o eje se cuentan las posiciones y cuál es la cota crítica de cada relación?",
+            "Which face, edge or axis are the positions counted from and which dimension is critical in each relation?",
+        ),
+        proposal=(
+            "desde las caras de referencia del archivo de intención; sin referencia se pregunta, nunca desde la esquina de la caja",
+            "from the reference faces of the intent file; with no reference it is asked, never from the corner of the box",
+        ),
+        only="part",
+        triggers=("holes", "features", "rounds"),
+        codes=(
+            "hole_not_located",
+            "hole_partly_located",
+            "hole_no_reference",
+            "hole_no_callout",
+            "feature_no_dimension",
+            "feature_not_located",
+            "round_no_dimension",
+        ),
+        measured=("holes", "features", "rounds"),
+        intent=("datums", "relations", "dimensions"),
+    ),
+    Row(
+        id="req.centre_lines",
+        title=("Ejes y marcas de centro", "Centre lines and centre marks"),
+        must=(
+            "cada agujero y cada rasgo redondo lleva su marca de centro o su eje",
+            "every hole and round feature carries its centre mark or centre line",
+        ),
+        standard="ISO 128",
+        question=(
+            "¿Algún agujero o cilindro no lleva eje (view_lines los dibuja todos)?",
+            "Does any hole or cylinder lack its axis (view_lines draws them all)?",
+        ),
+        proposal=("añadir view_lines", "add view_lines"),
+        only="part",
+        triggers=("holes", "bosses"),
+        codes=("centre_mark_missing", "cylinder_no_axis"),
+        measured=("holes", "bosses"),
+    ),
+    Row(
+        id="req.turned_part",
+        title=("Pieza torneada: diámetros", "Turned part: diameters"),
+        must=(
+            "una pieza torneada lleva sus diámetros en el corte o en la vista lateral, y su eje",
+            "a turned part carries its diameters on the section or the side view, and its centre line",
+        ),
+        standard="ISO 129-1",
+        question=(
+            "¿Qué diámetros del eje son funcionales y cuáles son libres?",
+            "Which diameters of the shaft are functional and which are free?",
+        ),
+        proposal=(
+            "todos los escalones con su diámetro en la vista lateral o en el corte, los funcionales con su ajuste",
+            "every step with its diameter on the side view or the section, the functional ones with their fit",
+        ),
+        only="part",
+        triggers=("turned",),
+        lacks=(_n("boss_radii_undimensioned", "escalones sin cota de diámetro", "steps with no diameter dimension"),),
+        measured=("turned",),
+    ),
+    Row(
+        id="req.geometric_tolerance",
+        title=("Tolerancias geométricas y datos", "Geometric tolerances and datums"),
+        must=(
+            "toda tolerancia geométrica cita datos definidos en la hoja y el rasgo está ubicado desde ellos",
+            "every geometric tolerance cites datums defined on the sheet and the feature is located from them",
+        ),
+        standard="ISO 1101, ISO 5459",
+        question=(
+            "¿Qué caras o ejes son los datos A, B, C y en qué orden se citan?",
+            "Which faces or axes are the datums A, B, C and in which order are they cited?",
+        ),
+        proposal=("los datos del archivo de intención, en el orden de montaje", "the datums of the intent file, in the order of assembly"),
+        triggers=("gdt_items",),
+        needs=(_n("datum_items", "un dato definido en la hoja", "a datum defined on the sheet"),),
+        codes=("datum_undefined", "gdt_not_located"),
+        measured=("gdt_items",),
+    ),
+    Row(
+        id="req.keyway",
+        title=("Chavetero", "Keyway"),
+        must=(
+            "el chavetero lleva la tolerancia del ancho, la profundidad y su posición",
+            "a keyway carries its width tolerance, its depth and its position",
+        ),
+        standard="DIN 6885-1, ISO 773",
+        question=(
+            "¿Qué ancho, tolerancia (tipo de ajuste de la chaveta) y profundidad lleva el chavetero, y desde qué cara se ubica?",
+            "Which width, tolerance (fit type of the key) and depth does the keyway carry, and which face is it located from?",
+        ),
+        proposal=(
+            "chaveta paralela: ancho y profundidad de la norma para el diámetro del eje, con la tolerancia del tipo de ajuste elegido",
+            "parallel key: width and depth from the standard for the shaft diameter, with the tolerance of the chosen fit type",
+        ),
+        triggers=("keyways", "intent.req.keyway"),
+        intent=("mating", "function", "process", "fits"),
+        intent_pattern=r"chavetero|keyway|key\s*seat|key\s*slot|chaveta|(?<![a-z])key(?![a-z])",
+    ),
+    Row(
+        id="req.bent_sheet",
+        title=("Chapa doblada", "Bent sheet"),
+        must=(
+            "radio interior, sentido y ángulo de cada doblez, el desarrollo con sus cotas y el espesor o calibre en una nota",
+            "inside radius, direction and angle of each bend, the flat pattern with its dimensions and the thickness or gauge in a note",
+        ),
+        standard="",
+        question=(
+            "¿Qué radio interior, sentido y ángulo lleva cada doblez y qué espesor o calibre tiene la chapa?",
+            "Which inside radius, direction and angle does each bend carry, and which thickness or gauge is the sheet?",
+        ),
+        proposal=("radio interior igual al espesor, «hacia abajo 90°» por doblez", "inside radius equal to the thickness, 'down 90 deg' per bend"),
+        only="part",
+        triggers=("sheet_metal",),
+        needs=(_n("bend_note_on_sheet", "una nota o cota de doblez (radio, sentido, desarrollo)", "a bend note or dimension (radius, direction, flat pattern)"),),
+        measured=("sheet_metal",),
+    ),
+    Row(
+        id="req.welds",
+        title=("Soldaduras", "Welds"),
+        must=(
+            "un símbolo de soldadura por unión (tamaño, lados, todo alrededor o intermitente) y la clase de tolerancia general de soldadura",
+            "one weld symbol per joint (size, sides, all round or intermittent) and the general tolerance class for welding",
+        ),
+        standard="ISO 2553, ISO 13920",
+        question=(
+            "¿Qué cuerpos une cada soldadura, de qué tipo y tamaño, y qué clase ISO 13920 lleva?",
+            "Which bodies does each weld join, of which type and size, and which ISO 13920 class does it carry?",
+        ),
+        proposal=(
+            "soldadura en ángulo por ambos lados, garganta según el espesor, clase ISO 13920 B",
+            "fillet weld on both sides, throat from the thickness, ISO 13920 class B",
+        ),
+        triggers=("weld_items", "intent.req.welds"),
+        needs=(
+            _n("weld_marked_on_sheet", "un símbolo o una nota de soldadura", "a weld symbol or note"),
+            _n("weld_class_on_sheet", "la clase ISO 13920", "the ISO 13920 class"),
+        ),
+        measured=("weld_items",),
+        intent=("welds", "process"),
+        intent_pattern=r"solda|weld",
+    ),
+    Row(
+        id="req.parts_list",
+        title=("Lista de piezas y globos", "Parts list and balloons"),
+        must=(
+            "una lista de piezas y un globo por posición, con los números de la lista",
+            "a parts list and a balloon per position, numbered as the list",
+        ),
+        standard="ISO 7573, ISO 6433",
+        question=(
+            "¿Qué piezas forman el conjunto, con qué número de plano o referencia y cantidad?",
+            "Which parts make up the assembly, with which drawing number or reference and quantity?",
+        ),
+        proposal=("una fila por pieza distinta, con su cantidad", "one row per distinct part, with its quantity"),
+        triggers=("assembly", "weld_items"),
+        needs=(
+            _n("parts_lists", "una lista de piezas", "a parts list"),
+            _n("balloons", "globos", "balloons"),
+        ),
+        codes=(
+            "no_parts_list",
+            "parts_without_balloons",
+            "balloons_without_row",
+            "position_without_balloon",
+            "balloon_without_row",
+            "parts_list_over_view",
+            "instance_hidden",
+        ),
+        measured=("assembly", "weld_items"),
+    ),
+    Row(
+        id="req.quantity_process",
+        title=("Cantidad y proceso", "Quantity and process"),
+        must=(
+            "la cantidad y el proceso de fabricación en el rótulo o en una nota",
+            "the quantity and the manufacturing process in the title block or a note",
+        ),
+        standard="",
+        question=(
+            "¿Cuántas piezas se fabrican y con qué proceso (corte láser, fresado, torneado...)?",
+            "How many parts are made and by which process (laser cutting, milling, turning...)?",
+        ),
+        proposal=("la cantidad del pedido y el proceso del archivo de intención", "the quantity of the order and the process of the intent file"),
+        only="part",
+        needs=(
+            _n("quantity_on_sheet", "la cantidad", "the quantity"),
+            _n("process_on_sheet", "el proceso", "the process"),
+        ),
+        intent=("process",),
+        intent_pattern=r"cantidad|quantity|\bqty\b|\d+\s*(?:pzas?|pcs|uds?|unidades|piezas)",
+    ),
+)
+
+ROW_IDS = tuple(r.id for r in ROWS)
+FACTS_USED = frozenset(
+    {t for r in ROWS for t in r.triggers if not t.startswith("intent.")}
+    | {r.only for r in ROWS if r.only}
+    | {n.fact for r in ROWS for n in (*r.needs, *r.lacks)}
+    | {m for r in ROWS for m in r.measured}
+)
+"""The names of the CAD's facts the table reads (the worker's ``sheet_reqfacts.FACT_NAMES`` must provide every one)."""
+
+MEASURED_FINDINGS = frozenset(
+    {
+        "hole_not_located",
+        "hole_partly_located",
+        "hole_no_reference",
+        "hole_no_callout",
+        "thread_no_callout",
+        "thread_no_representation",
+        "feature_no_dimension",
+        "feature_not_located",
+        "gdt_not_located",
+        "datum_undefined",
+        "stale_reference",
+        "dim_no_reference",
+        "item_error",
+        "callout_contradicts",
+        "duplicate_dimension",
+        "over_dimensioned",
+        "views_overlap",
+        "view_over_title_block",
+        "view_outside_frame",
+        "text_outside_frame",
+        "item_outside_frame",
+        "item_over_title_block",
+        "leader_crossing",
+        "leader_crosses_part",
+        "dimension_inside_outline",
+        "material_title_block_empty",
+        "material_inconsistent",
+        "parts_without_balloons",
+        "balloons_without_row",
+        "position_without_balloon",
+        "balloon_without_row",
+        "parts_list_over_view",
+        "instance_hidden",
+    }
+)
+"""Review findings that state a fact the harness measured on the part or the sheet (a hole with no position, a thread with
+no callout, an item that cannot be drawn, two views on top of each other): an answer ``does not apply`` cannot dismiss
+them, only the engineer's order can. The ones that are a judgement stay answerable: ``collision`` (accepted when no free
+place exists), ``fit_hole_no_tolerance`` (a diameter that LOOKS like a dowel), ``text_over_part``, ``view_adds_nothing``,
+the ``notes_*`` (a part may have no heat treatment), the style ones."""
+
+NOT_APPLIES = "not_applies"
+APPLIES = "applies"
+
+
+# --- the intent file ---------------------------------------------------------------------------------------------------------
+
+_SECTIONS = {
+    "function": ("function", "funcion"),
+    "mating": ("mating faces", "caras de union"),
+    "fits": ("fits", "ajustes"),
+    "datums": ("datums", "datos"),
+    "process": ("process", "proceso"),
+    "material": ("material",),
+    "treatments": ("treatments", "tratamientos"),
+    "welds": ("welds", "soldaduras"),
+    "dimensions": ("dimensions", "cotas"),
+    "relations": ("functional relations", "relaciones funcionales"),
+    "sheet": ("sheet", "hoja"),
+}
+_UNDEFINED = re.compile(r"^(?:undefined|indefinid[oa]|sin definir|por definir|tbd|pendiente|\?+|-+|—+)$", re.I)
+_HEADING = re.compile(r"^\s{0,3}(?:#{1,6}\s+|\*\*)\s*(.+?)\s*\**\s*:?\s*$")
+
+
+def _plain(text: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", text)
+    return re.sub(r"\(.*?\)", "", "".join(c for c in decomposed if not unicodedata.combining(c))).strip().lower()
+
+
+def _section_of(heading: str) -> str:
+    plain = _plain(heading)
+    for key, names in _SECTIONS.items():
+        if any(plain == n or plain.startswith(n + " ") for n in names):
+            return key
+    return ""
+
+
+@dataclass(frozen=True)
+class Intent:
+    """What the design's intent file says, by section (``sections``); ``path`` is the file it was read from."""
+
+    path: str = ""
+    sections: dict[str, str] = field(default_factory=dict)
+
+    def text(self, keys: tuple[str, ...]) -> str:
+        return "\n".join(self.sections.get(k, "") for k in keys if self.sections.get(k))
+
+    def declares(self, row: Row) -> str:
+        """The line of the intent file that declares ``row`` (``""``: it does not)."""
+        if not row.intent_pattern:
+            return ""
+        pattern = re.compile(row.intent_pattern, re.I)
+        for line in self.text(row.intent).splitlines():
+            if pattern.search(line):
+                return " ".join(line.split()).lstrip("-*• ").strip()
+        return ""
+
+    def silent_on(self, row: Row) -> bool:
+        """The sections that would carry ``row`` are missing, empty or undefined in the file."""
+        return bool(row.intent) and not self.text(row.intent)
+
+
+def parse_intent(text: str, path: str = "") -> Intent:
+    """The sections of an intent file: the headings the drafter reads (Function, Mating faces, Fits, Datums, Process,
+    Material, Treatments and finish, Welds, Dimensions, Functional relations, Sheet; the Spanish ones too). A section with
+    nothing under it, or ``undefined``, is empty."""
+    body = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    sections: dict[str, list[str]] = {}
+    current = ""
+    for line in body.splitlines():
+        found = _HEADING.match(line)
+        if found and (key := _section_of(found.group(1))):
+            current = key
+            sections.setdefault(current, [])
+            continue
+        if found and line.lstrip().startswith("#"):
+            current = ""  # another heading: not one of ours
+            continue
+        if current and line.strip():
+            sections[current].append(line.strip())
+    out: dict[str, str] = {}
+    for key, lines in sections.items():
+        joined = "\n".join(lines).strip()
+        if joined and not all(_UNDEFINED.match(ln.lstrip("-*• ").strip()) for ln in lines):
+            out[key] = joined
+    return Intent(path, out)
+
+
+def find_intent(workspace: Path, doc_name: str) -> Intent:
+    """The intent file of the open part in the design folder: ``drawings/<part>-intent.md`` (older projects:
+    ``planos/<part>-intencion.md``). The one that names the open document; with none named, the only one there is."""
+    found: list[tuple[Path, str]] = []
+    for folder, suffix in (("drawings", "-intent.md"), ("planos", "-intencion.md")):
+        base = workspace / folder
+        try:
+            found += [(p, p.name[: -len(suffix)]) for p in sorted(base.glob(f"*{suffix}")) if p.is_file()]
+        except OSError:
+            continue
+    name = doc_name.lower().removesuffix(".fcstd")
+    chosen = next((p for p, part in found if name and (part.lower() == name or name.startswith(part.lower()))), None)
+    if chosen is None and len(found) == 1:
+        chosen = found[0][0]
+    if chosen is None:
+        return Intent()
+    try:
+        return parse_intent(chosen.read_text(encoding="utf-8"), str(chosen))
+    except (OSError, UnicodeDecodeError):
+        return Intent()
+
+
+# --- the evaluation -----------------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Requirement:
+    """One row that applies to this sheet: its ``state``, why it is active, what is lacking, whether the harness MEASURED the
+    activation (``measured``: it cannot be dismissed without the engineer's order), the findings it took in, the answer the
+    sheet holds and whether the row is ``closed`` (met, or answered in a way that counts)."""
+
+    row: Row
+    state: str
+    why: str
+    lacking: tuple[str, ...]
+    measured: bool
+    codes: tuple[str, ...]
+    intent_line: str
+    answer: Any
+    closed: bool
+    refused_answer: bool
+
+    @property
+    def id(self) -> str:
+        return self.row.id
+
+
+def answer_counts(answer: Any, measured: bool) -> bool:
+    """Whether ``answer`` closes something: ``applies`` always; ``not_applies`` unless the harness measured it and the
+    engineer did not order it."""
+    if answer is None:
+        return False
+    if answer.verdict == APPLIES:
+        return True
+    return not measured or bool(getattr(answer, "ordered_by", ""))
+
+
+def finding_closed(finding: Any) -> bool:
+    """A review finding is closed by an answer that counts (``MEASURED_FINDINGS`` cannot be dismissed on the agent's word)."""
+    return answer_counts(finding.answer, finding.code in MEASURED_FINDINGS)
+
+
+def _activated(row: Row, facts: dict[str, int]) -> list[str]:
+    return [t for t in row.triggers if facts.get(t, 0) > 0]
+
+
+def evaluate(
+    facts: dict[str, int],
+    findings: tuple[Any, ...] | list[Any],
+    answers: dict[str, Any],
+    intent: Intent,
+) -> list[Requirement]:
+    """The rows that apply to this sheet, in table order, each with its state. ``facts`` empty (the CAD reports none): no
+    rows. ``findings`` are the review's, ``answers`` the sheet's by id. What it says is for the agent: English."""
+    if not facts:
+        return []
+    merged = dict(facts)
+    lines: dict[str, str] = {}
+    for row in ROWS:
+        hit = intent.declares(row)
+        if hit:
+            merged[f"intent.{row.id}"] = 1
+            lines[row.id] = hit
+    out: list[Requirement] = []
+    for row in ROWS:
+        if row.only and merged.get(row.only, 0) <= 0:
+            continue
+        active = _activated(row, merged)
+        if row.triggers and not active:
+            continue
+        measured = row.always_measured or any(merged.get(m, 0) > 0 for m in row.measured) or row.id in lines
+        if row.always_measured or not row.triggers:
+            why = f"every {row.only} sheet" if row.only else "every sheet"
+        else:
+            why = ", ".join(
+                "the intent file declares it" if t.startswith("intent.") else f"{merged[t]} {t.replace('_', ' ')}"
+                for t in active
+            )
+        open_codes = tuple(
+            dict.fromkeys(f.code for f in findings if f.code in row.codes and f.blocking and not finding_closed(f))
+        )
+        lacking = [n.en for n in row.needs if merged.get(n.fact, 0) <= 0]
+        lacking += [f"{merged[n.fact]} {n.en}" for n in row.lacks if merged.get(n.fact, 0) > 0]
+        state = MISSING if open_codes or lacking else MET if (row.needs or row.lacks or row.codes) else NEEDS_ANSWER
+        answer = answers.get(row.id)
+        counts = answer_counts(answer, measured)
+        out.append(
+            Requirement(
+                row=row,
+                state=state,
+                why=why,
+                lacking=tuple(lacking),
+                measured=measured,
+                codes=open_codes,
+                intent_line=lines.get(row.id, ""),
+                answer=answer,
+                closed=state == MET or counts,
+                refused_answer=answer is not None and not counts,
+            )
+        )
+    return out
+
+
+def claimed_codes(rows: list[Requirement]) -> frozenset[str]:
+    """The finding codes the active rows took in: shown under their row, closed with it."""
+    return frozenset(c for r in rows for c in r.row.codes)
+
+
+# --- what is said -------------------------------------------------------------------------------------------------------------
+
+
+def question_of(req: Requirement, language: str) -> str:
+    """The ONE question for the person who knows (the designer, through the channel, or the engineer), in the engineer's
+    language, with the proposed answer."""
+    row = req.row
+    proposal = say(language, row.proposal[0], row.proposal[1])
+    if req.intent_line:
+        known = say(
+            language,
+            f"el archivo de intención dice «{req.intent_line}»: confírmalo y ponlo en la hoja",
+            f"the intent file says '{req.intent_line}': confirm it and put it on the sheet",
+        )
+        return known
+    return say(language, row.question[0], row.question[1]) + " " + say(language, f"Propuesta: {proposal}", f"Proposal: {proposal}")
+
+
+def line(req: Requirement, language: str = "es") -> list[str]:
+    """The lines that list one row (English for the agent; the question is in the engineer's language). A row that is met is
+    one line: the listing is read whole, and what is open is what the agent needs."""
+    row = req.row
+    tag = (
+        "met"
+        if req.state == MET
+        else "answered"
+        if req.closed
+        else {MISSING: "MISSING", NEEDS_ANSWER: "NEEDS AN ANSWER"}[req.state]
+    )
+    standard = f" ({row.standard}{', ' + row.clause if row.clause else ''})" if row.standard else ""
+    head = f"  [{tag}] {row.id} — {row.title[1]}{standard}; active: {req.why}" + (" [measured]" if req.measured else "")
+    if req.state == MET:
+        return [head]
+    out = [head]
+    if req.closed and req.answer is not None:
+        out.append(f"      answered: {answer_text(req.answer)}")
+        return out
+    out.append(f"      must carry: {row.must[1]}")
+    if req.lacking:
+        out.append(f"      lacking: {'; '.join(req.lacking)}")
+    if req.codes:
+        out.append(f"      takes in the findings: {', '.join(req.codes)}")
+    if req.answer is not None and req.refused_answer:
+        out.append(
+            "      the answer 'does not apply' is NOT accepted: the harness measured it (or the intent file declares it); "
+            "only the engineer's order closes it (by=<him>, reason=<his words>)"
+        )
+    out.append(f"      ask, one at a time: «{question_of(req, language)}»")
+    return out
+
+
+def answer_text(answer: Any) -> str:
+    verdict = "MET" if answer.verdict == APPLIES else "DOES NOT APPLY"
+    text = answer.text
+    for prefix in ("met:", "cumple:", "applies:", "aplica:", "corregido:", "fixed:", "does not apply:", "no aplica:"):
+        if text.lower().startswith(prefix):
+            text = text[len(prefix) :].strip()
+            break
+    by = f" (ordered by {answer.ordered_by})" if getattr(answer, "ordered_by", "") else ""
+    return f"{verdict}: {text}{by}"

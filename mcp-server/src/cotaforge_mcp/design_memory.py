@@ -61,7 +61,8 @@ DEFAULT_REVIEW_WAIT_MIN = 15
 ROLES_FILE = "roles.yaml"
 MAX_PUSH_LINES = 3
 MIN_ANSWER_WORDS = 3
-APPLIES_PREFIXES = ("applies:", "aplica:", "corregido:", "fixed:")  # corregido: what a reviewer asked for
+APPLIES_PREFIXES = ("applies:", "aplica:", "corregido:", "fixed:", "met:", "cumple:")
+# corregido / fixed: what a reviewer asked for; met / cumple: a requirement the sheet carries (where)
 NOT_APPLIES_PREFIXES = ("does not apply:", "no aplica:")
 
 # Roles of bodies and components: a closed default vocabulary, extensible by the engineer in ``roles.yaml``.
@@ -511,7 +512,10 @@ def answer_problem(text: str) -> str | None:
     prefixes = (*APPLIES_PREFIXES, *NOT_APPLIES_PREFIXES)
     prefix = next((p for p in prefixes if lowered.startswith(p)), None)
     if prefix is None:
-        return "start with 'applies:' (how; 'corregido:' for a change you made) or 'does not apply:' (why not)"
+        return (
+            "start with 'applies:' (how; 'corregido:' for a change you made; 'met:' for a requirement, and where on "
+            "the sheet) or 'does not apply:' (why not)"
+        )
     if len(lowered.removeprefix(prefix).split()) < MIN_ANSWER_WORDS:
         return "say how it applies to which part, or why it does not (a few words, not 'yes')"
     return None

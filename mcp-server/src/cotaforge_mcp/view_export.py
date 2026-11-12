@@ -458,6 +458,20 @@ def _sheet_as_read(sheet: Any) -> list[str]:
     return lines
 
 
+def _requirements_block(session: Session, sheet: str) -> list[str]:
+    """The requirements of the sheet a create just made (what the standards ask it to carry, with the questions), for the
+    reply of ``create``. Never fails the create: a CAD that cannot describe the sheet, or any error, says nothing."""
+    if "describe_drawing" not in session.capabilities.tools:
+        return []
+    try:
+        info = drawing_gate.sheet_info(session, sheet, review=True)
+        if info is None or not info.facts or drawing_gate.mode_of(session) == "none":
+            return []
+        return drawing_gate.requirements_lines(session, info, session.language)
+    except Exception:  # noqa: BLE001 - the list is help, not part of the create
+        return []
+
+
 def drawing(session: Session, args: DrawingArgs) -> Reply:
     with session.lock:
         session.require_executor()
@@ -485,6 +499,7 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                 views=tuple(args.views) if args.views else None,
                 projection=args.projection,
                 fresh=args.fresh,
+                symmetry=args.symmetry,
                 unset=tuple(n for n in REBUILD_SETTINGS if n not in args.model_fields_set),
             )
             result = session.adapter.create_drawing(request)
@@ -496,11 +511,13 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                 *summary[1:],
                 f"ready: every view finished computing ({result.waited_s:g} s)",
                 *[f"warning: {w}" for w in result.warnings],
-                'next: drawing(action="add", items=[...]) a few at a time (one feature or group per call: the engineer '
+                *_requirements_block(session, result.sheet),
+                'next: ask what the requirements above lack BEFORE drawing it, then drawing(action="add", items=[...]) a '
+                "few at a time (one feature or group per call: the engineer "
                 'watches the sheet window and each item shows as it is added; cad_guide(topic="drawing")); '
                 'export(action="pdf" or "dxf") to write it',
             ]
-            return ok("\n".join(lines))
+            return ok("\n".join(lines), limit=REVIEW_REPLY_CHARS)
         if action in ("add", "remove", "remove_sheet", "update", "add_view", "remove_view"):
             session.need("annotate_drawing", f"drawing {action}")
             items = list(args.items or [])
@@ -526,6 +543,7 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                     ids=tuple(_item_id(i) for i in items) if action == "remove" else (),
                     view=args.views[0] if args.views else None,
                     title_block=args.title_block or {} if action == "update" else {},
+                    symmetry=args.symmetry if action == "update" else None,
                 )
             except ValidationError as exc:
                 raise ToolError(
@@ -549,6 +567,9 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                 "add the next few items",
             ]
             return ok("\n".join(lines))
+        if action == "requirements":
+            session.need("describe_drawing", "drawing requirements")
+            return ok(drawing_gate.requirements_report(session, args.sheet), limit=REVIEW_REPLY_CHARS)
         if action in ("list", "read", "review"):
             session.need("describe_drawing", f"drawing {action}")
             described = session.adapter.describe_drawing(
@@ -588,7 +609,7 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
         if action in ("answer", "approve", "request_review", "review_choice", "review_report"):
             session.need("annotate_drawing", f"drawing {action}")
             if action == "answer":
-                return ok(drawing_gate.answer(session, args.sheet, args.id, args.text))
+                return ok(drawing_gate.answer(session, args.sheet, args.id, args.text, args.by, args.reason))
             if action == "request_review":
                 return ok(drawing_gate.request_review(session, args.sheet), limit=REVIEW_REPLY_CHARS)
             if action == "review_choice":
