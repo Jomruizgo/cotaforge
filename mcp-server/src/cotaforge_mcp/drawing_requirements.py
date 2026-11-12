@@ -80,7 +80,8 @@ class Row:
     a DECISION, nobody knows the value, so it is a question): ``callouts`` (a callout of every hole: the thread and the fit
     the hole operations declared print by themselves), ``view_lines`` (the centre lines), ``intent_note`` (a note with the
     line of the intent file that declares it, in the designer's own words) or ``title`` (the title block ``create`` fills:
-    material, general tolerance, scale, projection)."""
+    material, general tolerance, scale, projection) or ``keyway`` (the dimensions of a keyway the walls of the part show:
+    width, depth, length, position; its fit class stays a question)."""
 
 
 def _n(fact: str, es: str, en: str) -> Need:
@@ -369,21 +370,23 @@ ROWS: tuple[Row, ...] = (
     ),
     Row(
         id="req.keyway",
+        auto="keyway",
         title=("Chavetero", "Keyway"),
         must=(
-            "el chavetero lleva la tolerancia del ancho, la profundidad y su posición",
-            "a keyway carries its width tolerance, its depth and its position",
+            "el chavetero lleva su ancho con la clase de tolerancia, su profundidad (d - t1 en el eje, d + t2 en el cubo), su longitud y su posición",
+            "a keyway carries its width with the tolerance class, its depth (d - t1 on a shaft, d + t2 in a hub), its length and its position",
         ),
         standard="DIN 6885-1, ISO 773",
         question=(
-            "¿Qué ancho, tolerancia (tipo de ajuste de la chaveta) y profundidad lleva el chavetero, y desde qué cara se ubica?",
-            "Which width, tolerance (fit type of the key) and depth does the keyway carry, and which face is it located from?",
+            "¿Qué ajuste lleva el ancho del chavetero (el tipo de ajuste de la chaveta: normal, firme o deslizante)? El ancho, la profundidad, la longitud y la posición ya están acotados.",
+            "Which fit does the keyway width carry (the fit type of the key: normal, tight or sliding)? Its width, depth, length and position are already dimensioned.",
         ),
         proposal=(
-            "chaveta paralela: ancho y profundidad de la norma para el diámetro del eje, con la tolerancia del tipo de ajuste elegido",
-            "parallel key: width and depth from the standard for the shaft diameter, with the tolerance of the chosen fit type",
+            "ajuste normal: N9 en el eje y JS9 en el cubo; firme: P9 en ambos; deslizante: H9 en el eje y D10 en el cubo (DIN 6885-1, según catálogos; la norma no se ha abierto)",
+            "normal fit: N9 on the shaft and JS9 in the hub; tight: P9 on both; sliding: H9 on the shaft and D10 in the hub (DIN 6885-1 as the catalogues list it; the standard was not opened)",
         ),
         triggers=("keyways", "intent.req.keyway"),
+        needs=(_n("keyway_fit_on_sheet", "the fit class of the width (N9, P9, JS9, D10...)", "the fit class of the width (N9, P9, JS9, D10...)"),),
         measured=("keyways_measured",),
         intent=("mating", "function", "process", "fits"),
         intent_pattern=r"chavetero|keyway|key\s*seat|key\s*slot|chaveta|(?<![a-z])key(?![a-z])",
@@ -752,7 +755,7 @@ def evaluate(
                 answer=answer,
                 closed=state == MET or counts,
                 refused_answer=answer is not None and not counts,
-                auto_items=tuple(i for i in (auto_item_id(row),) if i and i in item_ids),
+                auto_items=tuple(sorted(i for i in item_ids if owns(row, i))),
                 model_measured=row.always_measured or any(merged.get(m, 0) > 0 for m in row.measured),
             )
         )
@@ -763,6 +766,7 @@ AUTO_PREFIX = "rq_"
 """The id of every item the harness adds for a row starts with it."""
 CALLOUTS_ID = AUTO_PREFIX + "callouts"
 VIEW_LINES_ID = AUTO_PREFIX + "view_lines"
+KEYWAY_ID = AUTO_PREFIX + "keyway"
 CALLOUT_CODES = frozenset({"thread_no_callout", "hole_no_callout", "fit_hole_no_tolerance"})
 
 
@@ -772,14 +776,22 @@ def auto_item_id(row: Row) -> str:
         return CALLOUTS_ID
     if row.auto == "view_lines":
         return VIEW_LINES_ID
+    if row.auto == "keyway":
+        return KEYWAY_ID
     if row.auto == "intent_note":
         return AUTO_PREFIX + row.id.removeprefix(PREFIX)
     return ""
 
 
+def owns(row: Row, item_id: str) -> bool:
+    """Whether ``item_id`` is an item the harness added for ``row`` (the keyway's dimensions: ``rq_keyway_w``, ``_t``...)."""
+    mine = auto_item_id(row)
+    return bool(mine) and (item_id == mine or (row.auto == "keyway" and item_id.startswith(mine)))
+
+
 def rows_of_item(item_id: str) -> list[Row]:
     """The rows an item the harness added stands for (the callouts stand for several)."""
-    return [r for r in ROWS if item_id and auto_item_id(r) == item_id]
+    return [r for r in ROWS if item_id and owns(r, item_id)]
 
 
 @dataclass(frozen=True)
@@ -800,12 +812,15 @@ def plan_additions(rows: list[Requirement], items: list[Any]) -> list[Addition]:
     sheet has a ``hole_dim`` of its own."""
     have = {i.id for i in items}
     kinds = {i.type for i in items}
+    dimensioned = any(i.id.startswith(KEYWAY_ID) for i in items)
     out: dict[str, Addition] = {}
     for r in rows:
         row = r.row
         item_id = auto_item_id(row)
         if not item_id or r.state == MET or r.answer is not None or item_id in have:
             continue
+        if row.auto == "keyway" and (dimensioned or not r.model_measured):
+            continue  # only a keyway the walls of the part show (a measurement) is dimensioned by the harness
         wants_callouts = bool(CALLOUT_CODES & set(r.codes)) or any("no callout" in text for text in r.lacking)
         if row.auto == "callouts" and (not wants_callouts or "hole_dim" in kinds):
             continue
@@ -821,6 +836,9 @@ def plan_additions(rows: list[Requirement], items: list[Any]) -> list[Addition]:
             what = "a callout of every hole: the thread and the fit the hole operations declared print with it"
         elif row.auto == "view_lines":
             item, what = {"type": "view_lines", "id": item_id}, "the centre lines and marks of every hole and cylinder"
+        elif row.auto == "keyway":
+            item = {"type": "keyway_dims", "id": item_id}
+            what = "the width, the depth (d - t1 / d + t2), the length and the position of the keyway, measured on the model"
         else:
             item = {"type": "note", "id": item_id, "text": r.intent_line}
             what = f"a note with the intent file's own words: «{r.intent_line}»"
@@ -880,6 +898,8 @@ def line(req: Requirement, language: str = "es") -> list[str]:
     if req.closed and req.answer is not None:
         out.append(f"      answered: {answer_text(req.answer)}")
         return out
+    if req.auto_items:
+        out.append(f"      added by the harness: {', '.join(req.auto_items)} (what the model already says; the rest is below)")
     out.append(f"      must carry: {row.must[1]}")
     if req.lacking:
         out.append(f"      lacking: {'; '.join(req.lacking)}")

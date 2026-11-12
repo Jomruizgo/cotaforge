@@ -55,6 +55,10 @@ UNSUPPORTED: dict[str, str] = {
         "FreeCAD draws no weld symbols on a sheet, so nothing was drawn: say the weld in a note item (kind, size, "
         "sides, all around or field)"
     ),
+    "keyway_dims": (
+        "keyway_dims is made into plain dim items when it is added (drawing add) and is never stored: if you read this, "
+        "the part has no keyway whose walls can be dimensioned"
+    ),
 }
 
 ID_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,23}$")

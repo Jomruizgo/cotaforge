@@ -368,6 +368,12 @@ WELD_LINE = (
     "the list: review says weld_list_missing, item_without_balloon and balloon_not_in_list."
 )
 
+KEYWAY_LINE = (
+    "keyway_dims (no fields): the dimensions of the keyways the walls of the part show -- width, depth as the standards give "
+    "it (d - t1 on a shaft, d + t2 in a hub), length, position -- as dim items <id>_w, _t, _l, _p. The harness adds them "
+    "itself (rq_keyway); only the width's fit class is asked."
+)
+
 SPANISH_LINE = (
     "The engineer reads Spanish: notes, revision rows and the title block fields go in Spanish (the title block "
     "labels and the callouts are Spanish when language=es), numbers use the decimal comma on the sheet."
@@ -466,7 +472,7 @@ def drawing_text(tools: Collection[str], part: str = "") -> str:
     if part:
         groups = {
             TOPIC_ITEMS: [ITEM_INTRO[0], *ITEM_LINES[0:4]],
-            TOPIC_MARKS: [*ITEM_LINES[4:9], WELD_LINE],
+            TOPIC_MARKS: [*ITEM_LINES[4:9], WELD_LINE, KEYWAY_LINE],
             TOPIC_VIEWS: [*ITEM_LINES[9:12], ITEM_LINES[13]],
             TOPIC_ASSEMBLY: [ITEM_LINES[12]],
             TOPIC_OUTPUT: [SHEET_RULES[2], PROJECTION_LINE, VIEW_LINE],

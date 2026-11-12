@@ -162,7 +162,9 @@ def test_the_plan_adds_callouts_once_and_not_over_the_drafters_own() -> None:
 def test_every_determined_row_says_how_and_the_decision_rows_say_nothing() -> None:
     kinds = {row.id: row.auto for row in dr.ROWS}
     assert {k for k, v in kinds.items() if v} >= {"req.thread", "req.fit_class", "req.heat_treatment", "req.title_block"}
-    assert not any(kinds[i] for i in ("req.keyway", "req.bent_sheet", "req.geometric_tolerance", "req.turned_part"))
+    assert not any(kinds[i] for i in ("req.bent_sheet", "req.geometric_tolerance", "req.turned_part"))
+    assert kinds["req.keyway"] == "keyway" and dr.auto_item_id(next(r for r in dr.ROWS if r.id == "req.keyway")) == "rq_keyway"
+    assert [r.id for r in dr.rows_of_item("rq_keyway_w")] == ["req.keyway"]
     assert dr.auto_item_id(next(r for r in dr.ROWS if r.id == "req.heat_treatment")) == "rq_heat_treatment"
     assert {r.id for r in dr.rows_of_item("rq_callouts")} == {"req.thread", "req.fit_class", "req.dimensions"}
 

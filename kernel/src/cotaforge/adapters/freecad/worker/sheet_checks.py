@@ -60,6 +60,7 @@ class PartFacts:
     bosses: list[Boss] = field(default_factory=list)
     sheet_metal: bool = False
     keyways: int = 0  # slots with parallel walls along the axis of a cylindrical face (``sheet_keyway``)
+    keyway_slots: list[Any] = field(default_factory=list)  # the same slots with their faces (``sheet_keyway.Slot``)
     thread_features: int = 0  # features named as a thread that no ``hole`` operation made (an external thread)
 
 

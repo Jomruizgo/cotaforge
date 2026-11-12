@@ -36,6 +36,7 @@ ITEM_FIELDS: dict[str, frozenset[str]] = {
         {"mode", "x_from", "y_from", "holes", "x_side", "y_side", "at_mm", "view", "offset_mm", "auto"}
     ),
     "note": frozenset({"text", "at_mm", "auto", "view"}),
+    "keyway_dims": frozenset(),
     "revision": frozenset({"index", "description", "date", "by"}),
     "overall": frozenset({"offset_mm"}),
     "view_lines": frozenset({"hidden", "centres"}),

@@ -101,7 +101,8 @@ def test_a_threaded_fitted_shaft_activates_its_rows_and_they_are_measured() -> N
     assert active["req.fit_class"].state == dr.MISSING
     assert any("fit holes with no callout" in text for text in active["req.fit_class"].lacking)
     assert any("2 steps with no diameter dimension" in text for text in active["req.turned_part"].lacking)
-    assert active["req.keyway"].state == dr.NEEDS_ANSWER and not active["req.keyway"].measured  # named, not measured
+    assert active["req.keyway"].state == dr.MISSING and not active["req.keyway"].measured  # named, not measured
+    assert any("fit class of the width" in text for text in active["req.keyway"].lacking)
     assert rows({**SHAFT, "keyways_measured": 1})["req.keyway"].measured  # by the shape of the part: measured
     assert "req.thread" in rows({**PLATE, "thread_features": 1})  # an external thread, named so, activates the row
 
@@ -252,7 +253,7 @@ def test_a_row_the_sheet_does_not_carry_blocks_the_export_with_its_question(sett
     refused = call.err("export", action="pdf")
     for row_id in ("req.thread", "req.fit_class", "req.turned_part", "req.keyway"):
         assert row_id in refused, row_id
-    assert "lacking: a printed thread designation" in refused and "NEEDS AN ANSWER" in refused
+    assert "lacking: a printed thread designation" in refused and "[MISSING] req.keyway" in refused
     assert fake.exported == []
 
 

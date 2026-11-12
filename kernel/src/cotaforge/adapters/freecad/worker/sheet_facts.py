@@ -53,7 +53,7 @@ def collect(doc: reg.DocumentRec, bodies: list[reg.BodyRec]) -> sck.PartFacts:
             face = faces[index]
             kind = g.surface_kind(face)
             if kind == "plane" and len(faces) <= keyway.FACES_LIMIT:
-                flats.append(keyway.Flat(g.unit(g.vec(face.Surface.Axis)), g.vec(face.CenterOfMass)))
+                flats.append(keyway.Flat(g.unit(g.vec(face.Surface.Axis)), g.vec(face.CenterOfMass), face_id))
             if kind != "cylinder":
                 continue
             surf = face.Surface
@@ -73,7 +73,9 @@ def collect(doc: reg.DocumentRec, bodies: list[reg.BodyRec]) -> sck.PartFacts:
             keyway.Cylinder(key[0], (span[2], span[3], span[4]), key[2], key[3], span[0], span[1])
             for key, span in spans.items()
         ]
-        facts.keyways += keyway.count_keyways(cylinders, flats)
+        slots = keyway.find_slots(cylinders, flats)
+        facts.keyways += len(slots)
+        facts.keyway_slots.extend(slots)
         for key, members in groups.items():
             concave, radius = key[3], key[2]
             if sum(arc for _, _, arc, _ in members) >= FULL_TURN:

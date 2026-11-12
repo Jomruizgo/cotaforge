@@ -47,6 +47,7 @@ FACT_NAMES = (
     "weld_class_on_sheet",
     "keyways",
     "keyways_measured",
+    "keyway_fit_on_sheet",
     "thread_features",
     "title_material",
     "title_general_tolerance",
@@ -59,6 +60,7 @@ FACT_NAMES = (
 )
 
 THREAD_PRINTED = re.compile(r"(?<![A-Za-z0-9])M\s?\d{1,3}(?:\s?[x×]\s?\d+(?:[.,]\d+)?)?|UN[CF]\b|\bNPT\b|\bBSP\b|\bG\s?\d/\d", re.I)
+KEYWAY_FIT = re.compile(r"(?<![A-Za-z0-9])(?:P9|N9|JS9|Js9|D10)(?![A-Za-z0-9])")  # the classes of a keyway width (DIN 6885-1)
 KEYWAY = re.compile(r"keyway|key\s*seat|key\s*slot|chavetero|ranura\s+de\s+chaveta|asiento\s+de\s+chaveta", re.I)
 BEND = re.compile(r"doblez|doblado|pliegue|bend|fold|radio\s+interior|inside\s+radius|desarrollo|flat\s+pattern", re.I)
 WELD_NOTE = re.compile(r"solda|weld", re.I)
@@ -181,6 +183,7 @@ def facts(data: Any) -> dict[str, int]:
         "keyways": (part.keyways if part is not None else 0)
         or sum(1 for f in data.features if KEYWAY.search(f"{f.id} {f.label}")),  # by geometry, else by name
         "keyways_measured": part.keyways if part is not None else 0,
+        "keyway_fit_on_sheet": 1 if KEYWAY_FIT.search(printed) else 0,
         "thread_features": part.thread_features if part is not None else 0,
         "title_material": 1 if material else 0,
         "title_general_tolerance": 1 if str(fields.get("general_tolerances", "")).strip() else 0,

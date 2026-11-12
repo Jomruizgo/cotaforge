@@ -58,6 +58,7 @@ import sheet_dxf
 import sheet_facts
 import sheet_hlr
 import sheet_iso
+import sheet_keyway
 import sheet_items
 import sheet_layout
 import sheet_mirror
@@ -1107,6 +1108,29 @@ def _auto_paper(
     )
 
 
+def _expand_keyway_dims(
+    doc: reg.DocumentRec, spec: dict[str, Any], requested: list[Any], op: str | None
+) -> list[Any]:
+    """``keyway_dims`` is not an item of its own: it is the dimensions of the keyways of the part (width, depth as the
+    standards give it, length, position), made now from the faces of the model as ``dim`` items with their own ids
+    (``<id>_w``, ``_t``, ``_l``, ``_p``), so the sheet keeps plain dimensions that follow the normal rules."""
+    if not any(isinstance(i, dict) and i.get("type") == "keyway_dims" for i in requested):
+        return requested
+    slots = sheet_facts.collect(doc, _bodies(doc, spec.get("body"), op)).keyway_slots
+    shown = tuple(views_of(spec))
+    out: list[Any] = []
+    for item in requested:
+        if not (isinstance(item, dict) and item.get("type") == "keyway_dims"):
+            out.append(item)
+            continue
+        prefix = str(item.get("id") or "keyway")
+        made = [dim for number, slot in enumerate(slots, start=1) for dim in sheet_keyway.dimension_specs(slot, prefix if len(slots) == 1 else f"{prefix}{number}", shown)]
+        if not made:
+            raise invalid_request("the part has no keyway whose walls can be dimensioned (keyway_dims)", op)
+        out.extend(made)
+    return out
+
+
 def _declare_symmetry(spec: dict[str, Any], declared: Any) -> None:
     """The design intent says the part is symmetric (``True``) or not (``False``); ``None`` leaves the sheet as it was. It
     is never taken from the shape: a plate can be symmetric by chance, and a plane of symmetry that is not the designer's
@@ -1418,7 +1442,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         write_spec(page, spec)
         _sync_template_fields(fc_doc, op)
         return _result(doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), [], op, changed=tuple(wanted))
-    requested = list(params.get("items") or ())
+    requested = _expand_keyway_dims(doc, spec, list(params.get("items") or ()), op)
     if not requested:
         raise invalid_request('add needs items: a list like [{"type": "hole_dim", "all": true}]', op)
     if len(items) + len(requested) > sheet_items.MAX_ITEMS:

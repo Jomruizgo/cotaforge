@@ -37,10 +37,11 @@ class Cylinder:
 
 @dataclass(frozen=True)
 class Flat:
-    """A planar face: the unit normal and the centre of mass."""
+    """A planar face: the unit normal and the centre of mass (``face_id``: its id in the model, when it has one)."""
 
     normal: Vec3
     centre: Vec3
+    face_id: str = ""
 
 
 def _dot(a: Vec3, b: Vec3) -> float:
@@ -86,17 +87,130 @@ def _walls(c: Cylinder, a: Flat, b: Flat) -> bool:
     return True
 
 
-def count_keyways(cylinders: list[Cylinder], flats: list[Flat]) -> int:
-    """How many keyways the part has: the pairs of walls that one cylinder holds as described above, each counted once even
-    when a shaft and the bore of a hub on it both hold it."""
+@dataclass(frozen=True)
+class Slot:
+    """A keyway as the walls of the part show it: its two walls, the bottom (``None`` when none is found), the planes that end
+    it along the axis (none when it runs out through the end of the shaft, one when it does, two when it is closed), the
+    planes that end the cylinder itself (``caps``), the cylinder and the radial direction ``up`` the slot opens towards from
+    the axis. ``reach`` is how far from the axis the bottom lies along ``up``."""
+
+    cylinder: Cylinder
+    wall_a: Flat
+    wall_b: Flat
+    bottom: Flat | None
+    ends: tuple[Flat, ...]
+    caps: tuple[Flat, ...]
+    up: Vec3
+    width: float
+    reach: float | None
+
+
+def _unit(v: Vec3) -> Vec3:
+    n = math.sqrt(_dot(v, v)) or 1.0
+    return (v[0] / n, v[1] / n, v[2] / n)
+
+
+def _slot_of(c: Cylinder, a: Flat, b: Flat, flats: list[Flat]) -> Slot:
+    mid = tuple((a.centre[i] + b.centre[i]) / 2 for i in range(3))
+    radial = _sub(mid, c.point)
+    radial = tuple(radial[i] - _dot(radial, c.axis) * c.axis[i] for i in range(3))
+    up = _unit(radial)  # type: ignore[arg-type]
+    lateral = _cross(c.axis, up)
+    width = abs(_dot(_sub(a.centre, b.centre), a.normal))
+    bottom: Flat | None = None
+    ends: list[Flat] = []
+    caps: list[Flat] = []
+    for f in flats:
+        if f is a or f is b:
+            continue
+        offset = _sub(f.centre, c.point)
+        side = abs(_dot(offset, lateral) - _dot(_sub(mid, c.point), lateral))
+        height = _dot(offset, up)
+        along = _dot(f.centre, c.axis)
+        if abs(_dot(f.normal, c.axis)) > SAME_PLANE:  # across the axis: an end of the slot or an end of the shaft
+            if (abs(along - c.lo) <= AXIAL_SLACK_MM or abs(along - c.hi) <= AXIAL_SLACK_MM) and _radial(c, f.centre) <= c.radius * 1.02 + 0.2:
+                caps.append(f)
+            elif side <= width / 2 + 1.0 and c.lo + AXIAL_SLACK_MM < along < c.hi - AXIAL_SLACK_MM and 0.0 < height <= c.radius * 2.5 + 1.0:
+                ends.append(f)
+        elif abs(_dot(f.normal, up)) > SAME_PLANE and side <= width / 2 + 1.0 and abs(_dot(f.normal, c.axis)) < PARALLEL:
+            if height > 0.0 and (bottom is None or abs(height) < abs(_dot(_sub(bottom.centre, c.point), up))):
+                bottom = f
+    reach = _dot(_sub(bottom.centre, c.point), up) if bottom is not None else None
+    return Slot(c, a, b, bottom, tuple(ends), tuple(caps), up, width, reach)
+
+
+def find_slots(cylinders: list[Cylinder], flats: list[Flat]) -> list[Slot]:
+    """The keyways of the part: the pairs of walls that one cylinder holds as described above (each counted once even when
+    a shaft and the bore of a hub on it both hold it), with the bottom and the ends of each."""
     if len(flats) < 2 or len(flats) > FACES_LIMIT:
-        return 0
-    found: set[frozenset[int]] = set()
+        return []
+    found: dict[frozenset[int], Slot] = {}
     for cylinder in cylinders:
         for i, a in enumerate(flats):
             if abs(_dot(a.normal, cylinder.axis)) > PARALLEL:
                 continue
             for j in range(i + 1, len(flats)):
-                if _walls(cylinder, a, flats[j]):
-                    found.add(frozenset((i, j)))
-    return len(found)
+                if _walls(cylinder, a, flats[j]) and frozenset((i, j)) not in found:
+                    found[frozenset((i, j))] = _slot_of(cylinder, a, flats[j], flats)
+    return list(found.values())
+
+
+def count_keyways(cylinders: list[Cylinder], flats: list[Flat]) -> int:
+    """How many keyways the part has (see ``find_slots``)."""
+    return len(find_slots(cylinders, flats))
+
+
+AXIS_NAMES = (("x", (1.0, 0.0, 0.0)), ("y", (0.0, 1.0, 0.0)), ("z", (0.0, 0.0, 1.0)))
+PROFILE_VIEW = {"x": "right", "y": "front", "z": "top"}  # the standard view that looks along each model axis
+
+
+def axis_name(v: Vec3) -> str | None:
+    """``x``, ``y`` or ``z`` when ``v`` lies along that model axis (a dimension is measured along one), else ``None``."""
+    return next((name for name, a in AXIS_NAMES if abs(abs(_dot(v, a)) - 1.0) < 1e-3), None)
+
+
+def dimension_specs(slot: Slot, prefix: str, views: tuple[str, ...] = ()) -> list[dict[str, object]]:
+    """The ``dim`` items that say a keyway to the shop, measured on the model: the width (between the walls), the depth as
+    the standards give it (``d - t1`` on a shaft, ``d + t2`` in a hub: from the bottom to the opposite side of the cylinder),
+    the length (between the planes that end it; out through the end of the shaft: to that end) and the position (from the end
+    of the shaft to the first plane that ends it). A dimension whose faces are not found, or that does not lie along a model
+    axis, is left out: nothing is guessed. ``views`` are the views of the sheet; the width and the depth go in the one that
+    looks along the axis of the cylinder when it has it."""
+    c, out = slot.cylinder, []
+    profile = PROFILE_VIEW.get(axis_name(c.axis) or "")
+    view = {"view": profile} if profile in views else {}
+    across = axis_name(slot.wall_a.normal)
+    if across is not None and slot.wall_a.face_id and slot.wall_b.face_id:
+        out.append(
+            {"type": "dim", "kind": "distance", "id": f"{prefix}_w", "from": {"face": slot.wall_a.face_id},
+             "to": {"face": slot.wall_b.face_id}, "along": across, **view}
+        )  # fmt: skip
+    deep = axis_name(slot.up)
+    if deep is not None and slot.bottom is not None and slot.bottom.face_id:
+        along_axis = _dot(slot.bottom.centre, c.axis)
+        opposite = tuple(c.point[i] + c.axis[i] * (along_axis - _dot(c.point, c.axis)) - slot.up[i] * c.radius for i in range(3))
+        out.append(
+            {"type": "dim", "kind": "distance", "id": f"{prefix}_t", "from": {"face": slot.bottom.face_id},
+             "to": {"at": [round(v, 4) for v in opposite]}, "along": deep, **view}
+        )  # fmt: skip
+    lengthwise = axis_name(c.axis)
+    if lengthwise is None:
+        return out
+    inside = _dot(slot.wall_a.centre, c.axis)
+    ends = sorted(slot.ends, key=lambda f: _dot(f.centre, c.axis))
+    caps = sorted(slot.caps, key=lambda f: _dot(f.centre, c.axis))
+    first = next((f for f in ends if _dot(f.centre, c.axis) < inside), None)
+    last = next((f for f in reversed(ends) if _dot(f.centre, c.axis) > inside), None)
+    cap_low = caps[0] if caps and _dot(caps[0].centre, c.axis) < inside else None
+    cap_high = caps[-1] if caps and _dot(caps[-1].centre, c.axis) > inside else None
+    if first is not None and last is not None and first.face_id and last.face_id:  # closed at both ends
+        out.append({"type": "dim", "kind": "distance", "id": f"{prefix}_l", "from": {"face": first.face_id}, "to": {"face": last.face_id}, "along": lengthwise})
+        near = cap_low if cap_low is not None else cap_high
+        start = first if cap_low is not None else last
+        if near is not None and near.face_id and start.face_id:
+            out.append({"type": "dim", "kind": "distance", "id": f"{prefix}_p", "from": {"face": near.face_id}, "to": {"face": start.face_id}, "along": lengthwise})
+    else:  # open out through an end of the shaft: its length is measured to that end
+        end, cap = (first, cap_high) if first is not None else (last, cap_low)
+        if end is not None and cap is not None and end.face_id and cap.face_id:
+            out.append({"type": "dim", "kind": "distance", "id": f"{prefix}_l", "from": {"face": end.face_id}, "to": {"face": cap.face_id}, "along": lengthwise})
+    return out

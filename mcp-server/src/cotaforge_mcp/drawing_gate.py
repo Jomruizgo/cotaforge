@@ -359,7 +359,7 @@ def guard_removal(session: Session, sheet: str | None, ids: list[str], reason: s
             usage='drawing(action="remove", items=["rq_callouts"], reason="why")',
         )
     info = sheet_info(session, sheet, review=True)
-    rows = [r for r in (sheet_requirements(session, info) if info is not None else []) if r.row.auto and reqs.auto_item_id(r.row) in auto]
+    rows = [r for r in (sheet_requirements(session, info) if info is not None else []) if r.row.auto and any(reqs.owns(r.row, i) for i in auto)]
     if any(r.model_measured for r in rows) and not (by and by.strip()):
         raise ToolError(
             MEASURED_REFUSAL.format(what=', '.join(auto), why=', '.join(r.why for r in rows if r.model_measured)),

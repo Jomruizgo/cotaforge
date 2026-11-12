@@ -47,7 +47,7 @@ async def make_plate(cad: Cad, name: str = "placa") -> None:
 
 
 async def make_shaft(cad: Cad) -> None:
-    """A Ø30 x 80 shaft: an M8 tapped hole and a Ø6 H7 hole in its end, and a cut named keyway."""
+    """A Ø30 x 80 shaft: an M8 tapped hole and a Ø6 H7 hole in its end, and a keyway on its side."""
     await cad.ok("doc", action="new", name="eje")
     await cad.ok("doc", action="set_material", material="AISI 1045")
     await cad.ok("op", name="cylinder", id="base", params={"diameter_mm": 30, "height_mm": 80, "axis": "Z"})
@@ -55,9 +55,12 @@ async def make_shaft(cad: Cad) -> None:
     await cad.ok("op", name="hole", id="tapped", params=tapped)
     fitted = {"face": TOP, "at": [9, 0, 80], "standard": "simple", "diameter_mm": 6, "fit": "H7", "end_condition": "blind", "depth_mm": 10}
     await cad.ok("op", name="hole", id="dowel", params=fitted)
-    slot = [{"kind": "rect", "name": "k", "center": [0, 12], "width": 4, "height": 6}]
-    await cad.ok("op", name="sketch", id="key_sk", params={"on": TOP, "entities": slot})
-    await cad.ok("op", name="cut", id="slot1", params={"sketch": "key_sk", "depth_mm": 6}, intent="slot in the end of the shaft")
+    # a keyway 6 wide, 5 deep and 30 long (z = 20 to 50) on the side of the shaft, from a plane tangent to it
+    plane = {"define": {"how": "offset", "base": {"kind": "plane", "name": "XZ"}, "distance_mm": 15}}
+    await cad.ok("op", name="ref_plane", id="keyplane", params=plane)
+    slot = [{"kind": "rect", "name": "k", "center": [0, -35], "width": 6, "height": 30}]  # the XZ sketch runs z the other way
+    await cad.ok("op", name="sketch", id="key_sk", params={"on": {"kind": "plane", "from_op": "keyplane"}, "entities": slot})
+    await cad.ok("op", name="cut", id="slot1", params={"sketch": "key_sk", "depth_mm": 5}, intent="slot on the side of the shaft")
 
 
 SHAFT_INTENT = """# Intención: eje
@@ -191,10 +194,14 @@ async def test_a_threaded_fitted_shaft_activates_measured_rows_that_only_the_eng
         assert "added automatically" in created and "rq_callouts" in created
         assert listing["req.thread"] == "added automatically" and listing["req.fit_class"] == "added automatically"
         assert listing["req.heat_treatment"] == "added automatically" and listing["req.surface_texture"] == "added automatically"
-        assert listing["req.keyway"] == "NEEDS AN ANSWER" and listing["req.marking"] == "MISSING"  # no value known: questions
+        assert listing["req.keyway"] == "MISSING" and listing["req.marking"] == "MISSING"  # no value known: the fit class, the marking
+        assert "rq_keyway" in created and "the width, the depth (d - t1 / d + t2), the length and the position of the keyway" in created
         await snapshot(cad, out, "d2_shaft_automatic.png")
         text = await cad.ok("drawing", action="list")
         assert "M8" in text and "H7" in text  # the callout prints the thread and the declared fit; nobody asked
+        for dim in ("rq_keyway_w", "rq_keyway_t", "rq_keyway_l", "rq_keyway_p"):
+            assert dim in text, dim  # width, depth, length and position of the keyway, measured on the model
+        assert "fit class of the width" in created  # and the one thing nobody knows is a question
         assert "[measured]" in created.split("] req.keyway")[1].splitlines()[0]  # the slot is found by its walls, not by its name
         assert "[measured]" in created.split("] req.thread")[1].splitlines()[0]
         refused = await cad.err("export", action="pdf", path="eje.pdf")
