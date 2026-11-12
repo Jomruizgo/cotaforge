@@ -109,6 +109,7 @@ from cotaforge_mcp import (
     design_memory,
     foreign,
     hints,
+    pocket_corners,
     recovery,
     rules,
     usage,
@@ -1947,7 +1948,11 @@ class Session:
                 remembered = design_memory.after_op(self, step_id, name, params, role)
             except AdapterError as exc:
                 remembered = [f"note: the role could not be stored in the document ({exc.info.message})"]
-            remembered = [*remembered, *bearing_seats.after_op(self, step_id, name, role)]
+            remembered = [
+                *remembered,
+                *bearing_seats.after_op(self, step_id, name, role),
+                *pocket_corners.after_op(self, step_id, name),
+            ]
             return [
                 *before_lines,
                 *lines,

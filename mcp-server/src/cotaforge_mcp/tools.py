@@ -18,6 +18,7 @@ from cotaforge_mcp import (
     inspect_tools,
     memory_tools,
     parts_tools,
+    pocket_corners,
     rules,
     view_export,
 )
@@ -175,6 +176,7 @@ def _run(
             lines = feature_tools.delete_feature(session, args.delete, args.params, args.intent)
             lines += design_memory.after_action(session, "delete_feature", {"step": args.delete})
             lines += bearing_seats.after_action(session, "delete_feature")
+            lines += pocket_corners.after_action(session, "delete_feature")
             return ok("\n".join(lines), limit=2500)
         if (args.name is None) == (args.edit is None):
             both = ", not both" if args.name else ""
@@ -198,6 +200,7 @@ def _run(
                 lines = session.edit_step(args.edit, args.params, args.intent)
             lines += design_memory.after_action(session, "edit_feature", {"step": args.edit})
             lines += bearing_seats.after_action(session, "edit_feature")
+            lines += pocket_corners.after_action(session, "edit_feature")
             return ok("\n".join(lines), limit=2500)
         with session.listening(progress):
             return ok("\n".join(session.run_op(args.name, args.params, args.intent, args.id)))
