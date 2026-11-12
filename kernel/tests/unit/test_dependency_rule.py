@@ -13,7 +13,8 @@ Allowed "may import" arrows:
     adapters     -> nothing from cotaforge but its own root-level shared modules (adapters/rpc.py: CAD-agnostic
                        transport; it uses adapters/procstats.py: what the OS says about a process)
     adapters.fake  -> contract (only)
-    adapters.freecad -> contract, adapters.rpc (the shared transport)
+    adapters.freecad -> contract, adapters.rpc (the shared transport), conventions, ir (only the references
+                       -- FaceRef... -- the models of its own extension operations are written with)
     adapters.freecad.worker -> nothing from cotaforge (runs inside freecadcmd on its own sys.path;
                        it imports no cotaforge module at all)
 
@@ -38,7 +39,7 @@ ALLOWED_IMPORTS: dict[str, frozenset[str]] = {
     "verification": frozenset({"ir", "contract"}),
     "adapters": frozenset({"adapters.procstats"}),
     "adapters.fake": frozenset({"contract"}),
-    "adapters.freecad": frozenset({"contract", "adapters.rpc", "conventions"}),
+    "adapters.freecad": frozenset({"contract", "adapters.rpc", "conventions", "ir"}),
     "adapters.freecad.worker": frozenset(),
     "units": frozenset(),
     "memory": frozenset(),

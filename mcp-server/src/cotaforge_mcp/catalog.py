@@ -45,7 +45,8 @@ PURPOSE: dict[str, str] = {
     "cut": "pocket the closed profiles of a sketch (removes material, blind or through)",
     "revolve": "revolve the profiles of a sketch about an axis (adds material)",
     "sweep": "sweep the profile of a sketch along a path (adds material)",
-    "hole": "drill a hole into a planar face at a world point (at) or a (u, v) position",
+    "hole": "drill a hole into a planar face at a world point (at) or a (u, v) position; ONE call also makes the "
+    "counterbore, the countersink, the tapped hole and the blind or angled-point end",
     "linear_pattern": "repeat features along one or two directions",
     "circular_pattern": "repeat features about an axis",
     "chamfer": "bevel the given edges",

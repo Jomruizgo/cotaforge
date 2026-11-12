@@ -235,6 +235,8 @@ class MemoryArgs(Strict):
 
     action: Literal["index", "get", "search", "save", "deactivate", "approve", "answer", "review", "brief"]
     id: str | None = Field(default=None, description="entry id")
+    ids: list[str] | None = Field(default=None, description="get: several")
+    answers: dict[str, str] | None = Field(default=None, description="answer: {id: text, ...}")
     text: str | None = Field(
         default=None,
         description="search: words; answer: 'applies: how, here' | 'does not apply: why'; approve: quote; index: 'all_cad' adds other software's",
@@ -440,7 +442,9 @@ TOOLS: tuple[ToolDef, ...] = (
         "op",
         'Run ONE modelling operation and get measured facts. Parameters: cad_guide(topic="op:<name>"). '
         "edit=<step id> with the changed params sets a dimension; edit/delete also take a CAD feature name "
-        '(inspect tree): params are its CAD properties, e.g. {"Radius":4}.',
+        '(inspect tree): params are its CAD properties, e.g. {"Radius":4}. One designer feature is one op: a '
+        "counterbore, a countersink or a tapped hole is ONE hole (counterbore=, countersink=, standard=iso_tapped), "
+        "not a hole plus a cut.",
         OpArgs,
         "op(name, params, intent?, id?) | op(edit=<step id|feature>, params={changed only}, intent?) | "
         "op(delete=<step id|feature>, params={cascade:true}?)",

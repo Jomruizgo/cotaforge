@@ -315,6 +315,29 @@ def test_changes_made_outside_the_store_are_seen(store: MemoryStore) -> None:
     assert [item.entry.id for item in store.entries()] == ["by-hand"]
 
 
+def test_an_unchanged_file_is_not_parsed_again_but_an_edited_one_is(
+    store: MemoryStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cotaforge.memory import store as store_module
+
+    project_dir = store.directory(Scope.project)
+    assert project_dir is not None
+    project_dir.mkdir(parents=True)
+    path = project_dir / "kept.md"
+    path.write_text(render_entry(make_entry("kept", title="First title")), encoding="utf-8")
+    parses: list[str] = []
+    real = store_module.parse_entry
+    monkeypatch.setattr(store_module, "parse_entry", lambda text, **kw: parses.append(text) or real(text, **kw))
+
+    assert [item.entry.title for item in store.entries()] == ["First title"]
+    assert [item.entry.title for item in store.entries()] == ["First title"]
+    assert len(parses) == 1  # the second read reused the parse
+
+    path.write_text(render_entry(make_entry("kept", title="Second title, longer")), encoding="utf-8")
+    assert [item.entry.title for item in store.entries()] == ["Second title, longer"]
+    assert len(parses) == 2  # an edit (new size and time) is seen at once
+
+
 def test_material_entries_are_stored_like_any_other(store: MemoryStore) -> None:
     store.save(make_material(), Scope.user)
     found = store.get("steel-1045")

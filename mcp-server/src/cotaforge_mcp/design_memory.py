@@ -404,13 +404,16 @@ _cache: dict[str, Any] = {}
 
 def _signature(settings: Settings) -> tuple[Any, ...]:
     store = rules.memory_store(settings)
-    rows: list[tuple[str, int]] = []
+    rows: list[tuple[str, int, int, int]] = []
     for scope in (Scope.project, Scope.user, Scope.base):
         directory = store.directory(scope)
         if directory is None or not directory.is_dir():
             continue
         with os.scandir(directory) as scan:
-            rows.extend((entry.path, entry.stat().st_mtime_ns) for entry in scan if entry.name.endswith(".md"))
+            for entry in scan:
+                if entry.name.endswith(".md"):  # size and inode too: two writes in one clock tick share a time
+                    stat = entry.stat()
+                    rows.append((entry.path, stat.st_mtime_ns, stat.st_size, stat.st_ino))
     return tuple(sorted(rows))
 
 
@@ -473,7 +476,10 @@ def push(session: "Session", op: str, roles: frozenset[str]) -> list[str]:
     lines = [push_line(entry) for entry in hits[:MAX_PUSH_LINES]]
     if len(hits) > MAX_PUSH_LINES:
         lines.append(f"memory: +{len(hits) - MAX_PUSH_LINES} more: {', '.join(e.id for e in hits[MAX_PUSH_LINES:])}")
-    lines.append("memory: read the entry (memory get id=...) and answer at the milestone with memory(action=answer)")
+    lines.append(
+        "memory: read the entries (memory get, ids=[...] takes several) and answer at the milestone with "
+        "memory(action=answer, answers={id: text} takes several)"
+    )
     return lines
 
 

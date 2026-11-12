@@ -1,7 +1,9 @@
 """File-backed memory store with two scopes (project and user).
 
-Nothing is cached: every call reads the folders, so a change made by another process (or by hand) is seen
-immediately. A broken file never breaks the store: it is collected as a load problem and skipped.
+Every call reads the folders, so a change made by another process (or by hand) is seen immediately. What is kept
+between calls is only the parse of a file that has not changed (same path, modification time and size): parsing the
+YAML of the ~65 base entries on every call cost about 0.3 s each time on Windows. A broken file never breaks the store:
+it is collected as a load problem and skipped.
 """
 
 import os
@@ -31,6 +33,23 @@ HOME_ENV_VAR = "COTAFORGE_HOME"
 USER_MEMORY_DIRNAME = paths.MEMORY
 PROJECT_MEMORY_DIRNAME = paths.MEMORY
 BASE_MEMORY_DIRNAME = "base"
+
+_PARSED: dict[tuple[str, str], tuple[tuple[int, int, int], MemoryEntry]] = {}
+"""The last good parse of each entry file: ``(path, expected id)`` -> ``((mtime_ns, size, inode), entry)``. Entries are
+frozen, so sharing one between calls is safe; a file that changed (or fails to parse) is parsed again."""
+
+
+def _parsed(path: Path) -> MemoryEntry:
+    """``parse_entry`` of ``path``, reusing the last parse while the file's modification time and size are the same."""
+    stat = path.stat()
+    stamp = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+    key = (str(path), path.stem)
+    kept = _PARSED.get(key)
+    if kept is not None and kept[0] == stamp:
+        return kept[1]
+    entry = parse_entry(path.read_text(encoding="utf-8"), expected_id=path.stem)
+    _PARSED[key] = (stamp, entry)
+    return entry
 
 
 class MemoryStoreError(Exception):
@@ -141,7 +160,7 @@ class MemoryStore:
             if path.name == INDEX_FILENAME:
                 continue
             try:
-                entry = parse_entry(path.read_text(encoding="utf-8"), expected_id=path.stem)
+                entry = _parsed(path)
                 if canonical is not None:
                     _require_canonical_sectors(entry, canonical)
             except (EntryError, OSError, UnicodeDecodeError) as error:

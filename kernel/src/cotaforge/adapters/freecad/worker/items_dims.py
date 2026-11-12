@@ -11,6 +11,7 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+import sheet_thread
 import sheet_tol
 from items_attach import attach_face
 from items_common import asked, outward_diagonal, place_leader
@@ -501,7 +502,16 @@ def _diameter(ctx: Context, spec: dict[str, Any]) -> str:
         raise ItemError(msg)
     att = attach_face(ctx, face_id, spec.get("view"), spec.get("side"))
     diagonal = (1.0 if att.normal[0] >= 0 else -1.0, 1.0 if att.normal[1] >= 0 else -1.0)
-    rendered, extra = _toleranced(ctx, spec, 2 * face.radius, "linear", prefix="Ø")
+    threads = sheet_thread.threads_on_face(ctx, face_id, face)
+    if threads:  # a shaft end an ``external_thread`` threaded: its callout is the thread, not the plain diameter
+        if "fit" in spec or "tol" in spec:
+            msg = f"{face_id} is threaded ({threads[0].size}): a threaded diameter takes no fit or tolerance, the thread class is part of its size"
+            raise ItemError(msg)
+        lines = sheet_thread.external_callout(ctx, threads)
+        rendered, extra = sheet_tol.Rendered(" / ".join(lines)), f"; thread {threads[0].size}"
+    else:
+        lines = None
+        rendered, extra = _toleranced(ctx, spec, 2 * face.radius, "linear", prefix="Ø")
     ctx.record_dimension(("dia", round(2 * face.radius, 2), face_id), att.view.name)
     round_part = ctx.geometry.round_extent()
     if (
@@ -510,7 +520,7 @@ def _diameter(ctx: Context, spec: dict[str, Any]) -> str:
         ctx.record_dimension(("dia", round(2 * face.radius, 2), OVERALL), att.view.name)
     if att.view.derived and att.circle is None and att.kind == "surface":
         return _section_diameter(ctx, spec, att, face.radius, rendered.text, extra)
-    ctx.add(place_leader(ctx, att.view, att.tip, diagonal, [rendered.text], spec.get("offset_mm"), asked(spec)))
+    ctx.add(place_leader(ctx, att.view, att.tip, diagonal, lines or [rendered.text], spec.get("offset_mm"), asked(spec)))
     ctx.used_view(att.view.name)
     radius = face.radius * att.view.scale
     if att.circle is not None:  # seen along its axis: a circle of the view
