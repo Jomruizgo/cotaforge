@@ -140,53 +140,104 @@ def _modified_faces_count(check: Level2Check, e: Expectation, obs: Observation, 
     return check._scalar(e, len(obs.modified_face_handles))
 
 
-def _single_cylinder(check: Level2Check, obs: Observation, *, widest: bool = False) -> FaceInfo:
-    """The cylinder the hole created. A hole through both walls of a tube leaves one cylindrical face per wall:
-    those count as one hole when they share the axis LINE (each reports the axial midpoint of its own piece, so the
-    origins differ); a counterbored hole leaves a second, wider cylinder on the same axis. Anything not on that one
-    axis is not one hole and cannot be judged. Returns the narrowest cylinder (the hole itself), or the widest one (the
-    counterbore: what the entry face must hold) with ``widest``."""
+def _hole_groups(check: Level2Check, obs: Observation) -> list[list[FaceInfo]]:
+    """The cylinders the op created, grouped by axis LINE: one group per hole. A hole through both walls of a tube
+    leaves one cylindrical face per wall (each reports the axial midpoint of its own piece, so the origins differ) and a
+    counterbored hole a second, wider cylinder: both are one group. An op with several holes (a pattern in one
+    feature) leaves one group per hole."""
     cylinders = [f for f in obs.created_faces if f.surface == SurfaceType.cylinder]
     if not cylinders:
         raise _UnobservableError("expected a created cylindrical face, found 0")
-    first = cylinders[0]
-    if first.axis is None or first.radius is None:
-        raise _UnobservableError("cylindrical face has no axis/radius")
     t = check.thresholds
-    for other in cylinders[1:]:
-        if other.axis is None or other.radius is None:
+    groups: list[list[FaceInfo]] = []
+    for face in cylinders:
+        if face.axis is None or face.radius is None:
             raise _UnobservableError("cylindrical face has no axis/radius")
-        coaxial = t.parallel(first.axis.direction, other.axis.direction, either_sense=True) and (
-            formulas.distance_point_to_axis(other.axis.origin, first.axis) <= t.position_mm
-        )
-        if not coaxial:
-            raise _UnobservableError(
-                f"{len(cylinders)} created cylindrical faces, but they are not one coaxial hole (one axis)"
-            )
+        for group in groups:
+            first = group[0]
+            assert first.axis is not None
+            if t.parallel(first.axis.direction, face.axis.direction, either_sense=True) and (
+                formulas.distance_point_to_axis(face.axis.origin, first.axis) <= t.position_mm
+            ):
+                group.append(face)
+                break
+        else:
+            groups.append([face])
+    return groups
+
+
+def _pick(group: list[FaceInfo], widest: bool) -> FaceInfo:
     pick = max if widest else min
-    return pick(cylinders, key=lambda c: c.radius)  # type: ignore[arg-type,return-value]
+    return pick(group, key=lambda c: c.radius)  # type: ignore[arg-type,return-value]
 
 
-def _hole_axis_direction(check: Level2Check, e: Expectation, obs: Observation, _: dict[str, Expectation]) -> _Outcome:
-    """The single created cylindrical face's axis is parallel (either sense) to the expected direction."""
-    face = _single_cylinder(check, obs)
-    assert face.axis is not None
-    observed = face.axis.direction
-    return _Outcome(check.thresholds.parallel(e.value, observed, either_sense=True), observed)  # type: ignore[arg-type]
+def _holes(check: Level2Check, obs: Observation, others: dict[str, Expectation]) -> list[list[FaceInfo]]:
+    """The holes the op created, one axis group each. One hole is expected unless the op also states ``hole_count``
+    (several holes in one feature): cylinders that are not one coaxial hole are then not judged as one."""
+    groups = _hole_groups(check, obs)
+    if len(groups) > 1 and "hole_count" not in others:
+        raise _UnobservableError(
+            f"{len(obs.created_faces)} created faces, but the cylinders are not one coaxial hole (one axis)"
+        )
+    return groups
 
 
-def _hole_axis_position(check: Level2Check, e: Expectation, obs: Observation, _: dict[str, Expectation]) -> _Outcome:
-    """The expected point lies on the created cylindrical face's axis (observed = closest axis point)."""
-    face = _single_cylinder(check, obs)
+def _hole_count(check: Level2Check, e: Expectation, obs: Observation, _: dict[str, Expectation]) -> _Outcome:
+    """The op made as many holes (axis groups of cylinders) as it asked for."""
+    return check._scalar(e, len(_hole_groups(check, obs)))
+
+
+def _single_cylinder(
+    check: Level2Check, obs: Observation, others: dict[str, Expectation], *, near: Vec3 | None = None
+) -> FaceInfo:
+    """The cylinder the hole created: the narrowest of its axis group (the hole itself). With several holes
+    (``near`` = a point of the axis of the one asked about) the group whose axis passes nearest that point."""
+    groups = _holes(check, obs, others)
+    if near is not None:
+        return _pick(min(groups, key=lambda g: formulas.distance_point_to_axis(near, g[0].axis)), False)  # type: ignore[arg-type]
+    return _pick(groups[0], False)
+
+
+def _hole_axis_direction(
+    check: Level2Check, e: Expectation, obs: Observation, others: dict[str, Expectation]
+) -> _Outcome:
+    """The created cylindrical face's axis (every hole's, with several) is parallel (either sense) to the expected
+    direction."""
+    first: _Outcome | None = None
+    for group in _holes(check, obs, others):
+        face = _pick(group, False)
+        assert face.axis is not None
+        observed = face.axis.direction
+        outcome = _Outcome(check.thresholds.parallel(e.value, observed, either_sense=True), observed)  # type: ignore[arg-type]
+        if not outcome.ok:
+            return outcome
+        first = first or outcome
+    assert first is not None
+    return first
+
+
+def _hole_axis_position(
+    check: Level2Check, e: Expectation, obs: Observation, others: dict[str, Expectation]
+) -> _Outcome:
+    """The expected point lies on the axis of the created cylindrical face nearest to it (observed = closest axis
+    point); with several holes each has its own row."""
+    face = _single_cylinder(check, obs, others, near=e.value)  # type: ignore[arg-type]
     assert face.axis is not None
     closest = formulas.closest_point_on_axis(e.value, face.axis)  # type: ignore[arg-type]
     return check._vec(e, closest)
 
 
-def _hole_radius(check: Level2Check, e: Expectation, obs: Observation, _: dict[str, Expectation]) -> _Outcome:
-    face = _single_cylinder(check, obs)
-    assert face.radius is not None
-    return check._scalar(e, face.radius)
+def _hole_radius(check: Level2Check, e: Expectation, obs: Observation, others: dict[str, Expectation]) -> _Outcome:
+    first: _Outcome | None = None
+    for group in _holes(check, obs, others):
+        face = _pick(group, False)
+        assert face.radius is not None
+        outcome = check._scalar(e, face.radius)
+        if not outcome.ok:
+            return outcome
+        first = first or outcome
+    assert first is not None
+    return first
 
 
 def _hole_entry_face_modified(
@@ -199,19 +250,25 @@ def _hole_entry_face_modified(
     return _Outcome(observed == bool(e.value), observed)
 
 
-def _hole_within_face(check: Level2Check, e: Expectation, obs: Observation, _: dict[str, Expectation]) -> _Outcome:
+def _hole_within_face(
+    check: Level2Check, e: Expectation, obs: Observation, others: dict[str, Expectation]
+) -> _Outcome:
     """The created cylinder's footprint on the entry face's plane (observed: its flat bounding box) lies inside
     the entry face's bounding box (expected: the face's box before the hole). Exact when the face is a full
     axis-aligned rectangle; the ExpectedComputer asserts it only then and reports it otherwise."""
     face = obs.hole_entry_face_info
     if face is None or face.normal is None:
         raise _UnobservableError("hole entry face not observed after the hole")
-    cylinder = _single_cylinder(check, obs, widest=True)
-    assert cylinder.axis is not None and cylinder.radius is not None
-    try:
-        footprint = formulas.disc_footprint_bbox(cylinder.axis, cylinder.radius, face.center, face.normal)
-    except ValueError as exc:
-        raise _UnobservableError(str(exc)) from exc
+    footprint: BoundingBox | None = None
+    for group in _holes(check, obs, others):  # every hole of the op, one footprint each
+        cylinder = _pick(group, True)
+        assert cylinder.axis is not None and cylinder.radius is not None
+        try:
+            one = formulas.disc_footprint_bbox(cylinder.axis, cylinder.radius, face.center, face.normal)
+        except ValueError as exc:
+            raise _UnobservableError(str(exc)) from exc
+        footprint = one if footprint is None else formulas.bbox_union(footprint, one)
+    assert footprint is not None
     return check._bbox(e, footprint, within=True)
 
 
@@ -552,6 +609,7 @@ _EVALUATORS: dict[str, Evaluator] = {
     "modified_faces_count": _modified_faces_count,
     "hole_axis_direction": _hole_axis_direction,
     "hole_axis_position": _hole_axis_position,
+    "hole_count": _hole_count,
     "hole_radius": _hole_radius,
     "hole_entry_face_modified": _hole_entry_face_modified,
     "hole_within_face": _hole_within_face,
