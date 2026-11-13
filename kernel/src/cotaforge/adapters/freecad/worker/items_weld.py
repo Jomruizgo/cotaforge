@@ -3,7 +3,7 @@
 
 The joint is measured, never guessed: ``between`` names the two bodies that touch (``sheet_joints``); the weld -- its
 kind, the throat ``a`` (or the leg ``z``), the side, all round, field, intermittent -- is the designer's decision. One
-item is one symbol; the joints that are the same job (``also``) share it, and the symbol says how many (``4×``).
+item is one symbol; the joints that are the same job (``also``) share it: one reference line with an arrow to each of them (ISO 2553 allows several arrow lines on one reference line for identical welds), so the welder sees which joints are meant.
 
 The symbol stands where the joint is SEEN: in the view whose visible edges carry the seam of the joint. It is drawn the ISO
 way: an arrow line that ends on the seam, the continuous reference line, the elementary symbol under it for the arrow side
@@ -40,9 +40,9 @@ from sheet_model import DIMENSIONS, Arc, Circle, Entity, Line, Polyline, Solid, 
 KINDS = ("fillet", "v", "square")
 SIZE_KINDS = ("throat", "leg")
 SIDES = ("arrow", "other", "both")
-TEXT_MM = 3.5
-SYMBOL_W = 4.0
-SYMBOL_H = 4.0
+TEXT_MM = 4.5  # lettering of a drawn fragment renders smaller than TechDraw's own 3.5 mm dimension text: never below it on the sheet
+SYMBOL_W = 5.0
+SYMBOL_H = 5.0
 DASH_GAP_MM = 5.0
 PAD_MM = 1.5
 MIN_REF_MM = 14.0
@@ -52,10 +52,12 @@ FLAG_H = 5.0
 MIN_SEEN_MM = 2.5  # a seam shorter than this on the page is seen end-on
 VISIBLE_TOL_MM = 0.4
 SAMPLES = 8
-TIP_FRACTIONS = (0.5, 0.0, 1.0, 0.25, 0.75)
+TIP_FRACTIONS = (0.5, 0.35, 0.65, 0.25, 0.75)  # the middle of a seam first, never its end (a corner)
 DISTANCES = (8.0, 12.0, 18.0, 26.0, 36.0)
+FAR_DISTANCES = (46.0, 58.0)  # a group of joints spread over a view needs the reference line farther from the first arrow
 PARALLEL_DEG = 20.0
 NEAR_TIP_MM = 0.9
+SAME_TIP_MM = 1.0  # two joints whose seams project onto each other in a view share the arrow
 Rect = tuple[float, float, float, float]
 Segment = tuple[Point, Point]
 
@@ -228,9 +230,16 @@ def seen_spots(ctx: Context, view: ViewInfo, joint: Any) -> list[Spot]:
 
 
 def views_to_try(ctx: Context, wanted: str | None) -> list[ViewInfo]:
+    """The views a joint may be shown in: the three standard ones, then the pictorial (isometric) one, where the seams of
+    the joints a standard view hides behind the near ones are often seen."""
     if wanted is not None:
-        return [ctx.view(wanted)]
-    return [ctx.views[n] for n in VIEW_ORDER if n in ctx.views]
+        try:
+            return [ctx.view(wanted)]
+        except ItemError:
+            return [ctx.any_view(wanted)]
+    out = [ctx.views[n] for n in VIEW_ORDER if n in ctx.views]
+    iso = ctx.extras.get("views_extra", {}).get("isometric")
+    return out + ([iso] if iso is not None else [])
 
 
 def best_view(ctx: Context, joints: list[Any], wanted: str | None) -> tuple[ViewInfo, list[Spot]] | None:
@@ -379,17 +388,84 @@ def _directions(spot: Spot, tip: Point, wanted: str | None) -> list[tuple[float,
     return out[:1] if wanted is not None else out
 
 
-def place(ctx: Context, spots: list[Spot], spec: dict[str, Any], count: int) -> tuple[list[Entity], Spot, Point, Point, bool] | None:
-    """The first free place for the symbol: a tip on a visible stretch of the seam, a direction and a distance such that the
-    arrow crosses no line of the view, the symbol is inside the frame and clear of everything on the sheet. Returns the
-    entities, the stretch, the tip, the anchor and whether it is clean (``False``: the least bad place was kept)."""
+Member = tuple[Any, list[Spot]]  # a joint and the stretches of its seam a view shows
+
+
+def split_by_view(ctx: Context, joints: list[Any], wanted: str | None) -> tuple[list[tuple[ViewInfo, list[Member]]], list[Any]]:
+    """The joints shared out among the views, the fewest views first: each round takes the view that shows the most of the
+    joints left (ties: the most seam length), in the order of ``views_to_try``. Returns the groups and the joints no view
+    shows."""
+    views = views_to_try(ctx, wanted)
+    seen = {(v.name, j.key): seen_spots(ctx, v, j) for v in views for j in joints}
+    left = list(joints)
+    groups: list[tuple[ViewInfo, list[Member]]] = []
+    while left:
+        best: tuple[tuple[int, float], ViewInfo, list[Member]] | None = None
+        for view in views:
+            members = [(j, seen[(view.name, j.key)]) for j in left if seen[(view.name, j.key)]]
+            score = (len(members), sum(s.length for _, spots in members for s in spots))
+            if members and (best is None or score > (best[0][0], best[0][1] + 1e-6)):
+                best = (score, view, members)
+        if best is None:
+            break
+        groups.append((best[1], best[2]))
+        taken = {j.key for j, _ in best[2]}
+        left = [j for j in left if j.key not in taken]
+    return groups, left
+
+
+def _arrow_tip(
+    ctx: Context, member: Member, anchor: Point, rect: Rect, visible: list[Segment] | None, allowed: int, taken: list[Point]
+) -> Point | None:
+    """The tip of the arrow of one more joint of the group, leaving ``anchor``: the nearest point of one of its seams (never
+    its end) that the arrow reaches across no line of the view beyond ``allowed``, clear of the symbol, of the other arrows
+    and not along the seam."""
+    _, spots = member
+    best: tuple[float, Point] | None = None
+    for spot in sorted(spots, key=lambda s: -s.length)[:4]:
+        att = Attach(spot.view, spot.at(0.5), (0.0, 1.0), "plane")
+        along = _unit((spot.b[0] - spot.a[0], spot.b[1] - spot.a[1]))
+        for fraction in TIP_FRACTIONS:
+            tip = spot.at(fraction)
+            same = next((t for t in taken if math.dist(t, tip) < SAME_TIP_MM), None)
+            if same is not None:
+                return same  # the seam of this joint is drawn on the one an arrow already marks
+            length = math.dist(tip, anchor)
+            if length < 6.0:  # noqa: PLR2004
+                continue
+            direction = _unit((tip[0] - anchor[0], tip[1] - anchor[1]))
+            if abs(direction[0] * along[0] + direction[1] * along[1]) > math.cos(math.radians(PARALLEL_DEG)):
+                continue
+            start = (anchor[0] + direction[0] * 2.0, anchor[1] + direction[1] * 2.0)
+            if rect[0] <= start[0] <= rect[2] and rect[1] <= start[1] <= rect[3]:
+                continue  # the arrow would run back over the symbol
+            others = [_unit((t[0] - anchor[0], t[1] - anchor[1])) for t in taken]
+            if any(abs(direction[0] * o[1] - direction[1] * o[0]) < 0.17 and direction[0] * o[0] + direction[1] * o[1] > 0 for o in others):  # noqa: PLR2004
+                continue  # two arrows nearly on one line
+            att.tip = tip
+            if not _leader_free(ctx, att, tip, anchor, crossing=allowed > 0) or _crossings(visible, tip, anchor) > allowed:
+                continue
+            if best is None or length < best[0]:
+                best = (length, tip)
+    return None if best is None else best[1]
+
+
+def place(ctx: Context, members: list[Member], spec: dict[str, Any]) -> tuple[list[Entity], list[Point], Point, Rect, bool]:
+    """The first free place for ONE reference line with an arrow to each joint of ``members`` (ISO 2553: several arrow
+    lines may leave one reference line when the welds are identical): the anchor, a direction and a distance such that the
+    symbol is inside the frame and clear of everything on the sheet, and every arrow ends on a seam of its joint across
+    no line of the view. Returns the entities, the tips, the anchor, the rectangle and whether it is clean (``False``: the
+    least bad place was kept, with the lead arrow only)."""
     comma = ctx.comma
     explicit = asked(spec)
     distances = (spec["offset_mm"],) if spec.get("offset_mm") is not None else (DISTANCES[:1] if explicit else DISTANCES)
-    fallback = None
-    for allowed in (0, 1, 2) if not explicit else (0, 99):
-        for spot in spots:
-            visible = visible_segments(ctx, spot.view)
+    _, lead_spots = members[0]
+    visible = visible_segments(ctx, lead_spots[0].view)
+    if len(members) > 1 and spec.get("offset_mm") is None and not explicit:
+        distances = (*distances, *FAR_DISTANCES)
+    for allowed in (0, 1, 2, 4, 6) if not explicit else (0, 99):
+        best: tuple[float, list[Entity], list[Point], Point, Rect] | None = None
+        for spot in lead_spots:
             att = Attach(spot.view, spot.at(0.5), (0.0, 1.0), "plane")
             for fraction in TIP_FRACTIONS:
                 tip = spot.at(fraction)
@@ -398,27 +474,42 @@ def place(ctx: Context, spots: list[Spot], spec: dict[str, Any], count: int) -> 
                         distance = base + (0.0 if explicit else ctx.nudge() * 4.0)
                         anchor = (tip[0] + direction[0] * distance, tip[1] + direction[1] * distance)
                         sign = 1.0 if direction[0] >= 0 else -1.0
-                        entities, rect = symbol(anchor, sign, spec, comma, count)
+                        entities, rect = symbol(anchor, sign, spec, comma, 1)
                         if not ctx.inside(rect) or not ctx.free(rect):
                             continue
                         if visible and any(_segment_hits_rect(a, b, rect) for a, b in visible):
                             continue
                         att.tip = tip
-                        if not _leader_free(ctx, att, tip, anchor):
+                        if not _leader_free(ctx, att, tip, anchor, crossing=allowed > 0) or _crossings(visible, tip, anchor) > allowed:
                             continue
-                        if _crossings(visible, tip, anchor) > allowed:
+                        tips = [tip]
+                        reached = True
+                        for member in members[1:]:
+                            other = _arrow_tip(ctx, member, anchor, rect, visible, allowed, tips)
+                            if other is None:
+                                reached = False
+                                break
+                            if other not in tips:
+                                tips.append(other)
+                        if not reached:
                             continue
-                        line = [Line(tip[0], tip[1], anchor[0], anchor[1], DIMENSIONS), arrow(tip, _unit((tip[0] - anchor[0], tip[1] - anchor[1])))]
-                        return entities + line, spot, tip, anchor, True
-    # nothing clean: the first inside the frame, at the natural direction, so the sheet shows where it should go
-    for spot in spots:
-        tip = spot.at(0.5)
-        direction = _directions(spot, tip, spec.get("side"))[0]
-        anchor = (tip[0] + direction[0] * DISTANCES[1], tip[1] + direction[1] * DISTANCES[1])
-        entities, rect = symbol(anchor, 1.0 if direction[0] >= 0 else -1.0, spec, comma, count)
-        fallback = (entities + [Line(tip[0], tip[1], anchor[0], anchor[1], DIMENSIONS), arrow(tip, _unit((tip[0] - anchor[0], tip[1] - anchor[1])))], spot, tip, anchor, False)
-        break
-    return fallback
+                        cost = sum(math.dist(t, anchor) + 8.0 * _crossings(visible, t, anchor) for t in tips)  # short arrows, few crossings
+                        if best is None or cost < best[0] - 1e-9:
+                            best = (cost, entities, tips, anchor, rect)
+                        if explicit:
+                            break
+        if best is not None:
+            _, entities, tips, anchor, rect = best
+            for t in tips:
+                entities = [*entities, Line(t[0], t[1], anchor[0], anchor[1], DIMENSIONS), arrow(t, _unit((t[0] - anchor[0], t[1] - anchor[1])))]
+            return entities, tips, anchor, rect, True
+    # nothing clean: the lead joint at the natural direction, inside the frame, so the sheet shows where it should go
+    spot = lead_spots[0]
+    tip = spot.at(0.5)
+    direction = _directions(spot, tip, spec.get("side"))[0]
+    anchor = (tip[0] + direction[0] * DISTANCES[1], tip[1] + direction[1] * DISTANCES[1])
+    entities, rect = symbol(anchor, 1.0 if direction[0] >= 0 else -1.0, spec, comma, 1)
+    return [*entities, Line(tip[0], tip[1], anchor[0], anchor[1], DIMENSIONS), arrow(tip, _unit((tip[0] - anchor[0], tip[1] - anchor[1])))], [tip], anchor, rect, False
 
 
 def _unit(v: Point) -> Point:
@@ -443,28 +534,36 @@ def _label(spec: dict[str, Any], comma: bool) -> str:
 
 def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     joints = joints_named(ctx, spec)
-    found = best_view(ctx, joints, spec.get("view"))
+    groups, unseen = split_by_view(ctx, joints, spec.get("view"))
     names = " ; ".join(f"{j.bodies[0]} + {j.bodies[1]}" for j in joints)
-    if found is None:
+    if not groups:
         msg = ctx.say(
             f"ninguna vista muestra la unión {names}: su cordón queda oculto o de canto. Pide otra vista (view=) o añade una vista que la muestre",
             f"no view shows the joint {names}: its seam is hidden or edge-on. Ask for another view (view=) or add a view that shows it",
         )
         raise ItemError(msg)
-    view, spots = found
-    ctx.used_view(view.name)
-    count = len(joints)
-    placed = place(ctx, spots, spec, count)
-    assert placed is not None
-    entities, spot, tip, anchor, clean = placed
-    ctx.add(entities)
-    sign = 1.0 if anchor[0] >= tip[0] else -1.0
-    _, rect = symbol(anchor, sign, spec, ctx.comma, count)
-    ctx.reserve(rect)
-    ctx.extras.setdefault("segments", []).append((tip, anchor))
-    detail = f"{_label(spec, ctx.comma)} on {names} in the {view.name} view" + (f" (the same weld on {count} joints)" if count > 1 else "")
-    if not clean:
-        return "warning", detail + "; the symbol crosses or overlaps other things: move it with side or offset_mm"
+    parts: list[str] = []
+    clean_all = True
+    for view, members in groups:
+        ctx.used_view(view.name)
+        entities, tips, anchor, rect, clean = place(ctx, members, spec)
+        ctx.add(entities)
+        ctx.reserve(rect)
+        ctx.extras.setdefault("segments", []).extend((t, anchor) for t in tips)
+        clean_all = clean_all and clean
+        marked = ", ".join(f"{j.bodies[0]} + {j.bodies[1]}" for j, _ in (members if clean else members[:1]))
+        parts.append(f"{view.name} view: {len(tips)} arrow(s) for {marked}")
+    detail = f"{_label(spec, ctx.comma)} on {names}; " + "; ".join(parts)
+    problems: list[str] = []
+    if unseen:
+        hidden = ", ".join(f"{j.bodies[0]} + {j.bodies[1]}" for j in unseen)
+        problems.append(
+            f"no arrow for {hidden}: no view shows their seam (hidden or edge-on); add a view that shows them (view=) or a section"
+        )
+    if not clean_all:
+        problems.append("the symbol crosses or overlaps other things: move it with side or offset_mm")
+    if problems:
+        return "warning", f"{detail}; " + "; ".join(problems)
     return "ok", detail
 
 

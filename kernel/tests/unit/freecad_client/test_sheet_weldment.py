@@ -226,6 +226,39 @@ def test_the_cut_list_stays_inside_the_title_block_width_and_on_the_frame_whatev
     assert all(line.x2 <= 410.0 + 1e-9 for line in short.sheet.entities if hasattr(line, "x2"))
 
 
+def test_the_review_finds_the_cut_list_inside_the_frame() -> None:
+    found = reviewed(context(), {"type": "parts_list", "id": "cut", "rows": [{"component": "body:1", "name": "Tubo 40×40×3"}, {"component": "body:5", "name": "Chapa 6"}]})
+    assert "item_outside_frame" not in codes(found)
+    import sheet_units  # noqa: PLC0415
+
+    for language in ("es", "en"):  # the box the review measures holds the estimated width of every text, slack included
+        ctx = context(language)
+        draw(ctx, {"type": "parts_list", "rows": [{"component": "body:1", "name": "Tubo 40×40×3"}, {"component": "body:5", "name": "Chapa 6"}]})
+        box = sheet_units.bounds(ctx.sheet.entities)
+        assert box is not None and box[2] <= 410.0 + 1e-9, (language, box)
+
+
+def placed_right_edge(rect: tuple[float, float, float, float], origins: list[float]) -> float:
+    """Where the right edge of the table ends once the sheet window has placed it: a symbol whose centre is within 6 mm of a
+    view origin is pulled onto it (the centre takes the origin's x), so the whole table moves with it."""
+    centre = (rect[0] + rect[2]) / 2
+    for x in origins:
+        if abs(centre - x) <= 6.0:
+            return rect[2] + (x - centre)
+    return rect[2]
+
+
+def test_no_edge_of_the_cut_list_passes_the_inner_frame_line_after_the_window_placed_it_wherever_the_views_are() -> None:
+    for view_x in range(250, 411, 2):  # a view origin anywhere over where the table can stand
+        ctx = context()
+        iso = sc.ViewInfo("isometric", float(view_x), 150.0, 0.2, (1, 1, 1), (1, -1, 0), (0, 0, 0), (250.0, 100.0, 395.0, 200.0))
+        ctx.extras["views_extra"] = {"isometric": iso}
+        draw(ctx, {"type": "parts_list", "rows": [{"component": "body:1", "name": "Tubo 40×40×3"}, {"component": "body:5", "name": "Chapa 6"}]})
+        rect = ctx.extras["parts_list"]["rect"]
+        origins = [v.x for v in (*ctx.views.values(), iso)]
+        assert placed_right_edge(rect, origins) <= 410.0 + 1e-9, (view_x, rect)
+
+
 def test_the_centre_of_the_cut_list_keeps_clear_of_the_view_origins_the_window_snaps_to() -> None:
     ctx = context()
     iso = sc.ViewInfo("isometric", 322.5, 150.0, 0.2, (1, 1, 1), (1, -1, 0), (0, 0, 0), (250.0, 100.0, 395.0, 200.0))

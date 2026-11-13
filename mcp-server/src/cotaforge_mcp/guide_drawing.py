@@ -402,7 +402,7 @@ QUALITY_LINES = (
 WELD_LINE = (
     "weld: ISO 2553 symbol of a joint of a welded part. Joints are MEASURED (bodies that "
     "touch); review lists each identical group with the usual weld as a PROPOSAL: ask the DESIGNER once per group, "
-    "never apply it unasked. between=[body, body], also=[[body, body], ...] (identical joints: one symbol, '4x'), kind? "
+    "never apply it unasked. between=[body, body], also=[[body, body], ...] (identical joints: one reference line with an arrow to each joint), kind? "
     "(fillet | v | square), size_mm (throat a; size_kind=leg: z), sides? (arrow | other | both), all_around?, field?, "
     "length_mm + pitch_mm, view?, side?, offset_mm?. A joint with no symbol blocks the export (weld_joint_unspecified); "
     "sides=both is one symbol (weld_duplicate). The weld quality level is ISO 5817, not ISO 13920 (weld_class_13920). A "

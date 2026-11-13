@@ -35,6 +35,7 @@ from sheet_context import (
 )
 from sheet_layout import FRAME_MARGIN_MM, TITLE_BLOCK_TOP_MM, TITLE_BLOCK_WIDTH_MM
 from sheet_model import DIMENSIONS, TEXT, TITLE_BLOCK, Circle, Entity, Line, Solid, Text, text_width
+from sheet_units import TEXT_SLACK
 
 # --- the parts list -----------------------------------------------------------------------------------------------------
 
@@ -195,7 +196,7 @@ def fit_widths(ctx: Context, header: Sequence[str], rows: list[list[str]], right
     designation column takes a few millimetres more (the table grows to the left) so the centre is clear of it."""
     texts = [[header[c], *(r[c] for r in rows)] for c in range(2, 6)]
     wanted = [
-        min(FIT_MAX_MM, max(FIT_MIN_MM, max(text_width(t, CELL_HEIGHT_MM) for t in col) + 2 * CELL_PAD_MM + 1.0))
+        min(FIT_MAX_MM, max(FIT_MIN_MM, max(text_width(t, CELL_HEIGHT_MM) for t in col) * TEXT_SLACK + 2 * CELL_PAD_MM + 1.0))
         for col in texts
     ]
     room = TITLE_BLOCK_WIDTH_MM - sum(CUT_FIXED_MM)

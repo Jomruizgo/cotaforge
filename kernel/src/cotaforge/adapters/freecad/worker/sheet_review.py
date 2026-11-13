@@ -1313,6 +1313,10 @@ def _layout(data: ReviewInput) -> list[Finding]:
     return out
 
 
+def _box(x0: float, y0: float, x1: float, y1: float) -> str:
+    return f"[{x0:.2f}, {y0:.2f}, {x1:.2f}, {y1:.2f}]"
+
+
 def _item_places(data: ReviewInput, frame: Rect, flagged: set[str]) -> list[Finding]:
     """An item whose drawing (lines, frames, text) runs outside the frame or over the title block: placed by the
     placer, or asked for with ``at_mm`` -- either way the sheet would be printed wrong, and the finding names the item."""
@@ -1325,8 +1329,8 @@ def _item_places(data: ReviewInput, frame: Rect, flagged: set[str]) -> list[Find
         x0, y0, x1, y1 = unit.rect
         if unit.key not in flagged and (x0 < frame[0] or y0 < frame[1] or x1 > frame[2] or y1 > frame[3]):
             text = ctx.say(
-                f"{unit.key} ({unit.item_type}) se sale del marco del plano: muévelo (offset_mm, side o at_mm).",
-                f"{unit.key} ({unit.item_type}) runs outside the frame of the sheet: move it (offset_mm, side or at_mm).",
+                f"{unit.key} ({unit.item_type}) se sale del marco del plano ({_box(x0, y0, x1, y1)} frente a {_box(*frame)}): muévelo (offset_mm, side o at_mm).",
+                f"{unit.key} ({unit.item_type}) runs outside the frame of the sheet ({_box(x0, y0, x1, y1)} against {_box(*frame)}): move it (offset_mm, side or at_mm).",
             )
             out.append(Finding("item_outside_frame", "warning", text, (unit.key,)))
         if block is not None and unit.item_type != "parts_list" and _overlap((x0, y0, x1, y1), block):
