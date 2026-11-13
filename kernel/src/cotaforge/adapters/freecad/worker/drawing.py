@@ -1167,7 +1167,7 @@ def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
             spec["template"] = template_key(key, language, angle)
             warnings.append(
                 f"paper chosen from the part: {key} at {model.fmt_scale(chosen[1])} (A4 or A3 at full size or larger, "
-                "else the smallest paper not below 1:2); template=... states another"
+                "else the smallest paper where it is legible: not below 1:5 and its largest side drawn at least 80 mm); template=... states another"
             )
     apply_title_block(spec, params.get("title_block"), op)
     _sync_auto_items(doc, spec, op)
