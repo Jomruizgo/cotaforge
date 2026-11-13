@@ -230,7 +230,7 @@ def test_the_schema_cost_of_import_and_holes(session: Session) -> None:
     )  # 1964 with the convention action (values, +204); sew and sew_tolerance_mm of import added 187; reload and force 157
     assert cost(TOOLS_BY_NAME["inspect"]) < 1330  # 1293 with the edge-set preview; the CAD feature of tree on top
     assert (
-        sum(cost(t) for t in TOOLS if t.visible(session)) < 9800
+        sum(cost(t) for t in TOOLS if t.visible(session)) < 9850
     )  # 9394 with the convention action; +56 brief language
     # 8220 with feature edit, reload, focus; 8724 with memory v2; 9025 with view on=, sheet= and sheet items;
     # 9025 measured with the native drawing sheet (unchanged:

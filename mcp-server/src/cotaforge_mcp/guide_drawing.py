@@ -361,9 +361,9 @@ QUALITY_LINES = (
     "standard view), yours in the order added. A note is for fabrication and general remarks, never for a geometric "
     "tolerance (that is a gdt frame). Part-specific fabrication notes go there too (which ones the part needs: the requirements).",
     "VIEWS OF A REVOLVED PART: without views, a body of revolution about x, y or z gets, with a bore, the view along its "
-    "axis and a section A-A through it (item section holes=axis), solid the one view that shows its profile; the reply "
-    "says it chose, and views=[front, top, right, iso] gives all four. Any other part gets the four. A rebuild without "
-    "views keeps the sheet's.",
+    "axis and a section A-A through it (item section holes=axis); solid ONE view, axis horizontal, plus the isometric; "
+    "an end view only if it shows something. views=[front, top, right, iso] gives all. A rebuild without views keeps "
+    "the sheet's. A part's designation: doc set_title.",
     'ONE VIEW: a plate or flat part whose holes go through its thickness needs one view: create(views=["top"]) (or '
     "remove_view front on a sheet that has one other standard view). review says single_view_enough (no hold: the memory principle drawing-sufficient-views covers it) when the "
     "other views add nothing. The sheet then gives width and height on that view and the thickness as a note.",
