@@ -55,7 +55,7 @@ from cotaforge.language import say
 from cotaforge.memory import MemoryEntry
 from pydantic import ValidationError
 
-from cotaforge_mcp import design_memory, recovery
+from cotaforge_mcp import design_memory, measured_alerts, recovery
 from cotaforge_mcp import drawing_requirements as reqs
 from cotaforge_mcp.reply import ToolError
 from cotaforge_mcp.session import Session
@@ -277,8 +277,17 @@ def sheet_requirements(session: Session, sheet: DrawingSheetInfo) -> list[reqs.R
     if not sheet.facts:
         return []
     intent = reqs.find_intent(session.settings.workspace, session.doc_name)
+    # the violations the harness measures on the MODEL now (not the CAD's sheet review): open until the model is fixed or
+    # the engineer ordered them kept (memory(action=answer, by=, reason=) or this row's own answer)
+    firing = [line for lines in measured_alerts.open_now(session).values() for line in lines]
+    facts = {**sheet.facts, measured_alerts.MEASURED_FACT: len(firing)}
     return reqs.evaluate(
-        dict(sheet.facts), sheet.findings, dict(sheet.answers), intent, {item.id for item in sheet.items}
+        facts,
+        sheet.findings,
+        dict(sheet.answers),
+        intent,
+        {item.id for item in sheet.items},
+        {reqs.MEASURED_ROW: tuple(firing)},
     )
 
 
@@ -843,6 +852,15 @@ def _guard_answer(session: Session, sheet: str | None, item_id: str, verdict: st
                 f"{', '.join(rows) or 'none'} (drawing(action=requirements) lists them)",
                 code="unknown_entry",
                 field_name="id",
+                usage=ANSWER_USAGE,
+            )
+        if row.row.model_only:
+            raise ToolError(
+                f"{row.id} is open: {row.why}; {' | '.join(row.detail)}. No answer on the sheet closes it: fix the model "
+                "(the harness measures again and the row is gone) or, if the ENGINEER orders it kept, record his order "
+                "where the alert lives: memory(action=answer, id=<the entry>, by=<his name>, text='does not apply: <his words>')",
+                code="measured_not_dismissable",
+                field_name="text",
                 usage=ANSWER_USAGE,
             )
         if verdict == reqs.NOT_APPLIES and row.measured and not ordered:

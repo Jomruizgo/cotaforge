@@ -175,6 +175,8 @@ def read_pocket(
 
     ``universe`` has every face read, by handle id, so that the round corner a later step made is found next to a wall;
     ``edges_of`` reads the edges of a face."""
+    if len(made) > MAX_FACE_READS:  # before the axis: it compares every pair of faces (a faceted end has hundreds)
+        return None
     axis = cut_axis(made)
     if axis is None:
         return None
@@ -266,16 +268,32 @@ def process_allows(words: list[str], *, through: bool) -> bool:
 
 def alerts(session: "Session", op: str) -> list[str]:
     """The lines to add to the result of ``op``: empty when nothing is found, when the document is a concept model, or
-    when anything goes wrong."""
+    when anything goes wrong. A line is said once per server session."""
     if session.purpose == "sketch" or session.executor is None or op not in _OPS_THAT_COUNT:
         return []
     try:
-        return _alerts(session)
+        lines = []
+        for line in _lines(session):
+            if line not in session.mem.pushed:
+                session.mem.pushed.add(line)
+                lines.append(line)
+        return lines[:MAX_LINES]
     except Exception:  # noqa: BLE001 - an alert must never fail the op it comes with
         return []
 
 
-def _alerts(session: "Session") -> list[str]:
+def current_lines(session: "Session") -> list[str]:
+    """Every line that fires on the model now (measured again, none left out, none remembered): what the gate holds. A
+    concept model, or a reading that fails, has none."""
+    if session.purpose == "sketch" or session.executor is None:
+        return []
+    try:
+        return _lines(session)
+    except Exception:  # noqa: BLE001 - a reading must never break the call it comes with
+        return []
+
+
+def _lines(session: "Session") -> list[str]:
     steps = [s for s in session.steps() if s.feature is not None and s.op in ("cut", "fillet")]
     cuts = [s.id for s in steps if s.op == "cut"]
     if not cuts or len(steps) > MAX_STEPS:
@@ -303,13 +321,7 @@ def _alerts(session: "Session") -> list[str]:
         pocket = read_pocket(step_id, made.get(step_id, []), universe, edges_of)
         if pocket is not None and process_allows(words, through=pocket.through):
             pockets.append(pocket)
-    lines = []
-    for pocket in pockets:
-        line = line_for([pocket])
-        if line not in session.mem.pushed:
-            session.mem.pushed.add(line)
-            lines.append(line)
-    return lines[:MAX_LINES]
+    return [line_for([pocket]) for pocket in pockets]
 
 
 def after_op(session: "Session", step: str, op: str) -> list[str]:  # noqa: ARG001 - same shape as its siblings
