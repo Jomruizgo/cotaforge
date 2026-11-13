@@ -247,3 +247,40 @@ def check_a_hole_moved_onto_an_axis_of_its_sketch_is_not_edited_in_place() -> No
         ),
     )
     assert dry["refused"], dry
+
+
+def _try_edit(feature: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+    return call(
+        "edit_feature", op("edit", edits=[{"feature": feature, "kind": "hole", "request": request}], dry_run=False)
+    )
+
+
+def _body_volume() -> float:
+    body = next(o for o in main.WORKER.active.fc_doc.Objects if o.TypeId == "PartDesign::Body")
+    return float(body.Shape.Volume)
+
+
+def check_a_hole_moved_off_the_face_is_rolled_back_with_the_message_of_a_rebuild() -> None:
+    ids = _plate()
+    first = _hole(ids["top"], "first", 8.0, position=[-30.0, -20.0])
+    _hole(ids["top"], "second", 6.0, position=[30.0, -20.0])
+    volume = _body_volume()
+    result = _try_edit(first["feature"], _params(ids["top"], "first", 8.0, position=[-60.0, -20.0]))  # plate is +-50
+    assert not result["applied"], result
+    assert "is not on face" in str(result.get("failure") or result), result
+    _same(_axes(8.0), [(20.0, 10.0)])  # nothing moved, nothing stuck
+    _same(_axes(6.0), [(80.0, 10.0)])
+    assert abs(_body_volume() - volume) < 1e-6
+
+
+def check_a_hole_moved_over_a_hole_made_after_it_is_rolled_back() -> None:
+    ids = _plate()
+    first = _hole(ids["top"], "first", 8.0, position=[-30.0, -20.0])
+    _hole(ids["top"], "second", 6.0, position=[30.0, -20.0])
+    volume = _body_volume()
+    result = _try_edit(first["feature"], _params(ids["top"], "first", 8.0, position=[30.0, -20.0]))
+    assert not result["applied"], result
+    assert "is not on face" in str(result.get("failure") or result), result
+    _same(_axes(8.0), [(20.0, 10.0)])
+    _same(_axes(6.0), [(80.0, 10.0)])
+    assert abs(_body_volume() - volume) < 1e-6

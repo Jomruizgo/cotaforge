@@ -338,6 +338,7 @@ class Analysis:
         self.pd = False  # some edit is a PartDesign feature (its dimensions or those of its sketch)
         self.sets: dict[str, list[tuple[Any, str, Any]]] = {}  # feature id -> (object, property, value) to set
         self.moves: dict[str, list[tuple[int, str, float]]] = {}  # hole id -> datums of its sketch that move it
+        self.keeps_places = False  # only holes moved, nothing refers to an edge: no sketch or edge is placed again
 
 
 def analyse(doc: reg.DocumentRec, edits: list[Edit]) -> Analysis:
@@ -438,6 +439,13 @@ def analyse(doc: reg.DocumentRec, edits: list[Edit]) -> Analysis:
         logical = rec.id in wanted or any(rec in deps for deps in result.dependents.values())
         if in_graph or logical:
             result.recomputed.append(rec)
+    # a pure move of holes: no plane of any face changes (a cut leaves planes where they are), so every sketch on a
+    # face keeps its frame, and with no fillet or chamfer among the features nothing refers to a numbered edge
+    result.keeps_places = (
+        bool(result.moves)
+        and all(e.kind == "hole" and e.sketch is None and not result.sets.get(e.rec.id) for e in edits)
+        and not any(_edge_objects(doc, rec) for rec in result.recomputed)
+    )
     return result
 
 
@@ -802,6 +810,23 @@ def evaluate(
         if name in before.bad:
             continue
         health.append({"feature": handle(_feature_of(doc, name)), "object": name, "state": state, "message": status})
+
+    # guard 3a: a hole that was moved (and every hole after it) must still start on the face it is drilled in
+    if analysis.moves:
+        for rec in analysis.recomputed:
+            if rec.kind == "hole":
+                why = _hole_off_face(doc, rec)
+                if why is not None:
+                    flags.append(
+                        {
+                            "kind": "hole_off_face",
+                            "severity": "failure",
+                            "message": f"{rec.label}: {why}",
+                            "features": [{"id": rec.id}],
+                            "bodies": [],
+                            "value": None,
+                        }
+                    )
 
     # guard 3: semantic checks on the dependents
     for rec in analysis.recomputed:
@@ -1426,7 +1451,7 @@ def _settle(
     would place it (the origin of the face frame is the centre of the face, which moves with the edit); repeat until
     nothing moves (a sketch on a face of a feature that sits on a moved face)."""
     refs: dict[str, list[str]] = {"created": [], "removed": [], "modified": []}
-    placed = _placed_sketches(doc, analysis)
+    placed = [] if analysis.keeps_places else _placed_sketches(doc, analysis)
     follow = frozenset(face_id for _, _, face_id, _ in placed)
     for _ in range(len(placed) + 1):
         diff = _rebind(doc, analysis, edits, saved_created, follow)
@@ -1553,7 +1578,9 @@ def edit_feature(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]
                 edit.rec.instance_count = int(edit.request["count"]) * int(edit.request.get("count2") or 1)
         for sketch_plan in sketch_plans:
             _apply_sketch(doc, sketch_plan, saved_features)
-        if analysis.pd:  # the sketches on faces are placed one by one, each on the shape it was built on
+        if (
+            analysis.pd and not analysis.keeps_places
+        ):  # sketches on faces are placed one by one, each on the shape it was built on
             _place_in_order(doc, analysis, edge_refs)
         fc.recompute(fc_doc)
         if analysis.pd:  # the faces the later sketches sit on moved: place them again before anything is measured
@@ -1710,3 +1737,51 @@ def _rollback(
         ) from exc
     finally:
         del fc.recorder.lines[recorded:]
+
+
+HOLE_FACE_TOL = 1e-4  # mm: the same tolerance the hole op uses to say a point is on its face
+
+
+def _hole_off_face(doc: reg.DocumentRec, rec: reg.FeatureRec) -> str | None:
+    """Why a hole of a planar face no longer starts ON the face (``None``: it does), as the hole op says it when a
+    rebuild drills it: every centre must lie on the face of the shape the hole is built on (the feature before it), not
+    merely in its box, so a point over a hole drilled before it, or off the edge of the plate, is refused."""
+    obj = doc.fc_doc.getObject(rec.fc_main) if rec.fc_main else None
+    sk = _profile_sketch(obj) if obj is not None else None
+    base = getattr(obj, "BaseFeature", None) if obj is not None else None
+    shape = getattr(base, "Shape", None)
+    if sk is None or shape is None or shape.isNull():
+        return None
+    face = rec.params.get("face")
+    if not isinstance(face, dict) or not isinstance(face.get("id"), str):
+        return None
+    try:
+        frec, comp = reg.resolve_face(doc, face["id"], None)
+        if face_descriptor(doc, frec, comp)["normal"] is None:
+            return None  # across a curved face: its sketch is placed by its entry point
+    except WorkerError:
+        return None
+    pose = sk.getGlobalPlacement()
+    normal = g.vec(pose.Rotation.multVec(Vector(0, 0, 1)))
+    here = g.vec(pose.Base)
+    planes = []
+    for f in shape.Faces:  # the plane of a face is read off its surface: no mass properties, no normals per face
+        surface = f.Surface
+        if type(surface).__name__ != "Plane":
+            continue
+        axis = g.vec(surface.Axis)
+        if (
+            abs(abs(g.dot(axis, normal)) - 1.0) < 1e-9
+            and abs(g.dot(g.sub(g.vec(surface.Position), here), normal)) <= 1e-6
+        ):
+            planes.append(f)
+    for u, v in dim_edit.hole_points(rec.params):
+        point = pose.multVec(Vector(u, v, 0))
+        if not any(f.distToShape(Part.Vertex(point))[0] <= HOLE_FACE_TOL for f in planes):
+            return (
+                f"position {[u, v]} is not on face {face['id']}: the point ({point.x:.3f}, {point.y:.3f}, "
+                f"{point.z:.3f}) lies in the bounding box of the face but outside the face itself (a hole in it, or "
+                "a feature standing on it covers that spot). To drill the top of a boss select the "
+                "boss's own top face, not the face it stands on"
+            )
+    return None
