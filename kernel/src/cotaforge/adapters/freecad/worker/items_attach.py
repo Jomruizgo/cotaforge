@@ -181,6 +181,15 @@ def _attach_face(ctx: Context, face_id: str, wanted: str | None, side: str | Non
     # then in the air). Where the silhouette line of that side really exists is where a label may touch it.
     band = None
     found = ctx.geometry.cylinder_span(face_id, scale(side_line, sign))
+    named = [t for t in ctx.threads if t.cylinder == face_id]
+    if found is not None and named:  # a threaded shaft: the callout points at the thread, not the plain part
+        spans = []
+        for t in named:
+            start = dot(sub(t.start, face.axis_point), axis)
+            spans.append(tuple(sorted((start, start + t.length * dot(t.direction, axis)))))
+        narrowed = (max(found[0], min(a for a, _ in spans)), min(found[1], max(b for _, b in spans)))
+        if narrowed[1] - narrowed[0] > 1e-6:
+            found = narrowed
     if found is not None:
         low, high = found
         centre = view.project(_on_axis(face.axis_point, axis, (low + high) / 2))
