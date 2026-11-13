@@ -281,6 +281,34 @@ def place_callout(
     return entities, index
 
 
+def planned_elbow(ctx: Context) -> Point | None:
+    """The ``elbow_mm`` of the item being drawn: the vector from the tip of its leader to the elbow the global layout chose."""
+    current = ctx.extras.get("current")
+    for spec in ctx.extras.get("items", []):
+        if spec.get("id") == current and spec.get("elbow_mm") is not None:
+            return (float(spec["elbow_mm"][0]), float(spec["elbow_mm"][1]))
+    return None
+
+
+def leader_at(ctx: Context, tip: Point, elbow: Point, lines: list[str]) -> list[Entity]:
+    """A leader from ``tip`` to exactly ``elbow``, its shelf running the way the leader goes; when the place is not clean
+    the item's result says why (it is the layout's decision, not a search)."""
+    sx = 1.0 if elbow[0] - tip[0] >= 0 else -1.0
+    entities, rect = leader(tip, elbow, lines, "right" if sx > 0 else "left")
+    fits = ctx.inside(rect)
+    free = (
+        ctx.free(rect)
+        and _clear_of_views(ctx, rect)
+        and _leader_clear(ctx, tip, elbow)
+        and not _crosses_leaders(ctx, tip, elbow, rect, sx)
+    )
+    if not (fits and free):
+        ctx.note(why_not(ctx, rect, fits, free))
+    ctx.reserve(rect)
+    _remember(ctx, tip, elbow, sx, rect)
+    return entities
+
+
 def place_leader(
     ctx: Context,
     view: ViewInfo,
@@ -298,7 +326,11 @@ def place_leader(
     frame it is moved outward, and when that does not help the other diagonals are tried (the one asked for comes
     first) -- unless the item asked for its place (``explicit``: ``side`` / ``offset_mm``): then it goes exactly there
     and, when that is not a clean place, the item's result says why. The text's rectangle is reserved so the next
-    callout avoids it; a callout that finds no clean place at all is reported too."""
+    callout avoids it; a callout that finds no clean place at all is reported too. An item that carries ``elbow_mm`` (the
+    global layout put it there: the vector from the tip to the elbow, page mm, y up) ends exactly there."""
+    planned = planned_elbow(ctx)
+    if planned is not None:
+        return leader_at(ctx, tip, (tip[0] + planned[0], tip[1] + planned[1]), lines)
     gap = (CALLOUT_GAP_MM + ctx.nudge() * NUDGE_MM) if offset_mm is None else offset_mm
     box = view.box
     sx0, sy0 = diagonal

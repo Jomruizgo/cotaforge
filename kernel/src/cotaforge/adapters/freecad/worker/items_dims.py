@@ -40,6 +40,7 @@ from sheet_context import (
     v_bool,
     v_enum,
     v_ids,
+    v_point2,
     v_ref,
     v_view_or_section,
 )
@@ -62,6 +63,7 @@ CHECKS = {
     "along": v_enum("x", "y", "z"),
     "arrows": v_enum("auto", "inside", "outside"),
     "exact": v_bool,
+    "elbow_mm": v_point2,  # where the global layout ended the leader (the vector from its tip): written by it, not asked for
     "face": v_ids("face"),
     "faces": v_ids("face"),
     **sheet_tol.CHECKS,

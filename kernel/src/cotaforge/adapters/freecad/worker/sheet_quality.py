@@ -390,7 +390,9 @@ def _single_view(data: ReviewInput) -> list[Finding]:
         return []
     from sheet_review import _hole_like  # noqa: PLC0415 - a helper of the checks of that module
 
-    if any(f.kind in ("chamfer", "fillet") or (f.kind == "cut" and not _hole_like(ctx, f)) for f in data.features):
+    if any(
+        (f.kind in ("chamfer", "fillet") and not f.outline) or (f.kind == "cut" and not _hole_like(ctx, f)) for f in data.features
+    ):
         return []
     view = next((v for v in standard if ctx.views[v].looks_along(axis)), None)
     if view is None:

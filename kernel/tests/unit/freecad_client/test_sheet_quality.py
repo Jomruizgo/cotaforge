@@ -516,7 +516,7 @@ def test_the_notes_are_numbered_with_the_thickness_first() -> None:
     )
     notes = [t for t in ctx.sheet.texts() if t[:2] in ("1.", "2.", "3.", "4.")]
     assert sorted(notes) == [
-        "1. 19 de espesor",
+        "1. Espesor 19",
         "2. Fabricar de lámina rectificada",
         "3. Rebabas eliminadas",
     ]

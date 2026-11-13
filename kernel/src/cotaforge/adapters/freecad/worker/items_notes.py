@@ -68,7 +68,7 @@ def note_text(ctx: Context, spec: dict[str, Any]) -> str:
         raise ItemError(msg)
     view = next(iter(ctx.views.values()))
     thickness = sum(abs(a) * e for a, e in zip(view.direction, extent, strict=True))
-    return ctx.say(f"{ctx.num(round(thickness, 2))} de espesor", f"{ctx.num(round(thickness, 2))} thick")
+    return ctx.say(f"Espesor {ctx.num(round(thickness, 2))}", f"Thickness {ctx.num(round(thickness, 2))}")
 
 
 def _rank(spec: dict[str, Any]) -> int:

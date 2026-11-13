@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
-from cotaforge.contract import AnnotateDrawingRequest, DrawingRequest
+from cotaforge.contract import AdapterError, AnnotateDrawingRequest, DrawingRequest
 from cotaforge.language import say
 from pydantic import ValidationError
 
@@ -111,11 +111,37 @@ def require_sheet_flow(session: Session, action: str) -> None:
 # --- the seam of the layout ---------------------------------------------------------------------------------------------
 
 
-def lay_out(session: Session, request: DrawingRequest | None, items: list[dict[str, Any]], remove: list[str]) -> None:
+@dataclass(frozen=True)
+class Layout:
+    """What the global layout planner did with a sheet: the items it moved, the ones it could not place (with the reason: they
+    stay where they were and are reported, never dropped), whether the views and the room their annotations need fit the
+    paper (``needed``: width and height in mm when they do not) and, when the worker could not plan, why (``failed``)."""
+
+    placed: tuple[str, ...] = ()
+    unplaced: tuple[str, ...] = ()
+    fits: bool = True
+    needed: tuple[float, float] = (0.0, 0.0)
+    failed: str = ""
+
+    @property
+    def open(self) -> int:
+        """How many things the paper has to solve: the items without a place, and one when the views do not fit."""
+        return len(self.unplaced) + (0 if self.fits else 1)
+
+
+def lay_out(
+    session: Session,
+    request: DrawingRequest | None,
+    items: list[dict[str, Any]],
+    remove: list[str],
+    *,
+    relayout: bool = False,
+) -> Layout | None:
     """THE SEAM. Everything the order puts on the sheet goes through here: ``request`` (a create or a rebuild of the sheet,
-    or ``None``), the ids to take off and the items to put on, in this order. Today the placement is the one of every
-    ``add`` (items placed one after the other, the later one moves out of the way of the earlier). The global layout
-    planner replaces the body: the same inputs, one call to the worker that places everything at once."""
+    or ``None``), the ids to take off and the items to put on, in this order, and then ONE call to the worker that places the
+    annotations of the whole sheet at once (the global layout planner: it sees every view and every item). ``relayout`` asks
+    for that call when nothing is put on (a sheet rebuilt on another paper). Returns what the planner did, ``None`` when
+    nothing was put on and no layout was asked for."""
     sheet = request.sheet if request is not None else None
     if request is not None:
         session.adapter.create_drawing(request)
@@ -130,6 +156,16 @@ def lay_out(session: Session, request: DrawingRequest | None, items: list[dict[s
             )
         )
     session.dirty = True
+    return _plan(session, sheet) if items or relayout else None
+
+
+def _plan(session: Session, sheet: str | None) -> Layout:
+    """The one call that places everything (a sheet the CAD cannot plan keeps the placement of every ``add``: it says so)."""
+    try:
+        done = session.adapter.annotate_drawing(AnnotateDrawingRequest(operation_id="drawing_compose", action="layout", sheet=sheet))
+    except AdapterError as exc:
+        return Layout(failed=str(exc))
+    return Layout(done.layout_placed, done.layout_unplaced, done.layout_fits, tuple(done.layout_needed), "")
 
 
 # --- the decisions ------------------------------------------------------------------------------------------------------
@@ -224,7 +260,13 @@ def _survey(session: Session, sheet: str | None, extra: list[dict[str, Any]] | N
     placed: list[Any] = list(info.items)
     placed += [SimpleNamespace(id=i["id"], type=i["type"]) for i in extra or []]
     adds = (
-        reqs.plan_additions(rows, placed, assembly=bool(info.facts.get("assembly")), views=tuple(info.views))
+        reqs.plan_additions(
+            rows,
+            placed,
+            assembly=bool(info.facts.get("assembly")),
+            views=tuple(info.views),
+            external_threads=bool(info.facts.get("thread_features")),
+        )
         if mode != "none" and info.facts
         else []
     )
@@ -395,53 +437,75 @@ def compose(session: Session, args: DrawingArgs, make_request: Any) -> Reply:
     if any(i["type"] == "datum_dims" for i in items) and "loc" in {i.id for i in survey.info.items}:
         remove.append("loc")  # the engineer chose the relation: the default location would dimension the holes twice
     derived = [a.item for a in survey.adds]
-    lay_out(session, request, remove=remove, items=[*items, *derived])
+    layout = lay_out(session, request, remove=remove, items=[*items, *derived])
     for row_id, text in answers.items():
         drawing_gate.answer(session, survey.info.sheet, row_id, text, args.by, args.reason)
     notes: list[str] = []
     if not paper_fixed:
-        notes += _raise_paper(session, survey.info.sheet, make_request, fixed_scale)
-    return ok("\n".join(_report(session, survey.info.sheet, items, derived, remove, notes)), limit=REPLY_CHARS)
+        paper, layout = _raise_paper(session, survey.info.sheet, make_request, fixed_scale, layout)
+        notes += paper
+    return ok("\n".join(_report(session, survey.info.sheet, items, derived, remove, notes, layout)), limit=REPLY_CHARS)
 
 
 def _problems(info: Any) -> set[str]:
     return {f.code for f in info.findings if f.code in LAYOUT_CODES}
 
 
-def _raise_paper(session: Session, sheet: str, make_request: Any, fixed_scale: str | None) -> list[str]:
+def _open(info: Any, layout: Layout | None) -> int:
+    """What a bigger paper has to solve: the layout findings of the review, the items the planner could not place and the views
+    that do not fit."""
+    return len(_problems(info)) + (layout.open if layout is not None else 0)
+
+
+def _raise_paper(
+    session: Session, sheet: str, make_request: Any, fixed_scale: str | None, layout: Layout | None = None
+) -> tuple[list[str], Layout | None]:
     """Nobody fixed the paper and the annotations do not fit: the next paper (A2 at most), and the reply says so. The paper
     the engineer fixed is never touched (the caller does not come here); a scale he fixed is kept."""
     notes: list[str] = []
     for _ in range(len(PAPER_STEPS) - 1):
         info = drawing_gate.sheet_info(session, sheet, review=True)
-        if info is None or not _problems(info):
+        if info is None or not _open(info, layout):
             break
         key = info.template.split("_")[0][:2]
         if key not in PAPER_STEPS[:-1]:
             break
         bigger = PAPER_STEPS[PAPER_STEPS.index(key) + 1]
-        before = len(_problems(info))
+        before = _open(info, layout)
         stated: dict[str, Any] = {"template": bigger, **({"scale": fixed_scale} if fixed_scale else {})}
         request = make_request(session, DrawingArgs(action="create", sheet=sheet, **stated))
         if not fixed_scale:  # the largest standard scale that fits the new paper, not the old one
             request = request.model_copy(update={"scale": None, "unset": tuple(n for n in request.unset if n != "scale")})
-        lay_out(session, request, [], [])
+        planned = lay_out(session, request, [], [], relayout=True)
         after = drawing_gate.sheet_info(session, sheet, review=True)
-        if after is None or len(_problems(after)) >= before:  # a bigger paper that does not help is put back
+        if after is None or _open(after, planned) >= before:  # a bigger paper that does not help is put back
             back = make_request(session, DrawingArgs(action="create", sheet=sheet, **{**stated, "template": key}))
             if not fixed_scale:
                 back = back.model_copy(update={"scale": None, "unset": tuple(n for n in back.unset if n != "scale")})
-            lay_out(session, back, [], [])
+            layout = lay_out(session, back, [], [], relayout=True)
             notes.append(f"a paper bigger than {key} was tried and put back: it did not remove the {before} layout finding(s)")
-            break
+            return notes, layout
+
         notes.append(
             f"paper raised from {key} to {bigger} (nobody fixed it and the annotations did not fit: {before} layout "
-            f"finding(s) before, {len(_problems(after))} after; scale now {_ratio(after.scale)})"
+            f"finding(s) before, {_open(after, planned)} after; scale now {_ratio(after.scale)})"
         )
-    return notes
+        layout = planned
+    return notes, layout
 
 
-def _report(session: Session, sheet: str, items: list[dict[str, Any]], derived: list[dict[str, Any]], removed: list[str], notes: list[str]) -> list[str]:
+def _layout_lines(layout: Layout | None) -> list[str]:
+    """What the global layout did, and -- always -- what it could not place."""
+    if layout is None:
+        return []
+    if layout.failed:
+        return [f"layout: the CAD could not plan the sheet ({layout.failed}); every item keeps the place its own add gave it"]
+    lines = [f"layout: {len(layout.placed)} dimension(s) placed by the global planner" + ("" if layout.fits else f"; the views and their annotations need {layout.needed[0]:g} x {layout.needed[1]:g} mm and do not fit the paper")]
+    lines += [f"  NOT PLACED {line} (it stays where it was drawn; place it with side or offset_mm or change the sheet)" for line in layout.unplaced]
+    return lines
+
+
+def _report(session: Session, sheet: str, items: list[dict[str, Any]], derived: list[dict[str, Any]], removed: list[str], notes: list[str], layout: Layout | None = None) -> list[str]:
     survey = _survey(session, sheet)
     info = survey.info
     mine = {i["id"] for i in items} | {d["id"] for d in derived}
@@ -453,6 +517,7 @@ def _report(session: Session, sheet: str, items: list[dict[str, Any]], derived: 
         + (f"; took off {', '.join(removed)}" if removed else "")
     ]
     lines += notes
+    lines += _layout_lines(layout)
     lines += [f"  {i.id} {i.type} {i.status}: {i.detail}" for i in broken]
     if derived:
         lines.append("derived: " + ", ".join(f"{d['id']} ({d['type']})" for d in derived))

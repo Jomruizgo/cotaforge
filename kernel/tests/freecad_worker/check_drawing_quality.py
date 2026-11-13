@@ -98,7 +98,7 @@ def check_a_plate_is_drawn_in_one_view_with_its_thickness_as_a_note() -> None:
     assert _metrics()["views"] == ["top"]
     add(*_holes(), {"type": "note", "id": "n1", "text": "Fabricar de lámina rectificada"})
     texts = _metrics()["texts"]
-    assert "1. 19 de espesor" in texts, [t for t in texts if t[:1].isdigit() and "." in t[:3]]
+    assert "1. Espesor 19" in texts, [t for t in texts if t[:1].isdigit() and "." in t[:3]]
     assert any(t.startswith("2. Fabricar") for t in texts)
     assert not any("ISO 286" in t for t in texts), "no note asks the shop to verify the ISO 286 tables (d61dd3c)"
     assert not [f for f in _findings() if f["code"] in ("hole_not_located", "collision", "view_adds_nothing")], (

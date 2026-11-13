@@ -320,6 +320,10 @@ class DrawingResult(BaseModel, frozen=True):
     kept: tuple[str, ...] = ()  # a rebuild: what it kept of the sheet it replaced (items, answers, reviewer)
     unresolved: tuple[str, ...] = ()  # a rebuild: the kept items that no longer resolve against the part, and why
     discarded: tuple[str, ...] = ()  # a rebuild with ``fresh``: what it threw away
+    layout_placed: tuple[str, ...] = ()  # ``layout``: the items it moved (each now carries its side/offset_mm/elbow_mm)
+    layout_unplaced: tuple[str, ...] = ()  # ``layout``: what it could not place ("id: why"), never dropped silently
+    layout_fits: bool = True  # ``layout``: whether the views and the room their annotations need fit the area
+    layout_needed: tuple[float, float] = (0.0, 0.0)  # ``layout``: the width and height (mm) they need
 
 
 class DrawingItemInfo(BaseModel, frozen=True):

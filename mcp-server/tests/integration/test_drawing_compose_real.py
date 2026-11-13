@@ -17,6 +17,8 @@ import pytest
 
 from tests.integration.conftest import ORDER, Cad, Reply, running_server
 from tests.integration.test_drawing_review_gaps_real import build_assembly, plate
+from tests.integration.test_drawing_weldment_real import NOTE as WELD_NOTE
+from tests.integration.test_drawing_weldment_real import build_frame
 from tests.integration.test_external_thread_real import END, SHAFT, make_shaft
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="the visible FreeCAD window is exercised on Windows")
@@ -55,13 +57,13 @@ async def test_a_plate_is_composed_in_one_order(workspace: Path, tmp_path: Path)
             {
                 "sheet": {"symmetry": True, "title": "Placa base"},
                 "finish": [{"general": True, "ra": 3.2}],
-                "notes": ["Romper aristas vivas 0,5 x 45"],
+                "notes": ["Romper aristas vivas 0,5 × 45°"],
             },
             keep=("req.surface_texture",),
         )
         print("COMPOSED", composed)
         assert "composed sheet" in composed and "derived:" in composed, composed
-        shot(shots, "pt1a_plate", await cad("drawing", action="capture"))
+        shot(shots, "pt1c_plate", await cad("drawing", action="capture"))
         review = await cad.ok("drawing", action="review")
         print("REVIEW", review)
 
@@ -72,15 +74,11 @@ async def test_a_turned_shaft_is_composed_in_one_order(workspace: Path, tmp_path
         await in_one_order(cad)
         await make_shaft(cad)
         await cad.ok("op", name="external_thread", id="end_thread", params={"face": SHAFT, "size": "M12", "length_mm": 20, "end": END})
-        faces = await cad.ok("inspect", action="faces", surface="cylinder")
-        cylinder = re.search(r"face:\d+", faces)
-        assert cylinder, faces
-        thread = {"type": "dim", "kind": "diameter", "face": cylinder.group(0), "view": "front"}  # the thread callout: the engineer's decision
-        decisions = {"sheet": {"title": "Eje"}, "finish": [{"general": True, "ra": 1.6}], "fits": [thread]}
-        composed = await compose_the_rest(cad, decisions, keep=("req.surface_texture", "req.thread"))
+        decisions = {"sheet": {"title": "Eje"}, "finish": [{"general": True, "ra": 1.6}]}  # the thread callout is derived: nobody decides it
+        composed = await compose_the_rest(cad, decisions, keep=("req.surface_texture",))
         print("COMPOSED", composed)
         assert "composed sheet" in composed, composed
-        shot(shots, "pt1a_shaft", await cad("drawing", action="capture"))
+        shot(shots, "pt1c_shaft", await cad("drawing", action="capture"))
         print("REVIEW", await cad.ok("drawing", action="review"))
 
 
@@ -92,5 +90,19 @@ async def test_an_assembly_is_composed_in_one_order(workspace: Path, tmp_path: P
         composed = await compose_the_rest(cad, {"sheet": {"title": "Conjunto"}})
         print("COMPOSED", composed)
         assert "composed sheet" in composed and "rq_parts_list" in composed, composed
-        shot(shots, "pt1a_assembly", await cad("drawing", action="capture"))
+        shot(shots, "pt1c_assembly", await cad("drawing", action="capture"))
         print("REVIEW", await cad.ok("drawing", action="review"))
+
+
+async def test_a_welded_frame_is_composed_in_one_order(workspace: Path, tmp_path: Path) -> None:
+    shots = Path(os.environ.get("COTAFORGE_TEST_SHOTS") or tmp_path / "shots")
+    async with running_server(workspace, visible=True) as (cad, _):
+        await in_one_order(cad)
+        await build_frame(cad)
+        rows = [{"component": "body:1", "name": "Tubo 40×40×3"}, {"component": "body:5", "name": "Chapa 6"}]
+        composed = await compose_the_rest(cad, {"sheet": {"title": "Bastidor"}, "notes": [WELD_NOTE["text"]]}, keep=("req.welds",))
+        print("COMPOSED", composed)
+        assert "composed sheet" in composed, composed
+        shot(shots, "pt1c_frame", await cad("drawing", action="capture"))
+        print("REVIEW", await cad.ok("drawing", action="review"))
+        print("ROWS", rows)

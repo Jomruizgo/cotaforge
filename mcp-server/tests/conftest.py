@@ -82,6 +82,8 @@ class DrawingFake(FakeAdapter):
         self.pdf: bytes | None = None  # the bytes the next PDF export writes (default: a sound one-page PDF)
         self.output: dict[str, Any] = {}  # fields of the capture / export result (views, native, unrendered...)
         self.rebuilt: dict[str, tuple[str, ...]] | None = None  # kept / unresolved / discarded of the next create
+        self.layout_report: dict[str, Any] = {}  # what the next layout call reports (layout_placed...)
+        self.layout_fails: str | None = None  # the next layout call fails with this message
 
     def _need_sheet(self, sheet: str | None) -> str:
         from cotaforge.contract import AdapterError, ErrorCode, ErrorInfo
@@ -199,6 +201,11 @@ class DrawingFake(FakeAdapter):
         if request.action == "approve":
             sheet["approved_by"] = request.by
             return self._drawing_result(name)
+        if request.action == "layout":
+            if self.layout_fails is not None:
+                info = ErrorInfo(code=ErrorCode.invalid_request, message=self.layout_fails, recoverable=True)
+                raise AdapterError(info)
+            return self._drawing_result(name, rebuilt=self.layout_report or None)
         sheet["approved_by"] = ""  # any change of the sheet empties "Aprobó" and makes the reports old
         sheet["edits"] += 1
         if request.action == "update":

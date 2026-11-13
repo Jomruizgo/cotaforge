@@ -66,6 +66,7 @@ import sheet_mirror
 import sheet_model as model
 import sheet_native
 import sheet_output
+import sheet_plan_bridge
 import sheet_project
 import sheet_render
 import sheet_reqfacts
@@ -1314,6 +1315,42 @@ def _expand_chamfer_dims(
     return out
 
 
+def _expand_thread_dims(
+    doc: reg.DocumentRec, stored: list[dict[str, Any]], requested: list[Any], op: str | None
+) -> list[Any]:
+    """``thread_dims`` is not an item of its own: it is the callout (``M12 long. útil 20``) of every external thread of the
+    part (an ``external_thread`` feature) that no dimension of the sheet gives yet, made now from the cylinders the threads
+    were cut on as ``dim`` items of kind ``diameter`` (``<id>``, ``<id>2``...)."""
+    if not any(isinstance(i, dict) and i.get("type") == "thread_dims" for i in requested):
+        return requested
+    dimensioned = {
+        str(f)
+        for i in [*stored, *(r for r in requested if isinstance(r, dict))]
+        if i.get("type") == "dim" and i.get("kind") == "diameter"
+        for f in ([i["face"]] if isinstance(i.get("face"), str) else list(i.get("face") or ()))
+    }
+    faces = list(
+        dict.fromkeys(
+            str(r["cylinder"])
+            for r in thread_records.read_threads(doc.fc_doc)
+            if r.get("cylinder") and str(r["cylinder"]) not in dimensioned
+        )
+    )
+    out: list[Any] = []
+    for item in requested:
+        if not (isinstance(item, dict) and item.get("type") == "thread_dims"):
+            out.append(item)
+            continue
+        prefix = str(item.get("id") or "thread")
+        if not faces:
+            continue  # the sheet (or the others of this call) dimension the threads already: nothing to add
+        out.extend(
+            {"type": "dim", "id": prefix if number == 1 else f"{prefix}{number}", "kind": "diameter", "face": face}
+            for number, face in enumerate(faces, start=1)
+        )
+    return out
+
+
 def _expand_keyway_dims(
     doc: reg.DocumentRec, spec: dict[str, Any], requested: list[Any], op: str | None
 ) -> list[Any]:
@@ -1605,6 +1642,8 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         return update(doc, params)
     if action == "answer":
         return answer(doc, params)
+    if action == "layout":
+        return layout_action(doc, params)
     if action == "approve":
         return approve(doc, params)
     if action == "review_report":
@@ -1618,7 +1657,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     if action not in ("add", "remove", "remove_sheet"):
         raise invalid_request(
             f"unknown drawing action {action!r}, expected add, remove, remove_sheet, update, add_view, remove_view, "
-            "answer, approve, request_review, review_choice or review_report",
+            "answer, approve, request_review, review_choice, review_report or layout",
             op,
         )
     page = _need_page(fc_doc, params.get("sheet"), op)
@@ -1656,6 +1695,10 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         return _result(doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), [], op, changed=tuple(wanted))
     requested = _expand_keyway_dims(doc, spec, list(params.get("items") or ()), op)
     requested = _expand_chamfer_dims(doc, items, requested, op)
+    asked_threads = any(isinstance(i, dict) and i.get("type") == "thread_dims" for i in requested)
+    requested = _expand_thread_dims(doc, items, requested, op)
+    if not requested and asked_threads:  # every thread has its callout: the sheet stays as it is
+        return _result(doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), [], op)
     if not requested:
         raise invalid_request('add needs items: a list like [{"type": "hole_dim", "all": true}]', op)
     if len(items) + len(requested) > sheet_items.MAX_ITEMS:
@@ -1683,6 +1726,95 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     return _result(
         doc, page, _scale_of(page) or 1.0, waited, [], op, refused=refused, changed=tuple(a["id"] for a in keep)
     )
+
+
+def _plan_boxes(page: Any, ctx: sc.Context) -> dict[str, tuple[float, float, float, float]]:
+    """The rectangle of every view of the sheet (page mm, y up) by name: the standard ones, and the others (the isometric
+    one, a view an item made) as ``iso``, ``iso2``..."""
+    boxes = {name: v.box for name, v in ctx.views.items()}
+    extra = [
+        r
+        for r in ctx.extras.get("view_boxes", [])
+        if not any(max(abs(a - b) for a, b in zip(r, k, strict=True)) < 0.5 for k in boxes.values())
+    ]
+    if not extra and ctx.extras.get("iso_box") is not None:
+        extra = [ctx.extras["iso_box"]]
+    for number, rect in enumerate(extra, start=1):
+        boxes["iso" if number == 1 else f"iso{number}"] = tuple(rect)  # type: ignore[assignment]
+    return boxes
+
+
+def global_layout(doc: reg.DocumentRec, page: Any, spec: dict[str, Any], op: str | None) -> dict[str, Any]:
+    """Place the linear dimensions of the whole sheet at once (``sheet_plan_bridge``): the sheet is drawn as it stands, the
+    planner reads what every item drew, and each dimension or leader that asked for no place is given the ``side`` and ``offset_mm`` (or the ``elbow_mm``) it
+    stands at. What the planner placed before is planned again (it is not the engineer's). When the planned sheet collides
+    more than the one it replaces, nothing is kept. Returns what the call reports (``layout_*``)."""
+    items = [dict(i) for i in spec.get("items", [])]
+    before = {str(k): v for k, v in (spec.get("layout") or {}).get("placed", {}).items()}
+    for item in items:  # a place the planner gave is not a place the engineer asked for
+        mine = before.get(str(item.get("id")))
+        if mine and all(item.get(k) == v for k, v in mine.items()):
+            for key in mine:
+                item.pop(key, None)
+    spec["items"] = items
+    sheet, _results, ctx = compose(doc, page, spec, 1, 1, op)
+    units = list(ctx.extras.get("units", []))
+    lists = [u.rect for u in units if u.item_type == "parts_list" and u.entities]
+    prepared = sheet_plan_bridge.prepare(
+        (sheet.width, sheet.height),
+        ctx.area,
+        ctx.extras.get("title_block"),
+        _plan_boxes(page, ctx),
+        [u for u in units if u.item_type != "parts_list"],
+        items,
+        lists[0] if lists else None,
+        [(e.x1, e.y1, e.x2, e.y2) for e in ctx.extras.get("view_ink", []) if isinstance(e, model.Line) and e.layer == model.CONTOUR],
+    )
+    outcome = sheet_plan_bridge.run(prepared)
+    unplaced = [f"{key}: {why}" for key, why in outcome.unplaced]
+    kept: dict[str, dict[str, Any]] = {}
+    if outcome.placements:
+        planned = [{**i, **outcome.placements[str(i["id"])]} if str(i["id"]) in outcome.placements else i for i in items]
+        _, answers, after = compose(doc, page, {**spec, "items": planned}, 1, 1, op)
+        broke = {r.id for r in answers if r.status == "error"}
+        worse = len(after.extras.get("collisions", [])) > len(ctx.extras.get("collisions", []))
+        if worse:
+            unplaced += [
+                f"{key}: the planned place collided more than the one it has now: kept where it was"
+                for key in outcome.placements
+            ]
+        else:
+            kept = {k: v for k, v in outcome.placements.items() if k not in broke}
+            unplaced += [
+                f"{key}: the CAD refused the planned place: kept where it was" for key in outcome.placements if key in broke
+            ]
+    spec["items"] = [{**i, **kept[str(i["id"])]} if str(i["id"]) in kept else i for i in items]
+    spec["layout"] = {"placed": kept, "unplaced": unplaced}
+    return {
+        "layout_placed": sorted(kept),
+        "layout_unplaced": unplaced,
+        "layout_fits": outcome.fits,
+        "layout_needed": [round(outcome.needed[0], 1), round(outcome.needed[1], 1)],
+    }
+
+
+def layout_action(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
+    """``annotate(action="layout")``: ``global_layout`` on the sheet, in one call."""
+    op = params.get("operation_id")
+    fc_doc = doc.fc_doc
+    page = _need_page(fc_doc, params.get("sheet"), op)
+    activate(fc_doc)
+    spec = spec_of(page)
+    spec.pop("legacy", None)
+    report = global_layout(doc, page, spec, op)
+    _clear_approval(spec)
+    write_spec(page, spec)
+    _sync_template_fields(fc_doc, op)
+    waited = wait_views(fc_doc, page, op)
+    return {
+        **_result(doc, page, _scale_of(page) or 1.0, waited, [], op, changed=tuple(report["layout_placed"])),
+        **report,
+    }
 
 
 def _change_view(doc: reg.DocumentRec, params: dict[str, Any], action: str, op: str | None) -> dict[str, Any]:
@@ -2705,6 +2837,49 @@ def compare_window(doc: reg.DocumentRec, sheet: str | None, op: str | None) -> l
     return sheet_mirror.compare(page, ctx.extras["units"], composed.height)
 
 
+CORNER_CHAMFER_MAX = 0.25  # a flat chamfer of the outline is at most this fraction of the second largest side of the part
+CORNER_AXIS_TOL = 0.02
+
+
+def corner_chamfers(doc: reg.DocumentRec) -> list[sheet_review.FeatureInfo]:
+    """The corners an outline sketch cut (a rectangle with ``chamfer_mm``): flat faces that no chamfer feature made, running
+    parallel to a world axis and slanted across the other two, small beside the part, between two flat faces. One entry per
+    size (``chamfer``, the faces of equal corners together) so that the review and ``chamfer_dims`` ask for ONE callout per
+    size. A part of several bodies (a frame, a weldment) is not read: its slanted faces are mitres."""
+    bodies = doc.live_bodies()
+    if doc.components or len(bodies) != 1:
+        return []
+    sides = sorted(_extents(doc, None, None), reverse=True)
+    limit = CORNER_CHAMFER_MAX * sides[1] if len(sides) > 1 else 0.0
+    if limit <= 0.0:
+        return []
+    geometry = LiveGeometry(doc, [], None)
+    groups: dict[tuple[float, float, float], list[str]] = {}
+    for rec in bodies[0].faces.values():
+        if rec.stale:
+            continue
+        try:
+            face = geometry.face(rec.id)
+        except sc.ItemError:
+            continue
+        if face.kind != "plane" or face.normal is None:
+            continue
+        parts = [abs(c) for c in face.normal]
+        if max(parts) > 1 - CORNER_AXIS_TOL or min(parts) > CORNER_AXIS_TOL:
+            continue  # facing an axis, or slanted across all three: not the cut corner of an outline
+        try:
+            info = geometry.chamfer(rec.id)
+        except sc.ItemError:
+            continue
+        if info.leg_a > limit:
+            continue
+        groups.setdefault((round(info.leg_a, 2), round(info.leg_b, 2), round(info.angle_deg, 1)), []).append(rec.id)
+    return [
+        sheet_review.FeatureInfo(f"corner{number}", "chamfer", "corner chamfer", faces, outline=True)
+        for number, faces in enumerate(groups.values(), start=1)
+    ]
+
+
 def feature_infos(doc: reg.DocumentRec) -> list[sheet_review.FeatureInfo]:
     """The features of the part the review looks at (cuts, chamfers, fillets) with the faces and edges they made."""
     out = []
@@ -2716,6 +2891,7 @@ def feature_infos(doc: reg.DocumentRec) -> list[sheet_review.FeatureInfo]:
                     feature.id, feature.kind, label, list(feature.created_faces), list(feature.created_edges)
                 )
             )
+    out += [c for c in corner_chamfers(doc) if not any(set(c.faces) & set(f.faces) for f in out)]
     return out
 
 
@@ -2784,6 +2960,21 @@ def review_findings(
         }
         for f in sheet_review.review(data)
     ]
+    for line in (spec.get("layout") or {}).get("unplaced", []):  # what the global layout could not place: never dropped silently
+        key, _, why = str(line).partition(": ")
+        findings.append(
+            {
+                "code": "layout_unplaced",
+                "severity": "warning",
+                "message": ctx.say(
+                    f"El planificador de la hoja no pudo colocar {key}: {why}. Colócala con side u offset_mm o cambia la hoja.",
+                    f"The sheet layout could not place {key}: {why}. Place it with side or offset_mm, or change the sheet.",
+                ),
+                "items": [key] if key in {str(i.get("id")) for i in spec.get("items", [])} else [],
+                "features": [],
+                "key": key,
+            }
+        )
     held = sheet_mirror.owned(page)
     for unit in ctx.extras["units"]:  # an item that asked for TechDraw's own objects and is drawn as a symbol instead
         if unit.natives and held.get(unit.key) and not sheet_native.made(unit, held[unit.key]):
