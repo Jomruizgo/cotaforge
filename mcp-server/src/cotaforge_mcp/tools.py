@@ -20,6 +20,7 @@ from cotaforge_mcp import (
     parts_tools,
     pocket_corners,
     rules,
+    turned_ends,
     view_export,
 )
 from cotaforge_mcp.overflow import REPORTS_DIRNAME, Overflow
@@ -133,6 +134,8 @@ def _doc(session: Session, args: DocArgs, progress: Reporter | None = None) -> R
         return ok("\n".join(session.set_material(args.material)))
     if action == "set_route":
         return ok("\n".join(session.set_route(args.route)))
+    if action == "set_title":
+        return ok("\n".join(session.set_title(args.name)))
     if action == "set_purpose":
         return ok("\n".join(session.set_purpose(args.purpose)))
     if action == "convention":
@@ -177,6 +180,7 @@ def _run(
             lines += design_memory.after_action(session, "delete_feature", {"step": args.delete})
             lines += bearing_seats.after_action(session, "delete_feature")
             lines += pocket_corners.after_action(session, "delete_feature")
+            lines += turned_ends.after_action(session, "delete_feature")
             return ok("\n".join(lines), limit=2500)
         if (args.name is None) == (args.edit is None):
             both = ", not both" if args.name else ""
@@ -201,6 +205,7 @@ def _run(
             lines += design_memory.after_action(session, "edit_feature", {"step": args.edit})
             lines += bearing_seats.after_action(session, "edit_feature")
             lines += pocket_corners.after_action(session, "edit_feature")
+            lines += turned_ends.after_action(session, "edit_feature")
             return ok("\n".join(lines), limit=2500)
         with session.listening(progress):
             return ok("\n".join(session.run_op(args.name, args.params, args.intent, args.id)))

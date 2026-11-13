@@ -532,6 +532,7 @@ class FakeDocument:
     material: str | None = None
     route: tuple[str, ...] = ()
     roles: dict[str, str] = field(default_factory=dict)
+    title: str | None = None
     """The design attributes (``design_attributes``): kept in the saved file, outside the fingerprint."""
 
     def next_id(self, kind: str) -> str:

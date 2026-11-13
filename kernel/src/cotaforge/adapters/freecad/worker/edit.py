@@ -1157,10 +1157,13 @@ def _apply_sketch(
 def _sync_hole_sketch(edit: Edit) -> None:
     """A hole keeps its diameter in the feature and in the circle of its own sketch: both follow."""
     sk = _profile_sketch(edit.obj)
-    for index, c in enumerate(sk.Constraints if sk is not None else ()):
+    found = False
+    for index, c in enumerate(sk.Constraints if sk is not None else ()):  # a multi-hole feature has one per circle
         if str(c.Type) == "Diameter" and bool(c.Driving):
             fc.call(sk, "setDatum", index, float(edit.request["diameter_mm"]))
-            return
+            found = True
+    if found:
+        return
     raise dim_edit.NotInPlaceError(f"the sketch of {edit.rec.label} has no diameter to set")
 
 

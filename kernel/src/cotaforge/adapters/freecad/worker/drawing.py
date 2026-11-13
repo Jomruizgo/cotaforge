@@ -72,6 +72,7 @@ import sheet_svg
 import sheet_template
 import sheet_template_gen
 import sheet_thread
+import sheet_turned
 import sheet_units
 import thread_records
 from protocol import WorkerError, error, invalid_request, not_supported
@@ -566,14 +567,36 @@ def _distinct(values: list[float]) -> int:
     return len({round(v, 2) for v in values})
 
 
+def turned_of(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None) -> dict[str, Any] | None:
+    """How the front view of a TURNED part is oriented (``sheet_turned``): ``None`` for any other sheet (an assembly, an
+    ``hlr`` sheet, a sheet with no front view, a part that is not a body of revolution about x, y or z). Otherwise the axis,
+    whether the view is flipped so the thread end is on the right, and the part's length and diameter."""
+    body = spec.get("body")
+    if projection_of(spec) == "hlr" or _is_assembly(doc, body) or anchor_of(views_of(spec)) != "front":
+        return None
+    found = LiveGeometry(doc, _shapes(doc, body, op), op).round_extent()
+    box = _bounds(doc, body, op)
+    if found is None or not box:
+        return None
+    axis, diameter = found
+    index = sheet_turned.axis_index(axis)
+    low, high = float(box["min"][index]), float(box["max"][index])
+    middles = []
+    for record in thread_records.read_threads(doc.fc_doc):
+        start, direction, length = record["start"], record["direction"], float(record["length_mm"])
+        middles.append(float(start[index]) + float(direction[index]) * length / 2)
+    flip = sheet_turned.thread_end_flip(axis, (low, high), middles)
+    return {"axis": [float(c) for c in axis], "flip": flip, "length": high - low, "diameter": float(diameter)}
+
+
 def _dimension_room(
     doc: reg.DocumentRec, spec: dict[str, Any], shown: tuple[str, ...], third: bool, op: str | None
 ) -> dict[str, float]:
     """The room (mm of paper) the baseline dimensions of the holes need beyond the views, so the layout reserves it before
     it picks the scale: ``below_mm`` / ``above_mm`` for the rows of x values, ``left_mm`` for the rows of y values. One row
     per distinct coordinate (holes that share one share its dimension), ``ROW_STEP_MM`` apart. Assemblies have none."""
-    if _is_assembly(doc, spec.get("body")) or AUTO_LOCATE_ID in spec.get("declined", ()):
-        return {}
+    if _is_assembly(doc, spec.get("body")) or AUTO_LOCATE_ID in spec.get("declined", ()) or spec.get("turned"):
+        return {}  # a turned part's holes are called out, not stacked from a baseline: its frame is not the standard one
     axes = {"top": ((0, 1), (0.0, 0.0, 1.0)), "front": ((0, 2), (0.0, 1.0, 0.0)), "right": ((1, 2), (1.0, 0.0, 0.0))}
     rows_x = {"top": 0, "front": 0, "right": 0}
     rows_y = 0
@@ -675,12 +698,20 @@ def _build(
     with_iso = "iso" in shown
     anchor = anchor_of(shown)
     third = key_angle(spec["template"]) == "third"
+    turned = turned_of(doc, spec, op)
+    if turned is None:
+        spec.pop("turned", None)
+    else:
+        spec["turned"] = turned  # the view is turned, so the layout arranges length x diameter, not the part's own box
     room = _dimension_room(doc, spec, shown, third, op)
     across, up = {"front": (width, height), "top": (width, depth), "right": (depth, height)}[anchor]
+    lay_w, lay_d, lay_h = (
+        sheet_turned.layout_sizes(turned["length"], turned["diameter"]) if turned else (width, depth, height)
+    )
     layout = sheet_layout.plan(
-        across if anchor != "front" else width,
-        depth if anchor == "front" else 0.0,
-        up if anchor != "front" else height,
+        across if anchor != "front" else lay_w,
+        lay_d if anchor == "front" else 0.0,
+        up if anchor != "front" else lay_h,
         page_w,
         page_h,
         float(requested) if requested else None,
@@ -689,7 +720,7 @@ def _build(
         "top" in shown and anchor == "front",
         "right" in shown and anchor == "front",
         third=third,
-        iso_dims=(width, depth, height),
+        iso_dims=(lay_w, lay_d, lay_h),
         **room,
     )
     warnings: list[str] = []
@@ -749,6 +780,10 @@ def _build(
                 ):  # the one view of the sheet is the anchor, looked at from its side
                     added.Direction = App.Vector(*ANCHOR_DIRECTIONS[anchor][0])
                     added.XDirection = App.Vector(*ANCHOR_DIRECTIONS[anchor][1])
+                elif view_name == "Front" and turned:  # a turned part: its axis along the page, as it is machined
+                    direction, xdirection = sheet_turned.frame(tuple(turned["axis"]), bool(turned["flip"]))  # type: ignore[arg-type]
+                    added.Direction = App.Vector(*direction)
+                    added.XDirection = App.Vector(*xdirection)
         for item in group.Views:  # the names the page keeps for its views (contract of ``sheet_native``)
             key = anchor if str(item.Type) == "Front" else VIEW_KEYS[str(item.Type)]
             item.Label = sheet_native.VIEW_LABELS[key]
@@ -761,8 +796,13 @@ def _build(
             iso.Label = sheet_native.VIEW_LABELS["isometric"]
             sheet_native.tag_view(iso, "view:isometric", name)
             iso.Source = sources
-            iso.Direction = App.Vector(*sheet_layout.ISO_DIRECTION)
-            iso.XDirection = App.Vector(*sheet_layout.ISO_XDIRECTION)
+            iso_direction, iso_xdirection = (
+                sheet_turned.iso_frame(tuple(turned["axis"]), bool(turned["flip"]))  # type: ignore[arg-type]
+                if turned
+                else (sheet_layout.ISO_DIRECTION, sheet_layout.ISO_XDIRECTION)
+            )
+            iso.Direction = App.Vector(*iso_direction)
+            iso.XDirection = App.Vector(*iso_xdirection)
             iso.ScaleType = "Custom"
             iso.Scale = layout.scale
             iso.X, iso.Y = layout.iso[0], centre_y(layout.iso[1])
@@ -898,8 +938,16 @@ def _views_for_part(doc: reg.DocumentRec, body: Any, op: str | None) -> tuple[li
     if bored:
         along = ("right", "front", "top")[index]
         return [along], True, f"revolved about {name} with a bore: the {along} view and a section A-A through the axis"
-    profile = ("front", "top", "front")[index]
-    return [profile], False, f"revolved about {name}: the {profile} view, which shows its profile"
+    wants_end = bool(sheet_facts.collect(doc, _bodies(doc, body, op)).keyways)
+    views = sheet_turned.views_for(wants_end)
+    why = (
+        f"revolved about {name}: the main view with its axis horizontal (as it is machined), and the end view because "
+        "a keyway shows in it, and the isometric view"
+        if wants_end
+        else f"revolved about {name}: ONE main view with its axis horizontal (as it is machined); it carries the "
+        "diameters, the lengths, the thread and the chamfers, an end view would repeat circles; plus the isometric view"
+    )
+    return views, False, why
 
 
 def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
@@ -991,7 +1039,9 @@ def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         picked = _views_for_part(doc, body, op) if projection == "techdraw" and not assembly else None
         if picked is not None:
             spec["views"], section_wanted, why = picked
-            spec["isometric"] = False
+            spec["views"] = [*spec["views"], "iso"] if params.get("isometric") is not False else spec["views"]
+            if params.get("isometric") is False:
+                spec["isometric"] = False
             warnings.append(f"views chosen from the part ({why}); views=[...] states others")
     if paper_wanted and not section_wanted:  # the views known: the paper is chosen for the sheet that will be drawn
         # (a part with a section view keeps the default paper: the layout reserves no room for that view yet)
@@ -1095,15 +1145,19 @@ def _auto_paper(
     shown = views_of(spec)
     anchor = anchor_of(shown)
     across, up = {"front": (width, height), "top": (width, depth), "right": (depth, height)}[anchor]
+    turned = turned_of(doc, spec, op)
+    lay_w, lay_d, lay_h = (
+        sheet_turned.layout_sizes(turned["length"], turned["diameter"]) if turned else (width, depth, height)
+    )
     return sheet_layout.auto_paper(  # the arguments ``_build`` gives the layout of the same sheet
-        width if anchor == "front" else across,
-        depth if anchor == "front" else 0.0,
-        height if anchor == "front" else up,
+        lay_w if anchor == "front" else across,
+        lay_d if anchor == "front" else 0.0,
+        lay_h if anchor == "front" else up,
         "iso" in shown,
         "top" in shown and anchor == "front",
         "right" in shown and anchor == "front",
         third=str(params.get("angle") or "first") == "third",
-        iso_dims=(width, depth, height),
+        iso_dims=(lay_w, lay_d, lay_h),
     )
 
 
@@ -1204,13 +1258,17 @@ AUTO_IDS = (AUTO_LOCATE_ID, AUTO_THICKNESS_ID)
 ANGLES = ("first", "third")
 
 
-def _has_thickness(doc: reg.DocumentRec, body: str | None, view: str, op: str | None) -> bool:
+def _has_thickness(
+    doc: reg.DocumentRec, body: str | None, view: str, op: str | None, turned: bool = False
+) -> bool:
     """Whether the length of the part along the line of sight of its one view is a thickness a note can state: any part but
     a round one, which has it only when the view looks along its axis and it is a disc (a shaft seen from the side, a
     sleeve seen end-on: its length is no thickness)."""
     found = LiveGeometry(doc, _shapes(doc, body, op), op).round_extent()
     if found is None:
         return True
+    if turned and view == "front":  # the turned front view looks across the axis, whatever the axis is
+        return False
     axis, diameter = found
     direction = {"front": (0.0, 1.0, 0.0), "top": (0.0, 0.0, 1.0), "right": (1.0, 0.0, 0.0)}[view]
     if not sc.parallel(direction, axis):
@@ -1230,7 +1288,9 @@ def _sync_auto_items(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None)
     wanted: dict[str, dict[str, Any]] = {}
     if not assembly and hole_infos(doc, spec.get("body"), op):
         wanted[AUTO_LOCATE_ID] = {"id": AUTO_LOCATE_ID, "type": "datum_dims", "auto": True}
-    if not assembly and len(standard) == 1 and _has_thickness(doc, spec.get("body"), standard[0], op):
+    if not assembly and len(standard) == 1 and _has_thickness(
+        doc, spec.get("body"), standard[0], op, turned_of(doc, spec, op) is not None
+    ):
         wanted[AUTO_THICKNESS_ID] = {"id": AUTO_THICKNESS_ID, "type": "note", "auto": "thickness"}
     items = [i for i in items if i.get("auto") != "iso286"]  # a note of older sheets that no sheet writes any more
     have = {str(i["id"]) for i in items}
@@ -2219,6 +2279,9 @@ def _compose_pass(
     else:
         ctx.extras["view_boxes"] = view_rects(page)
     ctx.extras["main_scale"] = scale
+    if spec.get("turned"):  # the layout arranged length x diameter: the alternatives the review offers do the same
+        ctx.extras["layout_mm"] = (spec["turned"]["length"], spec["turned"]["diameter"], spec["turned"]["diameter"])
+    ctx.extras["sheet_views"] = list(views_of(spec))  # what the sheet was made with: the review asks for the isometric
     ctx.extras["angle"] = key_angle(key)
     if "extent" not in cache:
         cache["extent"] = _extents(doc, spec.get("body"), op)

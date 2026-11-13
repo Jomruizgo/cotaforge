@@ -832,49 +832,54 @@ class FakeAdapter(Adapter):
                 request.operation_id,
             )
         frame = frame_for_face(self._face_info(doc, face, None), request.origin)
-        origin = frame.to_world(*request.position)
+        points = [frame.to_world(*p) for p in (request.positions or (request.position,))]
         direction = vscale(face.normal, -1.0)
         radius = request.diameter_mm / 2.0
         through = request.end_condition is EndCondition.through_all
-        if not circle_within_face(face, origin, radius):
+        for origin in points:
+            if circle_within_face(face, origin, radius):
+                continue
             # The analytic bookkeeping would subtract a full cylinder wherever the hole lands; a footprint
             # that leaves the face is a wrong position (frame or selector), not material to drill.
             raise self._error(
                 ErrorCode.geometry_failed,
                 f"hole footprint (centre {_fmt_vec(origin)}, radius {radius:g} mm) is not fully inside face "
                 f"{face.id} (centre {_fmt_vec(face.center)}, bbox {_fmt_vec(face.bbox.min)}-"
-                f"{_fmt_vec(face.bbox.max)}); position is (u, v) from the face centre in its local frame",
+                f"{_fmt_vec(face.bbox.max)}); position is (u, v) from the centre of the face's bounding box",
                 request,
             )
 
         def build(feature: FakeFeature) -> None:
             b = Build(doc, feature, face.body)
-            if through:
-                _, length = axial_range_from(doc, face.body, origin, direction)
-            else:
-                assert request.depth_mm is not None
-                length = request.depth_mm
-            if length <= 1e-9:
-                raise self._error(ErrorCode.geometry_failed, "hole finds no material", request, recoverable=True)
-            exit_face = (
-                find_planar_face(doc, face.body, vadd(origin, vscale(direction, length)), direction, exclude={face.id})
-                if through
-                else None
-            )
-            build_cylinder(
-                b,
-                origin,
-                direction,
-                radius,
-                length,
-                -1,
-                blind=not through,
-                entry_face=face.id,
-                exit_face=exit_face.id if exit_face else None,
-            )
-            b.modify_face_area(face.id, -math.pi * radius * radius)
-            if exit_face is not None:
-                b.modify_face_area(exit_face.id, -math.pi * radius * radius)
+            for origin in points:
+                if through:
+                    _, length = axial_range_from(doc, face.body, origin, direction)
+                else:
+                    assert request.depth_mm is not None
+                    length = request.depth_mm
+                if length <= 1e-9:
+                    raise self._error(ErrorCode.geometry_failed, "hole finds no material", request, recoverable=True)
+                exit_face = (
+                    find_planar_face(
+                        doc, face.body, vadd(origin, vscale(direction, length)), direction, exclude={face.id}
+                    )
+                    if through
+                    else None
+                )
+                build_cylinder(
+                    b,
+                    origin,
+                    direction,
+                    radius,
+                    length,
+                    -1,
+                    blind=not through,
+                    entry_face=face.id,
+                    exit_face=exit_face.id if exit_face else None,
+                )
+                b.modify_face_area(face.id, -math.pi * radius * radius)
+                if exit_face is not None:
+                    b.modify_face_area(exit_face.id, -math.pi * radius * radius)
 
         return self._construct(doc, "hole", request, build).model_copy(update={"place": frame})
 
@@ -1641,7 +1646,7 @@ class FakeAdapter(Adapter):
 
     def design_attributes(self, request: Empty) -> DesignAttributes:
         doc = self._doc(request)
-        return DesignAttributes(material=doc.material, route=doc.route, roles=dict(doc.roles))
+        return DesignAttributes(material=doc.material, route=doc.route, title=doc.title, roles=dict(doc.roles))
 
     def set_design_attributes(self, request: SetDesignAttributesRequest) -> DesignAttributes:
         doc = self._doc(request)
@@ -1649,9 +1654,11 @@ class FakeAdapter(Adapter):
             doc.material = request.material.strip() or None
         if request.route is not None:
             doc.route = tuple(request.route)
+        if request.title is not None:
+            doc.title = request.title.strip() or None
         if request.roles is not None:
             doc.roles = dict(request.roles)
-        return DesignAttributes(material=doc.material, route=doc.route, roles=dict(doc.roles))
+        return DesignAttributes(material=doc.material, route=doc.route, title=doc.title, roles=dict(doc.roles))
 
     def close_document(self, request: Empty) -> Ack:
         """Forget the active document (the fake keeps nothing on disk besides what ``save_document`` wrote)."""
