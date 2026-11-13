@@ -13,6 +13,7 @@ They are style: listed and answerable, they never hold an export (``sheet_checks
 ``sheet_review.review`` calls ``check`` after its own checks.
 """
 
+import math
 from typing import Any
 
 import sheet_viewrules as rules
@@ -39,6 +40,8 @@ def check(data: ReviewInput) -> list[Finding]:
         *_redundant(data),
         *_hatches(data),
         *_underused(data),
+        *_no_isometric(data),
+        *_crowded(data),
     ]
 
 
@@ -75,21 +78,21 @@ def _fewer_views(ctx: Context) -> list[tuple[str, float]]:
 
     import sheet_layout  # noqa: PLC0415 - the layout arithmetic that chose the scale in the first place
 
-    extent = ctx.extras.get("extent_mm")
+    extent = ctx.extras.get("layout_mm") or ctx.extras.get("extent_mm")
     names = [n for n in ctx.views if n in ("front", "top", "right")]
     if extent is None or ctx.assembly is not None or "front" not in names:
         return []
     iso = "isometric" in ctx.extras.get("views_extra", {}) or len(ctx.extras.get("view_boxes", [])) > len(names)
-    now = {"top": "top" in names, "right": "right" in names, "iso": iso}
+    now = {"top": "top" in names, "right": "right" in names}  # the isometric stays: every sheet carries it
     w, d, h = (float(v) for v in extent)
     third = ctx.extras.get("angle") == "third"
     found: list[tuple[int, str, float]] = []
     held = [k for k, v in now.items() if v]
     for size in range(len(held) - 1, -1, -1):
         for keep in itertools.combinations(held, size):
-            chosen = ["front", *[k for k in ("top", "right", "iso") if k in keep]]
+            chosen = ["front", *[k for k in ("top", "right") if k in keep], *(["iso"] if iso else [])]
             layout = sheet_layout.plan(
-                w, d, h, ctx.sheet.width, ctx.sheet.height, None, None, "iso" in keep, "top" in keep, "right" in keep,
+                w, d, h, ctx.sheet.width, ctx.sheet.height, None, None, iso, "top" in keep, "right" in keep,
                 third=third, iso_dims=(w, d, h),
             )  # fmt: skip
             found.append((len(chosen), "views=[" + ", ".join(chosen) + "]", layout.scale))
@@ -97,10 +100,69 @@ def _fewer_views(ctx: Context) -> list[tuple[str, float]]:
     return [(what, scale) for _, what, scale in found]
 
 
+CROWD_TIP_MM = 6.0  # two callouts whose leaders touch the part this close are crowded at one spot
+CROWD_ROOM_FACTOR = 4.0  # ... and there is room nearby when the view is this many times longer than that distance
+
+
+def _crowded(data: ReviewInput) -> list[Finding]:
+    """Two callouts of different items whose leaders end within ``CROWD_TIP_MM`` of each other on a view that is much longer than
+    that (the thread callout and the chamfer callout both jammed at the end of a shaft while its length is free): move one
+    along the feature (``offset_mm`` / ``side`` of the item), where there is room."""
+    ctx = data.ctx
+    leaders = [lead for lead in ctx.extras.get("leaders", []) if lead.get("item")]
+    out: list[Finding] = []
+    seen: set[tuple[str, str]] = set()
+    for i, a in enumerate(leaders):
+        for b in leaders[i + 1 :]:
+            if a["item"] == b["item"] or tuple(sorted((a["item"], b["item"]))) in seen:
+                continue
+            gap = math.dist(a["tip"], b["tip"])
+            if gap >= CROWD_TIP_MM:
+                continue
+            roomy = any(
+                v.box[0] - 0.5 <= a["tip"][0] <= v.box[2] + 0.5
+                and v.box[1] - 0.5 <= a["tip"][1] <= v.box[3] + 0.5
+                and max(v.box[2] - v.box[0], v.box[3] - v.box[1]) >= CROWD_ROOM_FACTOR * CROWD_TIP_MM
+                for v in ctx.views.values()
+            )
+            if not roomy:
+                continue
+            seen.add(tuple(sorted((a["item"], b["item"]))))
+            text = ctx.say(
+                f"Las llamadas {a['item']} y {b['item']} se amontonan en el mismo sitio ({ctx.num(round(gap, 1))} mm entre "
+                "sus puntas) y la vista tiene sitio libre al lado: separa una a lo largo de la pieza (offset_mm o side).",
+                f"Callouts {a['item']} and {b['item']} are crowded at the same spot ({ctx.num(round(gap, 1))} mm between "
+                "their tips) and the view has free room beside it: move one along the part (offset_mm or side).",
+            )
+            out.append(Finding("callouts_crowded", "warning", text, (str(a["item"]), str(b["item"])), key=f"{a['item']},{b['item']}"))
+    return out
+
+
+def _no_isometric(data: ReviewInput) -> list[Finding]:
+    """A manufacturing sheet carries the isometric view (in colour by the harness's convention): it is how the shop sees the
+    part at a glance. A sheet made without it (``views=[...]`` with no ``iso``, or ``isometric=false``) is flagged; the engineer
+    may order it so."""
+    ctx = data.ctx
+    shown = ctx.extras.get("sheet_views")
+    if shown is None or "iso" in shown:
+        return []
+    text = ctx.say(
+        "La hoja no lleva vista isométrica: todo plano de fabricación la lleva (en color, por la convención del arnés). "
+        'Añádela: drawing(action=create, views=[..., "iso"]) o sin views para que el arnés elija; solo falta si el ingeniero '
+        "lo ordena (by=, reason=).",
+        "The sheet has no isometric view: every manufacturing sheet carries it (in colour, by the harness's convention). "
+        'Add it: drawing(action=create, views=[..., "iso"]) or leave views out so the harness chooses; it is missing only '
+        "if the engineer orders it (by=, reason=).",
+    )
+    return [Finding("no_isometric", "warning", text, (), key="iso")]
+
+
 def _underused(data: ReviewInput) -> list[Finding]:
     """The views and their dimensions cover too little of the free drawing area (a larger standard scale or a smaller paper
-    holds them), or sit in a corner with most of the room on one side. Style: listed and answerable, never holds an
-    export."""
+    holds them), or sit in a corner with most of the room on one side. ``sheet_underused`` is a measurement WITH a remedy (a
+    larger standard scale, a smaller paper, fewer views) and holds the export until it is applied or the engineer orders
+    otherwise; the same gap with no remedy (the automatic layout, nothing larger fits) is ``sheet_unbalanced``, a notice
+    that can be answered."""
     import sheet_layout  # noqa: PLC0415 - the paper sizes and the standard scales
     from sheet_model import fmt_scale  # noqa: PLC0415
 
@@ -175,7 +237,8 @@ def _underused(data: ReviewInput) -> list[Finding]:
             f"The block of views sits in a corner: {ctx.num(found.free_mm)} mm are free on the {found.side} and only "
             f"{ctx.num(found.opposite_mm)} mm on the opposite side; {advice}.",
         )
-    return [Finding("sheet_underused", "warning", text, (), key=found.reason)]
+    remedy = found.scale is not None or found.paper is not None or bool(found.fewer and found.fewer_scale is not None)
+    return [Finding("sheet_underused" if remedy else "sheet_unbalanced", "warning", text, (), key=found.reason)]
 
 
 # --- the hatch of the bodies of a section ----------------------------------------------------------------------------------------

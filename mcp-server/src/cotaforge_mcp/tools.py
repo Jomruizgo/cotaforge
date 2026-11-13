@@ -133,6 +133,8 @@ def _doc(session: Session, args: DocArgs, progress: Reporter | None = None) -> R
         return ok("\n".join(session.set_material(args.material)))
     if action == "set_route":
         return ok("\n".join(session.set_route(args.route)))
+    if action == "set_title":
+        return ok("\n".join(session.set_title(args.name)))
     if action == "set_purpose":
         return ok("\n".join(session.set_purpose(args.purpose)))
     if action == "convention":

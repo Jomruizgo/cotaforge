@@ -19,7 +19,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
-STANDARD_SCALES = (10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01)
+STANDARD_SCALES = (50.0, 20.0, 10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01)
 PAGES_MM = {
     "A4": (297.0, 210.0),
     "A3": (420.0, 297.0),
@@ -211,10 +211,11 @@ def _spread(spec: Spec, fits: Callable[[Spec], bool]) -> Spec:
     return spec
 
 
-def _start(left: float, area_w: float, needed_w: float, iso: tuple[float, float]) -> float:
+def _start(left: float, area_w: float, needed_w: float, iso: tuple[float, float], centred: bool = False) -> float:
     """Where the group starts: centred across the area; without an isometric view it stays at the left, so the room that
-    is left over is one piece (an exploded view takes it)."""
-    return left + (max(0.0, area_w - needed_w) / 2 if iso[0] > 0 else 0.0)
+    is left over is one piece (an exploded view takes it) -- unless nothing will take it (``centred``: a part sheet, whose
+    views would sit in a corner of the paper)."""
+    return left + (max(0.0, area_w - needed_w) / 2 if iso[0] > 0 or centred else 0.0)
 
 
 def _clear_of(blocks: list[Box], reserved: Box) -> bool:
@@ -299,7 +300,7 @@ def plan(
     if fits:  # room to spare: the views move apart (the scale stays what it was)
         spec = _spread(spec, lambda sp: fits_at(scale, sp))
     needed = _needed_spec(scale, spec)
-    start = _start(left, area_w, needed[0], iso)  # everything centred across the drawing area
+    start = _start(left, area_w, needed[0], iso, reserve is None)  # everything centred across the drawing area
     top += _drop(needed[1], free_h)  # ... and down it
     block_w, _, front_x, front_y = _extents(scale, spec)
     front = (start + front_x, top + front_y)

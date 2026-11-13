@@ -1641,7 +1641,7 @@ class FakeAdapter(Adapter):
 
     def design_attributes(self, request: Empty) -> DesignAttributes:
         doc = self._doc(request)
-        return DesignAttributes(material=doc.material, route=doc.route, roles=dict(doc.roles))
+        return DesignAttributes(material=doc.material, route=doc.route, title=doc.title, roles=dict(doc.roles))
 
     def set_design_attributes(self, request: SetDesignAttributesRequest) -> DesignAttributes:
         doc = self._doc(request)
@@ -1649,9 +1649,11 @@ class FakeAdapter(Adapter):
             doc.material = request.material.strip() or None
         if request.route is not None:
             doc.route = tuple(request.route)
+        if request.title is not None:
+            doc.title = request.title.strip() or None
         if request.roles is not None:
             doc.roles = dict(request.roles)
-        return DesignAttributes(material=doc.material, route=doc.route, roles=dict(doc.roles))
+        return DesignAttributes(material=doc.material, route=doc.route, title=doc.title, roles=dict(doc.roles))
 
     def close_document(self, request: Empty) -> Ack:
         """Forget the active document (the fake keeps nothing on disk besides what ``save_document`` wrote)."""
