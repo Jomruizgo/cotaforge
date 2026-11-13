@@ -31,8 +31,12 @@ from typing import Any
 
 from cotaforge.language import say
 
+from cotaforge_mcp.measured_alerts import MEASURED_FACT
+
 PREFIX = "req."
 """Every row id starts with it: ``drawing(action=answer, id="req.thread", ...)``."""
+MEASURED_ROW = PREFIX + "measured_alerts"
+"""The row that holds the export while a measured design alert is open (``measured_alerts``)."""
 
 MET, MISSING, NEEDS_ANSWER = "met", "missing", "needs_answer"
 
@@ -69,6 +73,9 @@ class Row:
     measured: tuple[str, ...] = ()
     """Facts that, when above 0, make the activation a MEASUREMENT: the row cannot be dismissed without the engineer's order."""
     always_measured: bool = False
+    model_only: bool = False
+    """No answer on the sheet closes the row: it is gone when its facts stop activating it (the model was fixed, or the
+    engineer's order was recorded in memory, which is where the order of a measured alert lives)."""
     intent: tuple[str, ...] = ()
     """Sections of the intent file that can declare this row."""
     intent_pattern: str = ""
@@ -486,14 +493,46 @@ ROWS: tuple[Row, ...] = (
         intent=("process",),
         intent_pattern=r"cantidad|quantity|\bqty\b|\d+\s*(?:pzas?|pcs|uds?|unidades|piezas)",
     ),
+    Row(
+        id=MEASURED_ROW,
+        title=("Alertas de diseño medidas, resueltas", "Measured design alerts resolved"),
+        must=(
+            "ninguna alerta de diseño que el arnés midió en el modelo sigue abierta: o se corrigió el modelo, o el ingeniero ordenó mantenerla, con sus palabras citadas",
+            "no design alert the harness measured on the model is still open: the model was fixed, or the engineer ordered it kept, his words quoted",
+        ),
+        standard="",
+        question=(
+            "¿Corriges el modelo (el arnés vuelve a medir) o el ingeniero ordena mantener lo medido? En ese caso, ¿con qué palabras?",
+            "Do you fix the model (the harness measures again) or does the engineer order what was measured kept? In that case, in which words?",
+        ),
+        proposal=(
+            "corregir el modelo; el plano se exporta cuando la alerta ya no se dispara",
+            "fix the model; the drawing is exported once the alert no longer fires",
+        ),
+        triggers=(MEASURED_FACT,),
+        lacks=(
+            _n(
+                MEASURED_FACT,
+                "medidas de diseño aún abiertas en el modelo",
+                "measured design alert(s) still firing on the model (memory(action=review) lists them)",
+            ),
+        ),
+        measured=(MEASURED_FACT,),
+        model_only=True,
+    ),
 )
 
 ROW_IDS = tuple(r.id for r in ROWS)
-FACTS_USED = frozenset(
-    {t for r in ROWS for t in r.triggers if not t.startswith("intent.")}
-    | {r.only for r in ROWS if r.only}
-    | {n.fact for r in ROWS for n in (*r.needs, *r.lacks)}
-    | {m for r in ROWS for m in r.measured}
+SERVER_FACTS = frozenset({MEASURED_FACT})
+"""The facts the SERVER measures on the model (the CAD's sheet review does not report them)."""
+FACTS_USED = (
+    frozenset(
+        {t for r in ROWS for t in r.triggers if not t.startswith("intent.")}
+        | {r.only for r in ROWS if r.only}
+        | {n.fact for r in ROWS for n in (*r.needs, *r.lacks)}
+        | {m for r in ROWS for m in r.measured}
+    )
+    - SERVER_FACTS
 )
 """The names of the CAD's facts the table reads (the worker's ``sheet_reqfacts.FACT_NAMES`` must provide every one)."""
 
@@ -672,6 +711,8 @@ class Requirement:
     """The items of the sheet the harness added for this row (``rq_...``): they are on the sheet now."""
     model_measured: bool = False
     """The activation is a measurement of the MODEL (a thread, a declared fit...), not only the intent file's words."""
+    detail: tuple[str, ...] = ()
+    """What the server measured for this row, line by line (the open measured design alerts)."""
 
     @property
     def id(self) -> str:
@@ -708,9 +749,11 @@ def evaluate(
     answers: dict[str, Any],
     intent: Intent,
     item_ids: Collection[str] = (),
+    details: dict[str, tuple[str, ...]] | None = None,
 ) -> list[Requirement]:
     """The rows that apply to this sheet, in table order, each with its state. ``facts`` empty (the CAD reports none): no
-    rows. ``findings`` are the review's, ``answers`` the sheet's by id. What it says is for the agent: English."""
+    rows. ``findings`` are the review's, ``answers`` the sheet's by id; ``details`` what the server measured, by row id.
+    What it says is for the agent: English."""
     if not facts:
         return []
     merged = dict(facts)
@@ -743,6 +786,8 @@ def evaluate(
         state = MISSING if open_codes or lacking else MET if (row.needs or row.lacks or row.codes) else NEEDS_ANSWER
         answer = answers.get(row.id)
         counts = answer_counts(answer, measured)
+        if row.model_only:  # no answer closes it, not even "met" or an order: the model is fixed, or the order is in memory
+            counts = False
         out.append(
             Requirement(
                 row=row,
@@ -757,6 +802,7 @@ def evaluate(
                 refused_answer=answer is not None and not counts,
                 auto_items=tuple(sorted(i for i in item_ids if owns(row, i))),
                 model_measured=row.always_measured or any(merged.get(m, 0) > 0 for m in row.measured),
+                detail=(details or {}).get(row.id, ()),
             )
         )
     return out
@@ -905,7 +951,13 @@ def line(req: Requirement, language: str = "es") -> list[str]:
         out.append(f"      lacking: {'; '.join(req.lacking)}")
     if req.codes:
         out.append(f"      takes in the findings: {', '.join(req.codes)}")
-    if req.answer is not None and req.refused_answer:
+    out.extend(f"      measured now: {text}" for text in req.detail)
+    if row.model_only:
+        out.append(
+            "      no answer on the sheet closes this row: fix the model (the harness measures again), or, if the ENGINEER "
+            "orders it kept, memory(action=answer, id=<the entry above>, by=<his name>, text='does not apply: <his words>')"
+        )
+    elif req.answer is not None and req.refused_answer:
         out.append(
             "      the answer 'does not apply' is NOT accepted: the harness measured it (or the intent file declares it); "
             "only the engineer's order closes it (by=<him>, reason=<his words>)"

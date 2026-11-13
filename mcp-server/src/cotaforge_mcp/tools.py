@@ -278,7 +278,9 @@ def call_tool(
     tool and whether it worked (``hand_edits``). ``cancelled`` is set by the server when the client gave the call up:
     the call still runs to its end (the CAD cannot interrupt what it is doing), but nobody is left to read its reply, so
     what a reply would carry (the hand edits) stays for the next one."""
+    session.mem.measured = None  # what a call measured on the model is good for that call only
     reply = _call_tool(session, name, arguments, progress, cancelled)
+    session.mem.measured = None
     if cancelled is not None and cancelled.is_set():
         return reply
     heads = [line for line in (session.hand_edits.take(session), *_adapter_notices(session)) if line is not None]
