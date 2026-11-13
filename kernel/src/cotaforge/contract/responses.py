@@ -400,6 +400,23 @@ class DrawingReviewRequest(BaseModel, frozen=True):
     at: float
 
 
+class DrawingMeasure(BaseModel, frozen=True):
+    """A value one dimension item of the sheet gives DIRECTLY (a distance between two features, a diameter, a radius, the
+    overall size, the diameter of a called-out hole), measured on the model; toleranced: it carries a fit or tolerance."""
+
+    id: str
+    kind: Literal["distance", "diameter", "radius", "overall", "hole"]
+    value_mm: float
+    toleranced: bool = False
+
+
+class DrawingComponent(BaseModel, frozen=True):
+    """One position of the parts list of an assembly: its designation and the reference (drawing number) the row prints."""
+
+    name: str
+    reference: str = ""
+
+
 class DrawingSheetInfo(BaseModel, frozen=True):
     sheet: str
     template: str
@@ -432,6 +449,10 @@ class DrawingSheetInfo(BaseModel, frozen=True):
     """With ``review``: what the CAD measured on the part and found on the sheet that the table of requirements of
     a drawing reads (``cotaforge_mcp.drawing_requirements``): a count per fact name (threaded holes, fit holes, notes
     found, weld items...). Empty: this CAD does not report them and no requirement is evaluated."""
+    measures: tuple[DrawingMeasure, ...] = ()
+    """With review: the value each dimension item of the sheet states by itself (see DrawingMeasure)."""
+    components: tuple[DrawingComponent, ...] = ()
+    """With review, an assembly: each position of the parts list and the reference (drawing number) its row prints."""
     native: tuple[str, ...] = ()
     """The objects on the page that no item made (a view, a dimension, a note, a hatch added by a native script): they
     show in the capture and the PDF, but the review does not read them."""
