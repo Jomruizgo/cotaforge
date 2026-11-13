@@ -15,6 +15,7 @@ the same for both items because both read the same ``Assembly``.
 
 import math
 import textwrap
+from collections.abc import Sequence
 from typing import Any
 
 from items_attach import _point_segment, _segment_distance, _segment_hits_rect
@@ -32,8 +33,8 @@ from sheet_context import (
     v_enum,
     v_str,
 )
-from sheet_layout import FRAME_MARGIN_MM, TITLE_BLOCK_TOP_MM
-from sheet_model import DIMENSIONS, TEXT, TITLE_BLOCK, Circle, Entity, Line, Solid, Text
+from sheet_layout import FRAME_MARGIN_MM, TITLE_BLOCK_TOP_MM, TITLE_BLOCK_WIDTH_MM
+from sheet_model import DIMENSIONS, TEXT, TITLE_BLOCK, Circle, Entity, Line, Solid, Text, text_width
 
 # --- the parts list -----------------------------------------------------------------------------------------------------
 
@@ -139,9 +140,9 @@ def draw_parts_list(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     welded = ctx.assembly is None and ctx.weldment is not None
     if welded:  # an empty designation stays visible as a question, never a file or object name
         rows = [(g, [*cells[:2], cells[2] or UNNAMED[ctx.language], *cells[3:]]) for g, cells in rows]
-    widths = COLUMNS_MM
     header = (CUT_HEADERS if welded else HEADERS)[ctx.language]
     right = ctx.sheet.width - FRAME_MARGIN_MM
+    widths = fit_widths(ctx, header, [cells for _, cells in rows], right) if welded else COLUMNS_MM
     left = right - sum(widths)
     bottom = TITLE_BLOCK_TOP_MM
     wrapped = [[_wrap(cell, w) for cell, w in zip(cells, widths, strict=True)] for _, cells in rows]
@@ -174,6 +175,49 @@ def draw_parts_list(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     if top > ctx.area[3]:
         return "warning", f"{note}; the list is taller than the free area of the sheet: use A3 or fewer positions"
     return "ok", note
+
+
+FIT_MIN_MM = 16.0  # the narrowest a text column gets
+FIT_MAX_MM = 70.0
+GUIDE_CLEAR_MM = 7.0  # the sheet window pulls a symbol whose centre is within 6 mm of a view's origin onto it
+CUT_FIXED_MM = COLUMNS_MM[:2]
+
+
+def _guides_x(ctx: Context) -> list[float]:
+    views = [*ctx.views.values(), *ctx.extras.get("views_extra", {}).values()]
+    return [v.x for v in views]
+
+
+def fit_widths(ctx: Context, header: Sequence[str], rows: list[list[str]], right: float) -> tuple[float, ...]:
+    """The columns of a cut list: the two narrow ones as always, the four text ones as wide as their longest text (headers
+    included) up to ``FIT_MAX_MM``, all of it never wider than the title block (what is left over wraps). The right edge stays
+    on the frame; if the centre of the table would sit where the sheet window snaps a symbol onto a view's origin, the
+    designation column takes a few millimetres more (the table grows to the left) so the centre is clear of it."""
+    texts = [[header[c], *(r[c] for r in rows)] for c in range(2, 6)]
+    wanted = [
+        min(FIT_MAX_MM, max(FIT_MIN_MM, max(text_width(t, CELL_HEIGHT_MM) for t in col) + 2 * CELL_PAD_MM + 1.0))
+        for col in texts
+    ]
+    room = TITLE_BLOCK_WIDTH_MM - sum(CUT_FIXED_MM)
+    if sum(wanted) > room:  # shrink the longest ones first, the rest keep what they need
+        wanted = _shrink(wanted, room)
+    widths = [*CUT_FIXED_MM, *wanted]
+    guides = _guides_x(ctx)
+    grow = 0.0
+    while grow < TITLE_BLOCK_WIDTH_MM - sum(widths) and any(abs(right - (sum(widths) + grow) / 2 - g) <= GUIDE_CLEAR_MM for g in guides):
+        grow += 1.0
+    widths[2] += grow
+    return tuple(widths)
+
+
+def _shrink(wanted: list[float], room: float) -> list[float]:
+    out = list(wanted)
+    while sum(out) > room + 1e-9:
+        biggest = max(range(len(out)), key=lambda i: out[i])
+        if out[biggest] <= FIT_MIN_MM:
+            break
+        out[biggest] = max(FIT_MIN_MM, out[biggest] - min(1.0, sum(out) - room))
+    return out
 
 
 def _row_height(cells: list[list[str]]) -> float:

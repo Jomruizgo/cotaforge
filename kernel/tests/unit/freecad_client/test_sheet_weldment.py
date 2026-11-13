@@ -211,3 +211,25 @@ def test_a_part_with_no_bodies_to_list_refuses_the_items() -> None:
     ctx.geometry = FrameGeometry()
     results = draw(ctx, {"type": "parts_list"})
     assert results[0].status == "error" and "welded" in results[0].detail
+
+
+def test_the_cut_list_stays_inside_the_title_block_width_and_on_the_frame_whatever_the_text() -> None:
+    ctx = context()
+    long_name = "Tubo estructural cuadrado 40x40x3, corte a inglete en ambos extremos, S235JR"
+    draw(ctx, {"type": "parts_list", "rows": [{"component": "body:1", "name": long_name}]})
+    left, _, right, _ = ctx.extras["parts_list"]["rect"]
+    assert right == 410.0 and right - left <= 180.0 + 1e-9  # the frame is at 410 and the title block is 180 wide
+    short = context()
+    draw(short, {"type": "parts_list", "rows": [{"component": "body:1", "name": "Tubo"}, {"component": "body:5", "name": "Chapa"}]})
+    sl, _, sr, _ = short.extras["parts_list"]["rect"]
+    assert sr == 410.0 and sr - sl < 180.0  # as wide as its content, not as wide as the title block
+    assert all(line.x2 <= 410.0 + 1e-9 for line in short.sheet.entities if hasattr(line, "x2"))
+
+
+def test_the_centre_of_the_cut_list_keeps_clear_of_the_view_origins_the_window_snaps_to() -> None:
+    ctx = context()
+    iso = sc.ViewInfo("isometric", 322.5, 150.0, 0.2, (1, 1, 1), (1, -1, 0), (0, 0, 0), (250.0, 100.0, 395.0, 200.0))
+    ctx.extras["views_extra"] = {"isometric": iso}
+    draw(ctx, {"type": "parts_list", "rows": [{"component": "body:1", "name": "Tubo 40×40×3"}]})
+    left, _, right, _ = ctx.extras["parts_list"]["rect"]
+    assert abs((left + right) / 2 - 322.5) > 7.0 and right == 410.0
