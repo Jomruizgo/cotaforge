@@ -759,6 +759,11 @@ def _build(
         warnings.append(f"no standard scale fits the sheet: drawn at {model.fmt_scale(layout.scale)}; try A3")
     if not layout.fits:
         warnings.append(f"at {model.fmt_scale(layout.scale)} the views do not fit the sheet: use a smaller scale or A3")
+    if layout.iso_scale:
+        warnings.append(
+            f"the isometric view is drawn at {model.fmt_scale(layout.iso_scale)} (written under it) so the main views can "
+            f"take {model.fmt_scale(layout.scale)}: a pictorial view may have its own scale"
+        )
 
     activate(fc_doc)
     names = sheet_template.editable_fields(template_text(spec["template"], op))
@@ -837,7 +842,7 @@ def _build(
             iso.Direction = App.Vector(*iso_direction)
             iso.XDirection = App.Vector(*iso_xdirection)
             iso.ScaleType = "Custom"
-            iso.Scale = layout.scale
+            iso.Scale = layout.iso_scale or layout.scale  # its own scale, when it has one
             iso.X, iso.Y = layout.iso[0], centre_y(layout.iso[1])
 
     waited = wait_views(fc_doc, page, op)  # the dimensions refer to finished views
@@ -882,6 +887,7 @@ def _hlr_record(
         iso,
         size,
         centre,  # type: ignore[arg-type]
+        layout.iso_scale,
     )
 
 
@@ -2455,6 +2461,12 @@ def _compose_pass(
     start = len(sheet.entities)
     sheet.extend(sheet_thread.thread_entities(ctx))
     ranges = {"threads": (start, len(sheet.entities))}
+    iso_view = hlr_views.iso if hlr_views is not None else (iso_info(page) if "iso" in views_of(spec) else None)
+    if iso_view is not None and abs(iso_view.scale - scale) > 1e-9:  # its own scale goes under it (ISO 5455)
+        label = ctx.say(f"Isométrica {model.fmt_scale(iso_view.scale)}", f"Isometric {model.fmt_scale(iso_view.scale)}")
+        start = len(sheet.entities)
+        sheet.add(model.Text((iso_view.box[0] + iso_view.box[2]) / 2, iso_view.box[1] - 6.0, label, anchor="center"))
+        ranges[sheet_units.KEY_ISO_SCALE] = (start, len(sheet.entities))
     results += sheet_items.draw_items(ctx, items)
     native = {
         i["id"]: dict(ctx.extras.get("overall_dims", {})) for i in items if i["type"] == "overall" and not hlr
