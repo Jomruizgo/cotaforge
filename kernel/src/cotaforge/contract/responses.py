@@ -421,6 +421,43 @@ class DrawingComponent(BaseModel, frozen=True):
     reference: str = ""
 
 
+class DrawingWeldBody(BaseModel, frozen=True):
+    """One position of the cut list of a welded part, with the section MEASURED of its body (the proposal for its designation,
+    never the designation): ``kind`` is ``tube`` (``section_mm`` width x height, ``wall_mm`` the wall), ``bar`` (width x
+    thickness) or ``plate`` (its thickness); ``named``: the sheet carries the designer's designation."""
+
+    position: int
+    instances: tuple[str, ...]
+    reference: str = ""
+    kind: Literal["tube", "bar", "plate"]
+    section_mm: tuple[float, ...] = ()
+    wall_mm: float = 0.0
+    named: bool = False
+
+
+class DrawingWeldJoint(BaseModel, frozen=True):
+    """A group of identical joints of a welded part (same kind, thinner wall and seam), measured: ``pairs`` are the two bodies
+    of each, the rest the weld the harness would propose (a fillet of throat max(3, 0.7 x the wall), never applied);
+    ``welded``: a weld item of the sheet covers all of them."""
+
+    kind: str
+    pairs: tuple[tuple[str, str], ...]
+    length_mm: float
+    thin_mm: float
+    weld_kind: str
+    size_mm: float
+    size_kind: str = "throat"
+    all_around: bool = False
+    welded: bool = False
+
+
+class DrawingWeldPlan(BaseModel, frozen=True):
+    """What a welded part still asks of its designer: the bodies of the cut list and the groups of its joints."""
+
+    bodies: tuple[DrawingWeldBody, ...] = ()
+    joints: tuple[DrawingWeldJoint, ...] = ()
+
+
 class DrawingSheetInfo(BaseModel, frozen=True):
     sheet: str
     template: str
@@ -457,6 +494,8 @@ class DrawingSheetInfo(BaseModel, frozen=True):
     """With review: the value each dimension item of the sheet states by itself (see DrawingMeasure)."""
     components: tuple[DrawingComponent, ...] = ()
     """With review, an assembly: each position of the parts list and the reference (drawing number) its row prints."""
+    weldment: DrawingWeldPlan | None = None
+    """With review, a welded part: its bodies with the measured section and its groups of joints."""
     native: tuple[str, ...] = ()
     """The objects on the page that no item made (a view, a dimension, a note, a hatch added by a native script): they
     show in the capture and the PDF, but the review does not read them."""

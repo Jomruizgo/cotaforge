@@ -362,7 +362,13 @@ def plan(
 
 AUTO_PAPERS = ("A4", "A3", "A2", "A1", "A0")
 FULL_SIZE_PAPERS = 2  # a part is first tried at full size on the papers a shop prints every day: A4 and A3
-HALF_SIZE = 0.5  # ... then at the largest paper that does not make it smaller than 1:2
+LEGIBLE_SCALE = 0.2
+"""The legibility floor of a scale (ISO 5455 preferred scale 1:5): a feature of 20 mm is still 4 mm on the paper, so the 3 mm
+arrowheads and the 3.5 mm text of its dimension (ISO 129) fit beside it."""
+LEGIBLE_EXTENT_MM = 80.0
+"""The legibility floor of the part: its largest side is drawn at least this long (about two dimension lines of 7 mm and their
+text on each side of the smallest view still leave a part you can read); a small part at 1:5 is not legible, a bigger paper is
+then worth it. Above both floors a paper is never made bigger just to draw at a bigger scale."""
 
 
 def auto_paper(
@@ -377,10 +383,11 @@ def auto_paper(
     iso_dims: tuple[float, float, float] | None = None,
 ) -> tuple[str, float]:
     """The paper and the standard scale (ISO 5455) a sheet gets when nobody chose a paper, so the views fill it instead of
-    floating on a sheet too big for them or shrinking on one too small: the smallest of A4 and A3 on which the automatic
-    layout reaches full size or an enlargement; else the smallest paper on which it does not go below 1:2; else (a part of
-    several metres) the paper with the largest scale, the smaller one on a tie. ``w`` / ``d`` / ``h`` are the sizes of the
-    views as ``plan`` takes them."""
+    floating on a sheet too big for them or shrinking on one too small (ISO 5457: the smallest paper on which the drawing is
+    legible): the smallest of A4 and A3 on which the automatic layout reaches full size or an enlargement; else the smallest
+    paper that reaches the legibility floor (``LEGIBLE_SCALE``, 1:5, with its largest side drawn at least ``LEGIBLE_EXTENT_MM``),
+    at the largest scale it fits there: never a bigger paper only to draw at a bigger scale; else (a part of several metres) the paper with the largest scale, the smaller one
+    on a tie. ``w`` / ``d`` / ``h`` are the sizes of the views as ``plan`` takes them."""
     scales = {
         name: plan(w, d, h, *PAGES_MM[name], None, None, isometric, has_top, has_right, third=third, iso_dims=iso_dims).scale
         for name in AUTO_PAPERS
@@ -389,7 +396,7 @@ def auto_paper(
         if scales[name] >= 1.0 - 1e-9:
             return name, scales[name]
     for name in AUTO_PAPERS:
-        if scales[name] >= HALF_SIZE - 1e-9:
+        if scales[name] >= LEGIBLE_SCALE - 1e-9 and max(w, d, h) * scales[name] >= LEGIBLE_EXTENT_MM - 1e-9:
             return name, scales[name]
     best = max(AUTO_PAPERS, key=lambda name: (round(scales[name], 9), -AUTO_PAPERS.index(name)))
     return best, scales[best]

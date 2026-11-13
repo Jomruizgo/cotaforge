@@ -17,7 +17,7 @@ import pytest
 
 from tests.integration.conftest import ORDER, Cad, Reply, running_server
 from tests.integration.test_drawing_review_gaps_real import build_assembly, plate
-from tests.integration.test_drawing_weldment_real import NOTE as WELD_NOTE
+from tests.integration.test_drawing_weldment_real import WELD
 from tests.integration.test_drawing_weldment_real import build_frame
 from tests.integration.test_external_thread_real import END, SHAFT, make_shaft
 
@@ -63,7 +63,7 @@ async def test_a_plate_is_composed_in_one_order(workspace: Path, tmp_path: Path)
         )
         print("COMPOSED", composed)
         assert "composed sheet" in composed and "derived:" in composed, composed
-        shot(shots, "pt1c_plate", await cad("drawing", action="capture"))
+        shot(shots, "pt1d_plate", await cad("drawing", action="capture"))
         review = await cad.ok("drawing", action="review")
         print("REVIEW", review)
 
@@ -78,7 +78,7 @@ async def test_a_turned_shaft_is_composed_in_one_order(workspace: Path, tmp_path
         composed = await compose_the_rest(cad, decisions, keep=("req.surface_texture",))
         print("COMPOSED", composed)
         assert "composed sheet" in composed, composed
-        shot(shots, "pt1c_shaft", await cad("drawing", action="capture"))
+        shot(shots, "pt1d_shaft", await cad("drawing", action="capture"))
         print("REVIEW", await cad.ok("drawing", action="review"))
 
 
@@ -90,7 +90,7 @@ async def test_an_assembly_is_composed_in_one_order(workspace: Path, tmp_path: P
         composed = await compose_the_rest(cad, {"sheet": {"title": "Conjunto"}})
         print("COMPOSED", composed)
         assert "composed sheet" in composed and "rq_parts_list" in composed, composed
-        shot(shots, "pt1c_assembly", await cad("drawing", action="capture"))
+        shot(shots, "pt1d_assembly", await cad("drawing", action="capture"))
         print("REVIEW", await cad.ok("drawing", action="review"))
 
 
@@ -99,10 +99,21 @@ async def test_a_welded_frame_is_composed_in_one_order(workspace: Path, tmp_path
     async with running_server(workspace, visible=True) as (cad, _):
         await in_one_order(cad)
         await build_frame(cad)
-        rows = [{"component": "body:1", "name": "Tubo 40×40×3"}, {"component": "body:5", "name": "Chapa 6"}]
-        composed = await compose_the_rest(cad, {"sheet": {"title": "Bastidor"}, "notes": [WELD_NOTE["text"]]}, keep=("req.welds",))
+        plan = await cad.ok("drawing", action="plan", title="Bastidor")
+        print("WELD PLAN", plan)
+        # the designer is asked each body (with the section the harness measured) and the weld of each group of joints
+        assert "Tubo 40×40×3" in plan and "Chapa 6" in plan, plan
+        assert "[welds]" in plan and "a=3 mm" in plan and "[welding]" in plan, plan
+        decisions = {
+            "sheet": {"title": "Bastidor"},
+            "bodies": [{"component": "body:1", "name": "Tubo 40×40×3"}, {"component": "body:5", "name": "Chapa 6"}],
+            "welds": [{k: v for k, v in WELD.items() if k != "id"}],  # the composer names the item
+            "welding": {"process": "MAG", "quality": "C", "tolerance": "B"},
+        }
+        composed = await compose_the_rest(cad, decisions)
         print("COMPOSED", composed)
-        assert "composed sheet" in composed, composed
-        shot(shots, "pt1c_frame", await cad("drawing", action="capture"))
-        print("REVIEW", await cad.ok("drawing", action="review"))
-        print("ROWS", rows)
+        assert "composed sheet" in composed and "rq_balloons" in composed and "A2" not in composed, composed
+        shot(shots, "pt1d_frame", await cad("drawing", action="capture"))
+        review = await cad.ok("drawing", action="review")
+        print("REVIEW", review)
+        assert not any(code in review for code in ("weld_joint_unspecified", "weld_body_unnamed", "weld_list_missing", "weld_class_13920")), review

@@ -17,7 +17,9 @@ import re
 from typing import Any
 
 import sheet_checks
+import sheet_joints
 import sheet_review
+import sheet_weldplan
 import sheet_weldreview
 from items_assembly import rows_of
 from items_holes import _select as select_callout_holes
@@ -192,7 +194,17 @@ def measures(data: Any) -> dict[str, list[dict[str, Any]]]:
                 continue
         for group in ctx.assembly.groups:
             components.append({"name": group.name or group.instances[0], "reference": (shown.get(group.key, group.reference) or "").strip()})
-    return {"measures": out, "components": components}
+    return {"measures": out, "components": components, "weldment": _weldment(data)}
+
+
+def _weldment(data: Any) -> dict[str, Any] | None:
+    """What a welded part still asks of its designer (``sheet_weldplan``); ``None`` for any other part."""
+    ctx = data.ctx
+    if ctx.weldment is None or ctx.assembly is not None:
+        return None
+    named = frozenset(str(n) for n in ctx.extras.get("parts_list", {}).get("names", {}))
+    pairs = [p for spec in sheet_review._of(data, "weld") for p in sheet_weldreview.weld_pairs(spec)]
+    return sheet_weldplan.plan_of(ctx.weldment.groups, sheet_weldreview.joints_of(ctx), named, sheet_joints.covers(pairs))
 
 
 def facts(data: Any) -> dict[str, int]:

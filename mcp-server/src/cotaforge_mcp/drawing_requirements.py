@@ -947,6 +947,7 @@ def plan_additions(
     assembly: bool = False,
     views: tuple[str, ...] = (),
     external_threads: bool = False,
+    weldment: bool = False,
 ) -> list[Addition]:
     """What the harness adds to the sheet for the DETERMINED rows that are not met: callouts of every hole when the part has
     threaded or fitted holes nobody called out (the thread and the fit come from the hole operations), the centre lines (of an
@@ -955,7 +956,8 @@ def plan_additions(
     that was answered (the item was removed with a reason) is never added again, and the agent's own items come first:
     callouts are not added while the sheet has a ``hole_dim`` of its own, nor a list while it has a ``parts_list``. With
     ``external_threads`` (the part holds an ``external_thread`` feature) the callout of each threaded cylinder is added too
-    (``thread_dims``: a diameter dimension that prints the thread, measured on the model, nothing to decide)."""
+    (``thread_dims``: a diameter dimension that prints the thread, measured on the model, nothing to decide). A ``weldment``
+    (a welded part) gets the balloons only: its cut list carries the designer's designations, so the list is his."""
     have = {i.id for i in items}
     kinds = {i.type for i in items}
     dimensioned = any(i.id.startswith(KEYWAY_ID) for i in items)
@@ -971,9 +973,9 @@ def plan_additions(
                 "a callout (size, pitch, usable length) of every external thread, measured on the model",
             )
         if row.auto == "parts_list":
-            if not assembly or r.state == MET or r.answer is not None or not (r.codes or r.lacking):
+            if not (assembly or weldment) or r.state == MET or r.answer is not None or not (r.codes or r.lacking):
                 continue
-            if "parts_list" not in kinds and PARTS_LIST_ID not in have:
+            if assembly and "parts_list" not in kinds and PARTS_LIST_ID not in have:
                 out[PARTS_LIST_ID] = Addition(
                     (row.id,),
                     {"type": "parts_list", "id": PARTS_LIST_ID},
