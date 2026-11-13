@@ -55,14 +55,14 @@ def build_bracket(with_holes: bool = True) -> dict[str, Any]:
         return call("hole", op(name, face=face["handle"], position=list(where), **params))
 
     face = top()
-    cx, cy, _ = [(a + b) / 2 for a, b in zip(face["bbox"]["min"], face["bbox"]["max"], strict=True)]
+    cx, cy, _ = face["center"]
     # holes are placed from the centre of the top face; a counterbore is the wide blind hole first, then the narrow
     # one through its floor
     pocket = drill("cbore", face, (25 - cx, 20 - cy), diameter_mm=11, end_condition="blind", depth_mm=6)
     floor = select_face(faces_of(pocket["feature"]), normal=(0, 0, 1), center=(25, 20, 24))
     drill("through", floor, (0, 0), diameter_mm=6.6)
     face = top()
-    cx, cy, _ = [(a + b) / 2 for a, b in zip(face["bbox"]["min"], face["bbox"]["max"], strict=True)]
+    cx, cy, _ = face["center"]
     drill("blind", face, (45 - cx, 20 - cy), diameter_mm=5, end_condition="blind", depth_mm=12)
     slope = select_face(faces_of(base["feature"]), center=(67.5, 20, 21))
     drill("square", slope, (0, 0), diameter_mm=6, end_condition="blind", depth_mm=8)

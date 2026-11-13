@@ -10,7 +10,7 @@ import math
 from typing import Any
 
 import main
-from harness import call, extrude, face_info, faces_of, new_document, op, rect, select_face, sketch
+from harness import call, extrude, face_info, faces_of, line, new_document, op, rect, select_face, sketch
 
 TOL = 1e-6  # mm
 PLATE = (100.0, 60.0, 8.0)  # centred at (50, 30), top at z = 8
@@ -23,7 +23,13 @@ def _plate() -> dict[str, Any]:
     return {"base": base, "top": select_face(faces_of(base["feature"]), normal=(0, 0, 1))}
 
 
-def _hole(top: dict[str, Any], name: str, diameter: float, **fields: Any) -> dict[str, Any]:
+def _box_origin(top: dict[str, Any]) -> list[float]:
+    """The origin the executor sends for a hole: the centre of the box of the face (``stable_face_origin``)."""
+    box = face_info(top["handle"])["bbox"]
+    return [(a + b) / 2 for a, b in zip(box["min"], box["max"], strict=True)]
+
+
+def _params(top: dict[str, Any], name: str, diameter: float, *, origin: Any = "box", **fields: Any) -> dict[str, Any]:
     params = op(
         name,
         face=top["handle"],
@@ -37,9 +43,20 @@ def _hole(top: dict[str, Any], name: str, diameter: float, **fields: Any) -> dic
         countersink=None,
         drill_point="flat",
         drill_point_angle_deg=118.0,
+        origin=_box_origin(top) if origin == "box" else origin,
     )
     params.update(fields)
-    return call("hole", params)
+    return params
+
+
+def _hole(top: dict[str, Any], name: str, diameter: float, **kw: Any) -> dict[str, Any]:
+    return call("hole", _params(top, name, diameter, **kw))
+
+
+def _edit(feature: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+    result = call("edit_feature", op("edit", edits=[{"feature": feature, "kind": "hole", "request": request}], dry_run=False))
+    assert result["applied"], result
+    return result
 
 
 def _axes(diameter: float) -> list[tuple[float, float]]:
@@ -113,3 +130,67 @@ def check_a_counterbore_applies_to_every_hole_of_the_call() -> None:
     )
     _same(_axes(6.0), [(50.0 + u, 30.0 + v) for u, v in points])
     _same(_axes(11.0), [(50.0 + u, 30.0 + v) for u, v in points])
+
+
+def check_a_request_without_an_origin_is_measured_from_the_centre_of_mass_as_it_always_was() -> None:
+    """What a model saved before the change recorded: no origin. Rebuilt, it puts the hole where it was."""
+    ids = _plate()
+    _hole(ids["top"], "hole_1", 14.0, origin=None, position=[-30.0, -20.0])
+    centre_of_mass = face_info(ids["top"]["handle"])["center"]
+    second = _hole(ids["top"], "hole_2", 4.0, origin=None, position=[0.0, 0.0])
+    _same(_axes(4.0), [tuple(centre_of_mass[:2])])  # the old frame: it drifted, and it still does for these
+    before = _axes(4.0)
+    # an edit in place of its diameter, with the request as it was recorded (no origin), keeps it where it was
+    _edit(second["feature"], _params(ids["top"], "hole_2", 8.0, origin=None, position=[0.0, 0.0]))
+    _same(_axes(8.0), before)
+
+
+def _l_plate() -> dict[str, Any]:
+    new_document("lplate")
+    points = [(0, 0), (100, 0), (100, 20), (20, 20), (20, 60), (0, 60)]
+    lines = [line(f"l{i}", points[i], points[(i + 1) % len(points)]) for i in range(len(points))]
+    base = extrude("base", sketch("base_sketch", "XY", lines), PLATE[2])
+    return {"base": base, "top": select_face(faces_of(base["feature"]), normal=(0, 0, 1))}
+
+
+def check_the_origin_on_an_l_shaped_face_is_its_box_centre_even_outside_the_material() -> None:
+    ids = _l_plate()
+    origin = _box_origin(ids["top"])
+    assert math.dist(origin[:2], (50.0, 30.0)) <= TOL  # in the notch: no material there
+    mass = face_info(ids["top"]["handle"])["center"]
+    assert math.dist(mass[:2], (50.0, 30.0)) > 5.0  # the centre of mass is elsewhere
+    points = [(-40.0, 20.0), (-40.0, 10.0)]  # world (10, 50) and (10, 40): on the upright of the L
+    _hole(ids["top"], "pair", 5.0, position=list(points[0]), positions=[list(p) for p in points])
+    _same(_axes(5.0), [(50.0 + u, 30.0 + v) for u, v in points])
+    _hole(ids["top"], "foot", 6.0, position=[30.0, -20.0])  # world (80, 10), on the foot, a second hole in the face
+    _same(_axes(6.0), [(80.0, 10.0)])
+
+
+def check_a_multi_hole_feature_is_edited_in_place_by_its_diameter_and_its_counterbore() -> None:
+    ids = _plate()
+    corners = [(-30.0, -15.0), (30.0, -15.0), (30.0, 15.0), (-30.0, 15.0)]
+    made = _hole(
+        ids["top"],
+        "pattern",
+        6.0,
+        position=list(corners[0]),
+        positions=[list(c) for c in corners],
+        counterbore={"diameter_mm": 11.0, "depth_mm": 3.0},
+    )
+    before = _axes(6.0)
+    _edit(
+        made["feature"],
+        _params(
+            ids["top"],
+            "pattern",
+            8.0,
+            position=list(corners[0]),
+            positions=[list(c) for c in corners],
+            counterbore={"diameter_mm": 14.0, "depth_mm": 3.0},
+        ),
+    )
+    _same(_axes(8.0), before)  # every circle took the new diameter, none moved
+    _same(_axes(14.0), before)
+    assert not _axes(6.0) and not _axes(11.0)
+    body = next(o for o in main.WORKER.active.fc_doc.Objects if o.TypeId == "PartDesign::Body")
+    assert len([o for o in body.Group if o.TypeId == "PartDesign::Hole"]) == 1

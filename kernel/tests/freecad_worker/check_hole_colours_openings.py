@@ -24,7 +24,7 @@ def _rec() -> Any:
 
 def _drill(base: dict[str, Any], where: tuple[float, float], diameter: float, **extra: Any) -> dict[str, Any]:
     face = select_face(faces_of(base["feature"]), normal=(0, 0, 1))
-    centre = [(a + b) / 2 for a, b in zip(face["bbox"]["min"], face["bbox"]["max"], strict=True)]  # box, not mass
+    centre = face["center"]
     fields: dict[str, Any] = {
         "standard": "simple",
         "size": None,

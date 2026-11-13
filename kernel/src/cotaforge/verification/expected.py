@@ -1648,6 +1648,7 @@ class ExpectedComputer:
             hole=HoleTool(
                 face=request.face,
                 position=position,
+                origin=request.origin,
                 outline=holetool.hole_outline(
                     op.diameter_mm, probe_length, counterbore=cbore, countersink=csink, point_angle_deg=tip
                 ),
@@ -1679,6 +1680,7 @@ class ExpectedComputer:
                         hole=HoleTool(
                             face=request.face,
                             position=position,
+                            origin=request.origin,
                             outline=holetool.hole_outline(op.diameter_mm, length, counterbore=cbore, countersink=csink),
                         ),
                     ),

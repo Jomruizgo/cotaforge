@@ -163,7 +163,8 @@ FIELD_NOTES: dict[tuple[str, str], str] = {
     ("cut", "direction"): "negative = into the material for a sketch on a face",
     ("revolve", "axis"): "u|v (sketch axes) or the name of a line entity of the sketch; profile on ONE side of it",
     ("hole", "position"): "(u, v) mm in the face frame, not world coordinates, measured from the centre of the face's "
-    "BOUNDING BOX (it does not move when holes are drilled in the face; the centre of mass does); or give at",
+    "BOUNDING BOX (it does not move when holes are drilled in the face; the centre of mass does). On an L-shaped or "
+    "notched face that point can lie outside the material: it is only the reference. Or give at",
     ("hole", "positions"): "several holes in ONE call and one feature: a list of (u, v), each as position (e.g. the 4 "
     "corners of a rectangular pattern); no two closer than one diameter; not with up_to_face",
     ("hole", "bolt_circle"): "holes equally spaced on a circle in ONE feature: {diameter_mm (pitch circle), count, "

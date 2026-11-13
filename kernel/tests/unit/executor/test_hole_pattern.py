@@ -1,26 +1,32 @@
 """Several holes in one ``hole`` op (``positions`` / ``bolt_circle``) and the origin their (u, v) is from."""
 
 import math
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
 from cotaforge.adapters.fake.adapter import FakeAdapter
 from cotaforge.contract import (
+    AdapterError,
+    BoundingBox,
     ConnectRequest,
+    ErrorCode,
+    ErrorInfo,
     FeatureRequest,
     ProvenanceRole,
     SurfaceType,
+    frame_for_face,
     stable_face_origin,
 )
 from cotaforge.executor.build import build_request
 from cotaforge.executor.config import ExecutorConfig
 from cotaforge.executor.errors import ResolutionError
-from cotaforge.executor.executor import Executor
+from cotaforge.executor.executor import Executor, _in_place_of
 from cotaforge.executor.trace import ExecutorState
 from cotaforge.ir import parse_plan
 from cotaforge.verification.verifier import Verifier
-from tests.unit.verification.helpers import plate_faces
+from tests.unit.verification.helpers import planar_face, plate_faces
 
 from .test_build import _env, _plan
 
@@ -137,3 +143,47 @@ def test_several_holes_on_a_curved_face_are_refused_with_the_way_out() -> None:
     plan = _plan([*BASE, _hole("hole_1", position=[0, 0]), _hole("h", positions=[[1, 2], [20, 2]], face=cyl)])
     with pytest.raises(ResolutionError, match="planar face"):
         build_request(plan.operations[3], ctx, resolver)
+
+
+def test_on_an_l_shaped_face_the_origin_is_the_box_centre_even_where_there_is_no_material() -> None:
+    l_face = planar_face(
+        "face:l", (0.0, 0.0, 1.0), (35.0, 17.0, 8.0), 3200.0, BoundingBox(min=(0, 0, 8), max=(100, 60, 8))
+    )
+    assert stable_face_origin(l_face) == pytest.approx((50.0, 30.0, 8.0))  # the notch of the L: no material there
+    assert frame_for_face(l_face, stable_face_origin(l_face)).to_world(-40.0, 20.0) == pytest.approx((10.0, 50.0, 8.0))
+
+
+def test_a_model_saved_before_keeps_its_holes_where_they_were() -> None:
+    """A request recorded without origin (every one saved before) is measured from the centre of mass, as it was; an
+    edit or a rebuild of it keeps the recorded origin, never the new one."""
+    face = planar_face(
+        "face:l", (0.0, 0.0, 1.0), (35.0, 17.0, 8.0), 3200.0, BoundingBox(min=(0, 0, 8), max=(100, 60, 8))
+    )
+    assert frame_for_face(face, None).origin == pytest.approx(
+        (35.0, 17.0, 8.0)
+    )  # legacy: no origin, the centre of mass
+    _, ctx, resolver = _env()
+    plan = _plan([*BASE, _hole("h", position=[1, 2])])
+    request = build_request(plan.operations[2], ctx, resolver)
+    assert request.origin is not None  # new requests always carry it
+    assert _in_place_of(request, {"origin": None}).origin is None  # the record says "legacy": it stays legacy
+    assert _in_place_of(request, {"origin": [35.0, 17.0, 8.0]}).origin == (35.0, 17.0, 8.0)
+
+
+def test_the_probe_that_verifies_a_hole_is_measured_from_the_same_origin_as_the_hole() -> None:
+    """The boolean the verifier asks the CAD for (``tool_overlap``) must place the tool where the hole goes."""
+    asked: list = []
+
+    class Recording(FakeAdapter):
+        def tool_overlap(self, request: Any) -> Any:
+            asked.append(request)
+            raise AdapterError(ErrorInfo(code=ErrorCode.not_supported, message="not measured here", recoverable=False))
+
+    adapter = Recording()
+    adapter.connect(ConnectRequest(operation_id="connect"))
+    plan = parse_plan({"id": "p", "kind": "part", "operations": [*BASE, _hole("h", position=[5, 5])]})
+    executor = Executor(plan, adapter, Verifier(), ExecutorConfig())
+    executor.start()
+    executor.run_to_end()
+    assert executor.state == ExecutorState.completed
+    assert asked and all(r.hole.origin == pytest.approx((50.0, 30.0, 8.0)) for r in asked), asked

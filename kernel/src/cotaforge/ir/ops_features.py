@@ -329,8 +329,9 @@ class HoleOperation(OperationBase):
     face: FaceRef
     position: tuple[float, float] | None = None
     """(u, v) in the face frame, from the CENTRE OF THE FACE'S BOUNDING BOX (not its centre of mass: that one moves when
-    holes are drilled in the face, the box centre does not), so every hole of a face is measured from the same point
-    (a convex cylindrical face: axial_mm, angle_deg). Exactly one of ``position``, ``positions``, ``bolt_circle`` and
+    holes are drilled in the face, the box centre does not), so every hole of a face is measured from the same point.
+    On a face that is not a rectangle (an L, a disc with a notch) that point can lie outside the material: it is only
+    the reference, so give the (u, v) from it (a convex cylindrical face: axial_mm, angle_deg). Exactly one of ``position``, ``positions``, ``bolt_circle`` and
     ``at``."""
     positions: tuple[tuple[float, float], ...] | None = None
     """Several holes of the same kind in ONE feature, each (u, v) as ``position`` (planar face; at least 2, no two

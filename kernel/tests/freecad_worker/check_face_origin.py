@@ -117,12 +117,12 @@ def _fresh_boss_volume(diameter: float) -> float:
 
 
 def check_a_hole_asked_for_relative_to_the_face_centre_lands_there_on_the_first_build() -> None:
-    """``position`` of a hole is measured from the centre of the box of the face, which the first hole does not move."""
+    """The meaning of ``position`` is unchanged: from the centre of the face as it is when the hole is asked for."""
     ids = _plate()
-    box = call("face_info", op("q", face=ids["top"]["handle"]))["bbox"]
-    centre = [(a + b) / 2 for a, b in zip(box["min"], box["max"], strict=True)]
+    centre = call("face_info", op("q", face=ids["top"]["handle"]))["center"]
     _second_hole(ids)
     point = _only(_axis_xy(4.0))
+    # the face as the second hole saw it already had the first hole in it
     assert _near(point, (centre[0] + SECOND[0], centre[1] + SECOND[1])), (point, centre)
 
 

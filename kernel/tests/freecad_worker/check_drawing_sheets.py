@@ -62,8 +62,8 @@ def build_plate() -> dict[str, Any]:
     def drill(name: str, where: tuple[float, float], **fields: Any) -> None:
         params = {"standard": "simple", "size": None, "end_condition": "through_all", "depth_mm": None}
         params.update(fields)
-        face = top()  # a hole is measured from the centre of the box of the face: holes in it do not move it
-        centre = [(a + b) / 2 for a, b in zip(face["bbox"]["min"], face["bbox"]["max"], strict=True)]
+        face = top()  # the centre of the face moves with every hole: the position is counted from where it is now
+        centre = face["center"]
         call("hole", op(name, face=face["handle"], position=[where[0] - centre[0], where[1] - centre[1]], **params))
 
     drill("hole_a", HOLES["a"], diameter_mm=8)

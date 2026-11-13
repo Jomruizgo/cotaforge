@@ -30,20 +30,14 @@ def _op(params: dict[str, Any]) -> str:
 # --- sketch ------------------------------------------------------------------------------------------------------
 
 
-def _origin_on(params: dict[str, Any], desc: dict[str, Any], *, stable: bool = False) -> g.Vec3:
+def _origin_on(params: dict[str, Any], desc: dict[str, Any]) -> g.Vec3:
     """The origin of the frame on the planar face ``desc``: the ``origin`` the request names (a rebuild puts a feature
-    where it stood), slid along the normal onto the plane of the face, or the centre of the face. With ``stable``
-    (a hole) the centre of the face is the centre of its bounding box, which holes drilled in the face do not move,
-    not its centre of mass, which they do."""
+    where it stood), slid along the normal onto the plane of the face, or, without one, the centre of mass of the face
+    (what every request recorded before the executor sent the origin of a hole always means: never moved)."""
     centre = tuple(desc["center"])
     wanted = params.get("origin")
     if wanted is None:
-        if not stable:
-            return centre
-        box = desc["bbox"]
-        middle = g.scale(g.add(g.vec(box["min"]), g.vec(box["max"])), 0.5)
-        n = g.unit(tuple(desc["normal"]))
-        return g.add(middle, g.scale(n, g.dot(g.sub(centre, middle), n)))
+        return centre
     n = g.unit(tuple(desc["normal"]))
     point = g.vec(wanted)
     return g.add(point, g.scale(n, g.dot(g.sub(centre, point), n)))
@@ -629,7 +623,7 @@ def hole(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         _, frame, drill = _radial_entry(doc, rec, desc, face_id, position, diameter, body, op)
         centre = [0.0, 0.0]  # the sketch origin IS the entry point
     else:
-        frame = g.frame_for_face(_origin_on(params, desc, stable=True), tuple(desc["normal"]))
+        frame = g.frame_for_face(_origin_on(params, desc), tuple(desc["normal"]))
         drill = g.scale(tuple(desc["normal"]), -1.0)
         centre = [float(position[0]), float(position[1])]
         for point in positions if positions is not None else [position]:
