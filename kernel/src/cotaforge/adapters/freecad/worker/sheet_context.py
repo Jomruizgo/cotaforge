@@ -371,6 +371,11 @@ class PartGroup:
     def quantity(self) -> int:
         return len(self.instances)
 
+    @property
+    def label(self) -> str:
+        """How a message names the position: its designation, else its first component (never a file name)."""
+        return self.name or f"({self.instances[0]})"
+
 
 @dataclass
 class Assembly:

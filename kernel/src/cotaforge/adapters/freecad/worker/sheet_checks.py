@@ -86,7 +86,7 @@ NON_BLOCKING = frozenset(
         "leader_not_on_chamfer",
         "view_redundant",
         "arrows_inside_short",
-        "sheet_underused",
+        "sheet_unbalanced",
         "hatch_same_as_neighbour",
         "hatch_pattern_differs",
     }

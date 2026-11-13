@@ -84,7 +84,7 @@ def test_four_holes_of_a_rectangular_pattern_are_one_feature_at_the_requested_po
     assert executor.state == ExecutorState.completed, executor.trace().final_state
     # the plate's top face is centred at (50, 30): every axis is the face centre plus the requested (u, v)
     wanted = sorted((50.0 + u, 30.0 + v) for u, v in corners)
-    assert _axes(executor, adapter, "holes") == pytest.approx(wanted)
+    assert [c for xy in _axes(executor, adapter, "holes") for c in xy] == pytest.approx([c for xy in wanted for c in xy])
     assert len(executor.trace().active_steps()) == 3  # sketch, extrude and ONE hole step
 
 
@@ -103,7 +103,7 @@ def test_the_second_hole_of_a_face_is_measured_from_the_same_point_as_the_first(
     second = _hole("h2", position=[0, 0])
     executor, adapter = _run(first, second)
     assert executor.state == ExecutorState.completed, executor.trace().final_state
-    assert _axes(executor, adapter, "h2") == pytest.approx([(50.0, 30.0)])
+    assert [c for xy in _axes(executor, adapter, "h2") for c in xy] == pytest.approx([50.0, 30.0])
 
 
 def test_the_origin_of_a_hole_is_the_centre_of_the_box_of_the_face_not_its_centre_of_mass() -> None:
