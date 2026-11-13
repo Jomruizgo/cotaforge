@@ -103,14 +103,19 @@ async def finish_drawing(
     project reviews its drawings itself (``propio``, the engineer's words quoted), so the points are the agent's own.
     Memory entries are read first, as the server requires. Returns how many points it answered."""
     await cad.ok("memory", action="brief", drawing_review="propio", text="la prueba trata de otra cosa que la revisión")
-    findings, questions, memory = await pending_points(cad, sheet)
-    rows = await pending_rows(cad, sheet)
     arguments = {"sheet": sheet} if sheet else {}
-    for entry in memory:
-        await cad.ok("memory", action="get", id=entry)
-    for point in [*findings, *questions, *memory, *rows]:
-        await cad.ok("drawing", action="answer", id=point, text=reason, **ORDER, **arguments)
-    return len(findings) + len(questions) + len(memory) + len(rows)
+    total = 0
+    for _ in range(4):  # answering opens the next points (the memory entries of the drawing ops, the rows that follow)
+        findings, questions, memory = await pending_points(cad, sheet)
+        rows = await pending_rows(cad, sheet)
+        if not (findings or questions or memory or rows):
+            break
+        for entry in memory:
+            await cad.ok("memory", action="get", id=entry)
+        for point in [*findings, *questions, *memory, *rows]:
+            await cad.ok("drawing", action="answer", id=point, text=reason, **ORDER, **arguments)
+        total += len(findings) + len(questions) + len(memory) + len(rows)
+    return total
 
 
 @pytest.fixture

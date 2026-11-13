@@ -154,9 +154,9 @@ async def test_the_engineer_chooses_or_the_manufacturer_is_assumed(workspace: Pa
                 {"kind": "other", "where": "rótulo", "text": "Falta el número de plano", "fix": "Llenar drawing_number"}
             ],
         )
-        assert ids(recorded, "ing") == ["ing2.1"]
-        assert "ing2.1" in await cad.err("export", action="pdf", path="b.pdf")
-        await cad.ok("drawing", action="answer", id="ing2.1", text="applies: puse el número de plano en el rótulo")
+        assert ids(recorded, "eng") == ["eng2.1"]
+        assert "eng2.1" in await cad.err("export", action="pdf", path="b.pdf")
+        await cad.ok("drawing", action="answer", id="eng2.1", text="applies: puse el número de plano en el rótulo")
         await cad.ok("export", action="pdf", path="b.pdf")
         assert (workspace / "b.pdf").read_bytes().startswith(b"%PDF")
 
@@ -166,7 +166,7 @@ async def test_propio_asks_the_agent_and_ninguno_asks_nothing(workspace: Path) -
         await clean_plate_sheet(cad)
         await cad.ok("memory", action="brief", drawing_review="propio", text="Ana: lo revisa el agente")
         review = await cad.ok("drawing", action="review")
-        assert "drawing review mode: propio" in review and "q.callouts" in review and "q.views" not in review
+        assert "drawing review mode: own" in review and "q.callouts" in review and "q.views" not in review
         assert "drawing_unfinished" in await cad.err("export", action="pdf", path="c.pdf")
         await cad.ok(
             "memory", action="brief", drawing_review="ninguno", text="Ana: sin revisión, es un borrador de prueba"

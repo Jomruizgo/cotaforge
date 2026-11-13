@@ -23,6 +23,7 @@ import sheet_checks
 import sheet_interface
 import sheet_isoview
 import sheet_thread
+import sheet_weldrules
 from items_assembly import rows_of
 from items_dims import AXES, _along, coordinate, resolve_ref
 from items_holes import _declared_thread as items_holes_declared
@@ -86,6 +87,7 @@ def review(data: ReviewInput) -> list[Finding]:
         _collisions,
         _layout,
         _assembly_lists,
+        _weldment_lists,
         _assembly_holes,
         _assembly_joints,
         _hidden_instances,
@@ -927,6 +929,160 @@ def _assembly_holes(data: ReviewInput) -> list[Finding]:
         )
         out.append(Finding("hole_not_located", "warning", text, (), (), key))
     return out
+
+
+def _weldment_lists(data: ReviewInput) -> list[Finding]:
+    """The sheet of a welded part carries its cut list and a balloon per body, numbered as the list (``sheet_weldrules``), and
+    every position has the designation (profile and size) the designer gave: the harness never guesses it."""
+    ctx = data.ctx
+    if ctx.weldment is None:
+        return []
+    lists = _of(data, "parts_list")
+    balloons = _of(data, "balloons")
+    list_ids = tuple(i["id"] for i in lists)
+    balloon_ids = tuple(i["id"] for i in balloons)
+    listed = frozenset(str(n) for n in ctx.extras.get("parts_list", {}).get("positions", []))
+    drawn = frozenset(str(n) for n in ctx.extras.get("balloons", {}).get("drawn", set()))
+    sheet = sheet_weldrules.WeldSheet(True, listed, drawn if balloons else frozenset())
+    names = {str(g.position): g for g in ctx.weldment.groups}
+    out: list[Finding] = []
+    for found in sheet_weldrules.weld_documentation(sheet):
+        shown = ", ".join(f"{n} ({names[n].instances[0]})" if n in names else n for n in found.numbers)
+        if found.code == "weld_list_missing":
+            text = ctx.say(
+                'El plano de la pieza soldada no lleva lista de corte: añade {"type":"parts_list"} (una fila por pieza '
+                'distinta, con su cantidad, designación y longitud) y {"type":"balloons"}.',
+                'The sheet of the welded part has no cut list: add {"type":"parts_list"} (one row per distinct piece, with '
+                'quantity, designation and length) and {"type":"balloons"}.',
+            )
+            out.append(Finding("weld_list_missing", "warning", text, balloon_ids))
+        elif found.code == "item_without_balloon":
+            text = ctx.say(
+                f"Cuerpos de la lista de corte sin globo en el plano: posiciones {shown}. Cada cuerpo lleva su globo "
+                "(balloons, en la vista donde se ve).",
+                f"Bodies of the cut list with no balloon on the sheet: positions {shown}. Every body has its balloon "
+                "(balloons, on the view that shows it).",
+            )
+            out.append(Finding("item_without_balloon", "warning", text, (*list_ids, *balloon_ids)))
+        else:
+            text = ctx.say(
+                f"Globos sin fila en la lista de corte: {', '.join(found.numbers)}.",
+                f"Balloons with no row in the cut list: {', '.join(found.numbers)}.",
+            )
+            out.append(Finding("balloon_not_in_list", "warning", text, (*list_ids, *balloon_ids)))
+    unnamed = [names[str(n)] for n in ctx.extras.get("parts_list", {}).get("unnamed", []) if str(n) in names]
+    if unnamed:
+        shown = ", ".join(f"{g.position} ({g.instances[0]}: {g.reference})" for g in unnamed)
+        first = unnamed[0]
+        text = ctx.say(
+            f"Cuerpos sin designación en la lista de corte: {shown}. Pregunta al diseñador qué es cada uno (perfil y medida, "
+            "p. ej. tubo 40x40x3, pletina 50x6, o chapa de espesor y material) y escríbelo; nunca el nombre del objeto. "
+            f'En la lista: rows=[{{"component": "{first.instances[0]}", "name": "<designación>"}}].',
+            f"Bodies with no designation in the cut list: {shown}. Ask the designer what each one is (profile and size, e.g. "
+            "tube 40x40x3, flat bar 50x6, or plate thickness and material) and write it; never the object name. "
+            f'In the list: rows=[{{"component": "{first.instances[0]}", "name": "<designation>"}}].',
+        )
+        out.append(Finding("weld_body_unnamed", "warning", text, list_ids))
+    out += _weldment_designations(data, names, list_ids)
+    out += _weldment_views(data)
+    out += _weldment_welds(data)
+    return out
+
+
+def _weldment_designations(data: ReviewInput, names: dict[str, Any], list_ids: tuple[str, ...]) -> list[Finding]:
+    """The designation the designer wrote agrees with the body (tubes, flat bars and plates; the rest is said, not checked)."""
+    import sheet_weldment  # noqa: PLC0415
+
+    ctx = data.ctx
+    written = ctx.extras.get("parts_list", {}).get("names", {})
+    wrong: list[str] = []
+    skipped: list[str] = []
+    for position, name in written.items():
+        group = names.get(str(position))
+        if group is None or group.measured is None:
+            continue
+        verdict = sheet_weldment.check_designation(str(name), group.measured)
+        label = f"{position} ({group.instances[0]}, {name!r})"
+        if verdict.status == "mismatch":
+            wrong.append(f"{label}: {verdict.why}")
+        elif verdict.status == "skipped":
+            skipped.append(f"{label}: {verdict.why}")
+    out: list[Finding] = []
+    if wrong:
+        out.append(
+            Finding(
+                "weld_designation_mismatch",
+                "warning",
+                ctx.say(
+                    "La designación de la lista de corte no coincide con el cuerpo medido: "
+                    + "; ".join(wrong)
+                    + ". Corrige el cuerpo del modelo (¿hueco o macizo? ¿qué sección?) o la designación, y pregunta al diseñador cuál es la buena.",
+                    "The designation in the cut list does not agree with the measured body: "
+                    + "; ".join(wrong)
+                    + ". Fix the model body (hollow or solid? which section?) or the designation, and ask the designer which is right.",
+                ),
+                list_ids,
+            )
+        )
+    if skipped:
+        out.append(
+            Finding(
+                "weld_designation_unchecked",
+                "info",
+                ctx.say(
+                    "No se comprobó la designación contra el cuerpo (solo se leen tubos, pletinas y chapas): "
+                    + "; ".join(skipped)
+                    + ".",
+                    "The designation was not checked against the body (only tubes, flat bars and plates are read): "
+                    + "; ".join(skipped)
+                    + ".",
+                ),
+                list_ids,
+            )
+        )
+    return out
+
+
+def _weldment_views(data: ReviewInput) -> list[Finding]:
+    """Two standard views that draw the same rectangles for every body: one of them adds nothing."""
+    import sheet_weldment  # noqa: PLC0415
+
+    ctx = data.ctx
+    boxes = ctx.geometry.body_boxes() if ctx.geometry is not None else []
+    out: list[Finding] = []
+    for kept, repeat in sheet_weldment.congruent_views(boxes):
+        if kept not in ctx.views or repeat not in ctx.views:
+            continue
+        text = ctx.say(
+            f"La vista {repeat} dibuja lo mismo que la vista {kept} (cada cuerpo ocupa el mismo rectángulo): no añade nada. "
+            f"Quítala (drawing action=remove_view, view={repeat}) y las demás se reparten el espacio.",
+            f"The {repeat} view draws the same as the {kept} view (every body fills the same rectangle): it adds nothing. "
+            f"Drop it (drawing action=remove_view, view={repeat}) and the others share the room.",
+        )
+        out.append(Finding("view_redundant", "warning", text, (repeat,), key=repeat))
+    return out
+
+
+WELD_TEXT = re.compile(r"solda|weld|cord[oó]n|bead|2553", re.I)
+
+
+def _weldment_welds(data: ReviewInput) -> list[Finding]:
+    """A welded part with no weld said anywhere on its sheet cannot be welded: which joints, which weld. FreeCAD draws no
+    weld symbol (the ``weld`` item is refused), so the answer goes in a note."""
+    ctx = data.ctx
+    if _of(data, "weld"):
+        return []
+    if any(WELD_TEXT.search(str(n.get("text", ""))) for n in _of(data, "note")):
+        return []
+    text = ctx.say(
+        "La pieza soldada no dice cómo se sueldan las uniones. Pregunta al diseñador qué uniones se sueldan y con qué soldadura "
+        "(tipo, garganta o cateto, todo el contorno o intermitente, proceso, clase ISO 13920) y escríbelo en un note: FreeCAD "
+        "no dibuja símbolos de soldadura (ISO 2553).",
+        "The welded part does not say how its joints are welded. Ask the designer which joints are welded and with which weld "
+        "(kind, throat or leg, all around or intermittent, process, ISO 13920 class) and write it in a note: FreeCAD draws no "
+        "weld symbols (ISO 2553).",
+    )
+    return [Finding("weld_not_specified", "warning", text, ())]
 
 
 def _assembly_lists(data: ReviewInput) -> list[Finding]:

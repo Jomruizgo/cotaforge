@@ -89,6 +89,7 @@ NON_BLOCKING = frozenset(
         "sheet_unbalanced",
         "hatch_same_as_neighbour",
         "hatch_pattern_differs",
+        "weld_designation_unchecked",
     }
 )
 """Notices that never hold an export: about the harness (the FreeCAD window, TechDraw's own objects) or suggestions whose

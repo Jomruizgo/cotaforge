@@ -42,6 +42,11 @@ HEADERS = {
     "es": ("Pos.", "Cant.", "Denominación", "Nº de plano / Referencia", "Material", "Observaciones"),
     "en": ("Item", "Qty", "Description", "Drawing no. / Reference", "Material", "Remarks"),
 }
+CUT_HEADERS = {  # the cut list of a weldment: what the welder cuts, and the length or blank of each piece
+    "es": ("Pos.", "Cant.", "Designación", "Longitud / medida (mm)", "Material", "Observaciones"),
+    "en": ("Item", "Qty", "Designation", "Length / size (mm)", "Material", "Remarks"),
+}
+UNNAMED = {"es": "(por definir)", "en": "(to define)"}
 CELL_HEIGHT_MM = 3.0
 CHAR_MM = CELL_HEIGHT_MM * 0.6
 LINE_STEP_MM = 3.6
@@ -86,10 +91,12 @@ def check_parts_list(spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def _assembly(ctx: Context, what: str) -> Assembly:
-    if ctx.assembly is None or not ctx.assembly.groups:
-        msg = f"{what} belong to an assembly drawing: this document has no components (insert parts first)"
+    """The things the list and the balloons number: the components of an assembly, or the bodies of a weldment."""
+    found = ctx.assembly if ctx.assembly is not None and ctx.assembly.groups else ctx.weldment
+    if found is None or not found.groups:
+        msg = f"{what} belong to an assembly drawing (or a welded part of several bodies): this document has no components or welded bodies (insert parts, or model the bodies, first)"
         raise ItemError(msg)
-    return ctx.assembly
+    return found
 
 
 def _wrap(text: str, width_mm: float) -> list[str]:
@@ -108,7 +115,7 @@ def rows_of(ctx: Context, spec: dict[str, Any]) -> list[tuple[PartGroup, list[st
         position = assembly.position_of(row["component"])
         if position is None:
             known = ", ".join(assembly.instances())
-            msg = f"{row['component']!r} is not a component of this assembly (its components: {known})"
+            msg = f"{row['component']!r} is not a component or body of this drawing (they are: {known})"
             raise ItemError(msg)
         overrides.setdefault(position, {}).update({k: v for k, v in row.items() if k != "component"})
     out = []
@@ -129,8 +136,11 @@ def draw_parts_list(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         msg = "the sheet has a parts list already: one list per sheet (change its rows with remove and add)"
         raise ItemError(msg)
     rows = rows_of(ctx, spec)
+    welded = ctx.assembly is None and ctx.weldment is not None
+    if welded:  # an empty designation stays visible as a question, never a file or object name
+        rows = [(g, [*cells[:2], cells[2] or UNNAMED[ctx.language], *cells[3:]]) for g, cells in rows]
     widths = COLUMNS_MM
-    header = HEADERS[ctx.language]
+    header = (CUT_HEADERS if welded else HEADERS)[ctx.language]
     right = ctx.sheet.width - FRAME_MARGIN_MM
     left = right - sum(widths)
     bottom = TITLE_BLOCK_TOP_MM
@@ -153,7 +163,12 @@ def draw_parts_list(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     ctx.add(out)
     rect: Rect = (left, bottom, right, top)
     ctx.reserve(rect)
-    ctx.extras["parts_list"] = {"rect": rect, "positions": [g.position for g, _ in rows]}
+    ctx.extras["parts_list"] = {
+        "rect": rect,
+        "positions": [g.position for g, _ in rows],
+        "unnamed": [g.position for g, cells in rows if welded and cells[2] == UNNAMED[ctx.language]],
+        "names": {g.position: cells[2] for g, cells in rows if welded and cells[2] != UNNAMED[ctx.language]},
+    }
     ctx.table_bottom = bottom
     note = f"{len(rows)} position(s), {sum(g.quantity for g, _ in rows)} component(s), above the title block"
     if top > ctx.area[3]:

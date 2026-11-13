@@ -108,6 +108,62 @@ def assembly_info(doc: reg.DocumentRec, language: str) -> sc.Assembly | None:
     return sc.Assembly(list(groups.values()))
 
 
+# --- the bodies of a welded part ---------------------------------------------------------------------------------------
+
+MAX_BODIES_MEASURED = 80
+ANGLE_STEP_DEG = 5
+
+
+def _tight_dims(shape: Any) -> tuple[float, float, float]:
+    """The sides of the smallest box around ``shape`` (longest first). The box along the axes of the document is tried
+    first, then boxes turned about each principal axis of the body, so a tube lying on a slant is measured along itself."""
+
+    def box(s: Any) -> tuple[float, float, float]:
+        try:
+            b = s.optimalBoundingBox(False, False)
+        except Exception:  # noqa: BLE001 - an older FreeCAD has no optimal box
+            b = s.BoundBox
+        return b.XLength, b.YLength, b.ZLength
+
+    best = box(shape)
+    try:
+        props = shape.PrincipalProperties
+        axes = [props["FirstAxisOfInertia"], props["SecondAxisOfInertia"], props["ThirdAxisOfInertia"]]
+    except Exception:  # noqa: BLE001 - no inertia: the axes of the document are all there is
+        axes = []
+    for axis in axes:
+        turn = App.Rotation(axis, V(0, 0, 1))
+        for angle in range(0, 90, ANGLE_STEP_DEG):
+            rotation = App.Rotation(V(0, 0, 1), angle).multiply(turn)
+            moved = shape.copy()
+            moved.Placement = App.Placement(V(0, 0, 0), rotation).multiply(moved.Placement)
+            sides = box(moved)
+            if sides[0] * sides[1] * sides[2] < best[0] * best[1] * best[2] * 0.995:
+                best = sides
+    return tuple(sorted(best, reverse=True))  # type: ignore[return-value]
+
+
+def weldment_info(doc: reg.DocumentRec, language: str) -> sc.Assembly | None:
+    """The cut list of a welded part: its live bodies grouped by what they measure (see ``sheet_weldment``); ``None`` when the
+    document is an assembly or has fewer than two bodies."""
+    import sheet_weldment  # noqa: PLC0415
+
+    if doc.kind == "assembly":
+        return None
+    material = _material(doc.fc_doc)
+    facts = []
+    for body in doc.live_bodies()[:MAX_BODIES_MEASURED]:
+        shape = reg.world_shape(doc, body)
+        if shape.isNull() or not shape.Solids:
+            continue
+        facts.append(
+            sheet_weldment.BodyFact(
+                body.id, shape.Volume, shape.Area, len(shape.Faces), _tight_dims(shape), material
+            )
+        )
+    return sheet_weldment.group_bodies(facts, language)
+
+
 # --- boxes and rays ---------------------------------------------------------------------------------------------------
 
 
@@ -159,13 +215,31 @@ class AssemblyRays:
     doc: reg.DocumentRec
     op: str | None
 
+    def body_boxes(self) -> list[tuple[sc.Vec3, sc.Vec3]]:
+        out = []
+        for body in self.doc.live_bodies():
+            shape = reg.world_shape(self.doc, body)
+            if not shape.isNull():
+                b = shape.BoundBox
+                out.append(((b.XMin, b.YMin, b.ZMin), (b.XMax, b.YMax, b.ZMax)))
+        return out
+
+    def _owner_ids(self) -> list[str]:
+        """What the balloons point at: the components of an assembly, or the live bodies of a welded part."""
+        if self.doc.components:
+            return list(self.doc.components)
+        return [b.id for b in self.doc.live_bodies()]
+
     def _body_units(self, comp_id: str) -> list[_Unit]:
         cache: dict[str, list[_Unit]] = self.__dict__.setdefault("_unit_cache", {})
         if comp_id not in cache:
-            comp = self.doc.components[comp_id]
             units = []
-            for body_id in comp.body_ids:
-                shape = reg.placed_component_body(self.doc, comp, body_id)
+            if comp_id in self.doc.components:
+                comp = self.doc.components[comp_id]
+                shapes = [reg.placed_component_body(self.doc, comp, body_id) for body_id in comp.body_ids]
+            else:  # a body of a welded part
+                shapes = [reg.world_shape(self.doc, self.doc.bodies[comp_id])]
+            for shape in shapes:
                 box = shape.BoundBox
                 units.append(_Unit(comp_id, shape, (box.XMin, box.YMin, box.ZMin), (box.XMax, box.YMax, box.ZMax)))
             cache[comp_id] = units
@@ -272,7 +346,7 @@ class AssemblyRays:
     ) -> dict[str, list[sc.Vec3]]:
         centre, xdir, direction = frame
         ydir = sc.unit(sc.cross(direction, xdir))
-        everyone = list(self.doc.components)
+        everyone = self._owner_ids()
         units: list[_Unit] = []
         for cid in everyone:
             units += self._displaced(cid, offsets.get(cid))
@@ -316,7 +390,7 @@ class AssemblyRays:
         centre, xdir, direction = frame
         ydir = sc.unit(sc.cross(direction, xdir))
         units: list[_Unit] = []
-        for cid in self.doc.components:
+        for cid in self._owner_ids():
             units += self._displaced(cid, offsets.get(cid))
         rects = [_frame_rect(u, centre, xdir, ydir, direction) for u in units]
         full = (centre, xdir, ydir, direction)
