@@ -153,23 +153,3 @@ def test_a_value_that_breaks_the_part_is_rolled_back_and_says_why() -> None:
     assert record.failure
     assert volume(executor) == pytest.approx(before)
     assert executor.plan.operations[0].entities[0].width == 100  # type: ignore[union-attr]
-
-
-def test_a_hole_position_is_set_in_place_and_nothing_runs_again() -> None:
-    executor = run()
-    steps = executor.trace().steps
-    record = executor.edit_in_place(plan(h1={"position": [-20, 10]}), ["h1"], by="agent", reason="moved hole")
-    assert record.status == "applied", record.failure
-    assert record.changes == {"h1": ("position",)}
-    assert executor.trace().steps == steps and executor.trace().reverts == ()
-    assert volume(executor) == pytest.approx(fresh_volume(h1={"position": [-20, 10]}))
-    assert executor.plan.operations[2].position == (-20, 10)  # type: ignore[union-attr]
-
-
-def test_a_hole_moved_off_the_plate_is_not_applied_and_the_plan_keeps_its_position() -> None:
-    executor = run()
-    before = volume(executor)
-    record = executor.edit_in_place(plan(h1={"position": [-300, 10]}), ["h1"], by="agent", reason="off the plate")
-    assert record.status != "applied"
-    assert executor.plan.operations[2].position == (-30, -20)  # type: ignore[union-attr]
-    assert volume(executor) == pytest.approx(before)

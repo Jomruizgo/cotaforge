@@ -2362,6 +2362,9 @@ def _compose_pass(
             if _is_assembly(doc, spec.get("body"))
             else sheet_facts.collect(doc, _bodies(doc, spec.get("body"), op))
         )
+        cache["weldment"] = (
+            drawing_assembly.weldment_info(doc, language) if spec.get("body") is None and not _is_assembly(doc, None) else None
+        )
         cache["views"] = {} if hlr else view_infos(page)
         cache["view_entities"] = [] if hlr else view_entities(page)
     geometry = cache["geometry"]
@@ -2382,7 +2385,7 @@ def _compose_pass(
             hlr_views = sheet_hlr.compose_views(geometry, spec["hlr"])
         except sc.ItemError as exc:
             raise error("geometry_failed", f"the part could not be projected: {exc}", op) from exc
-        sheet_hlr.apply(ctx, hlr_views, _is_assembly(doc, spec.get("body")))
+        sheet_hlr.apply(ctx, hlr_views, _is_assembly(doc, spec.get("body")) or cache["weldment"] is not None)
     else:
         ctx.extras["view_boxes"] = view_rects(page)
     ctx.extras["main_scale"] = scale
@@ -2404,8 +2407,9 @@ def _compose_pass(
     ctx.extras["symmetry"] = cache["symmetry"] if declared else {}  # the planes the design says it is symmetric across
     if cache["model_box"] is not None and not _is_assembly(doc, spec.get("body")):
         ctx.extras["model_box"] = cache["model_box"]  # the silhouette a position is counted from (see items_datum)
-    if _is_assembly(doc, spec.get("body")):
-        ctx.assembly = drawing_assembly.assembly_info(doc, language)
+    ctx.weldment = cache["weldment"]
+    if _is_assembly(doc, spec.get("body")) or ctx.weldment is not None:
+        ctx.assembly = drawing_assembly.assembly_info(doc, language) if ctx.weldment is None else None
         iso = None if hlr else iso_info(page)
         if iso is not None:
             ctx.extras["views_extra"] = {"isometric": iso}
@@ -2699,7 +2703,7 @@ def review_report(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """The review of one sheet: (findings, questions of judgement), each with the id an answer names and the answer the
     sheet holds for it (``None``: pending)."""
-    findings, questions, _, _ = review_bundle(doc, page, spec, number, total, op, with_facts=False)
+    findings, questions, _ = review_bundle(doc, page, spec, number, total, op, with_facts=False)
     return findings, questions
 
 
@@ -2722,8 +2726,7 @@ def review_bundle(
         {"id": q.id, "text": q.text, "answer": answers.get(q.id)} for q in sheet_checks.judgement(_last_input(ctx))
     ]
     facts = sheet_reqfacts.facts(_last_input(ctx)) if with_facts else {}
-    given = sheet_reqfacts.measures(_last_input(ctx)) if with_facts else {}
-    return findings, questions, facts, given
+    return findings, questions, facts
 
 
 def _last_input(ctx: sc.Context) -> sheet_review.ReviewInput:
@@ -2862,8 +2865,7 @@ def describe(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         row["printed"] = _printed(composed)
         row["native"] = sheet_output.listed(sheet_output.native_rows(page))
         if params.get("review"):
-            row["findings"], row["questions"], row["facts"], given = review_bundle(doc, page, spec, number, total, op)
-            row.update(given)
+            row["findings"], row["questions"], row["facts"] = review_bundle(doc, page, spec, number, total, op)
         sheets.append(row)
     return {"sheets": sheets}
 

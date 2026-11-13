@@ -226,16 +226,6 @@ def frame_for_face(face: "FaceInfo", origin: Vec3 | None = None) -> SketchFrame:
     return frame_for_normal(slide_onto_face(origin, face), face.normal)
 
 
-def stable_face_origin(face: "FaceInfo") -> Vec3:
-    """The origin a hole's ``(u, v)`` is measured from: the centre of the bounding box of the planar face, in its plane.
-    Unlike the centre of mass (``face.center``) it does not move when holes are drilled in the face, so the second hole
-    of a pattern is measured from the same point as the first."""
-    assert face.normal is not None
-    n = _normalise(face.normal)
-    centre = face.bbox.center()
-    return _add(centre, _scale(n, _dot(_sub(face.center, centre), n)))
-
-
 def slide_onto_face(point: Vec3, face: "FaceInfo") -> Vec3:
     """``point`` moved along the normal of the planar ``face`` onto its plane (what keeps a feature on the face when
     the face moves across its plane, a plate made thicker)."""

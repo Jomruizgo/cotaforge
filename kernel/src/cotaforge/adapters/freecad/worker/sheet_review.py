@@ -23,6 +23,7 @@ import sheet_checks
 import sheet_interface
 import sheet_isoview
 import sheet_thread
+import sheet_weldrules
 from items_assembly import rows_of
 from items_dims import AXES, _along, coordinate, resolve_ref
 from items_holes import _declared_thread as items_holes_declared
@@ -86,6 +87,7 @@ def review(data: ReviewInput) -> list[Finding]:
         _collisions,
         _layout,
         _assembly_lists,
+        _weldment_lists,
         _assembly_holes,
         _assembly_joints,
         _hidden_instances,
@@ -926,6 +928,61 @@ def _assembly_holes(data: ReviewInput) -> list[Finding]:
             "item draw them; or dimension it with dim distance from an edge of the plate.",
         )
         out.append(Finding("hole_not_located", "warning", text, (), (), key))
+    return out
+
+
+def _weldment_lists(data: ReviewInput) -> list[Finding]:
+    """The sheet of a welded part carries its cut list and a balloon per body, numbered as the list (``sheet_weldrules``), and
+    every position has the designation (profile and size) the designer gave: the harness never guesses it."""
+    ctx = data.ctx
+    if ctx.weldment is None:
+        return []
+    lists = _of(data, "parts_list")
+    balloons = _of(data, "balloons")
+    list_ids = tuple(i["id"] for i in lists)
+    balloon_ids = tuple(i["id"] for i in balloons)
+    listed = frozenset(str(n) for n in ctx.extras.get("parts_list", {}).get("positions", []))
+    drawn = frozenset(str(n) for n in ctx.extras.get("balloons", {}).get("drawn", set()))
+    sheet = sheet_weldrules.WeldSheet(True, listed, drawn if balloons else frozenset())
+    names = {str(g.position): g for g in ctx.weldment.groups}
+    out: list[Finding] = []
+    for found in sheet_weldrules.weld_documentation(sheet):
+        shown = ", ".join(f"{n} ({names[n].instances[0]})" if n in names else n for n in found.numbers)
+        if found.code == "weld_list_missing":
+            text = ctx.say(
+                'El plano de la pieza soldada no lleva lista de corte: añade {"type":"parts_list"} (una fila por pieza '
+                'distinta, con su cantidad, designación y longitud) y {"type":"balloons"}.',
+                'The sheet of the welded part has no cut list: add {"type":"parts_list"} (one row per distinct piece, with '
+                'quantity, designation and length) and {"type":"balloons"}.',
+            )
+            out.append(Finding("weld_list_missing", "warning", text, balloon_ids))
+        elif found.code == "item_without_balloon":
+            text = ctx.say(
+                f"Cuerpos de la lista de corte sin globo en el plano: posiciones {shown}. Cada cuerpo lleva su globo "
+                "(balloons, en la vista donde se ve).",
+                f"Bodies of the cut list with no balloon on the sheet: positions {shown}. Every body has its balloon "
+                "(balloons, on the view that shows it).",
+            )
+            out.append(Finding("item_without_balloon", "warning", text, (*list_ids, *balloon_ids)))
+        else:
+            text = ctx.say(
+                f"Globos sin fila en la lista de corte: {', '.join(found.numbers)}.",
+                f"Balloons with no row in the cut list: {', '.join(found.numbers)}.",
+            )
+            out.append(Finding("balloon_not_in_list", "warning", text, (*list_ids, *balloon_ids)))
+    unnamed = [names[str(n)] for n in ctx.extras.get("parts_list", {}).get("unnamed", []) if str(n) in names]
+    if unnamed:
+        shown = ", ".join(f"{g.position} ({g.instances[0]}: {g.reference})" for g in unnamed)
+        first = unnamed[0]
+        text = ctx.say(
+            f"Cuerpos sin designación en la lista de corte: {shown}. Pregunta al diseñador qué es cada uno (perfil y medida, "
+            "p. ej. tubo 40x40x3, pletina 50x6, o chapa de espesor y material) y escríbelo; nunca el nombre del objeto. "
+            f'En la lista: rows=[{{"component": "{first.instances[0]}", "name": "<designación>"}}].',
+            f"Bodies with no designation in the cut list: {shown}. Ask the designer what each one is (profile and size, e.g. "
+            "tube 40x40x3, flat bar 50x6, or plate thickness and material) and write it; never the object name. "
+            f'In the list: rows=[{{"component": "{first.instances[0]}", "name": "<designation>"}}].',
+        )
+        out.append(Finding("weld_body_unnamed", "warning", text, list_ids))
     return out
 
 

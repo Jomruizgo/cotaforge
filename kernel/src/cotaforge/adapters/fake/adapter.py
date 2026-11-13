@@ -832,54 +832,49 @@ class FakeAdapter(Adapter):
                 request.operation_id,
             )
         frame = frame_for_face(self._face_info(doc, face, None), request.origin)
-        points = [frame.to_world(*p) for p in (request.positions or (request.position,))]
+        origin = frame.to_world(*request.position)
         direction = vscale(face.normal, -1.0)
         radius = request.diameter_mm / 2.0
         through = request.end_condition is EndCondition.through_all
-        for origin in points:
-            if circle_within_face(face, origin, radius):
-                continue
+        if not circle_within_face(face, origin, radius):
             # The analytic bookkeeping would subtract a full cylinder wherever the hole lands; a footprint
             # that leaves the face is a wrong position (frame or selector), not material to drill.
             raise self._error(
                 ErrorCode.geometry_failed,
                 f"hole footprint (centre {_fmt_vec(origin)}, radius {radius:g} mm) is not fully inside face "
                 f"{face.id} (centre {_fmt_vec(face.center)}, bbox {_fmt_vec(face.bbox.min)}-"
-                f"{_fmt_vec(face.bbox.max)}); position is (u, v) from the centre of the face's bounding box",
+                f"{_fmt_vec(face.bbox.max)}); position is (u, v) from the face centre in its local frame",
                 request,
             )
 
         def build(feature: FakeFeature) -> None:
             b = Build(doc, feature, face.body)
-            for origin in points:
-                if through:
-                    _, length = axial_range_from(doc, face.body, origin, direction)
-                else:
-                    assert request.depth_mm is not None
-                    length = request.depth_mm
-                if length <= 1e-9:
-                    raise self._error(ErrorCode.geometry_failed, "hole finds no material", request, recoverable=True)
-                exit_face = (
-                    find_planar_face(
-                        doc, face.body, vadd(origin, vscale(direction, length)), direction, exclude={face.id}
-                    )
-                    if through
-                    else None
-                )
-                build_cylinder(
-                    b,
-                    origin,
-                    direction,
-                    radius,
-                    length,
-                    -1,
-                    blind=not through,
-                    entry_face=face.id,
-                    exit_face=exit_face.id if exit_face else None,
-                )
-                b.modify_face_area(face.id, -math.pi * radius * radius)
-                if exit_face is not None:
-                    b.modify_face_area(exit_face.id, -math.pi * radius * radius)
+            if through:
+                _, length = axial_range_from(doc, face.body, origin, direction)
+            else:
+                assert request.depth_mm is not None
+                length = request.depth_mm
+            if length <= 1e-9:
+                raise self._error(ErrorCode.geometry_failed, "hole finds no material", request, recoverable=True)
+            exit_face = (
+                find_planar_face(doc, face.body, vadd(origin, vscale(direction, length)), direction, exclude={face.id})
+                if through
+                else None
+            )
+            build_cylinder(
+                b,
+                origin,
+                direction,
+                radius,
+                length,
+                -1,
+                blind=not through,
+                entry_face=face.id,
+                exit_face=exit_face.id if exit_face else None,
+            )
+            b.modify_face_area(face.id, -math.pi * radius * radius)
+            if exit_face is not None:
+                b.modify_face_area(exit_face.id, -math.pi * radius * radius)
 
         return self._construct(doc, "hole", request, build).model_copy(update={"place": frame})
 

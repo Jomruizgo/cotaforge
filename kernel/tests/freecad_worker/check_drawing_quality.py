@@ -50,7 +50,7 @@ def check_the_default_location_counts_from_the_symmetry_and_from_the_declared_da
     from check_drawing_live import side_face  # noqa: PLC0415
 
     base = build_part()  # symmetric across x = 50 (one plane), not across y
-    made = call("create_drawing", op("d", template="A3", views=["front", "top", "iso"], symmetry=True))  # intent, not shape
+    made = call("create_drawing", op("d", template="A3", views=["front", "top", "iso"]))
     loc = next(i for i in made["items"] if i["id"] == "loc")
     assert loc["status"] == "warning" and "Ask the engineer which face or edge" in loc["detail"], loc
     add(*_holes())
@@ -93,14 +93,14 @@ def check_the_default_location_leaves_the_holes_an_explicit_dimension_locates() 
 
 def check_a_plate_is_drawn_in_one_view_with_its_thickness_as_a_note() -> None:
     build_part()
-    made = call("create_drawing", op("d", template="A3", views=["top"], symmetry=True))  # intent, not shape
+    made = call("create_drawing", op("d", template="A3", views=["top"]))
     assert made["views"] == ["top"], made["views"]
     assert _metrics()["views"] == ["top"]
     add(*_holes(), {"type": "note", "id": "n1", "text": "Fabricar de lámina rectificada"})
     texts = _metrics()["texts"]
     assert "1. 19 de espesor" in texts, [t for t in texts if t[:1].isdigit() and "." in t[:3]]
     assert any(t.startswith("2. Fabricar") for t in texts)
-    assert not any("ISO 286" in t for t in texts), "no note asks the shop to verify the ISO 286 tables (d61dd3c)"
+    assert any("ISO 286" in t and t.startswith("3. ") for t in texts), "the footnote goes in the numbered block"
     assert not [f for f in _findings() if f["code"] in ("hole_not_located", "collision", "view_adds_nothing")], (
         _findings()
     )

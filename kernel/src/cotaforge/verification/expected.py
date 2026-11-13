@@ -339,10 +339,6 @@ def forget_geometry_in(state: dict[str, Any]) -> None:
             regions[key] = None
 
 
-SUMMED_HOLE_ROWS = frozenset({"volume_delta", "new_faces_count", CUT_AREA, "cut_volume_bound"})
-"""The rows of one hole that add up over the holes of one feature (the section they cut, the faces they create...)."""
-
-
 class ExpectedComputer:
     def __init__(self, thresholds: Thresholds) -> None:
         self.thresholds = thresholds
@@ -1466,47 +1462,10 @@ class ExpectedComputer:
             out = self._radial_hole(op, request.position, face, before, adapter)
         elif face.normal is None:
             return [_exp("volume_delta", "mm3", 0.0, asserted=False, note="hole face is not planar")]
-        elif getattr(request, "positions", None):
-            out = self._several_holes(op, request, face, before, adapter)
         else:
             out = self._planar_hole(op, request, face, before, adapter)
         out.extend(self._thread_rows(request))
         return out
-
-    def _several_holes(
-        self, op: Any, request: Any, face: FaceInfo, before: StateSnapshot, adapter: Adapter
-    ) -> list[Expectation]:
-        """Several holes of one kind in one feature: each is judged as a hole of its own against the part before the op
-        (they do not overlap: the IR keeps them a diameter apart); the volume and the faces created add up, every hole
-        has its own axis row, and the rows that do not depend on the point (direction, radius, footprint, entry face,
-        boxes) are the first hole's and are checked for every hole by the evaluator."""
-        merged: list[Expectation] = []
-        regions: list[BoundingBox] = []
-        for index, point in enumerate(request.positions):
-            one = request.model_copy(update={"position": point, "positions": None})
-            rows = self._planar_hole(op, one, face, before, adapter)
-            if self._region is not None:
-                regions.append(self._region)
-            if index == 0:
-                merged = list(rows)
-                continue
-            for row in rows:
-                if row.name in SUMMED_HOLE_ROWS:
-                    at = next(i for i, m in enumerate(merged) if m.name == row.name)
-                    kind = merged[at].kind if row.kind is merged[at].kind else CheckKind.reported
-                    merged[at] = merged[at].model_copy(update={"value": merged[at].value + row.value, "kind": kind})
-                elif row.name == "hole_axis_position":
-                    merged.append(row)
-        if regions:
-            self._region = _union_boxes(regions)
-        count = len(request.positions)
-        merged.append(_exp("hole_count", "count", count, note="holes of the one feature"))
-        return [
-            m.model_copy(update={"note": f"{m.note} ({count} holes added up)".strip()})
-            if m.name in SUMMED_HOLE_ROWS
-            else m
-            for m in merged
-        ]
 
     def _thread_rows(self, request: Any) -> list[Expectation]:
         """The cosmetic thread of a tapped hole is metadata: nothing in the geometry (the hole is the plain tap-drill
@@ -1648,7 +1607,6 @@ class ExpectedComputer:
             hole=HoleTool(
                 face=request.face,
                 position=position,
-                origin=request.origin,
                 outline=holetool.hole_outline(
                     op.diameter_mm, probe_length, counterbore=cbore, countersink=csink, point_angle_deg=tip
                 ),
@@ -1680,7 +1638,6 @@ class ExpectedComputer:
                         hole=HoleTool(
                             face=request.face,
                             position=position,
-                            origin=request.origin,
                             outline=holetool.hole_outline(op.diameter_mm, length, counterbore=cbore, countersink=csink),
                         ),
                     ),

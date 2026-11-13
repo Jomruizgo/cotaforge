@@ -24,14 +24,13 @@ what the intent file of the part declares (``intent.<row id>``, read here). A CA
 
 import re
 import unicodedata
-from collections.abc import Collection, Sequence
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from cotaforge.language import say
 
-from cotaforge_mcp import functional_dimensions as functional
 from cotaforge_mcp.measured_alerts import MEASURED_FACT
 
 PREFIX = "req."
@@ -81,9 +80,6 @@ class Row:
     """Sections of the intent file that can declare this row."""
     intent_pattern: str = ""
     """What in those sections declares it; a hit also makes the row measured (the designer said so)."""
-    functional: bool = False
-    """The row is the functional dimensions of the intent file (``functional_dimensions``): it is active on every sheet, a
-    decision when the intent declares none, and met when the sheet gives each declared one directly."""
     clause: str = ""
     """The clause or table of ``standard`` this comes from, ONLY when it was checked against the text of the standard."""
     auto: str = ""
@@ -479,7 +475,7 @@ ROWS: tuple[Row, ...] = (
             "Which parts make up the assembly, with which drawing number or reference and quantity?",
         ),
         proposal=("una fila por pieza distinta, con su cantidad", "one row per distinct part, with its quantity"),
-        triggers=("assembly", "weld_items"),
+        triggers=("assembly", "weld_items", "weldment"),
         needs=(
             _n("parts_lists", "una lista de piezas", "a parts list"),
             _n("balloons", "globos", "balloons"),
@@ -494,8 +490,12 @@ ROWS: tuple[Row, ...] = (
             "instance_hidden",
             "balloons_off_isometric",
             "balloon_part_hidden",
+            "weld_list_missing",
+            "item_without_balloon",
+            "balloon_not_in_list",
+            "weld_body_unnamed",
         ),
-        measured=("assembly", "weld_items"),
+        measured=("assembly", "weld_items", "weldment"),
     ),
     Row(
         id="req.quantity_process",
@@ -518,26 +518,6 @@ ROWS: tuple[Row, ...] = (
         ),
         intent=("process",),
         intent_pattern=r"cantidad|quantity|\bqty\b|\d+\s*(?:pzas?|pcs|uds?|unidades|piezas)",
-    ),
-    Row(
-        id="req.functional_dimensions",
-        functional=True,
-        title=("Cotas funcionales", "Functional dimensions"),
-        must=(
-            "cada medida de la que depende la función (la holgura entre dos placas, la longitud del separador, los diámetros de un ajuste) va en la hoja directamente, entre los dos rasgos que la definen y con su tolerancia o ajuste, nunca como resultado de una cadena; en un conjunto puede estar en el plano de detalle de la pieza si su fila de la lista de piezas cita ese plano",
-            "every measure the function depends on (the gap between two plates, the spacer length, the diameters of a fit) is on the sheet directly, between the two features that define it and with its tolerance or fit, never as the result of a chain; in an assembly it may be on the detail sheet of the part if that part's row of the parts list cites that sheet",
-        ),
-        standard="ISO 129-1",
-        question=(
-            "¿De qué medidas depende la función (holguras, distancias entre caras, diámetros de ajuste) y con qué valor y tolerancia? Se anotan en la sección de relaciones funcionales del archivo de intención.",
-            "Which measures does the function depend on (gaps, distances between faces, fit diameters) and with which value and tolerance? They are written in the functional relations section of the intent file.",
-        ),
-        proposal=(
-            "las medidas que fijan cómo acopla o se separa cada pieza, cada una con su valor; si ninguna es funcional, «no aplica: todas libres» con las palabras del ingeniero",
-            "the measures that fix how each part couples or stands apart, each with its value; if none is functional, 'does not apply: all free' with the engineer's words",
-        ),
-        intent=functional.SECTIONS,
-        intent_pattern=functional.MARKER,
     ),
     Row(
         id=MEASURED_ROW,
@@ -618,6 +598,10 @@ MEASURED_FINDINGS = frozenset(
         "parts_list_over_view",
         "instance_hidden",
         "balloon_part_hidden",
+        "weld_list_missing",
+        "item_without_balloon",
+        "balloon_not_in_list",
+        "weld_body_unnamed",
         "view_adds_nothing",
         "sheet_underused",
         "part_unnamed",
@@ -802,8 +786,6 @@ def evaluate(
     intent: Intent,
     item_ids: Collection[str] = (),
     details: dict[str, tuple[str, ...]] | None = None,
-    measures: Sequence[Any] = (),
-    components: Sequence[Any] = (),
 ) -> list[Requirement]:
     """The rows that apply to this sheet, in table order, each with its state. ``facts`` empty (the CAD reports none): no
     rows. ``findings`` are the review's, ``answers`` the sheet's by id; ``details`` what the server measured, by row id.
@@ -838,13 +820,6 @@ def evaluate(
         lacking = [n.en for n in row.needs if merged.get(n.fact, 0) <= 0]
         lacking += [f"{merged[n.fact]} {n.en}" for n in row.lacks if merged.get(n.fact, 0) > 0]
         state = MISSING if open_codes or lacking else MET if (row.needs or row.lacks or row.codes) else NEEDS_ANSWER
-        if row.functional:
-            items = functional.declared(intent.text(row.intent))
-            lacking = functional.problems(items, measures, components)
-            state = MISSING if lacking else MET if items else NEEDS_ANSWER
-            measured = bool(items)
-            if items:
-                why = "the intent file declares it"
         answer = answers.get(row.id)
         counts = answer_counts(answer, measured)
         if row.model_only:  # no answer closes it, not even "met" or an order: the model is fixed, or the order is in memory

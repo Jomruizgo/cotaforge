@@ -121,18 +121,6 @@ def _sketch_tool(doc: reg.DocumentRec, params: dict[str, Any], op: str) -> tuple
     return tool_volume, common_volume, host
 
 
-def _hole_origin(spec: dict[str, Any], desc: dict[str, Any]) -> g.Vec3:
-    """Where the hole's ``position`` is measured from: the request's origin slid onto the plane of the face, else the
-    centre of the face (see ``ops_features._origin_on``)."""
-    centre = tuple(desc["center"])
-    wanted = spec.get("origin")
-    if wanted is None:
-        return centre
-    n = g.unit(tuple(desc["normal"]))
-    point = g.vec(wanted)
-    return g.add(point, g.scale(n, g.dot(g.sub(centre, point), n)))
-
-
 def _hole_tool(doc: reg.DocumentRec, params: dict[str, Any], op: str) -> tuple[float, float, Any]:
     spec = params["hole"]
     face_id = reg.handle_id(spec["face"], op, "hole.face")
@@ -142,7 +130,7 @@ def _hole_tool(doc: reg.DocumentRec, params: dict[str, Any], op: str) -> tuple[f
     desc = face_descriptor(doc, rec, comp)
     if desc["normal"] is None:
         raise not_supported("tool_overlap measures holes on planar faces only", op)
-    frame = g.frame_for_face(_hole_origin(spec, desc), tuple(desc["normal"]))
+    frame = g.frame_for_face(tuple(desc["center"]), tuple(desc["normal"]))
     drill = g.scale(tuple(desc["normal"]), -1.0)
     entry = g.frame_to_world(frame, float(spec["position"][0]), float(spec["position"][1]))
     outline = [(float(t), float(r)) for t, r in spec["outline"]]

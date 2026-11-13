@@ -190,7 +190,10 @@ def check_every_item_shows_on_the_page_when_it_is_added_and_the_page_matches_the
             seen.add(key)
             if key == "tbl":
                 seen.discard("loc")  # the table locates every hole: the default location has nothing left to draw
-            assert keys() - {"threads", "iso286"} == seen, (keys(), seen)
+            assert keys() - {"threads", "iso286", "n286"} == seen, (
+                keys(),
+                seen,
+            )  # n286: the ISO 286 note, in the notes block
             assert result["window"] != "unchanged", result["window"]
         problems = drawing.compare_window(_rec(), None, "check")
         assert problems == [], problems
@@ -201,6 +204,7 @@ def check_every_item_shows_on_the_page_when_it_is_added_and_the_page_matches_the
         "clear": "DrawViewDimension",
         "tap": "DrawViewDimension",
         "n1": "DrawViewAnnotation",
+        "n286": "DrawViewAnnotation",  # the ISO 286 note in the notes block
     }
     for row in drawing.page_objects(_page()):
         assert row[1] == native.get(row[3], "DrawViewSymbol") or row[3] in native and row[1] == "DrawViewSymbol", row

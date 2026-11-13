@@ -441,6 +441,7 @@ class Context:
     warnings: list[str] = field(default_factory=list)
     extras: dict[str, Any] = field(default_factory=dict)
     assembly: Assembly | None = None
+    weldment: Assembly | None = None  # the bodies of a welded part grouped like the parts of an assembly (instances are body ids)
     threads: list[ThreadInfo] = field(default_factory=list)  # the cosmetic external threads of the part
 
     @property

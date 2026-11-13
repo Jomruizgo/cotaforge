@@ -146,8 +146,7 @@ async def test_a_plate_lists_its_rows_and_the_symmetry_is_a_reference_only_when_
         )
         after = await cad.ok("drawing", action="requirements")
         out.say("requirements after the notes", after)
-        assert not [row for row, state in rows_of(after).items() if state not in ("met", "added automatically") and row != "req.functional_dimensions"]
-        assert rows_of(after)["req.functional_dimensions"] == "NEEDS AN ANSWER"  # the intent declares no functional dimension: asked
+        assert not [state for state in rows_of(after).values() if state not in ("met", "added automatically")]
         await finish_drawing(cad)
         exported = await cad.ok("export", action="pdf", path="placa.pdf")
         out.say("export", exported)

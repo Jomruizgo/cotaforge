@@ -288,8 +288,6 @@ def sheet_requirements(session: Session, sheet: DrawingSheetInfo) -> list[reqs.R
         intent,
         {item.id for item in sheet.items},
         {reqs.MEASURED_ROW: tuple(firing)},
-        sheet.measures,
-        sheet.components,
     )
 
 

@@ -86,8 +86,7 @@ def _rebuild(executor: Executor, hold: list[str]) -> None:
 def test_the_first_build_measures_from_the_centre_of_the_face() -> None:
     executor = _started()
     ctx, _ = executor._require_started()  # noqa: SLF001
-    assert _request(executor, "h1")["origin"] == pytest.approx([50.0, 30.0, 8.0])  # the centre of the face's box
-    assert _request(executor, "pk")["origin"] is None
+    assert _request(executor, "h1")["origin"] is None and _request(executor, "pk")["origin"] is None
     assert ctx.place_by_op["h1"].origin == pytest.approx((50.0, 30.0, 8.0))
     assert ctx.place_by_op["pk"].origin == pytest.approx((50.0, 30.0, 8.0))
 
@@ -110,7 +109,7 @@ def test_what_is_not_held_is_built_from_the_centre_of_the_face_again() -> None:
     executor = _started()
     _moved(executor, "h1", (1.5, -0.5, 0.0))
     _rebuild(executor, ["pk"])
-    assert _request(executor, "h1")["origin"] == pytest.approx([50.0, 30.0, 8.0])
+    assert _request(executor, "h1")["origin"] is None
     assert executor.release_places() == {}
 
 
@@ -128,8 +127,7 @@ def test_a_place_on_another_face_is_not_kept_and_the_distance_is_reported() -> N
     held = ctx.place_by_op["h1"]
     ctx.place_by_op["h1"] = SketchFrame(origin=(52.0, 30.0, 8.0), u=held.u, v=held.v, n=(0.0, 1.0, 0.0))
     _rebuild(executor, ["h1"])
-    # the face now has another orientation: only it can say (the centre of its box, not the place it had)
-    assert _request(executor, "h1")["origin"] == pytest.approx([50.0, 30.0, 8.0])
+    assert _request(executor, "h1")["origin"] is None  # the face now has another orientation: only it can say
     moved = executor.release_places()
     assert set(moved) == {"h1"} and math.isclose(moved["h1"], 2.0)
 

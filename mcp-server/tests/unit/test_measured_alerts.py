@@ -227,7 +227,6 @@ def _answer_the_rest(call: Caller) -> None:
         call.ok("drawing", action="answer", id=entry.id, text="applies: this sheet follows it as drawn")
     call.ok("drawing", action="answer", id="req.surface_texture", text="met: Ra 3,2 general en el rótulo")
     call.ok("drawing", action="answer", id="req.quantity_process", text="met: nota 3, cantidad 10 piezas, fresado")
-    call.ok("drawing", action="answer", id="req.functional_dimensions", text="no aplica: ninguna medida es funcional, todas libres")
 
 
 def test_a_drawing_of_a_part_with_an_open_violation_is_not_exported(settings: Settings) -> None:

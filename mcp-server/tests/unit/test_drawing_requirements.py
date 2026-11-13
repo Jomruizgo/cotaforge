@@ -247,7 +247,6 @@ def test_the_export_is_refused_while_an_active_row_is_open_and_goes_through_when
     still = call.err("export", action="pdf")
     assert "req.quantity_process" in still and "req.surface_texture" not in still
     call.ok("drawing", action="answer", id="req.quantity_process", text="met: nota 3, cantidad 10 piezas, corte láser")
-    call.ok("drawing", action="answer", id="req.functional_dimensions", text="no aplica: ninguna medida es funcional, todas libres")
     assert "exported pdf" in call.ok("export", action="pdf")
     assert fake.exported
 
@@ -318,7 +317,6 @@ def test_the_findings_a_row_takes_in_are_listed_under_it_and_closed_with_it(sett
     call.ok("drawing", action="answer", id="req.edge_state", text="met: nota 2 de la hoja")
     call.ok("drawing", action="answer", id="req.coating", text="no aplica: se entrega sin recubrimiento, lo dice el cliente")
     call.ok("drawing", action="answer", id="req.dimensions", text="met: todas las posiciones en datum_dims")
-    call.ok("drawing", action="answer", id="req.functional_dimensions", text="no aplica: ninguna medida es funcional, todas libres")
     for row_id in ("req.heat_treatment", "req.marking"):
         call.ok("drawing", action="answer", id=row_id, text="no aplica: el cliente no lo pide en este plano")
     review = call.ok("drawing", action="review")

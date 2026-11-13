@@ -282,8 +282,7 @@ ASSEMBLY_STEPS = (
     'op(name="insert_component", id="<instance>", params={"part": "<part name>", "placement": {"origin": [x,y,z]}}) '
     "makes one instance; insert the same part again for a second one. The part must be saved; the assembly is saved "
     "with its first insert (the links name files relative to it). A saved part that is not open needs no opening: "
-    "part = its saved file (the part name with the native extension of the CAD software) loads it for the insert "
-    "with no window.",
+    'part = its file ("bracket.FCStd") loads it for the insert with no window.',
     'Move an instance: op(name="place_component", params={"component": "<instance>", "placement": {...}}) (absolute '
     "pose). Mates (mate_concentric / mate_coincident / mate_distance) move the instance that owns face b; "
     "fix_component pins one.",

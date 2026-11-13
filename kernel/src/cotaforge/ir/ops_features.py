@@ -5,7 +5,6 @@ primitives imported from ``ops_primitives`` plus the feature, pattern and assemb
 ops defined here. ``OP_NAMES`` is the set of all their ``op`` names.
 """
 
-import math
 from typing import Annotated, Any, Literal
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -301,44 +300,14 @@ class Countersink(IRModel):
     """Included angle of the cone (FreeCAD's default: 90)."""
 
 
-class BoltCircle(IRModel):
-    """``count`` holes equally spaced on a circle of ``diameter_mm`` (the pitch circle diameter), in the face frame."""
-
-    diameter_mm: float = Field(gt=0)
-    count: int = Field(ge=2, le=64)
-    center: tuple[float, float] = (0.0, 0.0)
-    """(u, v) of the circle centre, from the same origin as ``position``."""
-    start_angle_deg: float = 0.0
-    """Angle of the first hole, from the face's +u axis towards +v."""
-
-    def points(self) -> tuple[tuple[float, float], ...]:
-        radius = self.diameter_mm / 2.0
-        return tuple(
-            (
-                self.center[0] + radius * math.cos(math.radians(self.start_angle_deg + 360.0 * i / self.count)),
-                self.center[1] + radius * math.sin(math.radians(self.start_angle_deg + 360.0 * i / self.count)),
-            )
-            for i in range(self.count)
-        )
-
-
 class HoleOperation(OperationBase):
     model_config = ConfigDict(json_schema_extra=_hole_schema)
 
     op: Literal["hole"] = "hole"
     face: FaceRef
     position: tuple[float, float] | None = None
-    """(u, v) in the face frame, from the CENTRE OF THE FACE'S BOUNDING BOX (not its centre of mass: that one moves when
-    holes are drilled in the face, the box centre does not), so every hole of a face is measured from the same point.
-    On a face that is not a rectangle (an L, a disc with a notch) that point can lie outside the material: it is only
-    the reference, so give the (u, v) from it (a convex cylindrical face: axial_mm, angle_deg). Exactly one of ``position``, ``positions``, ``bolt_circle`` and
-    ``at``."""
-    positions: tuple[tuple[float, float], ...] | None = None
-    """Several holes of the same kind in ONE feature, each (u, v) as ``position`` (planar face; at least 2, no two
-    closer than one diameter). A rectangular pattern is its four corners."""
-    bolt_circle: BoltCircle | None = None
-    """Holes equally spaced on a circle (pitch circle diameter, count, centre, start angle) in one feature. Planar
-    face only."""
+    """(u, v) from the face centre in the face frame (a convex cylindrical face: axial_mm, angle_deg). Exactly one of
+    ``position`` and ``at``."""
     at: Vec3 | None = None
     """A world point (mm) instead of ``position``: it is projected onto the planar ``face`` along its normal and must
     land inside the face (its bounding box); the hole is stored as this world point."""
@@ -406,50 +375,11 @@ class HoleOperation(OperationBase):
 
     @model_validator(mode="after")
     def _check_position_xor_at(self) -> "HoleOperation":
-        given = [
-            name
-            for name, value in (
-                ("position", self.position),
-                ("positions", self.positions),
-                ("bolt_circle", self.bolt_circle),
-                ("at", self.at),
-            )
-            if value is not None
-        ]
-        if len(given) != 1:
+        if (self.position is None) == (self.at is None):
             msg = (
-                "hole needs exactly one of position ((u, v) from the centre of the face's bounding box), positions "
-                "(a list of them), bolt_circle and at (a world point [x, y, z] mm), "
-                + (f"got {' and '.join(given)}" if given else "got neither")
+                "hole needs exactly one of position ((u, v) from the face centre) and at (a world point [x, y, z] mm), "
+                + ("got both" if self.position is not None else "got neither")
             )
-            raise ValueError(msg)
-        return self
-
-    def points(self) -> tuple[tuple[float, float], ...] | None:
-        """Every (u, v) of a multi-hole op (``positions`` or ``bolt_circle``), ``None`` for one hole."""
-        if self.positions is not None:
-            return self.positions
-        return self.bolt_circle.points() if self.bolt_circle is not None else None
-
-    @model_validator(mode="after")
-    def _check_several_points(self) -> "HoleOperation":
-        points = self.points()
-        if points is None:
-            return self
-        if len(points) < 2:
-            msg = "positions needs at least 2 points (one hole is position)"
-            raise ValueError(msg)
-        wide = max([self.diameter_mm, *(w.diameter_mm for w in (self.counterbore, self.countersink) if w is not None)])
-        for i, a in enumerate(points):
-            for b in points[i + 1 :]:
-                if math.dist(a, b) < wide - 1e-9:
-                    msg = (
-                        f"two of the holes are {math.dist(a, b):.3f} mm apart, closer than their widest diameter "
-                        f"({wide:g} mm): they would merge"
-                    )
-                    raise ValueError(msg)
-        if self.end_condition == EndCondition.up_to_face:
-            msg = "several holes in one op take through_all or blind, not up_to_face (one hole per face distance)"
             raise ValueError(msg)
         return self
 

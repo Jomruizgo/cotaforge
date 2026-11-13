@@ -99,8 +99,6 @@ MATE_FLIP_OPS = frozenset({"mate_coincident", "mate_distance"})
 PATTERN_OPS = frozenset({"linear_pattern", "circular_pattern", "mirror"})
 MATE_OPS = frozenset({"mate_concentric", "mate_coincident", "mate_distance"})
 PLACE_TOL_MM = 1e-6  # a feature rebuilt in the place it had: farther than this and it moved
-HOLE_MOVE_FIELDS = frozenset({"position", "positions", "at", "bolt_circle", "intent"})
-"""The fields of a hole op whose change alone only moves its holes."""
 
 
 def _now() -> datetime:
@@ -1306,12 +1304,7 @@ class Executor:
             )
             self._edits.append(done)
             return done
-        only_moved = all(
-            getattr(new_op, "op", None) == "hole" and set(changes.get(new_op.id, ())) <= HOLE_MOVE_FIELDS
-            for new_op in new_plan.operations
-            if new_op.id in ids
-        )
-        drift, follows, followed = self._reference_drift(new_plan, ids, positions_only=only_moved)
+        drift, follows, followed = self._reference_drift(new_plan, ids)
         if drift:
             self._take_edit_back(old_edits, operation_id)
             done = record(
@@ -1541,7 +1534,7 @@ class Executor:
             raise ExecutorStateError(msg)
 
     def _reference_drift(
-        self, new_plan: Plan, ids: tuple[str, ...], *, positions_only: bool = False
+        self, new_plan: Plan, ids: tuple[str, ...]
     ) -> tuple[tuple[str, ...], dict[str, list[tuple[tuple[str | int, ...], Vec3]]], tuple[str, ...]]:
         """Re-resolve the symbolic references of every executed op AFTER the first edited one and compare with the
         handles they resolved to when they ran (``StepRecord.resolved_refs``): a face selector can silently land on
@@ -1571,8 +1564,6 @@ class Executor:
             if isinstance(op, ExtensionOperation):
                 named += _extension_face_refs(op, self.extensions())
             for path, route, ref in named:
-                if positions_only and self._built_before(ref, positions, first):
-                    continue
                 try:
                     if isinstance(ref, FaceRef):
                         probe.face(ref, op.id, path)
@@ -1597,16 +1588,6 @@ class Executor:
                 if now is not None and now != was_id:
                     drift.append(f"{op.id}.{key} was {was_id}, now {now}")
         return tuple(drift), follows, tuple(notes)
-
-    @staticmethod
-    def _built_before(ref: Any, positions: Mapping[str, int], first: int) -> bool:
-        """A face selector with no absolute centre on a feature made before the first edited op."""
-        return (
-            isinstance(ref, FaceRef)
-            and ref.from_selection is None
-            and ref.select.center is None
-            and positions.get(ref.from_op or "", first) < first
-        )
 
     def _followed_face(self, ref: Any, handle_id: str | None, op_id: str, probe: Resolver) -> FaceInfo | None:
         """The face a selector with an absolute ``center`` found when its step ran, if it is still in the document and
