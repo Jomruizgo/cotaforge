@@ -2758,6 +2758,8 @@ class Session:
         declared = rules.declared_set(self.settings)
         lines = [f"material: {attributes.material or 'none'}" + self._declared_note(declared, attributes.material)]
         lines.append(f"route: {', '.join(attributes.route) or 'none'}")
+        if attributes.title:
+            lines.append(f"title: {attributes.title}")
         return lines
 
     @staticmethod
@@ -2797,6 +2799,28 @@ class Session:
                 )
             except AdapterError as exc:
                 raise self.adapter_failure(exc, "set_material") from exc
+            self.dirty = True
+            return self._attributes_lines(attributes)
+
+    def set_title(self, title: str | None) -> list[str]:
+        """The designation of the part (the name an assembly's parts list prints), kept in the document."""
+        self.need("set_design_attributes", "doc(action=set_title)")
+        with self.lock:
+            self.require_executor()
+            if title is None:
+                raise ToolError(
+                    "set_title needs the designation in the project language (an empty string clears it)",
+                    code="invalid_input",
+                    field_name="name",
+                    usage='doc(action="set_title", name="<designation>")',
+                    example='doc(action="set_title", name="Placa superior")',
+                )
+            try:
+                attributes = self.adapter.set_design_attributes(
+                    SetDesignAttributesRequest(operation_id=self._op_id("title"), title=title.strip())
+                )
+            except AdapterError as exc:
+                raise self.adapter_failure(exc, "set_title") from exc
             self.dirty = True
             return self._attributes_lines(attributes)
 

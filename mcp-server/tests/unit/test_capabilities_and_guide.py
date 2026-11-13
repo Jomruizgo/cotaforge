@@ -30,6 +30,7 @@ def test_the_full_fake_shows_its_tools_and_actions(session: Session) -> None:
         "switch",
         "set_material",
         "set_route",
+        "set_title",
         "set_purpose",
         "convention",
         "reload",
