@@ -200,12 +200,15 @@ def _run(
                     return ok("\n".join(design_memory.set_role(session, args.edit, role)))
             if feature_tools.targets_feature(session, args.edit):
                 lines = feature_tools.edit_feature(session, args.edit, args.params, args.intent)
+                moves_holes = False
             else:
+                moves_holes = session.only_moves_holes(args.edit, args.params)  # asked before the edit changes the plan
                 lines = session.edit_step(args.edit, args.params, args.intent)
             lines += design_memory.after_action(session, "edit_feature", {"step": args.edit})
             lines += bearing_seats.after_action(session, "edit_feature")
             lines += pocket_corners.after_action(session, "edit_feature")
-            lines += turned_ends.after_action(session, "edit_feature")
+            if not moves_holes:  # a hole moved is no new sharp end: reading every face of the part again is not needed
+                lines += turned_ends.after_action(session, "edit_feature")
             return ok("\n".join(lines), limit=2500)
         with session.listening(progress):
             return ok("\n".join(session.run_op(args.name, args.params, args.intent, args.id)))
