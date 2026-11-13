@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from items_attach import attach_face, place_label
-from items_common import asked
+from items_common import FRAME_CELL_MM, asked
 from sheet_context import (
     COMMON_FIELDS,
     Context,
@@ -33,7 +33,7 @@ from sheet_context import (
 from sheet_draw import arrow
 from sheet_model import DIMENSIONS, Entity, Glyph, Line, Polyline, Solid, Text, text_width
 
-CELL_MM = 7.0  # height of a frame; a symbol or datum cell is this wide
+CELL_MM = FRAME_CELL_MM  # height of a frame; a symbol or datum cell is this wide
 TEXT_MM = 3.5
 GLYPH_MM = 4.6
 MODIFIER_MM = 4.0
@@ -354,7 +354,9 @@ def _value(ctx: Context, value: float) -> str:
 
 
 def _hang(ctx: Context, spec: dict[str, Any], cells: list[tuple[str, ...]], summary: str) -> tuple[str, str]:
-    """Hang the frame under the shelf of the callout of the dimension item ``on``."""
+    """Hang the frame from the shelf of the callout of the dimension item ``on``, under the size: its top edge is the
+    shelf line, as ISO 1101 draws it (a second frame goes under the first). The room was kept when the callout was
+    placed."""
     target = spec["on"]
     anchors = ctx.extras.get("anchors", {}).get(target)
     if not anchors:
@@ -363,27 +365,20 @@ def _hang(ctx: Context, spec: dict[str, Any], cells: list[tuple[str, ...]], summ
             "kind radius, diameter or chamfer, drawn without error); for a linear dimension use face= instead"
         )
         raise ItemError(msg)
-    anchor = anchors[0]
-    elbow, direction = anchor["elbow"], anchor["dir"]
+    elbow, direction = anchors[0]["elbow"], anchors[0]["dir"]
     _, width = frame(0.0, 0.0, cells)
     x0 = elbow[0] if direction > 0 else elbow[0] - width
-    stub_x = elbow[0] + direction * 3.0
-    first: tuple[list[Entity], tuple[float, float, float, float]] | None = None
-    free = False
-    for step in range(4):
-        y0 = elbow[1] - 2.5 - CELL_MM - step * (CELL_MM + 1.5)
-        boxed, _ = frame(x0, y0, cells)
-        entities: list[Entity] = [Line(stub_x, elbow[1], stub_x, y0 + CELL_MM, DIMENSIONS), *boxed]
-        rect = (x0, y0, x0 + width, elbow[1])
-        if first is None:
-            first = (entities, rect)
-        if ctx.free((x0, y0, x0 + width, y0 + CELL_MM)):
-            free = True
-            break
-    assert first is not None
-    chosen = (entities, rect) if free else first
-    ctx.reserve((chosen[1][0], chosen[1][1], chosen[1][2], chosen[1][1] + CELL_MM))
-    ctx.add(chosen[0])
+    hung = ctx.extras.setdefault("frames_hung", {})
+    y0 = elbow[1] - (hung.get(target, 0) + 1) * CELL_MM
+    hung[target] = hung.get(target, 0) + 1
+    boxed, _ = frame(x0, y0, cells)
+    box = (x0, y0, x0 + width, y0 + CELL_MM)
+    slot = ctx.extras.get("frame_slots", {}).get(target)
+    free = (
+        slot is not None and box[0] >= slot[0] - 1e-6 and box[2] <= slot[2] + 1e-6 and box[1] >= slot[1] - 1e-6
+    ) or (ctx.free(box))
+    ctx.reserve(box)
+    ctx.add(boxed)
     text = f"{summary} hung from the callout of {target}"
     return (
         ("ok", text)
@@ -392,7 +387,36 @@ def _hang(ctx: Context, spec: dict[str, Any], cells: list[tuple[str, ...]], summ
     )
 
 
+def prepare_gdt(ctx: Context, specs: list[dict[str, Any]]) -> None:
+    """Before anything is drawn: the room each callout keeps under its shelf for the frames that hang from it, and the
+    holes a position frame tolerates (the dimensions that locate them are theoretically exact: boxed)."""
+    room: dict[str, tuple[float, int]] = {}
+    for spec in specs:
+        if "on" not in spec:
+            continue
+        try:
+            cells = [(c[0], c[1].replace("{value}", _value(ctx, spec["value"])), *c[2:]) for c in _cells(spec)]
+        except KeyError:
+            continue
+        _, width = frame(0.0, 0.0, cells)
+        old_width, count = room.get(spec["on"], (0.0, 0))
+        room[spec["on"]] = (max(old_width, width), count + 1)
+    ctx.extras["frame_room"] = room
+    holes = ctx.extras.setdefault("ted_holes", set())
+    from items_holes import _select  # noqa: PLC0415 - items_holes imports the sheet types this module is loaded with
+
+    others = {str(i["id"]): i for i in ctx.extras.get("sheet_items", []) if i.get("type") == "hole_dim"}
+    for spec in specs:
+        target = others.get(str(spec.get("on")))
+        if spec.get("char") != "position" or target is None:
+            continue
+        try:
+            holes |= {h.index for h in _select(ctx, target)}
+        except ItemError:
+            continue
+
+
 ITEMS = (
     ItemType("datum", "dt", check_datum, draw_datum, frozenset(DATUM_CHECKS), prepare_datum, phase=1),
-    ItemType("gdt", "gt", check_gdt, draw_gdt, frozenset(GDT_CHECKS), phase=2),
+    ItemType("gdt", "gt", check_gdt, draw_gdt, frozenset(GDT_CHECKS), prepare_gdt, phase=2),
 )

@@ -503,7 +503,7 @@ Sin ventana, `view` ofrece solo `show` y `focus`.
 | `detail` | Un círculo ampliado de una vista, rotulado `B (5:1)`. |
 | `aux_view` | La pieza vista de frente a una cara inclinada. |
 | `datum` | Un triángulo de referencia ISO 5459 con una letra, sobre una `face` o sobre el eje de un `hole_dim` o de un `dim` de diámetro (`on`). |
-| `gdt` | Un marco de tolerancia geométrica ISO 1101 (`char`, `value`, `datums`...). Citar una referencia que no existe en la hoja es un error. |
+| `gdt` | Un marco de tolerancia geométrica ISO 1101 (`char`, `value`, `datums`...). Citar una referencia que no existe en la hoja es un error. Una tolerancia geométrica escrita como texto de una nota se señala (`gdt_as_note`), igual que una referencia que ningún marco cita (`datum_unused`). Un marco de posición cuelga bajo la llamada de la medida; las cotas que ubican su rasgo van enmarcadas (teóricamente exactas; las que añades llevan `exact=true`) y su primer datum debe fijar el eje (la cara a la que el agujero es perpendicular). |
 | `finish` | Acabado superficial (ISO 21920-1): `ra`, `machining`, o `general=true` para el símbolo de "todas las demás superficies". |
 
 Los elementos con línea de referencia aceptan `offset_mm` y `side`. Sin ellos, la llamada busca espacio libre. Con ellos va exactamente donde se pide, con un `warning` si ese lugar está ocupado. `at_mm` es una posición en la hoja desde su esquina inferior izquierda.
@@ -512,7 +512,9 @@ Los elementos con línea de referencia aceptan `offset_mm` y `side`. Sin ellos, 
 
 **Ajustes y tolerancias.** `hole_dim` y `dim` aceptan `fit` (`"H7"`, `"g6"`, `"H7/g6"`; ISO 286, grados IT5 a IT11, hasta 500 mm), `tol` (`0.1` o `[upper, lower]`) y `show` (`symbol`, `deviations`, `both`, `limits`). El tamaño nominal es el del modelo. Una cota sin tolerancia propia informa la tolerancia general ISO 2768 de la hoja.
 
-> **No verificado.** Las tablas ISO 286 e ISO 2768 se transcribieron a mano de manuales, sin el texto de la norma. Toda hoja que use un ajuste imprime la nota "ISO 286 tables transcribed; verify against the standard" hasta que las confirmes.
+Un ajuste imprime su clase y, si es una sola, sus límites (`Ø20 H7 (+0,021/0)`). La hoja no lleva ninguna nota que pida al taller verificarlos.
+
+> **No verificado.** Las tablas ISO 286 e ISO 2768 se transcribieron a mano de manuales y se contrastaron con los ajustes habituales, no con el texto de la norma.
 
 Las roscas (ISO 6410) se dibujan automáticamente para los agujeros hechos con `hole`, como un arco de tres cuartos en el diámetro mayor.
 
@@ -591,7 +593,7 @@ Toda hoja recibe este mínimo sin que lo pidas. El papel, la proyección y el cu
 - **Todo agujero localizado.** Una hoja con agujeros recibe un elemento `loc`. Nunca cuenta desde la esquina de la caja envolvente. En cada dirección cuenta desde tus referencias declaradas (cotas de línea base); si no, desde el plano de simetría de la pieza; si no, no dibuja nada y te pregunta desde qué cara o arista se cuentan las posiciones.
 - **Llamadas compactas.** Los agujeros idénticos comparten una llamada. Las líneas de referencia van al lado más limpio y no se cruzan.
 - **Agujeros de posicionamiento.** `dowel=true` añade ◎ a la llamada y un anillo en cada agujero. La función de un agujero es cosa tuya; `review` avisa de un probable agujero de posicionamiento sin marcar.
-- **Notas numeradas.** El bloque `NOTAS` numera, en orden: el espesor (cuando la hoja tiene una vista estándar), las notas del agente y la nota ISO 286.
+- **Notas numeradas.** El bloque `NOTAS` numera, en orden: el espesor (cuando la hoja tiene una vista estándar), y las notas del agente.
 - **Cuadro de rotulación.** Una plantilla de TechDraw guardada en el documento. `create` o `update` con `title_block={"document_type": "...", ...}` fija campos por nombre. Todavía no hay logotipo.
 - **Una sola vista.** Una placa cuyos agujeros atraviesan el espesor se puede dibujar en una vista con una nota de espesor (`views=["top"]`).
 

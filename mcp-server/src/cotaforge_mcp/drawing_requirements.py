@@ -391,7 +391,7 @@ ROWS: tuple[Row, ...] = (
         proposal=("los datos del archivo de intención, en el orden de montaje", "the datums of the intent file, in the order of assembly"),
         triggers=("gdt_items",),
         needs=(_n("datum_items", "un dato definido en la hoja", "a datum defined on the sheet"),),
-        codes=("datum_undefined", "gdt_not_located"),
+        codes=("datum_undefined", "gdt_not_located", "gdt_as_note", "gdt_location_not_exact", "gdt_axis_not_oriented"),
         measured=("gdt_items",),
     ),
     Row(

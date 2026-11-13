@@ -503,7 +503,7 @@ Without a window, `view` offers only `show` and `focus`.
 | `detail` | An enlarged circle of a view, labelled `B (5:1)`. |
 | `aux_view` | The part seen head-on to an inclined face. |
 | `datum` | An ISO 5459 datum triangle with a letter, on a `face` or on the axis of a `hole_dim` or diameter `dim` (`on`). |
-| `gdt` | An ISO 1101 geometric tolerance frame (`char`, `value`, `datums`...). Citing a datum that does not exist on the sheet is an error. |
+| `gdt` | An ISO 1101 geometric tolerance frame (`char`, `value`, `datums`...). Citing a datum that does not exist on the sheet is an error. A geometric tolerance written as the text of a note is flagged (`gdt_as_note`), and so is a datum no frame cites (`datum_unused`). A position frame hangs under the size callout; the dimensions that locate its feature are boxed (theoretically exact; the ones you add take `exact=true`) and its first datum must fix the axis (the face the hole is perpendicular to). |
 | `finish` | Surface finish (ISO 21920-1): `ra`, `machining`, or `general=true` for the "all other surfaces" symbol. |
 
 Elements with a leader accept `offset_mm` and `side`. Without them the callout looks for free space. With them it goes exactly where asked, with a `warning` if that place is occupied. `at_mm` is a position on the sheet from its lower left corner.
@@ -512,7 +512,9 @@ Elements with a leader accept `offset_mm` and `side`. Without them the callout l
 
 **Fits and tolerances.** `hole_dim` and `dim` accept `fit` (`"H7"`, `"g6"`, `"H7/g6"`; ISO 286, grades IT5 to IT11, up to 500 mm), `tol` (`0.1` or `[upper, lower]`) and `show` (`symbol`, `deviations`, `both`, `limits`). The nominal size is the model's. A dimension without its own tolerance reports the ISO 2768 general tolerance of the sheet.
 
-> **Not verified.** The ISO 286 and ISO 2768 tables were transcribed by hand from handbooks, without the text of the standard. Every sheet that uses a fit prints the note "ISO 286 tables transcribed; verify against the standard" until you confirm them.
+A fit prints its class and, for one class, its limits (`Ø20 H7 (+0.021/0)`). The sheet carries no note asking the shop to verify them.
+
+> **Not verified.** The ISO 286 and ISO 2768 tables were transcribed by hand from handbooks and checked against the usual fits, not against the text of the standard.
 
 Threads (ISO 6410) are drawn automatically for holes made by `hole` as a three-quarter arc at the major diameter.
 
@@ -591,7 +593,7 @@ Every sheet gets this floor without you asking for it. Paper, projection and tit
 - **Every hole located.** A sheet with holes gets a `loc` element. It never counts from the corner of the bounding box. In each direction it counts from your declared datums (baseline dimensions), otherwise from the part's plane of symmetry, otherwise it draws nothing and asks you from which face or edge positions are counted.
 - **Compact callouts.** Identical holes share one callout. Leaders go to the cleanest side and do not cross each other.
 - **Dowel holes.** `dowel=true` adds ◎ to the callout and a ring on each hole. The function of a hole is yours to say; `review` warns about a likely dowel hole that is unmarked.
-- **Numbered notes.** The `NOTAS` block numbers, in order: thickness (when the sheet has one standard view), the agent's notes and the ISO 286 note.
+- **Numbered notes.** The `NOTAS` block numbers, in order: thickness (when the sheet has one standard view), and the agent's notes.
 - **Title block.** A TechDraw template stored in the document. `create` or `update` with `title_block={"document_type": "...", ...}` sets fields by name. There is no logo yet.
 - **A single view.** A plate whose holes go through the thickness can be drawn in one view with a thickness note (`views=["top"]`).
 

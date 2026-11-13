@@ -45,7 +45,6 @@ import geometry as g
 import gui
 import hole_colours
 import holes
-import iso286
 import Part
 import provenance as prov
 import queries
@@ -73,7 +72,6 @@ import sheet_svg
 import sheet_template
 import sheet_template_gen
 import sheet_thread
-import sheet_tol
 import sheet_units
 import thread_records
 from protocol import WorkerError, error, invalid_request, not_supported
@@ -1201,8 +1199,8 @@ def update(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
 
 AUTO_LOCATE_ID = "loc"  # the default location of the holes (a datum_dims with auto)
 AUTO_THICKNESS_ID = "tn"  # the thickness note of a sheet of one view
-AUTO_ISO286_ID = "n286"  # the ISO 286 transcription note, in the notes block
-AUTO_IDS = (AUTO_LOCATE_ID, AUTO_THICKNESS_ID, AUTO_ISO286_ID)
+LEGACY_ISO286_ID = "n286"  # the "tables transcribed" note older sheets carry: the sheet no longer writes it
+AUTO_IDS = (AUTO_LOCATE_ID, AUTO_THICKNESS_ID)
 ANGLES = ("first", "third")
 
 
@@ -1223,9 +1221,8 @@ def _has_thickness(doc: reg.DocumentRec, body: str | None, view: str, op: str | 
 
 def _sync_auto_items(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None) -> None:
     """Keep the items every sheet carries by itself in step with the part and the views: the baseline location of the holes
-    (``loc``) when the part has holes, the thickness note (``tn``) when the sheet has ONE standard view, the ISO 286
-    transcription note (``n286``) while a fit is on the sheet. The engineer may take one off with ``remove`` (it is then
-    ``declined`` and never comes back); the rest come and go with their reason."""
+    (``loc``) when the part has holes, the thickness note (``tn``) when the sheet has ONE standard view. The engineer may
+    take one off with ``remove`` (it is then ``declined`` and never comes back); the rest come and go with their reason."""
     items = spec["items"]
     declined = set(spec.get("declined", ()))
     standard = [v for v in views_of(spec) if v != "iso"]
@@ -1235,9 +1232,7 @@ def _sync_auto_items(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None)
         wanted[AUTO_LOCATE_ID] = {"id": AUTO_LOCATE_ID, "type": "datum_dims", "auto": True}
     if not assembly and len(standard) == 1 and _has_thickness(doc, spec.get("body"), standard[0], op):
         wanted[AUTO_THICKNESS_ID] = {"id": AUTO_THICKNESS_ID, "type": "note", "auto": "thickness"}
-    fits = any("fit" in i and i.get("type") in ("hole_dim", "dim") for i in items)
-    if fits and iso286.SHOW_TRANSCRIPTION_NOTE:
-        wanted[AUTO_ISO286_ID] = {"id": AUTO_ISO286_ID, "type": "note", "auto": "iso286"}
+    items = [i for i in items if i.get("auto") != "iso286"]  # a note of older sheets that no sheet writes any more
     have = {str(i["id"]) for i in items}
     for key, item in wanted.items():
         if key not in declined and key not in have:
@@ -2291,10 +2286,6 @@ def _compose_pass(
     sheet.extend(sheet_thread.thread_entities(ctx))
     ranges = {"threads": (start, len(sheet.entities))}
     results += sheet_items.draw_items(ctx, items)
-    start = len(sheet.entities)
-    if not any(i.get("auto") == "iso286" for i in items) and AUTO_ISO286_ID not in spec.get("declined", ()):
-        sheet_tol.footnotes(ctx)  # a sheet made before the note had its place in the notes block
-    ranges["iso286"] = (start, len(sheet.entities))
     native = {
         i["id"]: dict(ctx.extras.get("overall_dims", {})) for i in items if i["type"] == "overall" and not hlr
     }  # TechDraw's own dimension objects, put on the lines the sheet draws

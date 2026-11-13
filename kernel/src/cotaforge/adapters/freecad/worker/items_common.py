@@ -79,6 +79,26 @@ def why_not(ctx: Context, rect: tuple[float, float, float, float], fits: bool, f
     )
 
 
+FRAME_CELL_MM = 7.0  # the height of a feature control frame
+
+
+def frame_slot(ctx: Context, elbow: Point, direction: float) -> tuple[float, float, float, float] | None:
+    """The room a tolerance frame needs under the shelf of the callout being placed (``None`` when none hangs from it): the
+    frames join the shelf at the elbow, one under the other, running the way the shelf runs (``ctx.extras["frame_room"]``
+    maps an item id to the width and the number of its frames; ``items_gdt`` fills it)."""
+    need = ctx.extras.get("frame_room", {}).get(ctx.extras.get("current"))
+    if not need:
+        return None
+    width, count = need
+    x0 = elbow[0] if direction > 0 else elbow[0] - width
+    return (x0, elbow[1] - count * FRAME_CELL_MM, x0 + width, elbow[1] - 0.05)
+
+
+def _slot_ok(ctx: Context, elbow: Point, direction: float) -> bool:
+    slot = frame_slot(ctx, elbow, direction)
+    return slot is None or (ctx.inside(slot) and ctx.free(slot) and _clear_of_views(ctx, slot))
+
+
 def _clear_of_views(ctx: Context, rect: tuple[float, float, float, float]) -> bool:
     """Whether a callout's text stays off every view of the sheet (the isometric one too): a text belongs beside the
     part, not on it."""
@@ -203,7 +223,8 @@ def place_callout(
         ),
     )[:MAX_CALLOUT_HOLES]
     best: (
-        tuple[tuple[int, float], list[Entity], tuple[float, float, float, float], Point, Point, float, int, str] | None
+        tuple[tuple[int, int, float], list[Entity], tuple[float, float, float, float], Point, Point, float, int, str]
+        | None
     ) = None
     for index in order:
         centre, radius = holes[index]
@@ -238,6 +259,7 @@ def place_callout(
                     + DIMENSION_LINE_COST_MM * mains
                     + ANGLE_COST_PER_DEG * abs((angle % 90) - 45)
                 )
+                slot_bad = 0 if _slot_ok(ctx, elbow, sx) else 1  # no room for the frames: second to a clean place
                 bad = (0 if fits else 4) + 3 * crossing + 2 * max(0, cuts - 1) + (0 if free else 1)
                 problem = ""
                 if crossing:
@@ -246,12 +268,12 @@ def place_callout(
                     problem = f"crosses the outline of the part {cuts} times"
                 elif not fits or not free:
                     problem = why_not(ctx, rect, fits, free)
-                if best is None or (bad, cost) < best[0]:
-                    best = ((bad, cost), entities, rect, tip, elbow, sx, index, problem)
-                if bad == 0:
+                if best is None or (bad, slot_bad, cost) < best[0]:
+                    best = ((bad, slot_bad, cost), entities, rect, tip, elbow, sx, index, problem)
+                if bad == 0 and not slot_bad:
                     break  # the shortest length of this hole and angle that is clean
     assert best is not None
-    (bad, _), entities, rect, tip, elbow, sx, index, problem = best
+    (bad, _, _), entities, rect, tip, elbow, sx, index, problem = best
     if bad:
         ctx.note(problem or why_not(ctx, rect, ctx.inside(rect), ctx.free(rect)))
     ctx.reserve(rect)
@@ -287,6 +309,7 @@ def place_leader(
         sx0, sy0 = (1.0 if step[0] >= 0 else -1.0), (1.0 if step[1] >= 0 else -1.0)
     candidates = [(sx0, sy0)] if explicit or step is not None else [(sx0, sy0), (-sx0, sy0), (sx0, -sy0), (-sx0, -sy0)]
     best: tuple[list[Entity], tuple[float, float, float, float], Point, float, bool, bool] | None = None
+    fallback = best  # the first clean place, kept when no clean place has room for the frames hung from the callout
     for sx, sy in candidates:
         need_x = (box[2] - tip[0] if sx > 0 else tip[0] - box[0]) + gap
         need_y = (box[3] - tip[1] if sy > 0 else tip[1] - box[1]) + gap
@@ -304,16 +327,21 @@ def place_leader(
                 and _leader_clear(ctx, tip, elbow)
                 and not _crosses_leaders(ctx, tip, elbow, rect, sx)
             )
+            roomy = _slot_ok(ctx, elbow, sx)
             if best is None or (fits and not best[4]):  # the first try, or the first that is inside the frame
                 best = (entities, rect, elbow, sx, fits, free)
             if fits and free:
-                ctx.reserve(rect)
-                _remember(ctx, tip, elbow, sx, rect)
-                return entities
+                if fallback is None:
+                    fallback = (entities, rect, elbow, sx, fits, free)
+                if roomy:
+                    ctx.reserve(rect)
+                    _remember(ctx, tip, elbow, sx, rect)
+                    return entities
             distance += NUDGE_MM
     assert best is not None
-    entities, rect, elbow, sx, fits, free = best
-    ctx.note(why_not(ctx, rect, fits, free))
+    entities, rect, elbow, sx, fits, free = fallback or best
+    if not (fits and free):
+        ctx.note(why_not(ctx, rect, fits, free))
     ctx.reserve(rect)
     _remember(ctx, tip, elbow, sx, rect)
     return entities
@@ -337,6 +365,10 @@ def _remember(
         }
     )
     item = ctx.extras.get("current")
+    slot = frame_slot(ctx, elbow, direction)
+    if slot is not None and item is not None:
+        ctx.reserve(slot)
+        ctx.extras.setdefault("frame_slots", {})[item] = slot
     if item is not None:
         ctx.extras.setdefault("anchors", {}).setdefault(item, []).append(
             {"tip": tip, "elbow": elbow, "dir": direction, "rect": rect}

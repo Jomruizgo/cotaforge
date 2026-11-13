@@ -118,6 +118,7 @@ def normalise(spec: Any, taken: set[str], next_number: int) -> dict[str, Any]:
 def prepare_all(ctx: Context, items: list[dict[str, Any]]) -> None:
     """Let each item type see all its items before any is drawn (the title block needs the revisions, the notes block
     needs to know how many lines it has)."""
+    ctx.extras["sheet_items"] = items  # what a ``prepare`` needs of the other types
     for kind, group in _by_type(items).items():
         prepare = REGISTRY[kind].prepare if kind in REGISTRY else None
         if prepare is not None:

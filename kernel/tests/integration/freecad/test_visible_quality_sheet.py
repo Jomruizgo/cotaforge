@@ -2,7 +2,7 @@
 """The quality floor of a drawing, in the visible CAD: the 19 mm plate (4 dowel holes H7, 2 counterbored holes, one M6) drawn
 three ways -- all its views, ONE view with a thickness note, and in third angle -- and measured: every hole located in x and
 y by baseline dimensions stacked outside the part, callouts whose leaders never cross and cut the outline once, the dowels
-marked, the material in the title block, the notes numbered with the ISO 286 footnote among them.
+marked, the material in the title block, the notes numbered, none of them a request to verify the ISO 286 tables.
 
 Needs a display (on Windows the GUI binary opens its own window); skipped without one, carries the ``visible`` marker (run
 serially). Set ``COTAFORGE_TEST_SHOTS`` to a folder to keep the window images, the PDF and the transcript.
@@ -147,9 +147,7 @@ def test_the_plate_meets_the_floor_in_three_variants(visible: FreeCADAdapter, tm
     metrics = _measure(visible, doc, None, shots, "v1_all_views")
     transcript.append(f"v1 review: {metrics['review']}")
     assert metrics["material"] == MATERIAL, metrics["material"]
-    assert any(t.startswith("4. ") and "ISO 286" in t for t in metrics["texts"]) or any(
-        "ISO 286" in t for t in metrics["texts"]
-    ), metrics["texts"]
+    assert not any("ISO 286" in t for t in metrics["texts"]), metrics["texts"]  # a fit prints its limits, never a note to verify them
     problems += _floor("v1", metrics)
     pdf = shots / "v1_plate.pdf"
     written = visible.export_drawing(

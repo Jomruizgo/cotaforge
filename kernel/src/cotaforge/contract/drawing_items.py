@@ -30,7 +30,22 @@ ITEM_FIELDS: dict[str, frozenset[str]] = {
         }
     ),
     "dim": frozenset(
-        {"kind", "from", "to", "along", "face", "faces", "view", "offset_mm", "side", "fit", "tol", "show", "arrows"}
+        {
+            "kind",
+            "from",
+            "to",
+            "along",
+            "face",
+            "faces",
+            "view",
+            "offset_mm",
+            "side",
+            "fit",
+            "tol",
+            "show",
+            "arrows",
+            "exact",
+        }
     ),
     "datum_dims": frozenset(
         {"mode", "x_from", "y_from", "holes", "x_side", "y_side", "at_mm", "view", "offset_mm", "auto"}

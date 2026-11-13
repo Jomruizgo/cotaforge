@@ -14,14 +14,12 @@ WORKER_DIR = Path(__file__).resolve().parents[3] / "src" / "cotaforge" / "adapte
 if str(WORKER_DIR) not in sys.path:
     sys.path.append(str(WORKER_DIR))
 
-import iso286  # noqa: E402
 import sheet_context as sc  # noqa: E402
 import sheet_dxf  # noqa: E402
 import sheet_items as items  # noqa: E402
 import sheet_model as model  # noqa: E402
 import sheet_review as review  # noqa: E402
 import sheet_thread  # noqa: E402
-import sheet_tol  # noqa: E402
 
 CENTRE = (50.0, 30.0)
 
@@ -100,7 +98,6 @@ def draw(ctx: sc.Context, *specs: dict[str, Any]) -> list[sc.ItemResult]:
         taken.add(done["id"])
         normalised.append(done)
     results = items.draw_all(ctx, normalised)
-    sheet_tol.footnotes(ctx)
     return results
 
 
@@ -195,26 +192,26 @@ def test_a_fit_outside_the_tables_is_an_item_error_not_a_wrong_number() -> None:
     assert r.status == "error" and "J9" in r.detail
 
 
-# --- the note while the tables are only transcribed -------------------------------------------------------------------
+# --- a fit prints its class and its limits, never a note that asks the shop to verify ------------------------------
 
 
-def test_a_sheet_that_uses_a_fit_says_the_tables_are_transcribed() -> None:
+def test_a_sheet_that_uses_a_fit_prints_class_and_limits_and_no_verification_note() -> None:
     ctx = make_context()
     draw(ctx, {**BORE, "fit": "H7"})
-    assert texts(ctx).count("Tablas ISO 286 transcritas; verificar contra la norma") == 1
-    plain = make_context()
-    draw(plain, BORE, {"type": "dim", "kind": "radius", "face": "face:journal", "tol": 0.1})
-    assert "Tablas ISO 286 transcritas; verificar contra la norma" not in texts(plain)  # explicit tolerance: no tables
+    found = texts(ctx)
+    assert any("H7 (+0,018/0)" in t for t in found), found
+    assert not any(w in t.lower() for t in found for w in ("transcrit", "verificar", "verify"))
 
 
-def test_the_note_is_one_constant_that_can_be_switched_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(iso286, "SHOW_TRANSCRIPTION_NOTE", False)
+def test_a_fit_of_two_classes_prints_the_symbol_only_and_no_note() -> None:
     ctx = make_context()
-    draw(ctx, {**BORE, "fit": "H7"})
-    assert not any("transcritas" in t for t in texts(ctx))
+    draw(ctx, {**BORE, "fit": "H7/g6"})
+    found = texts(ctx)
+    assert any("H7/g6" in t for t in found), found
+    assert not any("transcrit" in t.lower() for t in found)
 
 
-def test_a_refused_fit_does_not_leave_the_note_behind() -> None:
+def test_a_refused_fit_leaves_no_note_behind() -> None:
     ctx = make_context()
     draw(ctx, {"type": "hole_dim", "face": "face:tapped", "fit": "H7"})
     assert not any("transcritas" in t for t in texts(ctx))
@@ -439,7 +436,119 @@ def test_position_with_a_diameter_zone_and_a_modifier_hangs_from_the_callout() -
     frame_top = max(
         e.y2 for e in ctx.sheet.entities if isinstance(e, model.Line) and e.x1 == e.x2 and e.y2 - e.y1 == 7.0
     )
-    assert frame_top < anchor["elbow"][1]  # hangs below the shelf
+    assert frame_top == pytest.approx(anchor["elbow"][1], abs=0.1)  # under the size: its top edge is the shelf line
+
+
+POSITION = {"type": "gdt", "char": "position", "value": 0.05, "diameter": True, "on": "bore", "id": "pos"}
+DATUM_C = {"type": "datum", "id": "dC", "letter": "C", "face": "face:bottom"}  # the face the bore is perpendicular to
+DATUM_B = {"type": "datum", "id": "dB", "letter": "B", "face": "face:side"}
+
+
+def test_a_frame_hangs_on_the_shelf_of_its_size_callout_and_the_room_is_kept_for_it() -> None:
+    ctx = make_context()
+    results = draw(ctx, BORE, DATUM_C, DATUM_B, {**POSITION, "datums": ["C", "B"]})
+    assert [r.status for r in results] == ["ok"] * 4, [r.detail for r in results]
+    anchor = ctx.extras["anchors"]["bore"][0]
+    slot = ctx.extras["frame_slots"]["bore"]
+    assert slot[3] == pytest.approx(anchor["elbow"][1], abs=0.1) and slot[3] - slot[1] == pytest.approx(7.0, abs=0.1)
+    boxes = [
+        (
+            min(q[0] for q in e.points),
+            min(q[1] for q in e.points),
+            max(q[0] for q in e.points),
+            max(q[1] for q in e.points),
+        )
+        for e in ctx.sheet.entities
+        if isinstance(e, model.Polyline) and e.closed and len(e.points) == 4
+    ]
+    frame_box = max(boxes, key=lambda b: b[2] - b[0])
+    assert frame_box[3] == pytest.approx(anchor["elbow"][1], abs=0.1)  # its top edge is the shelf line
+    assert slot[0] - 1e-6 <= frame_box[0] and frame_box[2] <= slot[2] + 1e-6  # inside the room that was kept
+
+
+def exact_flags(ctx: sc.Context, item: str) -> list[bool]:
+    return [n.exact for n in ctx.extras["natives"].get(item, []) if hasattr(n, "exact")]
+
+
+def test_the_dimensions_that_locate_a_hole_with_a_position_frame_are_boxed() -> None:
+    ctx = make_context()
+    draw(ctx, BORE, DATUM_C, {"type": "datum_dims", "id": "dd"}, {**POSITION, "datums": ["C"]})
+    assert ctx.extras["ted_holes"] == {0}
+    flags = exact_flags(ctx, "dd")
+    names = {n.name: n.exact for n in ctx.extras["natives"]["dd"]}
+    assert any(flags), names
+    boxed = [
+        e for e in ctx.sheet.entities if isinstance(e, model.Polyline) and e.closed and e.layer == model.DIMENSIONS
+    ]
+    assert len(boxed) >= 1
+
+
+def test_without_a_position_frame_the_location_dimensions_are_plain() -> None:
+    ctx = make_context()
+    draw(ctx, BORE, DATUM_C, {"type": "datum_dims", "id": "dd"})
+    assert not any(exact_flags(ctx, "dd")) and exact_flags(ctx, "dd")
+
+
+def test_a_distance_dimension_can_be_theoretically_exact_and_only_a_distance() -> None:
+    ctx = make_context()
+    spec = {"type": "dim", "kind": "distance", "from": {"at": [50, 30, 20]}, "to": {"face": "face:side"}, "id": "d1"}
+    (plain,) = draw(ctx, spec)
+    assert plain.status == "ok", plain.detail
+    before = len([e for e in ctx.sheet.entities if isinstance(e, model.Polyline)])
+    ctx2 = make_context()
+    (boxed,) = draw(ctx2, {**spec, "exact": True})
+    assert boxed.status == "ok", boxed.detail
+    assert exact_flags(ctx2, "d1") == [True]
+    assert len([e for e in ctx2.sheet.entities if isinstance(e, model.Polyline)]) == before + 1
+    with pytest.raises(sc.ItemError, match="exact"):
+        items.normalise({"type": "dim", "kind": "radius", "face": ["face:bore"], "exact": True}, set(), 1)
+
+
+def location(**extra: Any) -> dict[str, Any]:
+    return {
+        "type": "dim",
+        "kind": "distance",
+        "from": {"at": [50, 30, 20]},
+        "to": {"face": "face:side"},
+        "id": "d1",
+        **extra,
+    }
+
+
+def codes(found: list[review.Finding], *wanted: str) -> list[str]:
+    return [f.code for f in found if f.code in wanted]
+
+
+def test_review_flags_a_position_frame_located_by_plain_dimensions() -> None:
+    found = reviewed(make_context(), BORE, DATUM_C, location(), {**POSITION, "datums": ["C"]})
+    flagged = [f for f in found if f.code == "gdt_location_not_exact"]
+    assert len(flagged) == 1 and flagged[0].items == ("pos", "d1") and "exact=true" in flagged[0].message
+    ok = reviewed(make_context(), BORE, DATUM_C, location(exact=True), {**POSITION, "datums": ["C"]})
+    assert codes(ok, "gdt_location_not_exact") == []
+    no_position = reviewed(
+        make_context(),
+        BORE,
+        DATUM_C,
+        location(),
+        {"type": "gdt", "char": "runout", "value": 0.02, "datums": ["C"], "on": "bore"},
+    )
+    assert codes(no_position, "gdt_location_not_exact") == []
+
+
+def test_review_flags_a_position_frame_with_no_datum_that_fixes_the_axis() -> None:
+    found = reviewed(make_context(), BORE, DATUM_B, {**POSITION, "datums": ["B"]})
+    flagged = [f for f in found if f.code == "gdt_axis_not_oriented"]
+    assert len(flagged) == 1 and flagged[0].items == ("pos",) and "C | A | B" in flagged[0].message
+    for datums, specs in (
+        (["C", "B"], (DATUM_C, DATUM_B)),
+        (["A", "B"], (DATUM_B, {"type": "datum", "letter": "A", "on": "bore"})),
+    ):
+        found = reviewed(make_context(), BORE, *specs, {**POSITION, "datums": datums})
+        assert codes(found, "gdt_axis_not_oriented") == [], (
+            datums
+        )  # the face the hole is perpendicular to, or its own axis
+    none = reviewed(make_context(), BORE, {**POSITION})
+    assert codes(none, "gdt_axis_not_oriented") == ["gdt_axis_not_oriented"]
 
 
 def test_a_frame_can_only_hang_from_a_callout_that_exists() -> None:
@@ -642,6 +751,64 @@ def test_a_frame_citing_an_undefined_datum_is_one_datum_undefined_finding() -> N
     undefined = [f for f in found if f.code == "datum_undefined"]
     assert len(undefined) == 1 and undefined[0].items == ("f1",) and "B" in undefined[0].message
     assert not [f for f in found if f.code == "item_error" and f.items == ("f1",)]  # not reported twice
+
+
+GDT_NOTES_THAT_SHOULD_BE_FRAMES = [
+    "Perpendicularidad del Ø42 H7 respecto a A: 0,02",
+    "Coaxialidad Ø0,05 respecto a A-B",
+    "Salto radial 0,03 en el Ø32",
+    "Planitud 0,02 en la cara de apoyo",
+    "Tolerancia de posición Ø0,1 respecto a A y B",
+    "Posición (tolerancia) 0,1 a los datums A y B",
+    "⊥ Ø0,1 A",
+    "Perpendicularity 0.05 to datum A",
+    "Flatness of the seat: 0.02",
+]
+NOTES_THAT_ARE_NOT_TOLERANCE_FRAMES = [
+    "Fabricar de lámina rectificada",
+    "Rebabas eliminadas",
+    "Posición de los agujeros: ver cotas",  # names a characteristic, no tolerance value
+    "Planitud según marco",  # no value
+    "Posición del taladro a 12,5 mm del borde",  # a distance, not a tolerance of position
+    "Ra 1,6 en todas las caras mecanizadas",
+]
+
+
+def note_findings(text: str) -> list[review.Finding]:
+    found = reviewed(make_context(), {"type": "note", "id": "n1", "text": text})
+    return [f for f in found if f.code == "gdt_as_note"]
+
+
+@pytest.mark.parametrize("text", GDT_NOTES_THAT_SHOULD_BE_FRAMES)
+def test_a_geometric_tolerance_written_as_a_note_is_flagged_as_a_frame_missing(text: str) -> None:
+    (finding,) = note_findings(text)
+    assert finding.items == ("n1",) and finding.severity == "warning" and "ISO 1101" in finding.message
+    assert "gdt" in finding.message
+    from sheet_checks import NON_BLOCKING  # noqa: PLC0415
+
+    assert "gdt_as_note" not in NON_BLOCKING  # the export waits for it (an answer "not applicable" clears it)
+
+
+@pytest.mark.parametrize("text", NOTES_THAT_ARE_NOT_TOLERANCE_FRAMES)
+def test_an_ordinary_note_is_not_taken_for_a_geometric_tolerance(text: str) -> None:
+    assert note_findings(text) == []
+
+
+def test_a_real_frame_with_its_datums_leaves_the_review_quiet_about_notes_and_datums() -> None:
+    found = reviewed(
+        make_context(),
+        BORE,
+        DATUM_A,
+        {"type": "gdt", "char": "runout", "value": 0.02, "datums": ["A"], "face": "face:journal", "id": "f1"},
+        {"type": "note", "id": "n1", "text": "Fabricar de lámina rectificada"},
+    )
+    assert not {f.code for f in found} & {"gdt_as_note", "datum_undefined", "datum_unused"}
+
+
+def test_a_datum_no_frame_cites_is_still_flagged_by_the_review() -> None:
+    found = reviewed(make_context(), BORE, DATUM_A)
+    unused = [f for f in found if f.code == "datum_unused"]
+    assert len(unused) == 1 and "datum A" in unused[0].message
 
 
 def test_the_review_does_not_flag_the_tolerance_items_as_dimensions_or_errors() -> None:

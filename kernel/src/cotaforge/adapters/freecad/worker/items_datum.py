@@ -37,7 +37,7 @@ from sheet_context import (
     v_point2,
     v_points3,
 )
-from sheet_draw import centre_mark, linear_dimension, table
+from sheet_draw import centre_mark, exact_box, linear_dimension, table
 from sheet_model import AXES, TEXT, Line, Text, text_width
 from sheet_units import NativeDim, Ref2
 
@@ -163,6 +163,12 @@ def _real_point(view: ViewInfo, value: float, edge: float, vertical: bool) -> Po
     return min(on_line, key=lambda v: abs((v[1] if vertical else v[0]) - edge))
 
 
+def _exact(ctx: Context, holes: Any) -> bool:
+    """Whether one of ``holes`` has a position tolerance: the dimension that locates it is theoretically exact (boxed)."""
+    toleranced = ctx.extras.get("ted_holes", ())
+    return any(h.index in toleranced for h in holes)
+
+
 def _link(a: Point, b: Point, tail: float) -> Line:
     """The centre line that joins two holes of one row or column, ``tail`` mm past ``b``."""
     dx, dy = b[0] - a[0], b[1] - a[1]
@@ -204,7 +210,10 @@ def _along_x(
         distance = ctx.stack_distance(view.name, side, spec.get("offset_mm"))
         line = edge_y - distance if side == "below" else edge_y + distance
         text = ctx.num(key if signed else abs(key))
+        exact = _exact(ctx, (h for h, q in placed if round((q[0] - dx) / view.scale, 2) == key))
         entities, taken = linear_dimension(start, p, "h", line, text, "lo" if dx <= p[0] else "hi")
+        if exact:
+            exact_box(entities)
         far = max(columns[key], key=lambda q: abs(q[1] - p[1]))
         if abs(far[1] - p[1]) > 0.05:
             entities.append(_link(p, far, LINK_OVERSHOOT_MM))
@@ -221,6 +230,7 @@ def _along_x(
                 expected=abs(key),
                 orient="h",
                 rect=taken,
+                exact=exact,
             )
         )
         values.append(key)
@@ -260,7 +270,10 @@ def _along_y(
         distance = ctx.stack_distance(view.name, side, spec.get("offset_mm"))
         line = edge_x - distance if side == "left" else edge_x + distance
         text = ctx.num(key if signed else abs(key))
+        exact = _exact(ctx, (h for h, q in placed if round((q[1] - dy) / view.scale, 2) == key))
         entities, taken = linear_dimension(start, p, "v", line, text, "lo" if dy <= p[1] else "hi")
+        if exact:
+            exact_box(entities)
         far = max(rows[key], key=lambda q: abs(q[0] - p[0]))
         if abs(far[0] - p[0]) > 0.05:
             entities.append(_link(p, far, LINK_OVERSHOOT_MM))
@@ -277,6 +290,7 @@ def _along_y(
                 expected=abs(key),
                 orient="v",
                 rect=taken,
+                exact=exact,
             )
         )
         values.append(key)
@@ -332,7 +346,10 @@ def _mirror_pairs(
         distance = ctx.stack_distance(view.name, side, spec.get("offset_mm"))
         line = edge - distance if low_side else edge + distance
         span = round(abs(pb[i] - pa[i]) / view.scale, 2)
+        exact = _exact(ctx, (h for h, q in placed if round(abs(q[i] - plane) / view.scale, 2) == value))
         entities, taken = linear_dimension(pa, pb, "h" if horizontal else "v", line, ctx.num(span), "lo")
+        if exact:
+            exact_box(entities)
         for key in (-value, value):
             _, p = slot[1 if key > 0 else -1]
             far = max(lines[key], key=lambda q: abs(q[j] - p[j]))
@@ -355,6 +372,7 @@ def _mirror_pairs(
                 expected=span,
                 orient="h" if horizontal else "v",
                 rect=taken,
+                exact=exact,
             )
         )
         values.append(span)

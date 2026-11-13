@@ -295,7 +295,6 @@ def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     taps: dict[str, int] = {}
     general: dict[str, float] = {}
     contradictions: list[str] = []
-    toleranced = False
     for (view_name, _), group in placed.items():
         view = group[0][2]
         stack, centre, _ = group[0]
@@ -306,7 +305,6 @@ def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
                 msg = "a threaded hole takes no fit or tolerance on its diameter: the thread class is part of its size"
                 raise ItemError(msg)
             diameter_text = sheet_tol.render(ctx, stack[0].diameter, resolved, prefix="Ø").text
-            toleranced = toleranced or resolved.iso
         elif stack[0].thread is None and "text" not in spec:
             general.setdefault(f"Ø{ctx.num(stack[0].diameter)}", stack[0].diameter)
         lines = stack_lines(ctx, stack, len(group), diameter_text)
@@ -362,8 +360,6 @@ def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         notes += [
             ctx.say("el texto contradice el modelo: ", "the text contradicts the model: ") + "; ".join(contradictions)
         ]
-    if toleranced:
-        sheet_tol.mark_iso286(ctx)
     text = "; ".join(summary + notes) + (sheet_tol.general_notes(ctx, "linear", general) if general else "")
     if (
         taps

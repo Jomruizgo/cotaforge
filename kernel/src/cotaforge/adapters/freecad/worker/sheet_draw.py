@@ -15,6 +15,7 @@ from sheet_model import (
     Arc,
     Entity,
     Line,
+    Polyline,
     Solid,
     Text,
     text_width,
@@ -238,3 +239,29 @@ def table(
             left += width
     box = (x, bottom, x + total, y_top)
     return out, box
+
+
+EXACT_PAD_MM = 1.0
+
+
+def exact_box(entities: list[Entity]) -> None:
+    """Draw the frame ISO 1101 / 5458 puts round a theoretically exact dimension (a basic size, the location of a feature
+    with a position tolerance): a closed box round the value text of ``entities`` (a dimension's), turned with the text."""
+    index = max((i for i, e in enumerate(entities) if isinstance(e, Text)), default=None)
+    if index is None:
+        return
+    text: Text = entities[index]
+    width = text_width(text.text, text.height)
+    left = {"left": 0.0, "center": -width / 2, "right": -width}.get(text.anchor, 0.0)
+    low, high = -EXACT_PAD_MM, text.height + 0.2
+    angle = math.radians(text.angle)
+    ux, uy = math.cos(angle), math.sin(angle)
+    corners = []
+    for u, v in (
+        (left - EXACT_PAD_MM, low),
+        (left + width + EXACT_PAD_MM, low),
+        (left + width + EXACT_PAD_MM, high),
+        (left - EXACT_PAD_MM, high),
+    ):
+        corners.append((text.x + u * ux - v * uy, text.y + u * uy + v * ux))
+    entities.append(Polyline(tuple(corners), text.layer, closed=True))

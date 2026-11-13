@@ -10,7 +10,7 @@ ids of the items and features involved.
 Findings: holes and cut features nobody dimensions or calls out, features whose position is not given, a distance given
 twice (an ordinate set plus a chain between the same holes, a chain that closes on the overall size, the same pair twice),
 threads (a threaded hole without its callout, holes whose thread is unknown), datums a GD&T frame cites and no datum item
-defines, items that cannot be drawn (stale ids), and layout (views overlapping each other or the title block, text outside
+defines, a geometric tolerance written as the text of a note instead of a frame, items that cannot be drawn (stale ids), and layout (views overlapping each other or the title block, text outside
 the frame).
 """
 
@@ -26,7 +26,8 @@ from items_dims import AXES, _along, coordinate, resolve_ref
 from items_holes import _declared_thread as items_holes_declared
 from items_holes import _select as select_callout_holes
 from items_holes import _stacks
-from sheet_context import Context, HoleInfo, ItemError, ItemResult, Rect
+from sheet_context import Context, HoleInfo, ItemError, ItemResult, Rect, dot
+from sheet_context import unit as unit_vector
 from sheet_model import TITLE_BLOCK, Sheet, Text, text_width
 
 SAME_MM = 0.1  # two positions are the same
@@ -74,6 +75,9 @@ def review(data: ReviewInput) -> list[Finding]:
         _feature_dimensions,
         _over_dimensioning,
         _datums,
+        _gdt_as_note,
+        _gdt_location_exact,
+        _gdt_axis_oriented,
         _gdt_located,
         _view_lines,
         _unused_views,
@@ -670,6 +674,149 @@ def _datums(data: ReviewInput) -> list[Finding]:
                 f"{frame['id']} cites datum {', '.join(missing)} and no datum item defines it.",
             )
             out.append(Finding("datum_undefined", "warning", text, (frame["id"],)))
+    return out
+
+
+def _position_frames(
+    data: ReviewInput,
+) -> list[tuple[dict[str, Any], list[HoleInfo], tuple[float, float, float] | None]]:
+    """Every position frame hung from a callout, with the holes it tolerates and the direction of their axis (``None`` for
+    the axis of a cylinder that is no hole: the direction of its face)."""
+    ctx = data.ctx
+    out: list[tuple[dict[str, Any], list[HoleInfo], tuple[float, float, float] | None]] = []
+    for frame in (i for i in _of(data, "gdt") if i.get("char") == "position" and "on" in i):
+        target = next((i for i in data.items if i["id"] == frame["on"]), None)
+        if target is None:
+            continue
+        if target.get("type") == "hole_dim":
+            try:
+                holes = select_callout_holes(ctx, target)
+            except ItemError:
+                continue
+            out.append((frame, holes, tuple(unit_vector(holes[0].direction)) if holes else None))  # type: ignore[arg-type]
+        elif target.get("face"):
+            try:
+                axis = ctx.geometry.face(target["face"][0]).axis_dir
+            except ItemError:
+                continue
+            out.append((frame, [], tuple(unit_vector(axis)) if axis is not None else None))  # type: ignore[arg-type]
+    return out
+
+
+def _gdt_location_exact(data: ReviewInput) -> list[Finding]:
+    """The dimensions that locate a feature with a position tolerance are theoretically exact (ISO 1101, ISO 5458): boxed.
+    The ones the sheet writes itself (``loc``, ``datum_dims``) are boxed by the sheet; a ``dim`` the agent added is not
+    unless it says ``exact``."""
+    ctx = data.ctx
+    out: list[Finding] = []
+    for frame, holes, _ in _position_frames(data):
+        wanted = {h.index for h in holes}
+        plain = [
+            d["id"]
+            for d in _distance_dims(data)
+            if not d.get("exact") and wanted & {h.index for end in ("from", "to") for h in _hole_of_ref(ctx, d[end])}
+        ]
+        if plain:
+            text = ctx.say(
+                f"{frame['id']} (posición) tolera un agujero que localizan las cotas {', '.join(plain)} sin recuadro: con una "
+                "tolerancia de posición la cota de localización es teóricamente exacta (ISO 1101); añade exact=true a esas cotas.",
+                f"{frame['id']} (position) tolerates a hole located by the dimensions {', '.join(plain)} with no box: with a "
+                "position tolerance the locating dimension is theoretically exact (ISO 1101); add exact=true to those dimensions.",
+            )
+            out.append(Finding("gdt_location_not_exact", "warning", text, (frame["id"], *plain), key=frame["id"]))
+    return out
+
+
+def _parallel(a: tuple[float, float, float], b: tuple[float, float, float]) -> bool:
+    return abs(dot(unit_vector(a), unit_vector(b))) > 0.999
+
+
+def _fixes_direction(data: ReviewInput, datum: dict[str, Any], axis: tuple[float, float, float]) -> bool:
+    """Whether a datum item fixes the direction ``axis`` has: a plane the axis is perpendicular to, or an axis parallel to it."""
+    ctx = data.ctx
+    try:
+        if datum.get("face"):
+            face = ctx.geometry.face(datum["face"][0])
+            if face.kind == "plane" and face.normal is not None:
+                return _parallel(face.normal, axis)
+            return face.kind == "cylinder" and face.axis_dir is not None and _parallel(face.axis_dir, axis)
+    except ItemError:
+        return False
+    target = next((i for i in data.items if i["id"] == datum.get("on")), None)
+    if target is None:
+        return False
+    if target.get("type") == "hole_dim":
+        try:
+            return any(_parallel(h.direction, axis) for h in select_callout_holes(ctx, target))
+        except ItemError:
+            return False
+    try:
+        direction = ctx.geometry.face(target["face"][0]).axis_dir if target.get("face") else None
+    except ItemError:
+        return False
+    return direction is not None and _parallel(direction, axis)
+
+
+def _gdt_axis_oriented(data: ReviewInput) -> list[Finding]:
+    """A position tolerance of a hole needs a datum that fixes the direction of its axis: the face the hole is perpendicular
+    to (the primary datum of a through hole), then the edges that locate it. Datums that only fix the location leave the
+    axis free to tilt."""
+    ctx = data.ctx
+    datums = {d["letter"]: d for d in _of(data, "datum") if "letter" in d}
+    out: list[Finding] = []
+    for frame, _, axis in _position_frames(data):
+        if axis is None:
+            continue
+        cited = [datums[c] for c in _letters(frame.get("datums")) if c in datums]
+        if any(_fixes_direction(data, d, axis) for d in cited):
+            continue
+        text = ctx.say(
+            f"{frame['id']} (posición) no cita ningún datum que fije la dirección del eje: el datum primario de un agujero es "
+            "la cara a la que es perpendicular (declárala con un ítem datum y cítala la primera: ⌖ Ø0,05 | C | A | B).",
+            f"{frame['id']} (position) cites no datum that fixes the direction of the axis: the primary datum of a hole is "
+            "the face it is perpendicular to (declare it with a datum item and cite it first: ⌖ Ø0,05 | C | A | B).",
+        )
+        out.append(Finding("gdt_axis_not_oriented", "warning", text, (frame["id"],), key=frame["id"]))
+    return out
+
+
+_NUMBER = r"(?:Ø|⌀)?\s?\d+[.,]\d+"
+_GDT_STRONG = (
+    r"planitud|rectitud|circularidad|redondez|cilindricidad|paralelismo|perpendicularidad|angularidad|concentricidad|"
+    r"coaxialidad|salto (?:radial|axial|total|circular)|flatness|straightness|roundness|circularity|cylindricity|"
+    r"parallelism|perpendicularity|angularity|concentricity|coaxiality|(?:total |circular )?runout"
+)
+_GDT_WEAK = r"posici.n|simetr.a|perfil de (?:l.nea|superficie)|position|symmetry|profile of (?:a )?(?:line|surface)"
+_GDT_SYMBOLS = "⊥∥⌖◎⌭⌒⌓↗⌯⏥"
+GDT_IN_TEXT = re.compile(
+    rf"(?:{_GDT_STRONG})\b[^.;\n]{{0,40}}?{_NUMBER}"
+    rf"|(?:toleranc\w+|tolerance)\s+(?:de |of )?(?:{_GDT_WEAK})\b[^.;\n]{{0,40}}?{_NUMBER}"
+    rf"|(?:{_GDT_WEAK})\b[^.;\n]{{0,25}}?(?:toleranc\w+|tolerance)[^.;\n]{{0,25}}?{_NUMBER}"
+    rf"|[{_GDT_SYMBOLS}]\s?{_NUMBER}",
+    re.IGNORECASE,
+)
+
+
+def _gdt_as_note(data: ReviewInput) -> list[Finding]:
+    """A geometric tolerance written as the text of a note (``perpendicularidad 0,02 A``, ``⊥ Ø0,1 A``): a shop reads a
+    feature control frame (ISO 1101) on the feature, not a sentence in the notes block. The note is flagged and the
+    answer is a ``gdt`` item (and its ``datum`` items); a note that only names a characteristic without a value is quiet."""
+    ctx = data.ctx
+    out: list[Finding] = []
+    for note in _of(data, "note"):
+        text = str(note.get("text") or "")
+        if not GDT_IN_TEXT.search(text):
+            continue
+        shown = text if len(text) <= 60 else text[:57] + "..."
+        message = ctx.say(
+            f'{note["id"]} escribe una tolerancia geométrica como texto ("{shown}"): va en un marco ISO 1101 sobre el rasgo '
+            "o colgado de su cota, con sus datums definidos y usados. Usa un ítem gdt (char, value, datums, face u on) y "
+            "borra la nota; si no es una tolerancia geométrica, respóndelo como decisión (no aplica: <por qué>).",
+            f'{note["id"]} writes a geometric tolerance as text ("{shown}"): it belongs in an ISO 1101 frame on the feature '
+            "or hung from its dimension, with its datums defined and used. Use a gdt item (char, value, datums, face or on) "
+            "and remove the note; if it is not a geometric tolerance, answer it as a decision (not applicable: <why>).",
+        )
+        out.append(Finding("gdt_as_note", "warning", message, (str(note["id"]),), key=str(note["id"])))
     return out
 
 
