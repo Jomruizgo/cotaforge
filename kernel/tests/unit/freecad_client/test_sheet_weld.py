@@ -98,7 +98,8 @@ def test_a_tube_end_standing_on_a_plate_is_a_tee_two_ends_meeting_a_butt_two_sur
 
 
 def test_the_proposal_is_a_fillet_of_seven_tenths_of_the_thinner_wall_on_the_standard_series() -> None:
-    assert sj.proposal(tee("body:1")) == sj.Weld("fillet", 2.0, "throat")  # 0.7 x 3 = 2.1
+    assert sj.proposal(tee("body:1")) == sj.Weld("fillet", 3.0, "throat")  # 0.7 x 3 = 2.1, but a load-bearing fillet is never under 3 mm (EN 1993-1-8 4.5.2)
+    assert sj.proposal(sj.Joint(("body:1", "body:2"), "tee", (), (2.0, 6.0))).size_mm == 2.0  # never more than the thinner wall allows
     thick = sj.Joint(("body:1", "body:2"), "tee", (), (6.0, 8.0))
     assert sj.proposal(thick).size_mm == 4.0  # 0.7 x 6 = 4.2
     assert sj.standard_throat(3.5) == 4.0  # half way: the larger one
@@ -293,7 +294,7 @@ def test_the_fields_are_checked(spec: dict[str, Any], text: str) -> None:
 def test_joints_with_no_symbol_are_one_blocking_question_with_the_proposal_never_applied() -> None:
     found = reviewed(context())
     (ask,) = [f for f in found if f.code == "weld_joint_unspecified"]
-    assert "UNA vez" in ask.message and "a=2" in ask.message and "4 iguales" in ask.message
+    assert "UNA vez" in ask.message and "a=3" in ask.message and "EN 1993-1-8" in ask.message and "4 iguales" in ask.message
     assert "se ve en la vista front" in ask.message and "body:1" in ask.message and "body:4" in ask.message
     assert "salvo indicación" in ask.message  # a general note only adds to the symbols
     assert '"between":["body:1", "body:5"]' in ask.message and '"also":' in ask.message
@@ -368,7 +369,7 @@ def test_a_seam_behind_a_body_is_not_shown_even_when_an_outline_coincides_with_i
     ctx = context("en")
     ctx.geometry.seam_hidden = lambda point, towards: point[1] > 100  # type: ignore[method-assign]  # the far tubes are behind the near ones
     (result,) = drawn(ctx, WELD)
-    assert result.status == "warning"
-    assert "no arrow for body:2 + body:5, body:4 + body:5" in result.detail  # the far tubes: no view shows their seam, and it says so
+    assert result.status == "ok" and "4×" in ctx.sheet.texts()  # the far tubes: no view shows their seam, so the symbol states the 4 joints
+    assert "body:2 + body:5, body:4 + body:5 are hidden in every view" in result.detail
     tip = ctx.extras["segments"][0][0]
     assert tip[1] < 175 or 190 < tip[1]  # on the seam of a near tube (page y 166..174 or 226..234), not of a far one

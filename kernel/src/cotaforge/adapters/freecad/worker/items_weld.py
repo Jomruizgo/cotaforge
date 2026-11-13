@@ -450,7 +450,7 @@ def _arrow_tip(
     return None if best is None else best[1]
 
 
-def place(ctx: Context, members: list[Member], spec: dict[str, Any]) -> tuple[list[Entity], list[Point], Point, Rect, bool]:
+def place(ctx: Context, members: list[Member], spec: dict[str, Any], count: int = 1) -> tuple[list[Entity], list[Point], Point, Rect, bool]:
     """The first free place for ONE reference line with an arrow to each joint of ``members`` (ISO 2553: several arrow
     lines may leave one reference line when the welds are identical): the anchor, a direction and a distance such that the
     symbol is inside the frame and clear of everything on the sheet, and every arrow ends on a seam of its joint across
@@ -474,7 +474,7 @@ def place(ctx: Context, members: list[Member], spec: dict[str, Any]) -> tuple[li
                         distance = base + (0.0 if explicit else ctx.nudge() * 4.0)
                         anchor = (tip[0] + direction[0] * distance, tip[1] + direction[1] * distance)
                         sign = 1.0 if direction[0] >= 0 else -1.0
-                        entities, rect = symbol(anchor, sign, spec, comma, 1)
+                        entities, rect = symbol(anchor, sign, spec, comma, count)
                         if not ctx.inside(rect) or not ctx.free(rect):
                             continue
                         if visible and any(_segment_hits_rect(a, b, rect) for a, b in visible):
@@ -508,7 +508,7 @@ def place(ctx: Context, members: list[Member], spec: dict[str, Any]) -> tuple[li
     tip = spot.at(0.5)
     direction = _directions(spot, tip, spec.get("side"))[0]
     anchor = (tip[0] + direction[0] * DISTANCES[1], tip[1] + direction[1] * DISTANCES[1])
-    entities, rect = symbol(anchor, 1.0 if direction[0] >= 0 else -1.0, spec, comma, 1)
+    entities, rect = symbol(anchor, 1.0 if direction[0] >= 0 else -1.0, spec, comma, count)
     return [*entities, Line(tip[0], tip[1], anchor[0], anchor[1], DIMENSIONS), arrow(tip, _unit((tip[0] - anchor[0], tip[1] - anchor[1])))], [tip], anchor, rect, False
 
 
@@ -546,7 +546,7 @@ def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     clean_all = True
     for view, members in groups:
         ctx.used_view(view.name)
-        entities, tips, anchor, rect, clean = place(ctx, members, spec)
+        entities, tips, anchor, rect, clean = place(ctx, members, spec, len(joints) if unseen else 1)
         ctx.add(entities)
         ctx.reserve(rect)
         ctx.extras.setdefault("segments", []).extend((t, anchor) for t in tips)
@@ -555,11 +555,9 @@ def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         parts.append(f"{view.name} view: {len(tips)} arrow(s) for {marked}")
     detail = f"{_label(spec, ctx.comma)} on {names}; " + "; ".join(parts)
     problems: list[str] = []
-    if unseen:
+    if unseen:  # identical joints no view shows: the symbol states the count, the arrows mark the ones that are seen
         hidden = ", ".join(f"{j.bodies[0]} + {j.bodies[1]}" for j in unseen)
-        problems.append(
-            f"no arrow for {hidden}: no view shows their seam (hidden or edge-on); add a view that shows them (view=) or a section"
-        )
+        detail += f"; the symbol says {len(joints)}x: {hidden} are hidden in every view, so they have no arrow of their own"
     if not clean_all:
         problems.append("the symbol crosses or overlaps other things: move it with side or offset_mm")
     if problems:

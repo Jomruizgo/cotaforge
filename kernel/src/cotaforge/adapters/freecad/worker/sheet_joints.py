@@ -18,6 +18,7 @@ Vec3 = tuple[float, float, float]
 KINDS = ("tee", "corner", "butt", "lap", "edge")
 THROATS = (2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0, 12.0)  # standard throats a (mm)
 THROAT_FACTOR = 0.7  # a = 0.7 x the thinner wall (the usual rule for a fillet weld loaded evenly)
+MIN_THROAT_MM = 3.0  # the usual minimum throat of a load-bearing fillet weld (EN 1993-1-8 4.5.2, quoted from memory, not checked against the text)
 BUTT_SQUARE_MAX_MM = 3.0  # a butt joint up to this thickness is welded square (I) from one side; thicker, a V groove
 AREA_SAME = 0.9  # the contact is "the whole face" of a body when it covers this share of it
 END_FACE_SHARE = 0.3  # a face smaller than this share of the biggest flat face of its body is an end (a tube end, a plate edge)
@@ -131,11 +132,14 @@ def standard_throat(wanted: float) -> float:
 
 
 def proposal(joint: Joint) -> Weld:
-    """The usual weld of a joint, offered to the designer, never applied: a fillet of throat ~0.7 x the thinner wall for a
+    """The usual weld of a joint, offered to the designer, never applied: a fillet of throat max(3 mm, ~0.7 x the thinner wall), never above the wall, for a
     tee, corner, lap or edge; for a butt joint a square (up to 3 mm) or V butt weld of the wall's thickness."""
     if joint.kind == "butt":
         return Weld("square" if joint.thin <= BUTT_SQUARE_MAX_MM else "v", joint.thin, "throat")
-    return Weld("fillet", standard_throat(THROAT_FACTOR * joint.thin), "throat")
+    size = standard_throat(max(MIN_THROAT_MM, THROAT_FACTOR * joint.thin))
+    if size > joint.thin:  # never more than the thinner wall allows
+        size = max((t for t in THROATS if t <= joint.thin), default=joint.thin)
+    return Weld("fillet", size, "throat")
 
 
 def covers(pairs: Sequence[Sequence[str]]) -> set[str]:

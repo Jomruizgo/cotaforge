@@ -36,7 +36,7 @@ WELD = {
     "between": ["body:1", "body:5"],
     "also": [["body:2", "body:5"], ["body:3", "body:5"], ["body:4", "body:5"]],
     "kind": "fillet",
-    "size_mm": 2,
+    "size_mm": 3,
     "size_kind": "throat",
     "sides": "arrow",
     "all_around": True,
@@ -88,9 +88,9 @@ async def test_the_welded_sheet_gets_its_cut_list_and_a_balloon_per_body(workspa
         review = await cad.ok("drawing", action="review")
         print("JOINT QUESTION", review)
         findings, _, _ = await pending_points(cad)
-        # a general note does not close the joints: the four tee joints are ONE question, with the proposal a = 0.7 x 3 mm = 2 mm
+        # a general note does not close the joints: the four tee joints are ONE question, with the proposal a = max(3, 0.7 x 3 mm) = 3 mm
         (joint,) = [f for f in findings if f.startswith("weld_joint_unspecified")]
-        assert "4 iguales" in review and "a=2" in review and "BLOCKS EXPORT weld_joint_unspecified" in review, review
+        assert "4 iguales" in review and "a=3" in review and "BLOCKS EXPORT weld_joint_unspecified" in review, review
         # the designer accepts the proposal: one symbol for the four joints, the arrow on the seam
         added = await cad.ok("drawing", action="add", items=[WELD])
         print("WELD ADDED", added)

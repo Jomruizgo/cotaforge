@@ -42,9 +42,9 @@ def _proposal_text(ctx: Context, joint: Any) -> str:
     thin = ctx.num(joint.thin)
     if weld.kind == "fillet":
         return ctx.say(
-            f"soldadura de ángulo continua, garganta a={size} mm (0,7 × los {thin} mm de la pared más delgada, a la serie "
+            f"soldadura de ángulo continua, garganta a={size} mm (0,7 × los {thin} mm de la pared más delgada, con mínimo de 3 mm para soldaduras resistentes según EN 1993-1-8 §4.5.2, a la serie "
             "normal), por el lado de la flecha" + (", todo alrededor" if closed else ""),
-            f"continuous fillet weld, throat a={size} mm (0.7 x the {thin} mm of the thinner wall, rounded to the standard "
+            f"continuous fillet weld, throat a={size} mm (0.7 x the {thin} mm of the thinner wall, at least 3 mm for load-bearing welds per EN 1993-1-8 4.5.2, rounded to the standard "
             "series), on the arrow side" + (", all round" if closed else ""),
         )
     es = "I (cuadrada)" if weld.kind == "square" else "V"
