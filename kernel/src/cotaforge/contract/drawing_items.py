@@ -27,6 +27,7 @@ ITEM_FIELDS: dict[str, frozenset[str]] = {
             "show",
             "text",
             "thread",
+            "leader_mm",
         }
     ),
     "dim": frozenset(
@@ -84,6 +85,7 @@ ITEM_FIELDS: dict[str, frozenset[str]] = {
             "view",
             "side",
             "offset_mm",
+            "anchor_at",
         }
     ),
 }

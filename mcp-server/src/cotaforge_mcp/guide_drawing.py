@@ -497,8 +497,11 @@ TOPIC_OUTPUT = "drawing:output"
 TOPIC_QUALITY = "drawing:quality"
 TOPIC_DONE = "drawing:done"
 LAYOUT_LINE = (
-    "A sheet built in one order (compose) has its dimensions and leaders placed by one global layout: it writes side and offset_mm "
-    "on a dim, and elbow_mm [dx, dy] (the vector from the tip of a leader to its elbow, page mm, y up) on a callout; "
+    "A sheet built in one order (compose) has its dimensions, leaders, datums, weld symbols and angles placed by one global layout: "
+    "it writes side and offset_mm on a dim (offset_mm is the arc radius of an angle) and on a datum, elbow_mm [dx, dy] (the vector from "
+    "the tip of a leader to its elbow, page mm, y up) on a callout, leader_mm [tip x, tip y, elbow x, elbow y] (page mm) on a hole_dim "
+    "and anchor_at [x, y] (page mm, the junction of the arrow lines and the reference line) on a weld; the overall and datum_dims "
+    "items, notes, frames and balloons stand where their own drawer put them and the layout plans around them; "
     "what it cannot place it lists as layout_unplaced. thread_dims (no fields): the callout of every external thread, as "
     "dim items kind=diameter (the harness adds it itself: rq_threads)."
 )

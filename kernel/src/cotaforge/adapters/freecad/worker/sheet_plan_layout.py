@@ -25,7 +25,11 @@ Input
              ``callout`` (one anchor, text box ``w`` x ``h``, leader), ``balloon`` (as callout, ``w`` is the diameter),
              ``datum`` (anchor on an edge, ``normal`` pointing out, ``slide`` mm it may move along the edge, ``w`` x ``h`` the
              frame), ``section_label`` (above its view), ``surface`` (the general surface symbol, top right) and ``note``
-             (``order`` is its number; all notes form ONE block in number order). ``sides`` restricts or orders the allowed
+             (``order`` is its number; all notes form ONE block in number order), ``leader`` (an oblique line from its tip to an
+             elbow and a horizontal shelf the text stands on, ISO 128-22; ``anchors[0]`` is the tip, ``extra`` the centre and radius
+             of the circle it points at, when it leaves a hole), ``angle`` (an angular dimension: ``anchors[0]`` the apex, ``extra``
+             the angles of its two rays) and ``weld`` (a weld symbol: ``anchors`` the ends of its arrows, ``extra`` the room the
+             symbol takes about its anchor). ``sides`` restricts or orders the allowed
              sides (top|bottom|left|right). ``fixed_box`` / ``fixed_segments`` pin an item the engineer placed by hand: it is
              not moved and is an obstacle for everything else.
 
@@ -42,16 +46,18 @@ Strategy
 1. Room per view side: dimensions are stacked tentatively (shorter inside, ISO 129: first line 10 mm from the outline, 7 mm
    between lines) and callouts, datums and labels add their columns; the gap between related views is made from it.
 2. The views are arranged from those gaps and centred in the area; free views take the free room (nearest the top right).
-3. Items are placed in priority order (dimensions by span, then section labels, datums, callouts and balloons, the surface
-   symbol, the notes block), each by scoring candidate positions against the ink already on the sheet: text over text or over
+3. Items are placed in priority order (dimensions by span, angles, section labels, datums, weld symbols, leaders, callouts
+   and balloons, the surface symbol, the notes block), each by scoring candidate positions against the ink already on the sheet: text over text or over
    a line, collinear lines, anything over a view or the title block is forbidden; leader crossings, leader length and
-   leaders through the part cost.
+   leaders through the part cost. The arrows of a weld symbol cross no leader and no other arrow (that costs more than anything
+   else: a weld with no such place is reported, never drawn across a leader).
 4. If the notes block or the surface symbol find no free room, the area is reduced by them and everything is redone.
 """
 
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 Point = tuple[float, float]
 Rect = tuple[float, float, float, float]
@@ -72,7 +78,26 @@ MAX_LEVELS = 8
 JUDGE_BUDGET = 25
 NOTE_GAP_MM = 1.0
 SIDES = ("top", "bottom", "left", "right")
-DEFAULT_PRIORITY = {"dim": 0, "section_label": 1, "datum": 2, "callout": 3, "balloon": 3, "surface": 4, "note": 5}
+ARROW_CROSS = 200.0  # an arrow line across a leader or another arrow line: a place that has it is not taken when any other exists
+LEADER_ANGLES = (45, 135, 225, 315, 30, 60, 120, 150, 210, 240, 300, 330)
+"""The angles (degrees, counter-clockwise on the page) a leader may leave its tip at, the 45 degree ones first: ISO 128-22
+keeps a leader off the horizontal and the vertical (it would read as a centre line or a dimension line)."""
+ANGLE_RADII_MM = (12.0, 16.0, 20.0, 25.0, 31.0, 38.0)  # the arc of an angular dimension (ISO 129-1: outside the part)
+WELD_DISTANCES_MM = (8.0, 12.0, 18.0, 26.0, 36.0, 46.0, 58.0)
+WELD_DIRECTIONS = 24
+MAX_CANDIDATES = 400
+DEFAULT_PRIORITY = {
+    "dim": 0,
+    "angle": 0,
+    "section_label": 1,
+    "datum": 2,
+    "weld": 3,
+    "leader": 3,
+    "callout": 3,
+    "balloon": 3,
+    "surface": 4,
+    "note": 5,
+}
 _NORMALS = {"top": (0.0, -1.0), "bottom": (0.0, 1.0), "left": (-1.0, 0.0), "right": (1.0, 0.0)}
 
 
@@ -111,6 +136,12 @@ class Item:
     order: int = 0
     fixed_box: Rect | None = None
     fixed_segments: tuple[Segment, ...] = ()
+    fixed_kinds: tuple[str, ...] = ()
+    """The kind of each fixed segment (``ext`` when not given): a pinned leader costs a crossing like a placed one."""
+    extra: tuple[float, ...] = ()
+    """Kind specific numbers. ``angle``: the two ray angles (degrees, counter-clockwise on the page, y UP). ``leader``: the centre of the circle the
+    leader points at and its radius (local, y down): the tip moves round it. ``weld``: the
+    symbol's reach along the reference line, above it and below it, for a symbol that runs to the right of its anchor."""
 
 
 @dataclass(frozen=True)
@@ -132,6 +163,9 @@ class Placed:
     text_box: Rect
     segments: tuple[Segment, ...] = ()
     cost: float = 0.0
+    data: tuple[float, ...] = ()
+    """What the item needs to be drawn there. ``angle``: the radius of the arc. ``weld``: the anchor (x, y, page, y down).
+    ``leader``: the elbow and the tip (x, y, x, y: page, y down). ``datum``: the stem length."""
 
 
 @dataclass(frozen=True)
@@ -206,6 +240,20 @@ def _inside_len(s: Segment, r: Rect) -> float:
     return max(0.0, t1 - t0) * math.hypot(dx, dy)
 
 
+def _ray_exit(box: Rect, p: Point, u: Point) -> float:
+    """How far the ray from ``p`` along ``u`` runs before it leaves ``box``."""
+    ts = []
+    if u[0] > 1e-9:
+        ts.append((box[2] - p[0]) / u[0])
+    elif u[0] < -1e-9:
+        ts.append((box[0] - p[0]) / u[0])
+    if u[1] > 1e-9:
+        ts.append((box[3] - p[1]) / u[1])
+    elif u[1] < -1e-9:
+        ts.append((box[1] - p[1]) / u[1])
+    return max(0.0, min(ts)) if ts else 0.0
+
+
 def _far(a: Segment, b: Segment) -> bool:
     return (
         max(a[0], a[2]) < min(b[0], b[2]) - 1
@@ -255,6 +303,7 @@ class _Ink:
     solids: list[Rect] = field(default_factory=list)
     box: Rect = (0.0, 0.0, 0.0, 0.0)  # the bounding box (inflated) once on the sheet
     skip_solid: str | None = None  # the view whose body the lines of this ink may cross (its own)
+    text_in_view: bool = False  # ... and whose body its texts may stand over, when no line of the part is under them (an angle)
 
     def bbox(self) -> Rect:
         xs: list[float] = []
@@ -307,6 +356,13 @@ _CROSS_COST = {
     frozenset(["leader", "ext"]): 3.0,
     frozenset(["stem", "ext"]): 3.0,
     frozenset(["ext", "dim"]): 1.0,
+    # the arrow line of a weld symbol: it crosses no leader (ISO 2553: the arrow line is read as the one that points at the joint)
+    frozenset(["arrow"]): ARROW_CROSS,
+    frozenset(["arrow", "leader"]): ARROW_CROSS,
+    frozenset(["arrow", "stem"]): ARROW_CROSS,
+    frozenset(["arrow", "dim"]): 10.0,
+    frozenset(["arrow", "outline"]): 8.0,
+    frozenset(["arrow", "ext"]): 3.0,
 }
 _NO_COLLINEAR = frozenset(["ext"])  # two extension lines on one another is a shared extension line
 
@@ -325,7 +381,7 @@ class _Ctx:
         self.index.add(ink)
 
 
-def _text_free(r: Rect, owner: str, ctx: _Ctx) -> str | None:
+def _text_free(r: Rect, owner: str, ctx: _Ctx, own_view: str | None = None) -> str | None:
     """Cheap first test of a text box alone: why it cannot be there."""
     if not _inside(r, ctx.frame):
         return "outside the frame"
@@ -343,7 +399,7 @@ def _text_free(r: Rect, owner: str, ctx: _Ctx) -> str | None:
             ):
                 return f"text over {other.owner}"
         for r2 in other.solids:
-            if _overlap(r, r2):
+            if _overlap(r, r2) and other.owner != f"view:{own_view}":
                 return f"text over {other.owner}"
         for s2, _k in other.segs:
             if _seg_rect(s2, inner):
@@ -369,7 +425,7 @@ def _judge(ink: _Ink, ctx: _Ctx) -> tuple[str | None, float]:
                 if _overlap(_inflate(r, CLEAR_MM / 2), _inflate(r2, CLEAR_MM / 2)):
                     return f"text over {other.owner}", 0.0
             for r2 in other.solids:
-                if _overlap(r, r2):
+                if _overlap(r, r2) and not (ink.text_in_view and other.owner == f"view:{ink.skip_solid}"):
                     return f"text over {other.owner}", 0.0
             for s2, _k in other.segs:
                 if _seg_rect(s2, _inflate(r, -LINE_CLEAR_MM)):
@@ -452,7 +508,7 @@ def _rooms(views: dict[str, View], items: Sequence[Item]) -> dict[tuple[str, str
             half = max(_span(it), it.w + 2 * ARROW_MM) / 2
             stacks.setdefault((v.id, side), []).append((it.id, c - half, c + half))
             heights[(v.id, side)] = max(heights.get((v.id, side), 0.0), it.h)
-        elif it.kind in ("callout", "balloon") and it.anchors:
+        elif it.kind in ("callout", "balloon", "leader") and it.anchors:
             side = min(it.sides or SIDES, key=lambda s, v=v, it=it: _edge_distance(v, it.anchors[0], s))
             ext = (it.h if side in ("top", "bottom") else it.w) + LEADER_MIN_MM
             cols[(v.id, side)] = max(cols.get((v.id, side), 0.0), ext)
@@ -572,7 +628,8 @@ def _dim_ink(it: Item, vb: Rect, side: str, level: int) -> tuple[_Ink, Rect, tup
 
 
 def _fixed_ink(it: Item) -> _Ink:
-    ink = _Ink(it.id, segs=[(s, "ext") for s in it.fixed_segments])
+    kinds = it.fixed_kinds if len(it.fixed_kinds) == len(it.fixed_segments) else ("ext",) * len(it.fixed_segments)
+    ink = _Ink(it.id, segs=list(zip(it.fixed_segments, kinds, strict=True)))
     if it.fixed_box:
         ink.texts.append(it.fixed_box)
     return ink
@@ -699,10 +756,14 @@ class _Run:
             (i for i in todo if i.kind == "dim"), key=lambda i: (_span(i) if len(i.anchors) == 2 else 0.0, i.id)
         ):
             self._dim(it, views)
+        for it in sorted((i for i in todo if i.kind == "angle"), key=lambda i: (i.view or "", i.id)):
+            self._angle(it)
         for kind in ("section_label", "datum"):
             for it in sorted((i for i in todo if i.kind == kind), key=lambda i: (i.priority or 0, i.view or "", i.id)):
                 self._label(it) if kind == "section_label" else self._datum(it)
-        rest = [i for i in todo if i.kind in ("callout", "balloon")]
+        for it in sorted((i for i in todo if i.kind == "weld"), key=lambda i: (i.view or "", i.id)):
+            self._weld(it)
+        rest = [i for i in todo if i.kind in ("callout", "balloon", "leader")]
         for it in sorted(
             rest,
             key=lambda i: (
@@ -713,19 +774,21 @@ class _Run:
                 i.id,
             ),
         ):
-            self._callout(it)
+            self._leader(it) if it.kind == "leader" else self._callout(it)
         for it in sorted((i for i in todo if i.kind == "surface"), key=lambda i: i.id):
             self._corner(it)
         self._notes(sorted((i for i in todo if i.kind == "note"), key=lambda i: (i.order, i.id)))
-        known = {"dim", "section_label", "datum", "callout", "balloon", "surface", "note"}
+        known = {"dim", "angle", "section_label", "datum", "weld", "callout", "balloon", "leader", "surface", "note"}
         for it in todo:
             if it.kind not in known:
                 self.fail(it, f"unknown item kind {it.kind!r}")
 
-    def _commit(self, it: Item, ink: _Ink, side: str | None, level: int, box: Rect, cost: float) -> None:
+    def _commit(
+        self, it: Item, ink: _Ink, side: str | None, level: int, box: Rect, cost: float, data: tuple[float, ...] = ()
+    ) -> None:
         self.ctx.commit(ink)
         self.placed.append(
-            Placed(it.id, it.kind, it.view, side, level, box, tuple(s for s, _ in ink.segs), round(cost, 3))
+            Placed(it.id, it.kind, it.view, side, level, box, tuple(s for s, _ in ink.segs), round(cost, 3), data)
         )
 
     def _dim(self, it: Item, views: dict[str, View]) -> None:
@@ -800,12 +863,12 @@ class _Run:
         half = (it.h if ny else it.w) / 2
         ext = self.stack_ext.get((it.view or "", side), 0.0)
         why: dict[str, int] = {}
-        best: tuple[float, _Ink, Rect, int] | None = None
+        best: tuple[float, _Ink, Rect, float] | None = None
         slides = sorted(
             {0.0, *[s * 2.0 * sg for s in range(1, int(it.slide // 2) + 1) for sg in (1, -1)]},
             key=lambda s: (abs(s), s),
         )
-        for stem in (STEM_MIN_MM, ext + 3.0, ext + 9.0):
+        for stem in (STEM_MIN_MM, STEM_MIN_MM + 3.0, ext + 3.0, ext + 9.0):
             for t in slides:
                 px, py = ax + tx * t, ay + ty * t
                 cx, cy = px + nx * (stem + half), py + ny * (stem + half)
@@ -819,13 +882,13 @@ class _Run:
                     continue
                 total = cost + stem * 0.3 + abs(t) * 0.4
                 if best is None or total < best[0]:
-                    best = (total, ink, box, 0)
+                    best = (total, ink, box, stem)
             if best is not None:
                 break
         if best is None:
             self.fail(it, why)
             return
-        self._commit(it, best[1], side, 0, best[2], best[0])
+        self._commit(it, best[1], side, 0, best[2], best[0], (best[3],))
 
     def _callout(self, it: Item) -> None:
         vb = self.vbox(it.view)
@@ -879,6 +942,148 @@ class _Run:
             self.fail(it, why)
             return
         self._commit(it, best[1], best[3], 0, best[2], best[0])
+
+    def _choose(self, cands: list[tuple[float, _Ink, Any]], why: dict[str, int]) -> tuple[float, _Ink, Any] | None:
+        """The cheapest candidate that can stand on the sheet. ``cands`` are ``(base cost, ink, what the caller keeps)``;
+        the cheapest are judged first and the search ends once a place is known and the rest cost more."""
+        order = sorted(range(len(cands)), key=lambda i: (cands[i][0], i))[:MAX_CANDIDATES]
+        best: tuple[float, _Ink, Any] | None = None
+        tries, best_cross, budget = 0, 0.0, JUDGE_BUDGET
+        for i in order:
+            base, ink, meta = cands[i]
+            if best is not None and (base >= best[0] or budget <= 0 or tries > 8 * JUDGE_BUDGET):
+                break
+            bad = next(
+                (b for r in ink.texts if (b := _text_free(r, ink.owner, self.ctx, ink.skip_solid if ink.text_in_view else None))),
+                None,
+            )
+            if bad is None:
+                bad, cost = _judge(ink, self.ctx)
+            else:
+                cost = 0.0
+            if bad:
+                why[bad] = why.get(bad, 0) + 1
+                continue
+            tries += 1
+            if best is not None and best_cross < 10.0:
+                budget -= 1
+            if best is None or base + cost < best[0]:
+                best = (base + cost, ink, meta)
+                best_cross = cost
+        return best
+
+    def _leader(self, it: Item) -> None:
+        """A leader with its text on a shelf (ISO 128-22): an oblique line from the tip on the part to an elbow, then a
+        horizontal shelf the text stands on. The angles are the preferred ones (never along or across a centre line); the
+        elbow goes outside the view as near as the other annotations leave room."""
+        vb = self.vbox(it.view)
+        if vb is None or not it.anchors:
+            self.fail(it, "its view is not placed" if vb is None else "a leader needs an anchor (its tip)")
+            return
+        ax, ay = _abs(vb, it.anchors[0])
+        circle = (*_abs(vb, (it.extra[0], it.extra[1])), it.extra[2]) if len(it.extra) == 3 else None
+        cands: list[tuple[float, _Ink, Any]] = []
+        for angle in LEADER_ANGLES:
+            rad = math.radians(angle)
+            ux, uy = math.cos(rad), -math.sin(rad)
+            if circle is not None:  # the leader of a hole points at its centre: its tip is where that ray meets the circle
+                ax, ay = circle[0] + ux * circle[2], circle[1] + uy * circle[2]
+            reach = _ray_exit(vb, (ax, ay), (ux, uy))
+            sx = 1.0 if ux > 0 else -1.0
+            for step in range(14):
+                length = max(LEADER_MIN_MM, reach + 3.0) + step * 3.0
+                ex, ey = ax + ux * length, ay + uy * length
+                box = (ex, ey - it.h, ex + it.w, ey) if sx > 0 else (ex - it.w, ey - it.h, ex, ey)
+                seg = (ax, ay, ex, ey)
+                shelf = (ex, ey, ex + sx * it.w, ey)
+                base = length * 0.2 + abs((angle % 90) - 45) * 0.08 + _inside_len(seg, vb) * 0.15
+                ink = _Ink(it.id, texts=[box], segs=[(seg, "leader"), (shelf, "leader")], skip_solid=it.view)
+                cands.append((base, ink, (ex, ey, box, "right" if sx > 0 else "left", ax, ay)))
+        why: dict[str, int] = {}
+        best = self._choose(cands, why)
+        if best is None:
+            self.fail(it, why)
+            return
+        ex, ey, box, side, tx, ty = best[2]
+        self._commit(it, best[1], side, 0, box, best[0], (ex, ey, tx, ty))
+
+    def _angle(self, it: Item) -> None:
+        """An angular dimension: an arc about the apex between its two rays (ISO 129-1), the text outside it; the arc takes
+        the smallest of a few radii at which nothing else is crossed or covered."""
+        vb = self.vbox(it.view)
+        if vb is None or not it.anchors or len(it.extra) != 2:
+            self.fail(it, "its view is not placed" if vb is None else "an angle needs its apex and the angles of its rays")
+            return
+        ax, ay = _abs(vb, it.anchors[0])
+        a0, a1 = it.extra
+        span = (a1 - a0) % 360.0
+        mid = math.radians((a0 + span / 2) % 360.0)
+        cands: list[tuple[float, _Ink, Any]] = []
+        for k, radius in enumerate(ANGLE_RADII_MM):
+            n = max(4, int(span // 8))
+            pts = [
+                (ax + radius * math.cos(math.radians(a0 + span * i / n)), ay - radius * math.sin(math.radians(a0 + span * i / n)))
+                for i in range(n + 1)
+            ]
+            segs: list[tuple[Segment, str]] = [((p[0], p[1], q[0], q[1]), "dim") for p, q in zip(pts, pts[1:], strict=False)]
+            for a in (a0, a1):
+                r2 = radius + EXT_OVER_MM
+                segs.append(((ax, ay, ax + r2 * math.cos(math.radians(a)), ay - r2 * math.sin(math.radians(a))), "ext"))
+            tx, ty = ax + (radius + 4.0) * math.cos(mid), ay - (radius + 4.0) * math.sin(mid)
+            x0 = tx if math.cos(mid) >= 0 else tx - it.w
+            box = (x0, ty - it.h + 1.2, x0 + it.w, ty + 1.2)
+            cands.append((k * 2.0, _Ink(it.id, texts=[box], segs=segs, skip_solid=it.view, text_in_view=True), (radius, box)))
+        why: dict[str, int] = {}
+        best = self._choose(cands, why)
+        if best is None:
+            self.fail(it, why)
+            return
+        radius, box = best[2]
+        self._commit(it, best[1], None, 0, box, best[0], (radius,))
+
+    def _weld(self, it: Item) -> None:
+        """A weld symbol: its reference line goes where the arrows are short and cross nothing. ``anchors`` are the ends of
+        the arrows (the first one is the joint the symbol leads), ``extra`` the room the symbol takes about its anchor. The
+        anchor is looked for around the first joint and, when there are several, around the middle of all of them."""
+        vb = self.vbox(it.view)
+        if vb is None or not it.anchors or len(it.extra) != 3:
+            self.fail(it, "its view is not placed" if vb is None else "a weld needs the ends of its arrows and its size")
+            return
+        tips = [_abs(vb, a) for a in it.anchors]
+        reach, up, down = it.extra
+        lead = tips[0]
+        middle = (sum(t[0] for t in tips) / len(tips), sum(t[1] for t in tips) / len(tips))
+        origins = [lead] if len(tips) == 1 else [lead, middle]
+        cands: list[tuple[float, _Ink, Any]] = []
+        seen: set[tuple[int, int]] = set()
+        for origin in origins:
+            for n in range(WELD_DIRECTIONS):
+                rad = 2 * math.pi * n / WELD_DIRECTIONS
+                for d in WELD_DISTANCES_MM:
+                    anchor = (origin[0] + d * math.cos(rad), origin[1] + d * math.sin(rad))
+                    key = (round(anchor[0] * 2), round(anchor[1] * 2))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    lengths = [math.hypot(t[0] - anchor[0], t[1] - anchor[1]) for t in tips]
+                    if min(lengths) < LEADER_MIN_MM:
+                        continue
+                    sign = 1.0 if anchor[0] >= lead[0] else -1.0
+                    x0, x1 = (anchor[0], anchor[0] + reach) if sign > 0 else (anchor[0] - reach, anchor[0])
+                    rect = (x0, anchor[1] - up, x1, anchor[1] + down)
+                    segs: list[tuple[Segment, str]] = [((t[0], t[1], anchor[0], anchor[1]), "arrow") for t in tips]
+                    ink = _Ink(it.id, texts=[rect], segs=segs, skip_solid=it.view)
+                    cands.append((sum(lengths) * 0.3, ink, anchor))
+        why: dict[str, int] = {}
+        best = self._choose(cands, why)
+        if best is None:
+            self.fail(it, why)
+            return
+        if best[0] >= ARROW_CROSS:
+            self.fail(it, "every place it can stand has an arrow across a leader or another arrow")
+            return
+        anchor = best[2]
+        self._commit(it, best[1], None, 0, best[1].texts[0], best[0], (anchor[0], anchor[1]))
 
     def _corner(self, it: Item) -> None:
         fx0, fy0, fx1, fy1 = self.sheet.frame

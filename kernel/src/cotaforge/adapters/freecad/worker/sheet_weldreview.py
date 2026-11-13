@@ -162,13 +162,37 @@ def class_findings(data: Any) -> list[Any]:
     return [Finding("weld_class_13920", "warning", text, tuple(str(n["id"]) for n in bad))]
 
 
+def pictorial_findings(data: Any) -> list[Any]:
+    """A weld symbol whose arrow touches a pictorial view (ISO 2553 symbols stand on orthographic views or sections: in a picture
+    the seam is distorted and the arrow side is ambiguous)."""
+    from items_weld import PICTORIAL  # noqa: PLC0415
+    from sheet_review import Finding  # noqa: PLC0415
+
+    ctx = data.ctx
+    seen = ctx.extras.get("weld_views", {})
+    out = []
+    for spec in data_of(data, "weld"):
+        bad = sorted({v for v in seen.get(str(spec["id"]), []) if v in PICTORIAL or v.startswith("iso")})
+        if bad:
+            text = ctx.say(
+                f"El símbolo de soldadura {spec['id']} apunta a una vista pictórica ({', '.join(bad)}): en una isométrica el cordón se "
+                "deforma y el lado de la flecha (ISO 2553) es ambiguo. Ponlo en una vista ortogonal o en un corte que muestre la unión; "
+                "si ninguna la muestra, añade esa vista o corte.",
+                f"The weld symbol {spec['id']} points into a pictorial view ({', '.join(bad)}): in an isometric view the seam is "
+                "distorted and the arrow side (ISO 2553) is ambiguous. Put it on an orthographic view or a section that shows the "
+                "joint; if none does, add that view or section.",
+            )
+            out.append(Finding("weld_on_pictorial", "warning", text, (str(spec["id"]),)))
+    return out
+
+
 def findings(data: Any) -> list[Any]:
     """The welds of a welded part: every measured joint has its symbol; with no joint measured, a part that says no weld
     anywhere is asked which ones."""
     from sheet_review import Finding  # noqa: PLC0415
 
     ctx = data.ctx
-    out = class_findings(data) + duplicate_findings(data)
+    out = class_findings(data) + duplicate_findings(data) + pictorial_findings(data)
     joints = joints_of(ctx)
     if joints:
         return out + joint_findings(data, joints)

@@ -3,19 +3,28 @@
 
 ``sheet_plan_layout.plan_layout`` places views and annotations from their sizes and anchors; a composed sheet holds
 the ink the items drew (``sheet_units``). This module reads that ink as planner items, runs the planner and says, for each
-item the planner placed, the ``side`` and ``offset_mm`` the item takes to stand exactly there (every drawn item takes them:
-a dimension with a side and an offset goes where it is told).
+item the planner placed, what the item takes to stand exactly there (a dimension with a side and an offset goes where it is told).
 
 What it feeds the planner:
 
 * the views at the place the CAD put them (pinned: the planner never moves a view of the sheet, it only judges the room);
-* every linear ``dim`` item that asked for no place: its two anchors (the feet of its extension lines), its text size and
-  its axis, read from its own ink. These are what the planner MOVES;
-* the ink of every other item (callouts, datums, notes, the dimensions of ``overall``...) as pinned obstacles.
+* every item that asked for no place (none of ``PLACE_KEYS``) and is of a type the planner places, read from its own ink.
+  These are what the planner MOVES, and what each is told:
 
-What it does not do (and says): an item that is not a linear dimension is not moved (callouts keep their own diagonal
-leaders, which no ``side``/``offset_mm`` pair can reproduce from a planned position); a dimension whose ink cannot be read
-is an obstacle, and one the planner finds no place for stays where it is and is reported as ``unplaced``.
+  - ``dim`` distance: ``side`` and ``offset_mm``; ``dim`` angle: ``offset_mm`` (the radius of the arc);
+  - ``dim`` diameter, radius, chamfer: ``elbow_mm`` (from the tip, which the geometry fixes);
+  - ``hole_dim``: ``leader_mm`` (tip and elbow, absolute: the tip goes round the circle of the hole, so the leader points at
+    its centre);
+  - ``datum`` of a face: ``side`` and ``offset_mm`` (the stem);
+  - ``weld``: ``anchor_at`` (where the arrow lines meet the reference line; the drawer ends each arrow on its seam);
+
+* the ink of every other item as pinned obstacles, each line with its kind (a leader, an arrow, a dimension line), so what is
+  placed crosses them as little as it crosses a placed one. ``FIXED_REASONS`` says why the types that stay (overall,
+  datum_dims, notes, frames, finish symbols, balloons, section labels) are not moved.
+
+What it does not do (and says): an item whose ink cannot be read as one of those (a weld drawn in two views is two symbols, a
+callout of several leaders) is an obstacle and is listed as unplaced; one the planner finds no place for stays where it is and
+is reported as ``unplaced``.
 
 A second run, with the views related as the sheet arranges them (not pinned), answers whether the views and the room their
 annotations need fit the drawing area (``fits``, ``needed``): the caller steps the paper up when they do not.
@@ -29,6 +38,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import sheet_collide
+import sheet_model as model
 import sheet_plan_layout as pl
 import sheet_units
 
@@ -38,7 +48,25 @@ Segment = tuple[float, float, float, float]
 PARALLEL_TOL_MM = 0.05
 ROUND_MM = 0.5
 FOOT_MIN_MM = 4.0  # an extension line reaches farther than the edges of an arrowhead (they are at most 3.5 mm long)
-MOVABLE_TYPES = frozenset({"dim"})
+MOVABLE_TYPES = frozenset({"dim", "hole_dim", "datum", "weld"})
+PLACE_KEYS = ("side", "offset_mm", "elbow_mm", "leader_mm", "anchor_at")
+"""The fields that say where an item stands: an item that has one was placed by its author (or by the planner before) and stays."""
+LEADER_TYPES = frozenset({"dim", "hole_dim", "balloons", "gdt", "finish"})
+REF_MIN_MM = 14.0  # the reference line of a weld symbol (``items_weld.MIN_REF_MM``)
+ARROW_MIN_MM = 6.0  # an arrow line is longer than this; a flag pole or an arrowhead is not
+LEADER_LINE_MM = 6.0
+CENTRE_MARK_OVER_MM = 2.0  # a centre mark reaches this far past its circle (``sheet_draw.centre_mark``)
+TIP_ON_CIRCLE_MM = 0.6
+FIXED_REASONS = {
+    "overall": "its width, height and depth are one item with one stack distance: they stand outermost, as the first lines of the stacks, and the planner places everything else around them",
+    "datum_dims": "its chains and ordinates hang from the datum edges of the part and one item draws all of them: they are the frame of the sheet the others are placed against",
+    "note": "the notes form one numbered block that stands last in the free corner the rest leaves",
+    "gdt": "a feature control frame hangs from the callout or the face it controls and moves with it",
+    "finish": "the finish symbol stands on the face it marks (the general one in the corner of the sheet)",
+    "balloons": "a balloon leader ends on its part: the planner keeps clear of them, a balloon is not moved",
+    "section": "a section label and its cutting-plane line belong to the view the section makes",
+}
+"""Item types that stay where their own drawer put them, and why: for the planner they are obstacles."""
 CALLOUT_KINDS = frozenset({"diameter", "radius", "chamfer"})  # the ``dim`` kinds that are a leader and a text
 ARROW_EDGE_MM = 3.6  # the edges of an arrowhead are shorter than this; a leader and a shelf are not
 SIDE_OF = {"top": "above", "bottom": "below", "left": "left", "right": "right"}
@@ -149,6 +177,124 @@ def read_callout(ink: sheet_collide.Ink) -> tuple[tuple[float, float], tuple[flo
     return tip, elbow, box
 
 
+def read_angle(entities: Sequence[model.Entity]) -> tuple[tuple[float, float], tuple[float, float], Rect] | None:
+    """An angular dimension read from its entities (page coordinates, y up): ``(apex, (a0, a1), text box)`` or ``None``.
+    The angles are those of the two rays, in degrees, counter-clockwise from ``a0`` to ``a1`` as the arc runs."""
+    arcs = [e for e in entities if isinstance(e, model.Arc) and e.layer == model.DIMENSIONS]
+    texts = [sheet_collide.text_box(e) for e in entities if isinstance(e, model.Text)]
+    if len(arcs) != 1 or not texts:
+        return None
+    arc = arcs[0]
+    return (arc.cx, arc.cy), (arc.start, arc.end), _union(texts)
+
+
+def read_datum(ink: sheet_collide.Ink, entities: Sequence[model.Entity]) -> tuple[tuple[float, float], tuple[float, float], Rect] | None:
+    """The symbol of a datum read from its entities (page coordinates, y up): ``(tip, normal, frame)``. The tip is the apex of
+    the triangle on the part, ``normal`` the unit vector (along x or y) from there to its base, ``frame`` the lettered box."""
+    triangles = [e for e in entities if isinstance(e, model.Solid) and len(e.points) == 3]
+    if len(triangles) != 1 or len(ink.frames) != 1:
+        return None
+    tip, b1, b2 = triangles[0].points
+    base = ((b1[0] + b2[0]) / 2, (b1[1] + b2[1]) / 2)
+    dx, dy = base[0] - tip[0], base[1] - tip[1]
+    length = math.hypot(dx, dy)
+    if length < 1e-6:
+        return None
+    nx, ny = dx / length, dy / length
+    if max(abs(nx), abs(ny)) < 0.99:
+        return None
+    return tip, (float(round(nx)), float(round(ny))), ink.frames[0]
+
+
+def read_weld(entities: Sequence[model.Entity]) -> tuple[list[tuple[float, float]], tuple[float, float, float]] | None:
+    """A weld symbol read from its entities (page coordinates, y up): ``(arrow ends, (reach, up, down))`` or ``None``. The
+    reference line is the long horizontal line; the arrows are the lines that leave one of its ends. ``reach`` is how far the
+    symbol runs from that end along the line (the other way for a line that ends there), ``up`` / ``down`` its extent over and
+    under the line. Only a symbol with ONE reference line is read (an item drawn in two views is two symbols)."""
+    lines = [e for e in entities if isinstance(e, model.Line) and e.layer == model.DIMENSIONS]
+    heads = [e for e in entities if isinstance(e, model.Solid) and len(e.points) == 3 and e.layer == model.DIMENSIONS]
+    arrow_lines: list[tuple[model.Line, tuple[float, float]]] = []  # an arrow line ends in an arrowhead: its tip
+    for e in lines:
+        if math.hypot(e.x2 - e.x1, e.y2 - e.y1) < ARROW_MIN_MM:
+            continue
+        for h in heads:
+            if math.dist(h.points[0], (e.x1, e.y1)) <= 0.05 or math.dist(h.points[0], (e.x2, e.y2)) <= 0.05:
+                arrow_lines.append((e, h.points[0]))
+                break
+    taken = {id(e) for e, _ in arrow_lines}
+    refs = [e for e in lines if id(e) not in taken and abs(e.y1 - e.y2) <= PARALLEL_TOL_MM and abs(e.x2 - e.x1) >= REF_MIN_MM]
+    if len(refs) != 1 or not arrow_lines:
+        return None
+    ref = refs[0]
+    ends = [(ref.x1, ref.y1), (ref.x2, ref.y2)]
+    joints = {
+        i
+        for e, tip in arrow_lines
+        for i, end in enumerate(ends)
+        if any(math.dist(p, end) <= 0.05 and math.dist(p, tip) > 0.05 for p in ((e.x1, e.y1), (e.x2, e.y2)))
+    }
+    if len(joints) != 1 or len({i for i in joints}) != 1:
+        return None
+    joint = joints.pop()
+    anchor = ends[joint]
+    tips = [tip for _, tip in arrow_lines]
+    tip_ids = {id(h) for h in heads if any(math.dist(h.points[0], t) <= 0.05 for t in tips)}
+    rest = [e for e in entities if id(e) not in tip_ids and id(e) not in taken]
+    box = sheet_collide.extent(sheet_collide.ink_of("", rest))
+    sign = 1.0 if joint == 0 else -1.0
+    reach = (box[2] - anchor[0]) if sign > 0 else (anchor[0] - box[0])
+    return tips, (reach + 0.5, box[3] - anchor[1] + 0.5, anchor[1] - box[1] + 0.5)
+
+
+def item_type_of(spec: Mapping[str, Any], unit: sheet_units.Unit) -> str:
+    return str(spec.get("type") or unit.item_type)
+
+
+def read_hole(entities: Sequence[model.Entity], tip: tuple[float, float]) -> tuple[tuple[float, float], float] | None:
+    """The circle of the hole a callout leads to, from the centre mark the same item drew (page coordinates, y up): ``(centre,
+    radius)`` when the tip of the leader is on a circle the cross of a centre mark stands at (the mark reaches 2 mm past it)."""
+    marks = [e for e in entities if isinstance(e, model.Line) and e.layer == model.AXES]
+    for h in (e for e in marks if abs(e.y1 - e.y2) <= PARALLEL_TOL_MM < abs(e.x2 - e.x1)):
+        cx, cy, half = (h.x1 + h.x2) / 2, h.y1, abs(h.x2 - h.x1) / 2
+        for v in (e for e in marks if abs(e.x1 - e.x2) <= PARALLEL_TOL_MM < abs(e.y2 - e.y1)):
+            if abs(v.x1 - cx) <= PARALLEL_TOL_MM and abs((v.y1 + v.y2) / 2 - cy) <= PARALLEL_TOL_MM and abs(half - abs(v.y2 - v.y1) / 2) <= PARALLEL_TOL_MM:
+                radius = half - CENTRE_MARK_OVER_MM
+                if radius > 0 and abs(math.dist(tip, (cx, cy)) - radius) <= TIP_ON_CIRCLE_MM:
+                    return (cx, cy), radius
+    return None
+
+
+def _kind_of_lines(item_type: str, ink: sheet_collide.Ink) -> tuple[str, ...]:
+    """The planner's kind of each line of a pinned item: a leader (or the arrow of a weld) costs a crossing with another
+    leader, a dimension line with a leader less, an extension line almost nothing."""
+    main = set(ink.dimension_lines)
+    out: list[str] = []
+    for s in ink.lines:
+        long = math.hypot(s[2] - s[0], s[3] - s[1]) >= ARROW_EDGE_MM
+        if s in main:
+            out.append("dim")
+        elif item_type == "weld" and long:
+            out.append("arrow")
+        elif item_type == "datum" and long:
+            out.append("stem")
+        elif item_type in LEADER_TYPES and long:
+            out.append("leader")
+        else:
+            out.append("ext")
+    return tuple(out)
+
+
+class _Reader:
+    """The views as the planner has them (page y up in ``boxes``, y down in ``flat``)."""
+
+    def __init__(self, boxes: Mapping[str, Rect], flat: Mapping[str, Rect], height: float) -> None:
+        self.boxes, self.flat, self.height = boxes, flat, height
+
+    def local(self, view: str, p: tuple[float, float]) -> tuple[float, float]:
+        vb = self.flat[view]
+        return (p[0] - vb[0], (self.height - p[1]) - vb[1])
+
+
 def prepare(
     page: tuple[float, float],
     area: Rect,
@@ -160,7 +306,8 @@ def prepare(
     outline: Sequence[Segment] = (),
 ) -> Prepared:
     """Read a composed sheet. ``boxes`` are the views' rectangles (page mm, y up), ``units`` what each item drew, ``specs``
-    the items as stored: a ``dim`` that carries neither ``side`` nor ``offset_mm`` is the planner's to move."""
+    the items as stored: an item that carries none of the keys that say where it stands (``side``, ``offset_mm``, ``elbow_mm``,
+    ``leader_mm``, ``anchor_at``) is the planner's to move, when it is of a kind the planner places."""
     height = page[1]
     sheet = pl.Sheet(
         paper=page,
@@ -173,6 +320,7 @@ def prepare(
         pl.View(name, b[2] - b[0], b[3] - b[1], at=(b[0], b[1]), outline=_outline_in(boxes[name], flat[name], outline, height))
         for name, b in sorted(flat.items())
     ]
+    reader = _Reader(boxes, flat, height)
     by_id = {str(s.get("id")): s for s in specs}
     movable: dict[str, dict[str, Any]] = {}
     items: list[pl.Item] = []
@@ -183,55 +331,129 @@ def prepare(
             continue
         spec = by_id.get(unit.key, {})
         ink = sheet_collide.ink_of(unit.key, unit.entities)
-        free_place = (
-            spec.get("type") in MOVABLE_TYPES
-            and spec.get("side") is None
-            and spec.get("offset_mm") is None
-            and spec.get("elbow_mm") is None
-        )
-        wants_move = free_place and spec.get("kind", "distance") == "distance"
-        wants_leader = free_place and spec.get("kind") in CALLOUT_KINDS
-        if wants_leader:
-            callout = read_callout(ink)
-            if callout is not None:
-                tip, elbow, box = callout
-                view = _nearest_view(boxes, spec, [tip])
-                if view is not None:
-                    vb = flat[view]
-                    w, h = box[2] - box[0], box[3] - box[1]
-                    items.append(
-                        pl.Item(
-                            unit.key, "callout", view, w, h, ((tip[0] - vb[0], (height - tip[1]) - vb[1]),), sides=("top", "left", "right")
-                        )
-                    )
-                    movable[unit.key] = dict(spec)
-                    tips[unit.key] = tip
-                    continue
-            unread.append((unit.key, "its ink is not a leader the planner can read: left where it is"))
-        if wants_move:
-            read = read_dimension(ink)
+        item_type = str(spec.get("type") or unit.item_type)
+        free_place = item_type in MOVABLE_TYPES and not any(spec.get(k) is not None for k in PLACE_KEYS)
+        kind = _wants_kind(item_type, spec) if free_place else ""
+        if kind:
+            read = _movable(unit, spec, ink, kind, reader, tips)
             if read is not None:
-                axis, feet, text = read
-                view = _nearest_view(boxes, spec, feet)
-                if view is not None:
-                    vb = flat[view]
-                    local = tuple((x - vb[0], (height - y) - vb[1]) for x, y in feet)
-                    tw, th = text[2] - text[0], text[3] - text[1]
-                    w, h = (tw, th) if axis == "h" else (th, tw)
-                    items.append(pl.Item(unit.key, "dim", view, w, h, local, axis))  # type: ignore[arg-type]
-                    movable[unit.key] = dict(spec)
-                    continue
-            unread.append((unit.key, "its ink is not a linear dimension the planner can read: left where it is"))
+                items.append(read)
+                movable[unit.key] = dict(spec)
+                continue
+            unread.append((unit.key, f"its ink is not a {_WORDS[kind]} the planner can read: left where it is"))
+        kinds = _kind_of_lines(item_type, ink)
         if ink.texts:
             first = True
             for rect, _ in ink.texts:
                 segs = tuple(_flip_segment(s, height) for s in ink.lines) if first else ()
-                items.append(pl.Item(f"{unit.key}#{len(items)}", "callout", None, fixed_box=flip(rect, height), fixed_segments=segs))
+                items.append(
+                    pl.Item(f"{unit.key}#{len(items)}", "callout", None, fixed_box=flip(rect, height), fixed_segments=segs, fixed_kinds=kinds if first else ())
+                )
                 first = False
         elif ink.lines:
-            items.append(pl.Item(f"{unit.key}#{len(items)}", "callout", None, fixed_segments=tuple(_flip_segment(s, height) for s in ink.lines)))
+            items.append(
+                pl.Item(f"{unit.key}#{len(items)}", "callout", None, fixed_segments=tuple(_flip_segment(s, height) for s in ink.lines), fixed_kinds=kinds)
+            )
     related = _related(views)
     return Prepared(sheet, views, items, movable, height, flat, related, unread, tips)
+
+
+_WORDS = {
+    "distance": "linear dimension",
+    "leader": "leader",
+    "angle": "angular dimension",
+    "datum": "datum symbol",
+    "weld": "weld symbol",
+}
+
+
+def _wants_kind(item_type: str, spec: Mapping[str, Any]) -> str:
+    """What the planner places an item of this type as (``""``: it stays where its own drawer put it, see ``FIXED_REASONS``)."""
+    if item_type == "dim":
+        kind = spec.get("kind", "distance")
+        return "leader" if kind in CALLOUT_KINDS else str(kind) if kind in ("distance", "angle") else ""
+    if item_type == "datum":
+        return "" if "on" in spec else "datum"  # the datum of an axis stands on the shelf of its callout by design
+    return {"hole_dim": "leader", "weld": "weld"}.get(item_type, "")
+
+
+def _movable(
+    unit: sheet_units.Unit,
+    spec: Mapping[str, Any],
+    ink: sheet_collide.Ink,
+    kind: str,
+    reader: _Reader,
+    tips: dict[str, tuple[float, float]],
+) -> pl.Item | None:
+    """The planner item of one unit, or ``None`` when its ink is not what the planner knows how to place."""
+    boxes = reader.boxes
+    if kind == "leader":
+        callout = read_callout(ink)
+        if callout is None or _leader_lines(ink) != 1:
+            return None
+        tip, _elbow, box = callout
+        view = _nearest_view(boxes, spec, [tip])
+        if view is None:
+            return None
+        tips[unit.key] = tip
+        circle = read_hole(unit.entities, tip) if item_type_of(spec, unit) == "hole_dim" else None
+        extra: tuple[float, ...] = ()
+        if circle is not None:
+            centre = reader.local(view, circle[0])
+            extra = (centre[0], centre[1], circle[1])
+        return pl.Item(unit.key, "leader", view, box[2] - box[0], box[3] - box[1], (reader.local(view, tip),), extra=extra)
+    if kind == "distance":
+        read = read_dimension(ink)
+        if read is None:
+            return None
+        axis, feet, text = read
+        view = _nearest_view(boxes, spec, feet)
+        if view is None:
+            return None
+        local = tuple(reader.local(view, f) for f in feet)
+        tw, th = text[2] - text[0], text[3] - text[1]
+        w, h = (tw, th) if axis == "h" else (th, tw)
+        return pl.Item(unit.key, "dim", view, w, h, local, axis)  # type: ignore[arg-type]
+    if kind == "angle":
+        angle = read_angle(unit.entities)
+        if angle is None:
+            return None
+        apex, (a0, a1), text = angle
+        view = _nearest_view(boxes, spec, [apex])
+        if view is None:
+            return None
+        return pl.Item(unit.key, "angle", view, text[2] - text[0], text[3] - text[1], (reader.local(view, apex),), extra=(a0, a1))
+    if kind == "datum":
+        datum = read_datum(ink, unit.entities)
+        if datum is None:
+            return None
+        tip, normal, frame = datum
+        view = _nearest_view(boxes, spec, [tip])
+        if view is None:
+            return None
+        return pl.Item(
+            unit.key, "datum", view, frame[2] - frame[0], frame[3] - frame[1], (reader.local(view, tip),), normal=(normal[0], -normal[1])
+        )
+    if kind == "weld":
+        weld = read_weld(unit.entities)
+        if weld is None:
+            return None
+        ends, size = weld
+        view = _nearest_view(boxes, spec, [ends[0]])
+        if view is None:
+            return None
+        tips[unit.key] = ends[0]
+        return pl.Item(unit.key, "weld", view, 0.0, 0.0, tuple(reader.local(view, e) for e in ends), extra=size)
+    return None
+
+
+def _leader_lines(ink: sheet_collide.Ink) -> int:
+    """How many leaders an item drew: lines that are neither horizontal (a shelf) nor short (an arrowhead)."""
+    return sum(
+        1
+        for s in ink.lines
+        if math.hypot(s[2] - s[0], s[3] - s[1]) >= LEADER_LINE_MM and abs(s[1] - s[3]) > PARALLEL_TOL_MM
+    )
 
 
 def _outline_in(box: Rect, flat: Rect, segments: Sequence[Segment], height: float) -> tuple[Segment, ...]:
@@ -276,25 +498,45 @@ def run(prepared: Prepared, *, min_view_gap: float = 12.0) -> Outcome:
     positions = {v.id: v for v in pinned.views}
     placements: dict[str, dict[str, Any]] = {}
     for p in pinned.items:
-        if p.id not in prepared.movable or p.side is None or p.view not in positions:
+        if p.id not in prepared.movable or p.view not in positions:
             continue
-        vp = positions[p.view]
-        if p.kind == "callout":  # a leader: where it ends, as the vector from its tip (the shelf is the box's lower edge)
-            tip = prepared.tips[p.id]
-            at = p.segments[0]
-            box = p.text_box
-            elbow = (box[0] if p.side == "top" else at[2], prepared.height - box[3])  # a text above its leader starts at the elbow
-            placements[p.id] = {"elbow_mm": [round(elbow[0] - tip[0], 1), round(elbow[1] - tip[1], 1)]}
-            continue
-        line = p.segments[0]
-        distance = {
-            "top": vp.y - line[1],
-            "bottom": line[1] - (vp.y + vp.h),
-            "left": vp.x - line[0],
-            "right": line[0] - (vp.x + vp.w),
-        }[p.side]
-        placements[p.id] = {"side": SIDE_OF[p.side], "offset_mm": round(max(distance, 0.0) / ROUND_MM) * ROUND_MM}
+        found = _placement(prepared, p, positions[p.view])
+        if found:
+            placements[p.id] = found
     lost = [(u.id, u.reason) for u in pinned.unplaced if u.id in prepared.movable]
-    lost += [(u.id, u.reason) for u in room.unplaced if u.id not in {x for x, _ in lost} and u.id in prepared.movable]
+    kinds = {i.id: i.kind for i in moving}
+    lost += [  # the room run only asks whether the views and their dimensions fit: the other items are judged where the views are
+        (u.id, u.reason) for u in room.unplaced if u.id not in {x for x, _ in lost} and kinds.get(u.id) == "dim"
+    ]
     lost += prepared.unread
     return Outcome(placements, tuple(lost), room.fits, room.needed)
+
+
+def _placement(prepared: Prepared, p: pl.Placed, vp: pl.ViewPos) -> dict[str, Any]:
+    """What an item says to stand where the planner put it (page mm, y up): its ``side`` and ``offset_mm``, the ``elbow_mm`` of
+    its leader (from its tip), the absolute ``leader_mm`` of a hole callout, the ``anchor_at`` of a weld symbol."""
+    height = prepared.height
+    spec = prepared.movable[p.id]
+    if p.kind == "leader":
+        tip = prepared.tips[p.id]
+        ex, ey = p.data[0], height - p.data[1]
+        if spec.get("type") == "hole_dim":  # which hole it leaves is the drawer's choice: it is told the tip too
+            tx, ty = (p.data[2], height - p.data[3]) if len(p.data) == 4 else tip
+            return {"leader_mm": [round(tx, 2), round(ty, 2), round(ex, 2), round(ey, 2)]}
+        return {"elbow_mm": [round(ex - tip[0], 1), round(ey - tip[1], 1)]}
+    if p.kind == "angle":
+        return {"offset_mm": round(p.data[0] / ROUND_MM) * ROUND_MM}
+    if p.kind == "weld":
+        return {"anchor_at": [round(p.data[0], 2), round(height - p.data[1], 2)]}
+    if p.kind == "datum" and p.side is not None:
+        return {"side": SIDE_OF[p.side], "offset_mm": round(max(p.data[0], 0.0) / ROUND_MM) * ROUND_MM}
+    if p.side is None:
+        return {}
+    line = p.segments[0]
+    distance = {
+        "top": vp.y - line[1],
+        "bottom": line[1] - (vp.y + vp.h),
+        "left": vp.x - line[0],
+        "right": line[0] - (vp.x + vp.w),
+    }[p.side]
+    return {"side": SIDE_OF[p.side], "offset_mm": round(max(distance, 0.0) / ROUND_MM) * ROUND_MM}

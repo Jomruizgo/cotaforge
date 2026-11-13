@@ -9,6 +9,7 @@ pattern) is described by its geometry only: the item says "rosca no declarada" i
 """
 
 import dataclasses
+import math
 import re
 from typing import Any
 
@@ -16,7 +17,7 @@ import sheet_callout
 import sheet_section
 import sheet_thread
 import sheet_tol
-from items_common import asked, mark_once, outward_diagonal, place_callout, place_leader, view_looking_along
+from items_common import asked, leader_at, mark_once, outward_diagonal, place_callout, place_leader, view_looking_along
 from sheet_context import (
     COMMON_FIELDS,
     SECTION_LABEL,
@@ -24,6 +25,7 @@ from sheet_context import (
     HoleInfo,
     ItemError,
     ItemType,
+    Point,
     check_fields,
     hole_stacks,
     v_bool,
@@ -36,6 +38,18 @@ from sheet_draw import centre_mark
 from sheet_model import AXES, THREAD, Arc, Circle
 from sheet_units import NativeDim, Ref2
 
+def v_leader(value: Any) -> list[float]:
+    """The leader of a callout the global layout placed: its tip and its elbow, ``[tip x, tip y, elbow x, elbow y]`` (page mm)."""
+    if (
+        not isinstance(value, list | tuple)
+        or len(value) != 4
+        or any(isinstance(c, bool) or not isinstance(c, int | float) or not math.isfinite(c) for c in value)
+    ):
+        msg = "must be [tip x, tip y, elbow x, elbow y] in page mm"
+        raise ItemError(msg)
+    return [float(c) for c in value]
+
+
 CHECKS = {
     "at": v_points3,
     "face": v_ids("face"),
@@ -44,11 +58,13 @@ CHECKS = {
     "dowel": v_bool,
     "text": v_str(120),
     "thread": v_str(24),
+    "leader_mm": v_leader,  # where the global layout ended the leader: written by it, not asked for
     **sheet_tol.CHECKS,
     **COMMON_FIELDS,
     "view": v_view_or_section,
 }
 DEPTH_EPS_MM = 0.05
+TIP_TOLERANCE_MM = 0.8  # a planned tip is on the circle of the hole it leaves
 DEPTH = "↧"  # ISO 7200 / ASME Y14.5 depth symbol (osifont, TechDraw's own font, has it)
 COUNTERBORE = "⌴"  # counterbore / spotface symbol (the countersink one is ⌵)
 DOWEL = "◎"  # registration (dowel) hole: leads its callout, and a ring is drawn round the hole in the view
@@ -255,6 +271,19 @@ def _thread_arc(view: Any, hole: HoleInfo) -> list[Any]:
     return [Arc(cx, cy, major / 2 * view.scale, sheet_thread.OPEN_FROM_DEG, sheet_thread.OPEN_TO_DEG, THREAD)]
 
 
+def _planned_leader(spec: dict[str, Any], group: list[Any], radius: float) -> tuple[Point, Point, Point] | None:
+    """The ``leader_mm`` of the item as (tip, elbow, centre of the hole the tip is on), or ``None`` when the item has none or
+    no hole of this group has the tip on its circle (the views moved since: the leader is searched again)."""
+    planned = spec.get("leader_mm")
+    if planned is None:
+        return None
+    tip, elbow = (planned[0], planned[1]), (planned[2], planned[3])
+    for _stack, centre, _view in group:
+        if abs(math.dist(centre, tip) - radius) <= TIP_TOLERANCE_MM:
+            return tip, elbow, centre
+    return None
+
+
 def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     stacks = [_declared_thread(ctx, spec, s) for s in _stacks(_select(ctx, spec))]
     target = _section_target(ctx, spec)
@@ -321,7 +350,11 @@ def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             summary.append(f"{view_name}: {' / '.join(lines)}")
             continue
         radius = stack[-1].diameter / 2 * view.scale
-        if asked(spec):  # the engineer says where: the leader goes exactly there, from the hole that sticks out most
+        planned = _planned_leader(spec, group, radius)
+        if planned is not None:  # the global layout ended the leader here: from the hole whose circle holds its tip
+            tip, elbow, centre = planned
+            ctx.add(leader_at(ctx, tip, elbow, lines))
+        elif asked(spec):  # the engineer says where: the leader goes exactly there, from the hole that sticks out most
             diagonal = outward_diagonal(view, group[0][1], spec.get("side"))
             _, centre, _ = max(
                 ((s, c, v) for s, c, v in group), key=lambda g: diagonal[0] * g[1][0] + diagonal[1] * g[1][1]

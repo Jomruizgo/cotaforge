@@ -330,3 +330,114 @@ def test_a_datum_on_the_very_line_of_an_extension_line_with_no_slide_is_reported
     plan = pl.plan_layout(SHEET, plate_views(), items)
     assert [u.id for u in plan.unplaced] == ["datA"]
     assert "line" in plan.unplaced[0].reason
+
+
+# --- every annotation is placed: leaders with a shelf, angular dimensions, weld symbols, datums -------------------------
+
+
+def one_view(box: tuple[float, float] = (100.0, 60.0)) -> list[pl.View]:
+    return [pl.View("front", *box, at=(150.0, 100.0))]
+
+
+def test_a_leader_has_an_oblique_line_and_a_horizontal_shelf_at_an_iso_angle() -> None:
+    item = pl.Item("t", "leader", "front", 28.0, 5.0, ((20.0, 20.0),))
+    plan = pl.plan_layout(SHEET, one_view(), [item])
+    assert not plan.unplaced, plan.unplaced
+    placed = plan.items[0]
+    leader, shelf = placed.segments
+    assert shelf[1] == shelf[3] and abs(shelf[2] - shelf[0]) == 28.0  # the shelf the text stands on
+    assert (shelf[0], shelf[1]) == (leader[2], leader[3]) == placed.data[:2]  # it starts where the leader ends (the elbow, then the tip)
+    angle = abs(math.degrees(math.atan2(leader[3] - leader[1], leader[2] - leader[0]))) % 90
+    assert 10.0 < angle < 80.0  # never along a centre line or a dimension line (ISO 128-22)
+    assert placed.text_box[3] == shelf[1] and placed.text_box[1] == shelf[1] - 5.0
+
+
+def test_two_leaders_to_nearby_holes_do_not_cross_and_their_text_does_not_overlap() -> None:
+    items = [pl.Item(f"t{i}", "leader", "front", 26.0, 8.0, ((20.0 + 6 * i, 15.0),)) for i in range(4)]
+    plan = pl.plan_layout(SHEET, one_view(), items)
+    assert not plan.unplaced, plan.unplaced
+    leaders = [p.segments[0] for p in plan.items]
+    for i, a in enumerate(leaders):
+        for b in leaders[i + 1 :]:
+            assert not pl._cross(a, b)
+    boxes = [p.text_box for p in plan.items]
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1 :]:
+            assert not pl._overlap(a, b)
+
+
+def test_an_angular_dimension_takes_the_smallest_arc_that_crosses_nothing() -> None:
+    angle = pl.Item("a", "angle", "front", 9.0, 3.5, ((100.0, 60.0),), extra=(0.0, 60.0))  # the apex at the bottom right corner
+    plan = pl.plan_layout(SHEET, one_view(), [angle])
+    assert not plan.unplaced, plan.unplaced
+    assert plan.items[0].data == (pl.ANGLE_RADII_MM[0],)
+    blocker = pl.Item("n", "callout", None, fixed_box=(258.0, 148.0, 268.0, 152.0))
+    again = pl.plan_layout(SHEET, one_view(), [blocker, angle])
+    assert not again.unplaced, again.unplaced
+    assert next(p for p in again.items if p.id == "a").data[0] > pl.ANGLE_RADII_MM[0]  # a note on the first arc pushes it out
+
+
+def test_a_weld_symbol_stands_near_its_arrows_and_crosses_no_leader() -> None:
+    views = [pl.View("front", 100.0, 60.0, at=(150.0, 100.0))]
+    tips = ((10.0, 30.0), (10.0, 50.0))
+    weld = pl.Item("w", "weld", "front", 0.0, 0.0, tips, extra=(20.0, 6.0, 6.0))
+    plan = pl.plan_layout(SHEET, views, [weld])
+    assert not plan.unplaced, plan.unplaced
+    ax, ay = plan.items[0].data
+    for tip in tips:
+        assert math.hypot(150.0 + tip[0] - ax, 100.0 + tip[1] - ay) < 40.0  # short arrows
+    # a leader already standing across the straight way out: the arrows go round it, they never cross it
+    wall = pl.Item("l", "callout", None, fixed_segments=((140.0, 110.0, 140.0, 140.0),), fixed_kinds=("leader",))
+    around = pl.plan_layout(SHEET, views, [wall, weld])
+    assert not [u for u in around.unplaced if u.id == "w"], around.unplaced
+    placed = next(p for p in around.items if p.id == "w")
+    for seg in placed.segments:
+        if seg[2:] == placed.data or seg[:2] == placed.data:
+            assert not pl._cross(seg, (140.0, 110.0, 140.0, 140.0)), seg
+
+
+def test_a_weld_with_no_place_without_an_arrow_across_a_leader_is_reported() -> None:
+    views = [pl.View("front", 100.0, 60.0, at=(150.0, 100.0))]
+    ring = tuple(
+        (math.cos((a * 22.5 + 3.0) * math.pi / 180) * 7 + 160.0, math.sin((a * 22.5 + 3.0) * math.pi / 180) * 7 + 130.0) for a in range(16)
+    )
+    leaders = tuple((ring[i][0], ring[i][1], ring[(i + 1) % 16][0], ring[(i + 1) % 16][1]) for i in range(16))
+    fence = pl.Item("f", "callout", None, fixed_segments=leaders, fixed_kinds=("leader",) * 16)
+    weld = pl.Item("w", "weld", "front", 0.0, 0.0, ((10.0, 30.0),), extra=(20.0, 6.0, 6.0))  # its tip stands inside the closed ring
+    plan = pl.plan_layout(SHEET, [pl.View("front", 100.0, 60.0, at=(150.0, 100.0))], [fence, weld])
+    assert [u.id for u in plan.unplaced] == ["w"] and "across a leader" in plan.unplaced[0].reason
+
+
+def test_a_datum_symbol_is_placed_by_the_planner_with_its_stem() -> None:
+    datum = pl.Item("d", "datum", "front", 7.0, 7.0, ((50.0, 60.0),), normal=(0.0, 1.0))
+    plan = pl.plan_layout(SHEET, one_view(), [datum])
+    assert not plan.unplaced, plan.unplaced
+    placed = plan.items[0]
+    assert placed.side == "bottom" and placed.data[0] >= pl.STEM_MIN_MM
+
+
+def test_the_leader_of_a_hole_points_at_its_centre_whatever_the_angle() -> None:
+    item = pl.Item("h", "leader", "front", 26.0, 8.0, ((50.0, 15.0),), extra=(50.0, 20.0, 5.0))  # a hole of radius 5 at (50, 20)
+    plan = pl.plan_layout(SHEET, one_view(), [item])
+    assert not plan.unplaced, plan.unplaced
+    placed = plan.items[0]
+    ex, ey, tx, ty = placed.data
+    cx, cy = 150.0 + 50.0, 100.0 + 20.0
+    assert abs(math.hypot(tx - cx, ty - cy) - 5.0) < 1e-6
+    assert abs((tx - cx) * (ey - ty) - (ty - cy) * (ex - tx)) < 1e-6 * 100  # tip, centre and elbow on one line
+
+
+def test_a_planned_sheet_with_every_kind_of_item_is_clean_and_fast() -> None:
+    items = [
+        pl.Item("w1", "dim", "front", 12.0, 3.5, ((0.0, 60.0), (100.0, 60.0)), "h"),
+        pl.Item("a1", "angle", "front", 9.0, 3.5, ((0.0, 0.0),), extra=(300.0, 360.0)),
+        pl.Item("l1", "leader", "front", 28.0, 8.0, ((30.0, 30.0),)),
+        pl.Item("l2", "leader", "front", 28.0, 8.0, ((70.0, 30.0),)),
+        pl.Item("d1", "datum", "front", 7.0, 7.0, ((50.0, 0.0),), normal=(0.0, -1.0)),
+        pl.Item("s1", "weld", "front", 0.0, 0.0, ((100.0, 20.0), (100.0, 40.0)), extra=(20.0, 6.0, 6.0)),
+    ]
+    start = time.perf_counter()
+    plan = pl.plan_layout(SHEET, one_view(), items)
+    assert time.perf_counter() - start < 2.0
+    assert not plan.unplaced, plan.unplaced
+    assert pl.plan_layout(SHEET, one_view(), items) == plan  # deterministic
