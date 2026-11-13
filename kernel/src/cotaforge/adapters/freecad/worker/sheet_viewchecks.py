@@ -509,7 +509,12 @@ def _datums(data: ReviewInput) -> list[Finding]:
 def _unused_datums(data: ReviewInput) -> list[Finding]:
     """A ``datum`` item whose letter no ``gdt`` item cites in its ``datums``: a datum symbol means nothing on its own."""
     ctx = data.ctx
-    declared = [(str(i["id"]), str(i["letter"])) for i in data.items if i.get("type") == "datum" and i.get("letter")]
+    located = any(i.get("type") == "datum_dims" for i in data.items)  # the positions count from a declared datum face
+    declared = [
+        (str(i["id"]), str(i["letter"]))
+        for i in data.items
+        if i.get("type") == "datum" and i.get("letter") and not (located and i.get("face"))
+    ]
     if not declared:
         return []
     cited = [list(i.get("datums") or ()) for i in data.items if i.get("type") == "gdt"]
