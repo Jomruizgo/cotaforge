@@ -2,8 +2,9 @@
 
 An alert kept only in memory is a prompt, and a prompt guarantees nothing. Some memory entries are activated by a
 MEASUREMENT of the model (the sharp inside corners of a milled pocket, a bearing on a shaft run much longer than
-itself): each has a detector (``pocket_corners``, ``bearing_seats``) that reads the geometry. This module is the one
-rule for all of them, and the place a new one is registered (``detectors``):
+itself, a turned end with no chamfer): each has a detector (``pocket_corners``, ``bearing_seats``, ``turned_ends``)
+that reads the geometry. This module is the one rule for all of them, and the place a new one is registered
+(``detectors``):
 
 * a measured entry is closed in only two ways: the violation is FIXED (the harness measures again and the trigger no
   longer fires) or the engineer ORDERED it kept (``by`` his name, and the ``text`` of the answer his words, quoted).
@@ -42,11 +43,16 @@ class Detector:
 
 def detectors() -> tuple[Detector, ...]:
     """Every measured alert. A new one is added here and is then held by the review, the answers and the export."""
-    from cotaforge_mcp import bearing_seats, pocket_corners  # they import design_memory, which imports this module
+    from cotaforge_mcp import (  # they import design_memory, which imports this module
+        bearing_seats,
+        pocket_corners,
+        turned_ends,
+    )
 
     return (
         Detector(bearing_seats.ENTRY_ID, bearing_seats.current_lines),
         Detector(pocket_corners.ENTRY_ID, pocket_corners.current_lines),
+        Detector(turned_ends.ENTRY_ID, turned_ends.current_lines),
     )
 
 

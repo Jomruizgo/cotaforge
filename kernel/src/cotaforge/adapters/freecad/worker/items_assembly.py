@@ -349,7 +349,7 @@ def visible_dots(
     frame = (view.centre, view.xdir, view.direction)
     margin = MARGIN_PAGE_MM / view.scale
     pending = {g.position: list(g.instances) for g in assembly.groups}
-    names = {g.position: g.name for g in assembly.groups}
+    names = {g.position: g.label for g in assembly.groups}
     shown: dict[int, tuple[str, Point]] = {}
     while pending:
         batch = [instances[0] for instances in pending.values()]

@@ -33,6 +33,7 @@ class DocArgs(Strict):
         "switch",
         "set_material",
         "set_route",
+        "set_title",
         "set_purpose",
         "convention",
         "import",
@@ -344,7 +345,7 @@ def _doc_actions(session: "Session") -> list[str]:
         actions.append("close")
     actions.append("switch")
     if "set_design_attributes" in t:
-        actions.extend(["set_material", "set_route"])
+        actions.extend(["set_material", "set_route", "set_title"])
     actions.append("set_purpose")
     actions.append("convention")
     if "open_document" in t and "close_document" in t:
@@ -427,13 +428,13 @@ TOOLS: tuple[ToolDef, ...] = (
         "doc",
         "Document lifecycle: new(name, kind?) | open(path: any native file of the CAD) | "
         "import(path: .step/.stp/.iges/.igs, name, sew?) | save(path?, overwrite?) | status | "
-        "close(discard?) | switch(name) | set_material(material) | set_route(route) | set_purpose(sketch|detail) | "
+        "close(discard?) | switch(name) | set_material(material) | set_route(route) | set_title(name) | set_purpose(sketch|detail) | "
         "convention(values?: hole colours; set only when the engineer asks) | "
         "reload (re-read the file). "
         "Several documents stay open; switch picks the one op acts on. Save refuses to replace another existing "
         "file unless overwrite=true.",
         DocArgs,
-        'doc(action="new|open|import|save|status|close|switch|set_material|set_route|set_purpose|convention", name?, '
+        'doc(action="new|open|import|save|status|close|switch|set_material|set_route|set_title|set_purpose|convention", name?, '
         "kind?, path?, discard?, overwrite?, force?, material?, route?, purpose?, values?)",
         'doc(action="new", name="bracket")',
         _doc_actions,

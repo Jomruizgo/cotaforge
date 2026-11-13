@@ -222,11 +222,11 @@ def draw_overall(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
                 out.append(f"height {shown_h}")
                 sizes["height"] = height
     if top is not None:
-        ctx.used_view("top")
         b = top.box
         depth = (b[3] - b[1]) / top.scale
         d_round = _is_diameter(top, axis)[1]
         if not (d_round and given):
+            ctx.used_view("top")  # only a dimension drawn on the view gives it a job: a view the overall size skips has none
             dist = ctx.stack_distance("top", "right", offset)
             shown_d = f"Ø{ctx.num(depth)}" if d_round else ctx.num(depth)
             entities, taken = linear_dimension((b[2], b[1]), (b[2], b[3]), "v", b[2] + dist, shown_d)
@@ -592,8 +592,14 @@ def _diameter(ctx: Context, spec: dict[str, Any]) -> str:
         ctx.record_dimension(("dia", round(2 * face.radius, 2), OVERALL), att.view.name)
     if att.view.derived and att.circle is None and att.kind == "surface":
         return _section_diameter(ctx, spec, att, face.radius, rendered.text, extra)
+    # a thread seen across a HORIZONTAL axis: the callout leaves straight up (or down) from the middle of the thread, so its
+    # dimension line stands on the threaded length, clear of the end and of the chamfer's callout
+    horizontal = abs(att.normal[1]) > 0.9
+    straight = att.normal if threads and att.circle is None and horizontal and spec.get("side") is None else None
     ctx.add(
-        place_leader(ctx, att.view, att.tip, diagonal, lines or [rendered.text], spec.get("offset_mm"), asked(spec))
+        place_leader(
+            ctx, att.view, att.tip, diagonal, lines or [rendered.text], spec.get("offset_mm"), asked(spec), straight
+        )
     )
     ctx.used_view(att.view.name)
     radius = face.radius * att.view.scale
@@ -747,7 +753,16 @@ def _cone_chamfer(ctx: Context, spec: dict[str, Any], cone: Any) -> str:
     if view is None:
         msg = "no view of the sheet shows the axis of this chamfer's shaft across the view: say view= (front, top or right)"
         raise ItemError(msg)
-    across = view.xdir  # model direction of the page's x axis: the profile is seen on the side of it
+    # the profile of the shaft is seen on one side of its axis: the side the page's x points to when the axis is vertical on
+    # the page, the upper side when it is horizontal (a turned part is drawn as it is machined)
+    axis_page = (view.xdir[0] * cone.axis[0] + view.xdir[1] * cone.axis[1] + view.xdir[2] * cone.axis[2],
+                 view.ydir[0] * cone.axis[0] + view.ydir[1] * cone.axis[1] + view.ydir[2] * cone.axis[2])
+    side = (-axis_page[1], axis_page[0])
+    if side[0] < -1e-9 or (abs(side[0]) <= 1e-9 and side[1] < 0):
+        side = (-side[0], -side[1])
+    reach = math.hypot(*side) or 1.0
+    side = (side[0] / reach, side[1] / reach)
+    across = tuple(side[0] * x + side[1] * y for x, y in zip(view.xdir, view.ydir, strict=True))  # model direction
     ends = [
         view.project(tuple(c + a * radius for c, a in zip(centre, across, strict=True)))  # type: ignore[arg-type]
         for centre, radius in (cone.small, cone.big)
@@ -759,7 +774,7 @@ def _cone_chamfer(ctx: Context, spec: dict[str, Any], cone: Any) -> str:
         raise ItemError(msg)
     line = ((ends[1][0] - ends[0][0]) / run, (ends[1][1] - ends[0][1]) / run)
     normal = (line[1], -line[0])
-    if normal[0] < 0:
+    if normal[0] * side[0] + normal[1] * side[1] < 0:
         normal = (-normal[0], -normal[1])  # away from the axis: toward the side the profile is on
     diagonal = outward_diagonal(view, tip, spec.get("side"))
     text = f"{ctx.num(round(cone.leg_a, 2))} × {ctx.num(round(cone.angle_deg, 1))}°"

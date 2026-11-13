@@ -218,19 +218,20 @@ def a3_plate(scale: float = 1.0) -> sc.Context:
 
 
 def underused(ctx: sc.Context) -> list[review.Finding]:
-    return [f for f in viewchecks.check(review.ReviewInput([], {}, ctx, ctx.sheet)) if f.code == "sheet_underused"]
+    return [f for f in viewchecks.check(review.ReviewInput([], {}, ctx, ctx.sheet)) if f.code in ("sheet_underused", "sheet_unbalanced")]
 
 
-def test_a_plate_in_four_views_at_1_to_1_on_a3_is_flagged_and_told_what_would_fill_the_sheet() -> None:
-    (found,) = underused(a3_plate())
-    assert found.severity == "warning" and "las vistas en sí ocupan solo el" in found.message and "desperdicia papel" in found.message
-    assert "con menos vistas (views=[front, top, right]) cabe la escala 2 : 1" in found.message  # without the isometric view
-    assert found.code in checks.NON_BLOCKING  # style: listed and answerable, it never holds an export
+def test_a_plate_in_four_views_at_1_to_1_on_a3_is_not_told_to_drop_the_isometric_view() -> None:
+    """The isometric view stays on every sheet: the alternatives the review offers keep it, and none of them gives the plate a
+    larger standard scale, so the sheet is not flagged for wasting paper (it used to be told to take the isometric off)."""
+    assert underused(a3_plate()) == []
+    options = viewchecks._fewer_views(a3_plate())  # noqa: SLF001
+    assert all(what.endswith("iso]") for what, _ in options)
 
 
 def test_the_alternatives_are_the_fewest_views_dropped_first() -> None:
     options = viewchecks._fewer_views(a3_plate())  # noqa: SLF001
-    assert options[0][0].startswith("views=[front, top, right]") and options[-1][0] == "views=[front]"
+    assert options[0][0].startswith("views=[front, top, iso]") and options[-1][0] == "views=[front, iso]"
     assert all(scale >= 1.0 for _, scale in options)
 
 

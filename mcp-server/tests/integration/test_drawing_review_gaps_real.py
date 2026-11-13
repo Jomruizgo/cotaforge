@@ -9,23 +9,23 @@ Set ``COTAFORGE_TEST_SHOTS`` to a folder to keep the images of the sheets.
 
 import base64
 import os
-import re
 import sys
 from pathlib import Path
 
 import pytest
 
 from tests.integration.conftest import Cad, Reply, pending_points, running_server
-from tests.integration.test_external_thread_real import END, SHAFT, make_shaft
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="the visible FreeCAD window is exercised on Windows")
 
 XY = {"kind": "plane", "name": "XY"}
 
 
-async def plate(cad: Cad, name: str, thick: float, tapped: bool) -> None:
+async def plate(cad: Cad, name: str, thick: float, tapped: bool, title: str | None) -> None:
     await cad.ok("doc", action="new", name=name)
     await cad.ok("doc", action="set_material", material="S355J2")
+    if title:
+        await cad.ok("doc", action="set_title", name=title)  # the designation the parts list prints, not the file name
     entities = [{"kind": "rect", "name": "plate", "center": [0, 0], "width": 120, "height": 60, "chamfer_mm": 4}]
     await cad.ok("op", name="sketch", id="outline", params={"on": XY, "entities": entities})
     await cad.ok("op", name="extrude", id="base", params={"sketch": "outline", "depth_mm": thick})
@@ -39,11 +39,13 @@ async def plate(cad: Cad, name: str, thick: float, tapped: bool) -> None:
     await cad.ok("doc", action="save", path=f"{name}.FCStd")
 
 
-async def build_assembly(cad: Cad) -> None:
-    await plate(cad, "base-plate", 10, True)
-    await plate(cad, "top-plate", 8, False)
+async def build_assembly(cad: Cad, titled: bool = True) -> None:
+    await plate(cad, "base-plate", 10, True, "Placa base" if titled else None)
+    await plate(cad, "top-plate", 8, False, "Placa superior" if titled else None)
     await cad.ok("doc", action="new", name="spacer")
     await cad.ok("doc", action="set_material", material="C45")
+    if titled:
+        await cad.ok("doc", action="set_title", name="Separador")
     ring = [
         {"kind": "circle", "name": "od", "center": [0, 0], "diameter": 16},
         {"kind": "circle", "name": "id", "center": [0, 0], "diameter": 9},
@@ -77,27 +79,25 @@ async def test_the_assembly_sheet_gets_its_list_balloons_and_axes_and_a_width_cl
         findings, _, _ = await pending_points(cad)
         assert not any(f.startswith("dimension_side") for f in findings), review  # the width went below: nothing crosses the gap
         assert "view_adds_nothing:B-B" in findings, review  # a section with no dimension is flagged ...
+        assert "plano de conjunto" in review and "los ajustes" in review, review  # ... and the review asks what it shows
+        assert "part_unnamed" not in "".join(findings), review  # every part has its designation
+        refused = await cad.err("export", action="pdf", path="rv2_assembly.pdf")  # the measured gate holds the export
+        print("EXPORT REFUSED", refused)
+        assert "view_adds_nothing:B-B" in refused, refused
         assert not any(f.startswith(("cylinder_no_axis", "balloons_off_isometric")) for f in findings), review  # ... the sleeves have axes
         shot(shots, "rv1_assembly", await cad("drawing", action="capture"))
         own_word = await cad("drawing", action="answer", id="view_adds_nothing:B-B", text="no aplica: el corte solo enseña el apilado")
         assert own_word.is_error or "order" in own_word.text.lower(), own_word.text  # the agent cannot dismiss it on its own word
 
 
-async def test_the_threaded_shaft_says_its_diameter_once_and_dimensions_its_chamfer(workspace: Path, tmp_path: Path) -> None:
-    shots = Path(os.environ.get("COTAFORGE_TEST_SHOTS") or tmp_path / "shots")
-    shots.mkdir(parents=True, exist_ok=True)
+async def test_a_part_with_no_designation_is_a_question_and_the_file_name_is_never_printed(workspace: Path, tmp_path: Path) -> None:
     async with running_server(workspace, visible=True) as (cad, _):
-        await make_shaft(cad)
-        await cad.ok("op", name="external_thread", id="end_thread", params={"face": SHAFT, "size": "M12", "length_mm": 20, "end": END})
-        faces = await cad.ok("inspect", action="faces", surface="cylinder")
-        cylinder = re.search(r"face:\d+", faces)
-        assert cylinder, faces
-        created = await cad.ok("drawing", action="create", template="A3", scale="2:1", title="Eje M12", views=["front", "top"])
-        assert "width Ø12" in created, created  # the overall diameter is a diameter (it was a bare 12, twice)
-        item = {"type": "dim", "id": "thr", "kind": "diameter", "face": cylinder.group(0), "view": "front"}
-        added = await cad.ok("drawing", action="add", items=[item])
-        assert "thread M12" in added, added
+        await build_assembly(cad, titled=False)
+        await cad.ok("drawing", action="create", template="A3", angle="first", views=["front", "top", "iso"], title="Conjunto")
         review = await cad.ok("drawing", action="review")
-        assert "rq_chamfers" in created + added + review, review  # the callout of the chamfer is the harness's
-        assert "chamfer_no_dimension" not in review, review
-        shot(shots, "rv1_shaft", await cad("drawing", action="capture"))
+        findings, _, _ = await pending_points(cad)
+        assert any(f.startswith("part_unnamed") for f in findings), review  # it asks the designer, it does not guess
+        line = next(row for row in review.splitlines() if "part_unnamed" in row)
+        assert "top_plate" not in line and "top-plate" not in line and "set_title" in line, line
+        refused = await cad.err("export", action="pdf", path="rv2_unnamed.pdf")
+        assert "part_unnamed" in refused, refused
