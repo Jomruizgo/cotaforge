@@ -345,6 +345,10 @@ class Geometry:
         ``frame`` = (centre, xdir, direction): how much of it a reader sees. Empty when it cannot be told."""
         return {}
 
+    def body_boxes(self) -> "list[tuple[Vec3, Vec3]]":
+        """The box of every live body of the part (a weldment), in document axes; none when it cannot be told."""
+        return []
+
     def assembly_holes(self) -> "list[AssemblyHole]":
         """The full round holes of the components of an assembly (none for a part)."""
         return []
@@ -388,6 +392,7 @@ class PartGroup:
     remarks: str
     instances: list[str]
     bought: bool = False
+    measured: Any = None  # a weldment body: what was measured of it (``sheet_weldment.BodyFact``)
 
     @property
     def quantity(self) -> int:
@@ -441,6 +446,7 @@ class Context:
     warnings: list[str] = field(default_factory=list)
     extras: dict[str, Any] = field(default_factory=dict)
     assembly: Assembly | None = None
+    weldment: Assembly | None = None  # the bodies of a welded part grouped like the parts of an assembly (instances are body ids)
     threads: list[ThreadInfo] = field(default_factory=list)  # the cosmetic external threads of the part
 
     @property
