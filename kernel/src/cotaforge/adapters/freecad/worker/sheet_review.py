@@ -20,6 +20,8 @@ from typing import Any
 
 import sheet_callout
 import sheet_checks
+import sheet_interface
+import sheet_isoview
 import sheet_thread
 from items_assembly import rows_of
 from items_dims import AXES, _along, coordinate, resolve_ref
@@ -84,6 +86,8 @@ def review(data: ReviewInput) -> list[Finding]:
         _collisions,
         _layout,
         _assembly_lists,
+        _assembly_holes,
+        _assembly_joints,
         _hidden_instances,
         sheet_checks.checks,  # the finished-drawing list (F6)
     ):
@@ -870,6 +874,61 @@ HIDDEN_CHECK_LIMIT = 80  # instances looked at for "hidden in every view": the f
 REVIEW_MARGIN_MM = 2.5
 
 
+JOINT_WORDS = re.compile(
+    r"tornill|perno|tuerca|arandela|remach|pasador|chaveta|espárrag|esparrag|bulón|bulon|soldad|solda|adhesiv|pegad|pegament|"
+    r"ajuste|interferencia|prensad|encaj|unión|union|screw|bolt|nut\b|washer|rivet|dowel|pin\b|weld|adhesive|glue|bond|"
+    r"press[\s-]*fit|interference|clamp|abraz|fasten|sujec|fij",
+    re.I,
+)  # a fastener, a weld, a fit, or a note that says how the parts are held
+
+
+def _assembly_joints(data: ReviewInput) -> list[Finding]:
+    """An assembly of two or more parts that nothing joins: no fastener among the parts, no weld, no fit on the sheet and
+    no note of the engineer saying how they are held. A question to the designer: the harness adds nothing."""
+    ctx = data.ctx
+    if ctx.assembly is None or len(ctx.assembly.groups) < 2:
+        return []
+    for group in ctx.assembly.groups:
+        if group.bought or JOINT_WORDS.search(f"{group.name} {group.remarks}"):
+            return []
+    if any(i.get("type") == "weld" for i in data.items):
+        return []
+    if any("fit" in i for i in data.items if i.get("type") in ("dim", "hole_dim")):
+        return []
+    if any(JOINT_WORDS.search(n) for n in sheet_checks._notes(data)):
+        return []
+    text = ctx.say(
+        "Las piezas del conjunto no están unidas: ninguna es un elemento de fijación (tornillo, perno, pasador, remache), ni hay "
+        "soldadura, ni un ajuste, ni una nota del ingeniero que diga cómo se sujetan. Pregunta al diseñador cómo se unen "
+        "(¿tornillos que se añaden al conjunto, soldadura, ajuste a presión?) y refléjalo: inserta la pieza de fijación o escribe "
+        "una nota. El arnés no añade nada por su cuenta.",
+        "The parts of the assembly are not joined: none is a fastener (screw, bolt, pin, rivet), and there is no weld, no fit "
+        "and no note of the engineer saying how they are held. Ask the designer how they are joined (screws to add to the "
+        "assembly, a weld, a press fit?) and show it: insert the fastener or write a note. The harness adds nothing by itself.",
+    )
+    return [Finding("assembly_not_joined", "warning", text)]
+
+
+def _assembly_holes(data: ReviewInput) -> list[Finding]:
+    """A through hole of the assembly is located only by a dimension that is ON THE SHEET (its centre distance and its
+    distance from the edge of the plate): a hole that the model has and the sheet does not position is a finding."""
+    ctx = data.ctx
+    out: list[Finding] = []
+    for key, label, missing in sheet_interface.unlocated(ctx):
+        along = {"x": "en x", "y": "en y", "xy": "en x e y"}[missing]
+        along_en = {"x": "along x", "y": "along y", "xy": "along x and y"}[missing]
+        text = ctx.say(
+            f"Agujero pasante {label} del conjunto sin posición {along} en la hoja: ninguna cota dibujada da su distancia entre "
+            "centros ni su distancia a un borde de la placa. Una vista que lo vea como círculo (superior) y el item overall "
+            "las dibujan; o acota con dim distance desde una arista de la placa.",
+            f"Through hole {label} of the assembly has no position {along_en} on the sheet: no dimension drawn gives its centre "
+            "distance or its distance from an edge of the plate. A view that sees it as a circle (the top one) and the overall "
+            "item draw them; or dimension it with dim distance from an edge of the plate.",
+        )
+        out.append(Finding("hole_not_located", "warning", text, (), (), key))
+    return out
+
+
 def _assembly_lists(data: ReviewInput) -> list[Finding]:
     """The parts list and the balloons of an assembly sheet agree: a position without a balloon, balloons without a list."""
     ctx = data.ctx
@@ -957,6 +1016,20 @@ def _assembly_lists(data: ReviewInput) -> list[Finding]:
             f"view: balloons go on the pictorial view, where each part is seen (balloons with view={sorted(pictorial)[0]}).",
         )
         out.append(Finding("balloons_off_isometric", "warning", text, balloon_ids))
+    thin = {n: s for n, s in sorted(book.get("share", {}).items()) if n in drawn and s < sheet_isoview.VISIBLE_MIN}
+    if thin:
+        labels = {g.position: g.label for g in ctx.assembly.groups}
+        shown = ", ".join(f"{n} ({labels.get(n, '?')}, {round(100 * s)} %)" for n, s in thin.items())
+        percent = round(100 * sheet_isoview.VISIBLE_MIN)
+        text = ctx.say(
+            f"El globo de la(s) posición(es) {shown} señala una pieza de la que la vista casi no enseña nada (menos del "
+            f"{percent} % de su contorno es superficie suya a la vista): no se ve lo que el globo nombra. Pon el globo de esa "
+            "pieza en una vista donde se vea (una vista explosionada: exploded, y balloons sobre ella), o cambia la dirección de la vista.",
+            f"The balloon of position(s) {shown} points at a part that the view barely shows (less than {percent} % of its "
+            "outline is its own surface in view): what the balloon names cannot be seen. Put that part's balloon on a view where "
+            "it shows (an exploded view, with the balloons on it), or change the view direction.",
+        )
+        out.append(Finding("balloon_part_hidden", "warning", text, balloon_ids))
     rect = ctx.extras.get("parts_list", {}).get("rect")
     if rect is not None:
         for name, box in _rects(data).items():
@@ -966,6 +1039,14 @@ def _assembly_lists(data: ReviewInput) -> list[Finding]:
                 )
                 out.append(Finding("parts_list_over_view", "warning", text, list_ids))
     return out
+
+
+def sub_(a: tuple[float, ...], b: tuple[float, ...]) -> tuple[float, float, float]:
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _corners(low: tuple[float, ...], high: tuple[float, ...]) -> list[tuple[float, float, float]]:
+    return [(x, y, z) for x in (low[0], high[0]) for y in (low[1], high[1]) for z in (low[2], high[2])]
 
 
 def _hidden_instances(data: ReviewInput) -> list[Finding]:
@@ -982,6 +1063,17 @@ def _hidden_instances(data: ReviewInput) -> list[Finding]:
     ordered += [i for g in ctx.assembly.groups for i in g.instances[1:]]
     ordered = ordered[:HIDDEN_CHECK_LIMIT]
     hidden = set(ordered)
+    for at, normal in ctx.extras.get("section_planes", {}).values():  # a part the plane of a section cuts is seen in the cut
+        for cid in list(hidden):
+            try:
+                low, high = ctx.geometry.instance_box(cid)
+            except ItemError:
+                continue
+            sides = [dot(sub_(corner, at), normal) for corner in _corners(low, high)]
+            if min(sides) <= 1e-6 <= max(sides):
+                hidden.discard(cid)
+    if not hidden:
+        return []
     for view in views:
         offsets = explosion.get("offsets", {}) if view.name == "exploded" else {}
         try:

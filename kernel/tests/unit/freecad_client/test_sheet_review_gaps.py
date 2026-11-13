@@ -151,18 +151,32 @@ def shaft_context() -> sc.Context:
     return ctx
 
 
+THREAD_DIM = {"type": "dim", "id": "thr", "kind": "diameter", "face": "face:shaft", "view": "front"}
+
+
 def test_the_overall_diameter_of_a_shaft_is_a_diameter_and_its_thread_callout_does_not_repeat_it() -> None:
     plain = shaft_context()
     (res,) = draw(plain, {"type": "overall"})
     assert "Ø12" in plain.sheet.texts() and "60" in plain.sheet.texts(), res.detail  # with no callout the diameter is stated
 
     called = shaft_context()
-    res, callout = draw(called, {"type": "overall"}, {"type": "dim", "id": "thr", "kind": "diameter", "face": "face:shaft", "view": "front"})
+    called.threads = [sc.ThreadInfo("M12", 12.0, 9.853, 60.0, (0, 0, 60), (0, 0, -1), "face:shaft", 1.75)]  # the thread runs the whole length
+    res, callout = draw(called, {"type": "overall"}, THREAD_DIM)
     assert res.status == "ok" and callout.status == "ok", callout.detail
     assert any(t.startswith("M12") for t in called.sheet.texts())
     assert "Ø12" not in called.sheet.texts() and "12" not in called.sheet.texts(), "M12 already says the major diameter"
     assert "60" in called.sheet.texts()
     assert "not drawn: width Ø12" in res.detail
+
+
+def test_a_thread_on_one_end_leaves_the_plain_part_its_own_diameter() -> None:
+    """M12 for 20 of 60 mm: the callout says the thread's diameter and nothing of the plain 40 mm, which keeps its Ø12."""
+    ctx = shaft_context()  # the thread is 20 mm long on a 60 mm shaft
+    res, callout = draw(ctx, {"type": "overall"}, THREAD_DIM)
+    assert res.status == "ok" and callout.status == "ok", callout.detail
+    assert any(t.startswith("M12") for t in ctx.sheet.texts())
+    assert "Ø12" in ctx.sheet.texts() and "60" in ctx.sheet.texts()
+    assert "not drawn" not in res.detail
 
 
 def test_a_diameter_dim_on_a_plain_cylinder_does_not_remove_the_overall_diameter() -> None:
@@ -328,3 +342,38 @@ def test_a_section_with_no_dimension_is_flagged_as_a_view_that_adds_nothing() ->
 def test_the_vocabulary_of_the_new_findings_exists() -> None:
     assert math.isfinite(vr.EXTENT_GAP_MM)
     assert "chamfer_dims" in items.UNSUPPORTED
+
+
+class HorizontalShaft(ShaftGeometry):
+    def round_extent(self) -> tuple[sc.Vec3, float]:
+        return (1.0, 0.0, 0.0), 12.0
+
+    def face(self, face_id: str) -> sc.FaceInfo:
+        if face_id == "face:shaft":
+            return sc.FaceInfo(
+                "face:shaft", "cylinder", (30, 0, 0), radius=6.0, axis_point=(0, 0, 0), axis_dir=(1, 0, 0), surface_point=(30, 6, 0)
+            )
+        return PlateGeometry.face(self, face_id)
+
+
+def test_the_diameter_of_a_shaft_with_a_thread_on_one_end_sits_on_the_plain_part_not_on_the_thread() -> None:
+    """Axis along the page x, M12 on the right end (x 40..60 of 60): the Ø12 is at the plain LEFT end, and its extension lines
+    start at the left end of the silhouette, which is plain cylinder."""
+    ctx = shaft_context()
+    ctx.views["front"] = sc.ViewInfo("front", 160.0, 160.0, 2.0, (0, -1, 0), (1, 0, 0), (30, 0, 0), (100.0, 148.0, 220.0, 172.0))
+    ctx.geometry = HorizontalShaft()
+    ctx.threads = [sc.ThreadInfo("M12", 12.0, 9.853, 20.0, (60, 0, 0), (-1, 0, 0), "face:shaft", 1.75)]
+    draw(ctx, {"type": "overall"}, THREAD_DIM)
+    label = next(e for e in ctx.sheet.entities if isinstance(e, model.Text) and e.text == "Ø12")
+    assert label.x < 100.0, "the Ø is left of the view, over the plain part"
+    starts = [e for e in ctx.sheet.entities if isinstance(e, model.Line) and e.layer == model.DIMENSIONS and e.y1 == e.y2 and e.y1 in (148.0, 172.0)]
+    assert starts and all(min(e.x1, e.x2) < 105.0 for e in starts), "its extension lines start at the plain left end"
+    thread_x = [e.x for e in ctx.sheet.entities if isinstance(e, model.Text) and e.text.startswith("M12")]
+    assert thread_x and label.x < min(thread_x)
+
+
+def test_a_shaft_standing_on_the_page_gets_its_diameter_at_the_plain_end() -> None:
+    ctx = shaft_context()  # axis along the page y, the thread at the top (z 40..60)
+    draw(ctx, {"type": "overall"}, THREAD_DIM)
+    label = next(e for e in ctx.sheet.entities if isinstance(e, model.Text) and e.text == "Ø12")
+    assert label.y < 100.0, "the Ø is below the view, at the plain bottom end"

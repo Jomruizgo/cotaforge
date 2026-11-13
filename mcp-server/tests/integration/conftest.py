@@ -73,7 +73,7 @@ async def running_server(
         yield Cad(session), init
 
 
-FINDING_LINE = re.compile(r"^  (?:warning|info) (\S+?)(?: \[[^\]]*\])?(?: \(row [^)]*\))?: ", re.M)
+FINDING_LINE = re.compile(r"^  (?:warning|info|BLOCKS EXPORT)(?: \(does not block export\))? (\S+?)(?: \[[^\]]*\])?(?: \(row [^)]*\))?: ", re.M)
 ROW_LINE = re.compile(r"^  \[(?:MISSING|NEEDS AN ANSWER)\] (req\.\S+) ", re.M)
 ORDER = {"by": "la prueba", "reason": "la prueba trata de otra cosa que este punto; el ingeniero lo ordena así"}
 """What an engineer who orders a point closed says: a test about something else than the finished drawing plays him, so

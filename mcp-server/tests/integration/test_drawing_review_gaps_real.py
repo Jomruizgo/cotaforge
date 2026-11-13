@@ -101,3 +101,24 @@ async def test_a_part_with_no_designation_is_a_question_and_the_file_name_is_nev
         assert "top_plate" not in line and "top-plate" not in line and "set_title" in line, line
         refused = await cad.err("export", action="pdf", path="rv2_unnamed.pdf")
         assert "part_unnamed" in refused, refused
+
+
+async def test_an_assembly_with_no_views_asked_is_the_section_through_its_holes_and_the_top_view_with_the_hole_positions(
+    workspace: Path, tmp_path: Path
+) -> None:
+    shots = Path(os.environ.get("COTAFORGE_TEST_SHOTS") or tmp_path / "shots")
+    shots.mkdir(parents=True, exist_ok=True)
+    async with running_server(workspace, visible=True) as (cad, _):
+        await build_assembly(cad)
+        made = await cad.ok("drawing", action="create", angle="first", title="Conjunto")
+        print("CREATED", made)
+        assert "section A-A through their axes" in made and "views: top, iso" in made.replace("views chosen from the assembly", "views: top, iso"), made
+        review = await cad.ok("drawing", action="review")
+        print("REVIEW", review)
+        findings, _, _ = await pending_points(cad)
+        print("FINDINGS", findings)
+        assert not any(f.startswith("view_adds_nothing") for f in findings), review  # the section is the main view and carries the height
+        assert not any(f.startswith("hole_not_located") for f in findings), review  # Ø, centre distance and edge distance are on the sheet
+        assert any(f.startswith("assembly_not_joined") for f in findings), review  # two plates and two spacers, nothing joins them
+        assert "BLOCKS EXPORT" in review, review
+        shot(shots, "rv3_assembly", await cad("drawing", action="capture"))

@@ -11,6 +11,7 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+import sheet_interface
 import sheet_thread
 import sheet_tol
 import sheet_viewrules as rules
@@ -76,10 +77,30 @@ def check_overall(spec: dict[str, Any]) -> dict[str, Any]:
     return check_fields(spec, {"offset_mm": COMMON_FIELDS["offset_mm"], "side": v_enum("above", "below")})
 
 
+THREAD_SPAN_TOL_MM = 0.5  # a thread this near to the whole length of the part is the whole length
+
+
+def part_length_along(ctx: Context, axis: Vec3) -> float | None:
+    """The overall length of the part along ``axis`` (the model box, else the view that shows that axis in its plane)."""
+    box = ctx.extras.get("model_box")
+    if box is not None:
+        return sum(abs(hi - lo) * abs(a) for lo, hi, a in zip(box[0], box[1], axis, strict=True))
+    for view in ctx.views.values():
+        if not view.shows_axis_along(axis):
+            continue
+        ax, ay = view.axis(axis)
+        if abs(ax) > 0.99:
+            return (view.box[2] - view.box[0]) / view.scale
+        if abs(ay) > 0.99:
+            return (view.box[3] - view.box[1]) / view.scale
+    return None
+
+
 def thread_states_diameter(ctx: Context, diameter: float) -> bool:
-    """Whether a callout of the sheet already says the outer diameter ``diameter`` as the major diameter of a thread (M12
-    carries Ø12): a ``dim`` of kind diameter on a cylinder an ``external_thread`` threaded, of that diameter. The plain
-    ``Ø12`` of the overall size is then the same dimension twice."""
+    """Whether a callout of the sheet already says the outer diameter ``diameter`` of the WHOLE part as the major diameter of
+    a thread (M12 carries Ø12): a ``dim`` of kind diameter on a cylinder an ``external_thread`` threaded, of that diameter,
+    when the thread runs the whole length of the part. A thread that covers only an end leaves a plain part of the same
+    diameter beside it, and the callout of the thread says nothing of that one: it keeps its own Ø."""
     for spec in ctx.extras.get("items", []):
         if spec.get("type") != "dim" or spec.get("kind") != "diameter" or not spec.get("face"):
             continue
@@ -88,9 +109,32 @@ def thread_states_diameter(ctx: Context, diameter: float) -> bool:
             face = ctx.geometry.face(face_id)
         except ItemError:
             continue
-        if face.radius is not None and abs(2 * face.radius - diameter) < 0.05 and sheet_thread.threads_on_face(ctx, face_id, face):
+        if face.radius is None or abs(2 * face.radius - diameter) >= 0.05:
+            continue
+        threads = sheet_thread.threads_on_face(ctx, face_id, face)
+        if not threads:
+            continue
+        axis = face.axis_dir if face.axis_dir is not None else threads[0].direction
+        length = part_length_along(ctx, unit(axis))
+        if length is None or sum(t.length for t in threads) >= length - THREAD_SPAN_TOL_MM:
             return True
     return False
+
+
+def _threaded_end(ctx: Context, view: ViewInfo, diameter: float) -> Point | None:
+    """The page direction from the middle of ``view`` to the threads of this diameter that cover only part of the part, or
+    ``None`` (no such thread): the plain part, whose Ø the overall dimension is, lies the other way."""
+    if thread_states_diameter(ctx, diameter):
+        return None
+    mids = [
+        view.project(tuple(s + d * t.length / 2 for s, d in zip(t.start, t.direction, strict=True)))  # type: ignore[arg-type]
+        for t in ctx.threads
+        if abs(t.major - diameter) < 0.05
+    ]
+    if not mids:
+        return None
+    cx, cy = (view.box[0] + view.box[2]) / 2, (view.box[1] + view.box[3]) / 2
+    return sum(m[0] for m in mids) / len(mids) - cx, sum(m[1] for m in mids) / len(mids) - cy
 
 
 def view_outline(ctx: Context, box: tuple[float, float, float, float]) -> list[tuple[float, float, float, float]]:
@@ -194,6 +238,9 @@ def draw_overall(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         elif not below:
             below = bool(_extent_gap(ctx, b, "above"))  # its extension lines would cross the view over nothing
         given = w_round or h_round
+        toward = _threaded_end(ctx, primary, width if w_round else height) if (w_round or h_round) else None
+        if toward is not None and asked_side is None and w_round and not by_thread_w:
+            below = toward[1] > 0  # the Ø goes at the plain end, away from the thread callout (axis along the page y)
         if by_thread_w:
             skipped.append(f"width Ø{ctx.num(width)} (the thread callout carries it)")
         else:
@@ -212,12 +259,14 @@ def draw_overall(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             if by_thread_h:
                 skipped.append(f"height Ø{ctx.num(height)} (the thread callout carries it)")
             else:
-                dist = ctx.stack_distance(name, "right", offset)
+                left = h_round and toward is not None and toward[0] > 0  # thread at the right end: the Ø goes at the plain left one
+                dist = ctx.stack_distance(name, "left" if left else "right", offset)
                 shown_h = f"Ø{ctx.num(height)}" if h_round else ctx.num(height)
-                entities, taken = linear_dimension((b[2], b[1]), (b[2], b[3]), "v", b[2] + dist, shown_h)
+                x_line = b[0] - dist if left else b[2] + dist
+                entities, taken = linear_dimension((b[0] if left else b[2], b[1]), (b[0] if left else b[2], b[3]), "v", x_line, shown_h)
                 ctx.add(entities)
                 ctx.reserve_dimension(entities, taken)
-                _record(ctx, "height", name, "v", b[2] + dist, (b[1] + b[3]) / 2, shown_h)
+                _record(ctx, "height", name, "v", x_line, (b[1] + b[3]) / 2, shown_h)
                 _record_overall(ctx, primary, False, height if h_round else None)
                 out.append(f"height {shown_h}")
                 sizes["height"] = height
@@ -817,7 +866,27 @@ def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     return "ok", detail
 
 
+def check_hole_positions(spec: dict[str, Any]) -> dict[str, Any]:
+    return check_fields(spec, {"auto": v_bool})
+
+
+def draw_hole_positions(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
+    """The through holes of an assembly: their diameter, their centre distance and their distance from an edge of the plate,
+    on the view that sees them as circles (see ``sheet_interface``)."""
+    del spec
+    if ctx.assembly is None:
+        msg = "hole_positions is for an assembly sheet: a part's holes are located by datum_dims and called out by hole_dim"
+        raise ItemError(msg)
+    for name in ("top", "front", "right"):
+        view = ctx.views.get(name)
+        done = sheet_interface.draw(ctx, view) if view is not None else []
+        if done:
+            return "ok", f"in the {name} view: " + "; ".join(done)
+    return "ok", "no view of the sheet sees a through hole of the assembly as a circle"
+
+
 ITEMS = (
     ItemType("overall", "o", check_overall, draw_overall, frozenset({"offset_mm", "side"}), phase=0),
     ItemType("dim", "d", check, draw, frozenset(CHECKS), phase=0),
+    ItemType("hole_positions", "hp", check_hole_positions, draw_hole_positions, frozenset({"auto"}), phase=0),
 )

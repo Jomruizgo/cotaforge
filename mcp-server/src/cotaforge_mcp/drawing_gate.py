@@ -425,6 +425,14 @@ def _remark_line(who: str, remark: DrawingRemark) -> str:
 # --- the review ---------------------------------------------------------------------------------------------------------
 
 
+def severity_label(finding: Any) -> str:
+    """How a finding is labelled in every list the agent reads, in this one place: a finding that holds the export says so
+    (``warning`` alone reads as optional); one that does not says that too."""
+    if finding.blocking:
+        return "BLOCKS EXPORT"
+    return f"{finding.severity} (does not block export)"
+
+
 def review_lines(session: Session, sheet: DrawingSheetInfo) -> list[str]:
     """The review of one sheet: the findings (warnings first, they arrive sorted), the answers given, then who reviews it
     and where that stands (or, in ``own``, the questions of judgement and the memory entries) and what the export
@@ -440,13 +448,17 @@ def review_lines(session: Session, sheet: DrawingSheetInfo) -> list[str]:
     else:
         warnings = sum(f.severity == "warning" for f in pending)
         tail = f", {len(done)} answered" if done else ""
-        lines.append(f"review: {warnings} warning(s), {len(pending) - warnings} to confirm{tail}")
+        blocking = sum(f.blocking and not reqs.finding_closed(f) for f in pending)
+        lines.append(
+            f"review: {warnings} warning(s), {len(pending) - warnings} to confirm{tail}; {blocking} block(s) the export "
+            "until fixed or answered"
+        )
     rows = sheet_requirements(session, sheet) if brief.drawing_review != "none" else []
     owner = {c: r.id for r in rows for c in r.row.codes}
     for f in pending:
         refs = ", ".join([*f.items, *f.features])
         under = f" (row {owner[f.code]})" if f.code in owner else ""
-        lines.append(f"  {f.severity} {finding_id(f)}{' [' + refs + ']' if refs else ''}{under}: {f.message}")
+        lines.append(f"  {severity_label(f)} {finding_id(f)}{' [' + refs + ']' if refs else ''}{under}: {f.message}")
     lines += _requirement_lines(rows, brief.lang)
     lines += _answered_lines(session, sheet, done, rows)
     if brief.drawing_review == "own":

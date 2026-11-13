@@ -73,7 +73,7 @@ def test_the_review_lists_findings_with_ids_the_questions_and_what_the_export_wa
     fake.findings, fake.questions = (NOT_LOCATED, NOTE), (CALLOUTS, LINES)
     text = call.ok("drawing", action="review")
     assert "review: 1 warning(s), 1 to confirm" in text
-    assert "warning hole_not_located:@20,20,8 [feature:3]: Agujero Ø6 [20, 20, 8] sin posición" in text
+    assert "BLOCKS EXPORT hole_not_located:@20,20,8 [feature:3]: Agujero Ø6 [20, 20, 8] sin posición" in text
     assert "q.callouts: ¿Las llamadas dicen cantidad, Ø y profundidad?" in text and "q.line_weights" in text
     assert (
         "export of this sheet is REFUSED: 4 pending (2 findings, 2 questions, 0 memory entries, 0 reviewer remarks"
