@@ -123,13 +123,15 @@ def check_a_sleeve_with_two_flats_is_symmetric_across_x_and_y_and_a_plain_cut_is
 
 def check_a_hole_on_the_axis_of_a_symmetric_part_is_located_by_the_part_not_by_a_number() -> None:
     build_sleeve()
-    call("create_drawing", op("d", template="A3", views=["front", "top", "iso"], scale=1.0, symmetry=True))  # intent
+    # a sheet with a front view draws a turned part with its axis horizontal (f3dd2e3): its end view is "right", not "top"
+    call("create_drawing", op("d", template="A3", views=["front", "right", "iso"], scale=1.0, symmetry=True))  # intent
     sheet, results, ctx = _composed()
     loc = next(r for r in results if r.id == "loc")
     assert loc.status == "ok" and "symmetry" in loc.detail, loc
     assert ctx.extras["loc_axes"] == {0: {"x", "y"}}, ctx.extras["loc_axes"]
     shown = {e.text for e in sheet.of_layer(model.DIMENSIONS) if isinstance(e, model.Text)}
-    assert shown == {"Ø60", "50"}, shown  # the overall size and no number from the edge of the box to the centre
+    # the overall size of both views (the end view adds its 60) and no number from the edge of the box to the centre
+    assert shown == {"Ø60", "60", "50"}, shown
     codes = {f["code"] for f in _findings()}
     assert not codes & {"hole_not_located", "hole_partly_located", "hole_no_reference"}, codes
 
@@ -140,7 +142,7 @@ def check_a_hole_on_the_axis_of_a_symmetric_part_is_located_by_the_part_not_by_a
 def check_a_revolved_part_with_a_bore_gets_its_end_view_and_the_section_through_the_axis() -> None:
     build_sleeve()
     made = call("create_drawing", op("d", template="A3", scale=1.0))
-    assert made["views"] == ["top"], made["views"]
+    assert made["views"] == ["top", "isometric"], made["views"]  # the end view, the section, and the isometric (f3dd2e3)
     assert any("views chosen from the part" in w for w in made["warnings"]), made["warnings"]
     section = next(i for i in made["items"] if i["type"] == "section")
     assert section["status"] == "ok" and "through the axis of the part" in section["detail"], section
@@ -155,7 +157,7 @@ def check_a_solid_round_part_gets_the_one_view_that_shows_its_profile() -> None:
     new_document("eje")
     extrude("base", sketch("s0", "XY", [circle("od", (0, 0), 40)]), 100)
     made = call("create_drawing", op("d", template="A3"))
-    assert made["views"] == ["front"] and not [i for i in made["items"] if i["type"] == "section"], made
+    assert made["views"] == ["front", "isometric"] and not [i for i in made["items"] if i["type"] == "section"], made
     assert "tn" not in {i["id"] for i in made["items"]}, "a shaft seen from the side has no thickness to write"
 
 
