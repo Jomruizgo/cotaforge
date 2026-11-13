@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import pending_points, running_server
+from tests.integration.conftest import ORDER, ROW_LINE, pending_points, running_server
 from tests.integration.test_drawing_finished_real import (
     CLEARANCE,
     DOWELS,
@@ -86,6 +86,9 @@ async def test_a_clean_plate_sheet_has_its_positions_and_closes_with_few_points(
             await cad.ok(
                 "drawing", action="answer", id=point, text="no aplica: la placa es plana y se lee en una vista"
             )
+        asked = await cad.ok("drawing", action="review")
+        for row in ROW_LINE.findall(asked):  # the requirement rows the sheet still asks: a measured one closes only on the engineer's order
+            await cad.ok("drawing", action="answer", id=row, text="no aplica: la placa es plana y se lee en una vista", **ORDER)
         done = await cad.ok("drawing", action="review")
         assert "export of this sheet is open" in done, done
         await cad.ok("drawing", action="approve", sheet="Drawing", by="Engineer", reason="the engineer: approve it")
