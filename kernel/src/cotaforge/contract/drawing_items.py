@@ -55,6 +55,7 @@ ITEM_FIELDS: dict[str, frozenset[str]] = {
     "chamfer_dims": frozenset(),
     "revision": frozenset({"index", "description", "date", "by"}),
     "overall": frozenset({"offset_mm", "side"}),
+    "hole_positions": frozenset({"auto"}),
     "view_lines": frozenset({"hidden", "centres"}),
     "line": frozenset({"style", "axis", "from", "to", "view", "extend_mm"}),
     "section": frozenset({"view", "at", "normal", "holes", "letter", "flip", "at_mm", "hatch"}),

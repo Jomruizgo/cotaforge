@@ -56,7 +56,9 @@ import sheet_context as sc
 import sheet_dxf
 import sheet_facts
 import sheet_hlr
+import sheet_interface
 import sheet_iso
+import sheet_isoview
 import sheet_items
 import sheet_keyway
 import sheet_layout
@@ -670,6 +672,12 @@ def _scale_of(page: Any) -> float | None:
 # --- creating ---------------------------------------------------------------------------------------------------------
 
 
+def _iso_quarter_turned(spec: dict[str, Any]) -> bool:
+    """Whether the isometric view of the sheet is a quarter turn from the usual one (what it shows across swaps)."""
+    frame = spec.get("iso_frame")
+    return bool(frame) and sheet_isoview.quarter_turned(tuple(frame[0]))  # type: ignore[arg-type]
+
+
 def _build(
     doc: reg.DocumentRec, spec: dict[str, Any], op: str | None
 ) -> tuple[Any, sheet_layout.Layout, float, list[str]]:
@@ -720,7 +728,7 @@ def _build(
         "top" in shown and anchor == "front",
         "right" in shown and anchor == "front",
         third=third,
-        iso_dims=(lay_w, lay_d, lay_h),
+        iso_dims=(lay_d, lay_w, lay_h) if _iso_quarter_turned(spec) else (lay_w, lay_d, lay_h),
         **room,
     )
     warnings: list[str] = []
@@ -799,7 +807,9 @@ def _build(
             iso_direction, iso_xdirection = (
                 sheet_turned.iso_frame(tuple(turned["axis"]), bool(turned["flip"]))  # type: ignore[arg-type]
                 if turned
-                else (sheet_layout.ISO_DIRECTION, sheet_layout.ISO_XDIRECTION)
+                else (
+                    tuple(spec["iso_frame"][0]), tuple(spec["iso_frame"][1])
+                ) if spec.get("iso_frame") else (sheet_layout.ISO_DIRECTION, sheet_layout.ISO_XDIRECTION)
             )
             iso.Direction = App.Vector(*iso_direction)
             iso.XDirection = App.Vector(*iso_xdirection)
@@ -884,7 +894,7 @@ def _name_for(fc_doc: Any, wanted: str | None, op: str | None) -> str:
     return wanted
 
 
-CARRIED_KEYS = ("declined", "answers", "review_choice", "review_request", "reports", "report_n", "symmetry")
+CARRIED_KEYS = ("declined", "answers", "review_choice", "review_request", "reports", "report_n", "symmetry", "iso_frame")
 # what a sheet remembers beyond its items, and a rebuild keeps: the defaults the engineer took off, the answers to the
 # review, who he chose to review it, the reports of the reviewers
 FLAT_RATIO = 0.35  # a round part is a disc (its length is a thickness) when it is at most this fraction of its diameter
@@ -948,6 +958,52 @@ def _views_for_part(doc: reg.DocumentRec, body: Any, op: str | None) -> tuple[li
         "diameters, the lengths, the thread and the chamfers, an end view would repeat circles; plus the isometric view"
     )
     return views, False, why
+
+
+def _views_for_assembly(
+    doc: reg.DocumentRec, body: Any, op: str | None
+) -> tuple[list[str], dict[str, Any], str] | None:
+    """The views an assembly is drawn in when the caller does not say: ``(views, section item, why)``, or ``None`` (all the
+    standard views, as always). Parts fastened through holes that all run one way and lie on one line have what an assembly
+    sheet shows in the section through their axes: the view that looks along the holes plus that section, in projection with
+    it, instead of a full outside view that the section would only repeat."""
+    stacks = sheet_interface.stacks_of(LiveGeometry(doc, _shapes(doc, body, op), op).assembly_holes())
+    if not stacks:
+        return None
+    axes = {tuple(round(c, 6) for c in s.direction) for s in stacks}
+    if len(axes) != 1:
+        return None
+    axis = next(iter(axes))
+    index = max(range(3), key=lambda i: abs(axis[i]))
+    if abs(axis[index]) < 0.999:
+        return None
+    centres = [s.centre for s in stacks]
+    for j in (i for i in range(3) if i != index):
+        if max(c[j] for c in centres) - min(c[j] for c in centres) <= sheet_interface.AXIS_TOL_MM:
+            normal = [0.0, 0.0, 0.0]
+            normal[j] = 1.0
+            view = ("right", "front", "top")[index]
+            section = {"type": "section", "at": list(centres[0]), "normal": normal, "view": view, "letter": "A"}
+            return [view], section, f"the holes run along {'xyz'[index]} on one line: the {view} view and section A-A through their axes"
+    return None
+
+
+def _best_isometric(doc: reg.DocumentRec, body: Any, op: str | None) -> tuple[sc.Vec3, sc.Vec3] | None:
+    """The isometric direction (of the four from above) that shows the most of each part of the assembly, or ``None`` when
+    the assembly is too big to try (it keeps the usual one)."""
+    ids = list(doc.components)
+    if not ids or len(ids) > sheet_isoview.MAX_PARTS_TRIED:
+        return None
+    geometry = LiveGeometry(doc, _shapes(doc, body, op), op)
+    try:
+        boxes = [geometry.instance_box(c) for c in ids]
+        centre = tuple((min(b[0][i] for b in boxes) + max(b[1][i] for b in boxes)) / 2 for i in range(3))
+        shares = [
+            geometry.visible_share(ids, (centre, sc.unit(x), sc.unit(d)), {}) for d, x in sheet_isoview.CANDIDATES
+        ]
+    except (sc.ItemError, WorkerError):
+        return None
+    return sheet_isoview.CANDIDATES[sheet_isoview.choose(shares)]
 
 
 def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
@@ -1021,6 +1077,7 @@ def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
             raise invalid_request("angle=third needs projection=techdraw: an hlr sheet is made in first angle", op)
     warnings: list[str] = []
     section_wanted = False
+    assembly_section: dict[str, Any] | None = None
     if params.get("views") is not None:
         chosen = normalise_views(params["views"], op)
         if projection == "hlr" and set(chosen) != set(views_of(spec)):
@@ -1043,7 +1100,27 @@ def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
             if params.get("isometric") is False:
                 spec["isometric"] = False
             warnings.append(f"views chosen from the part ({why}); views=[...] states others")
-    if paper_wanted and not section_wanted:  # the views known: the paper is chosen for the sheet that will be drawn
+        elif assembly and projection == "techdraw":
+            found = _views_for_assembly(doc, body, op)
+            if found is not None:
+                spec["views"], assembly_section, why = found
+                if params.get("isometric") is not False:
+                    spec["views"] = [*spec["views"], "iso"]
+                else:
+                    spec["isometric"] = False
+                warnings.append(f"views chosen from the assembly ({why}); views=[...] states others")
+    if assembly and paper_wanted:  # parts list, balloons and the views of an assembly: A3, not the A4 of a part
+        key = "A3"
+        spec["template"] = template_key(key, language, angle)
+    if assembly and projection == "techdraw" and "iso" in views_of(spec) and "iso_frame" not in spec:
+        frame = _best_isometric(doc, body, op)
+        if frame is not None:
+            spec["iso_frame"] = [list(frame[0]), list(frame[1])]
+            if frame != sheet_isoview.DEFAULT:
+                warnings.append(
+                    f"isometric view looks from {tuple(int(c) for c in frame[0])}: the direction that shows the most of each part"
+                )
+    if paper_wanted and not section_wanted and not assembly:  # the views known: the paper is chosen for the sheet that will be drawn
         # (a part with a section view keeps the default paper: the layout reserves no room for that view yet)
         chosen = _auto_paper(doc, spec, params, op)
         if chosen is not None:
@@ -1058,6 +1135,10 @@ def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     if section_wanted:
         taken = {str(i["id"]) for i in spec["items"]}
         spec["items"].append(sheet_items.normalise({"type": "section", "holes": "axis"}, taken, spec["next"]))
+        spec["next"] += 1
+    if assembly_section is not None:
+        taken = {str(i["id"]) for i in spec["items"]}
+        spec["items"].append(sheet_items.normalise(assembly_section, taken, spec["next"]))
         spec["next"] += 1
     if carried is not None:
         _clear_approval(spec)
@@ -1254,7 +1335,8 @@ def update(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
 AUTO_LOCATE_ID = "loc"  # the default location of the holes (a datum_dims with auto)
 AUTO_THICKNESS_ID = "tn"  # the thickness note of a sheet of one view
 LEGACY_ISO286_ID = "n286"  # the "tables transcribed" note older sheets carry: the sheet no longer writes it
-AUTO_IDS = (AUTO_LOCATE_ID, AUTO_THICKNESS_ID)
+AUTO_HOLES_ID = "hp"  # the diameter, centre distance and edge distance of the through holes of an assembly
+AUTO_IDS = (AUTO_LOCATE_ID, AUTO_THICKNESS_ID, AUTO_HOLES_ID)
 ANGLES = ("first", "third")
 
 
@@ -1286,6 +1368,8 @@ def _sync_auto_items(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None)
     standard = [v for v in views_of(spec) if v != "iso"]
     assembly = _is_assembly(doc, spec.get("body"))
     wanted: dict[str, dict[str, Any]] = {}
+    if assembly and LiveGeometry(doc, _shapes(doc, spec.get("body"), op), op).assembly_holes():
+        wanted[AUTO_HOLES_ID] = {"id": AUTO_HOLES_ID, "type": "hole_positions", "auto": True}
     if not assembly and hole_infos(doc, spec.get("body"), op):
         wanted[AUTO_LOCATE_ID] = {"id": AUTO_LOCATE_ID, "type": "datum_dims", "auto": True}
     if not assembly and len(standard) == 1 and _has_thickness(

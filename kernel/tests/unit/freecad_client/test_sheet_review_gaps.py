@@ -151,18 +151,32 @@ def shaft_context() -> sc.Context:
     return ctx
 
 
+THREAD_DIM = {"type": "dim", "id": "thr", "kind": "diameter", "face": "face:shaft", "view": "front"}
+
+
 def test_the_overall_diameter_of_a_shaft_is_a_diameter_and_its_thread_callout_does_not_repeat_it() -> None:
     plain = shaft_context()
     (res,) = draw(plain, {"type": "overall"})
     assert "Ø12" in plain.sheet.texts() and "60" in plain.sheet.texts(), res.detail  # with no callout the diameter is stated
 
     called = shaft_context()
-    res, callout = draw(called, {"type": "overall"}, {"type": "dim", "id": "thr", "kind": "diameter", "face": "face:shaft", "view": "front"})
+    called.threads = [sc.ThreadInfo("M12", 12.0, 9.853, 60.0, (0, 0, 60), (0, 0, -1), "face:shaft", 1.75)]  # the thread runs the whole length
+    res, callout = draw(called, {"type": "overall"}, THREAD_DIM)
     assert res.status == "ok" and callout.status == "ok", callout.detail
     assert any(t.startswith("M12") for t in called.sheet.texts())
     assert "Ø12" not in called.sheet.texts() and "12" not in called.sheet.texts(), "M12 already says the major diameter"
     assert "60" in called.sheet.texts()
     assert "not drawn: width Ø12" in res.detail
+
+
+def test_a_thread_on_one_end_leaves_the_plain_part_its_own_diameter() -> None:
+    """M12 for 20 of 60 mm: the callout says the thread's diameter and nothing of the plain 40 mm, which keeps its Ø12."""
+    ctx = shaft_context()  # the thread is 20 mm long on a 60 mm shaft
+    res, callout = draw(ctx, {"type": "overall"}, THREAD_DIM)
+    assert res.status == "ok" and callout.status == "ok", callout.detail
+    assert any(t.startswith("M12") for t in ctx.sheet.texts())
+    assert "Ø12" in ctx.sheet.texts() and "60" in ctx.sheet.texts()
+    assert "not drawn" not in res.detail
 
 
 def test_a_diameter_dim_on_a_plain_cylinder_does_not_remove_the_overall_diameter() -> None:

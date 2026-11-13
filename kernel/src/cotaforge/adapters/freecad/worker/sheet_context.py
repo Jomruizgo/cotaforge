@@ -135,6 +135,17 @@ class ViewInfo:
         return parallel(self.direction, v, 1e-6)
 
 
+@dataclass(frozen=True)
+class AssemblyHole:
+    """A full round hole of one component of an assembly: the component, a point on its axis (the middle of the hole),
+    the axis direction and the diameter."""
+
+    comp_id: str
+    centre: "Vec3"
+    direction: "Vec3"
+    diameter: float
+
+
 @dataclass
 class HoleInfo:
     """A cylindrical hole of the part. ``centre`` is the axis point where the hole opens (any point of the axis
@@ -327,6 +338,17 @@ class Geometry:
         return []
 
     # --- assemblies (P3: parts list, balloons, exploded view) ---
+    def visible_share(
+        self, instances: list[str], frame: tuple[Vec3, Vec3, Vec3], offsets: dict[str, Vec3]
+    ) -> dict[str, float]:
+        """For each instance, the share (0 to 1) of its outline that is its own surface in a view looking against
+        ``frame`` = (centre, xdir, direction): how much of it a reader sees. Empty when it cannot be told."""
+        return {}
+
+    def assembly_holes(self) -> "list[AssemblyHole]":
+        """The full round holes of the components of an assembly (none for a part)."""
+        return []
+
     def instance_box(self, comp_id: str) -> tuple[Vec3, Vec3]:
         """The (quick, never smaller than the part) box of one component instance in the assembly's axes."""
         msg = "component boxes are not available"

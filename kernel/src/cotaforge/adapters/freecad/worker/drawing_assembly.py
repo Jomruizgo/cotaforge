@@ -16,6 +16,7 @@ from typing import Any
 
 import assembly_names
 import FreeCAD as App
+import geometry as g
 import Part
 import registry as reg
 import sheet_context as sc
@@ -183,6 +184,38 @@ class AssemblyRays:
             )
         return moved
 
+    def assembly_holes(self) -> list[sc.AssemblyHole]:
+        """The full round holes (concave cylinders of at least half a circle) of the bodies of every component, placed in
+        the assembly: where the parts are fastened through, and so what the sheet must dimension."""
+        cached = self.__dict__.get("_asm_holes")
+        if cached is not None:
+            return cached
+        import holes as hole_reader  # noqa: PLC0415 - the hole reader of a part, used here on placed bodies
+
+        found: list[sc.AssemblyHole] = []
+        for comp_id in self.doc.components:
+            for unit in self._body_units(comp_id):
+                for face in unit.shape.Faces:
+                    try:
+                        kind = g.surface_kind(face)
+                        if kind == "cylinder":
+                            if not hole_reader._is_concave(face):
+                                continue
+                            cut = hole_reader._analytic_cut(hole_reader._FaceRef("", 0), face)
+                        elif kind == "other":  # a threaded or exported hole: a cylinder written as a B-spline
+                            cut = hole_reader._fitted_cut(hole_reader._FaceRef("", 0), face)
+                        else:
+                            continue
+                    except Exception:  # noqa: BLE001 - a face that cannot be read is not a hole
+                        continue
+                    if cut is None or cut.arc < hole_reader.MIN_ARC:
+                        continue
+                    middle = (cut.t0 + cut.t1) / 2
+                    centre = sc.add(cut.anchor, sc.scale(cut.direction, middle))
+                    found.append(sc.AssemblyHole(comp_id, centre, cut.direction, 2 * cut.radius))
+        self.__dict__["_asm_holes"] = found
+        return found
+
     def instance_box(self, comp_id: str) -> tuple[sc.Vec3, sc.Vec3]:
         comp = self.doc.components.get(comp_id)
         if comp is None:
@@ -272,6 +305,35 @@ class AssemblyRays:
                     continue
                 fallback.append(found[1])
             out[cid] = [p for _, p in sorted(good, reverse=True)[:1]] if good else fallback[:1]
+        return out
+
+    def visible_share(
+        self, instances: list[str], frame: tuple[sc.Vec3, sc.Vec3, sc.Vec3], offsets: dict[str, sc.Vec3]
+    ) -> dict[str, float]:
+        """For each instance, the share (0 to 1) of the outline it has in a view looking against ``frame`` = (centre,
+        xdir, direction) that is really its own surface: rays cast on a grid over the box of each of its bodies, counted when
+        the first surface they meet is the instance's. A spacer seen as a sliver between two plates has a small share."""
+        centre, xdir, direction = frame
+        ydir = sc.unit(sc.cross(direction, xdir))
+        units: list[_Unit] = []
+        for cid in self.doc.components:
+            units += self._displaced(cid, offsets.get(cid))
+        rects = [_frame_rect(u, centre, xdir, ydir, direction) for u in units]
+        full = (centre, xdir, ydir, direction)
+        reach = 2.0 * max((math.dist(u.low, u.high) for u in units), default=1.0) + 2.0 * max(
+            (math.dist(centre, u.low) for u in units), default=1.0
+        )
+        out: dict[str, float] = {}
+        for cid in instances:
+            mine = [r for u, r in zip(units, rects, strict=True) if u.comp_id == cid]
+            samples = [p for r in mine[:MAX_BODIES_SAMPLED] for p in _grid(r, OUTWARD_GRID)]
+            if not samples:
+                out[cid] = 0.0
+                continue
+            own = sum(
+                1 for u, v in samples if (o := self._owner(units, rects, full, u, v, reach)) is not None and o[0] == cid
+            )
+            out[cid] = own / len(samples)
         return out
 
     def assembly_projection(
