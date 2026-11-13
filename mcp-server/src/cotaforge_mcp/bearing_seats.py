@@ -257,16 +257,33 @@ def line_for(seats: list[Seat]) -> str:
 
 def alerts(session: "Session", op: str, step: str | None = None, role: str = "") -> list[str]:
     """The lines to add to the result of ``op`` (the step ``step`` it made, with the role ``role``): empty when nothing
-    long is found, when there is no bearing, when the document is a concept model, or when anything goes wrong."""
+    long is found, when there is no bearing, when the document is a concept model, or when anything goes wrong. A line
+    is said once per server session."""
     if session.purpose == "sketch" or session.executor is None:
         return []
     try:
-        return _alerts(session, op, step, role)
+        lines = []
+        for line in _lines(session, op, step, role):
+            if line not in session.mem.pushed:
+                session.mem.pushed.add(line)
+                lines.append(line)
+        return lines[:MAX_LINES]
     except Exception:  # noqa: BLE001 - an alert must never fail the op it comes with
         return []
 
 
-def _alerts(session: "Session", op: str, step: str | None, role: str) -> list[str]:
+def current_lines(session: "Session") -> list[str]:
+    """Every line that fires on the model now (measured again, none left out, none remembered): what the gate holds. A
+    concept model, or a reading that fails, has none."""
+    if session.purpose == "sketch" or session.executor is None:
+        return []
+    try:
+        return _lines(session, "", None, "")
+    except Exception:  # noqa: BLE001 - a reading must never break the call it comes with
+        return []
+
+
+def _lines(session: "Session", op: str, step: str | None, role: str) -> list[str]:
     roles = design_memory.effective_roles(session)
     if step is not None and role:
         roles = {**roles, step: role}
@@ -295,13 +312,7 @@ def _alerts(session: "Session", op: str, step: str | None, role: str) -> list[st
     by_run: dict[tuple[str, float, float], list[Seat]] = {}
     for seat in seats:
         by_run.setdefault((seat.shaft, round(seat.diameter, 2), round(seat.run, 1)), []).append(seat)
-    lines = []
-    for group in by_run.values():
-        line = line_for(group)
-        if line not in session.mem.pushed:
-            session.mem.pushed.add(line)
-            lines.append(line)
-    return lines[:MAX_LINES]
+    return [line_for(group) for group in by_run.values()]
 
 
 def after_op(session: "Session", step: str, op: str, role: str) -> list[str]:
