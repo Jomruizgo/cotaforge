@@ -2,7 +2,8 @@
 """The cut list of a welded part on the real FreeCAD (Windows, VISIBLE): a small frame of 4 hollow tubes (40x40x3) and 1 end
 plate in one part. The sheet gets a parts list (one row for the 4 tubes with quantity 4, one for the plate) and a balloon per
 body; the designation is the designer's and is checked against the measured body; the default views leave out the one that
-would draw the same as another; the weld is a question until a note says it.
+would draw the same as another. The harness measures the joints (the four tubes stand on the plate: four identical tee joints);
+the weld is the designer's: a question with a proposal until a weld item draws its ISO 2553 symbol on the joint.
 
 Set ``COTAFORGE_TEST_SHOTS`` to a folder to keep the image of the sheet.
 """
@@ -28,7 +29,18 @@ TUBE_CODE = (
         for n, (y, z) in enumerate(TUBES, start=1)
     )
 )
-NOTE = {"type": "note", "id": "weld", "text": "Soldadura de filete a=4 mm en todas las uniones, proceso MAG, clase ISO 13920-B"}
+NOTE = {"type": "note", "id": "weld", "text": "Proceso MAG, nivel de calidad ISO 5817-C. Tolerancias generales ISO 13920-B"}
+WELD = {
+    "type": "weld",
+    "id": "w1",
+    "between": ["body:1", "body:5"],
+    "also": [["body:2", "body:5"], ["body:3", "body:5"], ["body:4", "body:5"]],
+    "kind": "fillet",
+    "size_mm": 3,
+    "size_kind": "throat",
+    "sides": "arrow",
+    "all_around": True,
+}
 
 
 @pytest.fixture(autouse=True)
@@ -59,7 +71,8 @@ async def test_the_welded_sheet_gets_its_cut_list_and_a_balloon_per_body(workspa
         await cad.ok("drawing", action="add", items=[{"type": "parts_list", "id": "cut"}, {"type": "balloons", "id": "bal", "view": "isometric"}])
         findings, _, _ = await pending_points(cad)
         assert any(f.startswith("weld_body_unnamed") for f in findings), findings  # it asks the designer, it does not guess
-        assert any(f.startswith("weld_not_specified") for f in findings), findings  # and which welds
+        assert any(f.startswith("weld_joint_unspecified") for f in findings), findings  # and which welds: the joints are measured
+        assert not any(f.startswith("weld_not_specified") for f in findings), findings
         # a designation that does not agree with the body (the tubes are 40 x 40) is a blocking finding
         wrong = [{"component": "body:1", "name": "Tubo 50×50×3"}, {"component": "body:5", "name": "Chapa 6"}]
         await cad.ok("drawing", action="remove", items=["cut"])
@@ -73,9 +86,19 @@ async def test_the_welded_sheet_gets_its_cut_list_and_a_balloon_per_body(workspa
         await cad.ok("drawing", action="remove", items=["cut"])
         await cad.ok("drawing", action="add", items=[{"type": "parts_list", "id": "cut", "rows": rows}, NOTE])
         review = await cad.ok("drawing", action="review")
+        print("JOINT QUESTION", review)
+        findings, _, _ = await pending_points(cad)
+        # a general note does not close the joints: the four tee joints are ONE question, with the proposal a = max(3, 0.7 x 3 mm) = 3 mm
+        (joint,) = [f for f in findings if f.startswith("weld_joint_unspecified")]
+        assert "4 iguales" in review and "a=3" in review and "BLOCKS EXPORT weld_joint_unspecified" in review, review
+        # the designer accepts the proposal: one symbol for the four joints, the arrow on the seam
+        added = await cad.ok("drawing", action="add", items=[WELD])
+        print("WELD ADDED", added)
+        assert "error" not in added.lower().split("w1")[-1][:80], added
+        review = await cad.ok("drawing", action="review")
         findings, _, _ = await pending_points(cad)
         print("FINAL FINDINGS", findings)
         assert not any(f.startswith(("weld_", "item_without_balloon", "balloon_not_in_list", "view_redundant")) for f in findings), review
         capture = await cad("drawing", action="capture")
         assert capture.images, capture.text
-        (shots / "w1_frame_cut_list.png").write_bytes(base64.b64decode(capture.images[0].data))
+        (shots / "w2_frame_weld_symbols.png").write_bytes(base64.b64decode(capture.images[0].data))

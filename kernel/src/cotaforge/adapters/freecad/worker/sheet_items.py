@@ -23,6 +23,7 @@ import items_holes
 import items_lines
 import items_notes
 import items_views
+import items_weld
 from sheet_context import SECTION_LABEL, Context, ItemError, ItemResult, ItemType
 
 PHASE_ON_SECTION = 5  # after the views (3) and the balloons (4)
@@ -41,6 +42,7 @@ MODULES = (
     items_assembly,
     items_explode,
     items_lines,
+    items_weld,
 )
 
 REGISTRY: dict[str, ItemType] = {t.name: t for module in MODULES for t in module.ITEMS}
@@ -51,10 +53,6 @@ PLANNED: dict[str, str] = {}
 # item types the contract takes that this CAD does not draw: refused with this text (the adapter says it in its own
 # words)
 UNSUPPORTED: dict[str, str] = {
-    "weld": (
-        "FreeCAD draws no weld symbols on a sheet, so nothing was drawn: say the weld in a note item (kind, size, "
-        "sides, all around or field)"
-    ),
     "keyway_dims": (
         "keyway_dims is made into plain dim items when it is added (drawing add) and is never stored: if you read "
         "this, the part has no keyway whose walls can be dimensioned"

@@ -429,3 +429,153 @@ class AssemblyRays:
         # (and again to capture and export): the same poses, offsets and frame give the same answer
         key = (self.doc.id, tuple(poses), centre, xdir, direction, tuple(sorted(offsets.items())))
         return sheet_project.project_view(key, shapes, centre, xdir, direction)
+
+
+# --- the joints of a welded part ------------------------------------------------------------------------------------------
+
+CONTACT_TOL_MM = 0.05  # two bodies this near touch
+MAX_BODIES_JOINTED = 60
+SEAM_DEFLECTION_MM = 0.2
+MIN_CONTACT_MM2 = 0.01
+RAY_OFFSET_MM = 0.3  # the ray that tells whether a seam is hidden starts this far in front of it
+
+
+def _plane_frame(face: Any) -> tuple[sc.Vec3, sc.Vec3] | None:
+    """A point and the outward unit normal of a planar face, ``None`` for any other face."""
+    if g.surface_kind(face) != "plane":
+        return None
+    u, v = face.Surface.parameter(face.CenterOfMass)
+    return g.vec(face.valueAt(u, v)), g.unit(g.vec(face.normalAt(u, v)))
+
+
+def _outline(face: Any) -> list[sc.Vec3]:
+    return [g.vec(p) for p in face.OuterWire.discretize(Deflection=SEAM_DEFLECTION_MM)]
+
+
+def _measure_joint(
+    a: str, b: str, sa: Any, sb: Any, thick: dict[str, float]
+) -> Any:
+    """The joint of two touching bodies: the faces of one that lie on faces of the other (the seam is the outer outline of
+    what overlaps) or, when no face lies on another, the edges where the surfaces meet. ``None`` when they only touch at a
+    point."""
+    import sheet_joints as sj  # noqa: PLC0415
+
+    flats_a = [(f, _plane_frame(f)) for f in sa.Faces]
+    flats_b = [(f, _plane_frame(f)) for f in sb.Faces]
+    big_a = max((f.Area for f, fr in flats_a if fr), default=0.0)
+    big_b = max((f.Area for f, fr in flats_b if fr), default=0.0)
+    overlap = 0.0
+    best: tuple[float, Any, Any, Any] | None = None
+    seams: list[tuple[sc.Vec3, ...]] = []
+    for fa, ra in flats_a:
+        if ra is None:
+            continue
+        for fb, rb in flats_b:
+            if rb is None or sc.dot(ra[1], rb[1]) > -0.9999:
+                continue
+            if abs(sc.dot(sc.sub(rb[0], ra[0]), ra[1])) > CONTACT_TOL_MM:
+                continue
+            box = App.BoundBox(fa.BoundBox)
+            box.enlarge(CONTACT_TOL_MM)
+            if not box.intersect(fb.BoundBox):
+                continue
+            try:
+                common = fa.common(fb)
+            except Exception:  # noqa: BLE001 - a boolean that fails is no contact face
+                continue
+            for piece in common.Faces:
+                if piece.Area < MIN_CONTACT_MM2:
+                    continue
+                overlap += piece.Area
+                seams.append(tuple(_outline(piece)))
+                if best is None or piece.Area > best[0]:
+                    best = (piece.Area, fa, fb, piece)
+    if best is not None:
+        _, fa, fb, piece = best
+        larger = fa if fa.Area >= fb.Area else fb
+        outline = larger.OuterWire
+        flush = False
+        for line in seams:
+            for p, q in zip(line, line[1:], strict=False):
+                mid = App.Vector((p[0] + q[0]) / 2, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2)
+                if outline.distToShape(Part.Vertex(mid))[0] < CONTACT_TOL_MM:
+                    flush = True
+        contact = sj.Contact(overlap, (fa.Area, fb.Area), (fa.Area <= sj.END_FACE_SHARE * big_a, fb.Area <= sj.END_FACE_SHARE * big_b), flush)
+    else:
+        try:
+            edges = sa.section(sb).Edges
+        except Exception:  # noqa: BLE001
+            return None
+        seams = [tuple(g.vec(p) for p in e.discretize(Deflection=SEAM_DEFLECTION_MM)) for e in edges]
+        if not seams:
+            return None
+        contact = sj.Contact(0.0, (0.0, 0.0), (False, False))
+    return sj.Joint((a, b), sj.classify(contact), tuple(seams), (thick[a], thick[b]), contact.area)
+
+
+class WeldJoints:
+    """The joints of a welded part on the live document, mixed into ``LiveGeometry``."""
+
+    doc: reg.DocumentRec
+
+    def weld_joints(self) -> list[Any]:
+        """Where the bodies of the part touch (``sheet_joints.Joint``), measured, in the order of their body ids; none for
+        an assembly or a part of one body."""
+        cached = self.__dict__.get("_weld_joints")
+        if cached is not None:
+            return cached
+        import sheet_joints as sj  # noqa: PLC0415
+
+        found: list[Any] = []
+        if self.doc.kind != "assembly":
+            shapes = {}
+            thick: dict[str, float] = {}
+            for body in self.doc.live_bodies()[:MAX_BODIES_JOINTED]:
+                shape = reg.world_shape(self.doc, body)
+                if shape.isNull() or not shape.Solids:
+                    continue
+                shapes[body.id] = shape
+                box = shape.BoundBox
+                dims = tuple(sorted((box.XLength, box.YLength, box.ZLength), reverse=True))
+                thick[body.id] = sj.wall_thickness(shape.Volume, shape.Area, dims)  # type: ignore[arg-type]
+            ids = sorted(shapes, key=sj.natural)
+            for i, a in enumerate(ids):
+                for b in ids[i + 1 :]:
+                    box = App.BoundBox(shapes[a].BoundBox)
+                    box.enlarge(CONTACT_TOL_MM)
+                    if not box.intersect(shapes[b].BoundBox):
+                        continue
+                    try:
+                        if shapes[a].distToShape(shapes[b])[0] > CONTACT_TOL_MM:
+                            continue
+                        joint = _measure_joint(a, b, shapes[a], shapes[b], thick)
+                    except Exception:  # noqa: BLE001 - a pair the kernel cannot measure has no joint listed
+                        continue
+                    if joint is not None:
+                        found.append(joint)
+        self.__dict__["_weld_joints"] = found
+        return found
+
+    def seam_hidden(self, point: sc.Vec3, towards: sc.Vec3) -> bool:
+        """Whether a body of the part stands between the seam point ``point`` and a viewer far away along ``towards`` (the
+        direction to the viewer): a ray from just in front of the point, tried against every live body."""
+        cache: list[Any] | None = self.__dict__.get("_ray_shapes")
+        if cache is None:
+            cache = []
+            for body in self.doc.live_bodies()[:MAX_BODIES_JOINTED]:
+                shape = reg.world_shape(self.doc, body)
+                if not shape.isNull() and shape.Solids:
+                    cache.append(shape)
+            self.__dict__["_ray_shapes"] = cache
+        direction = g.unit(towards)
+        far = (max(s.BoundBox.DiagonalLength for s in cache) if cache else 0.0) + 10.0
+        start = sc.add(point, sc.scale(direction, RAY_OFFSET_MM))
+        line = Part.makeLine(g.fcvec(start), g.fcvec(sc.add(point, sc.scale(direction, far))))
+        for shape in cache:
+            try:
+                found = shape.section(line)
+            except Exception:  # noqa: BLE001 - a body the kernel cannot cut by a line blocks nothing
+                continue
+            if found.Vertexes or found.Edges:
+                return True
+        return False
