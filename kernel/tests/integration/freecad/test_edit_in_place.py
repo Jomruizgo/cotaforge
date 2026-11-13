@@ -183,9 +183,16 @@ def test_a_pad_length_is_edited_in_place_and_what_cannot_be_said_by_a_dimension_
         back = executor.edit_in_place(parse_plan(plate_plan_dict()), ["base"])
         assert back.status == "applied", back
         assert_same(signature(adapter, document), baseline, "pad length: round trip")
-        # the position of a hole on a face is not a dimension of the hole: it is refused and nothing is recorded
+        # the position of a hole on a face is a datum of its sketch: moved in place (the pattern that repeats it
+        # follows), the same part as a fresh build, and back where it was the same as the baseline
         moved = plate_plan_dict()
         moved["operations"][2]["position"] = [-30, -20]
-        refused = executor.edit_in_place(parse_plan(moved), ["hole_1"])
-        assert refused.status == "refused" and refused.failure and "position" in refused.failure
-        assert refused.failure_kind == "technical" and len(executor.trace().edits) == 2
+        applied = executor.edit_in_place(parse_plan(moved), ["hole_1"])
+        assert applied.status == "applied", (applied.failure, applied.result.flags if applied.result else None)
+        assert executor.trace().reverts == ()
+        fresh_moved = signature(adapter, fast_build(adapter, parse_plan(moved)))
+        assert_same(signature(adapter, document), fresh_moved, "hole position: in place vs fresh")
+        adapter.set_active_document(SetActiveDocumentRequest(operation_id="s", document=document))
+        again = executor.edit_in_place(parse_plan(plate_plan_dict()), ["hole_1"])
+        assert again.status == "applied", again
+        assert_same(signature(adapter, document), baseline, "hole position: round trip")
