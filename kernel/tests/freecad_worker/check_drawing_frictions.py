@@ -123,7 +123,7 @@ def check_a_sleeve_with_two_flats_is_symmetric_across_x_and_y_and_a_plain_cut_is
 
 def check_a_hole_on_the_axis_of_a_symmetric_part_is_located_by_the_part_not_by_a_number() -> None:
     build_sleeve()
-    call("create_drawing", op("d", template="A3", views=["front", "top", "iso"], scale=1.0))
+    call("create_drawing", op("d", template="A3", views=["front", "top", "iso"], scale=1.0, symmetry=True))  # intent
     sheet, results, ctx = _composed()
     loc = next(r for r in results if r.id == "loc")
     assert loc.status == "ok" and "symmetry" in loc.detail, loc
