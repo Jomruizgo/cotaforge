@@ -351,7 +351,8 @@ def test_a_rebuild_that_names_another_face_for_the_edited_step_takes_the_face_as
     text = call.ok("op", edit="s3", params={"face": other, "position": [10, 0]})
     assert "method: rebuilt from s3" in text
     step = next(s for s in call.session.require_executor().trace().active_steps() if s.op_id == "s3")
-    assert step.attempts[-1].request["origin"] is None
+    # the place of the old face is not kept on the other one: measured from the centre of that face's box
+    assert step.attempts[-1].request["origin"] == [50.0, 30.0, 0.0]
 
 
 # --- a rebuild that cannot put the steps back ------------------------------------------------------------------------

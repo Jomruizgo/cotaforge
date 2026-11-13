@@ -3246,8 +3246,11 @@ def _apply_changes(op: str, data: dict[str, Any], changes: dict[str, Any]) -> No
             usage=catalog.op_usage(op),
         )
     data.update(changes)
-    if op == "hole" and ("position" in changes) != ("at" in changes):
-        data["at" if "position" in changes else "position"] = None  # one way of placing it: the one just given
+    placed = [k for k in ("position", "positions", "bolt_circle", "at") if k in changes]
+    if op == "hole" and len(placed) == 1:  # one way of placing it: the one just given
+        for other in ("position", "positions", "bolt_circle", "at"):
+            if other != placed[0]:
+                data[other] = None
     if op == "hole" and {"size", "standard"} & changes.keys() and "diameter_mm" not in changes:
         if data.get("standard") in ("iso_clearance", "iso_tapped"):
             data.pop("diameter_mm", None)  # derived from the size: let the thread table fill it in again
