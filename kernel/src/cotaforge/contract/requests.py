@@ -203,9 +203,13 @@ class HoleRequest(Request):
 
     face: FaceHandle
     position: tuple[float, float]
+    positions: tuple[tuple[float, float], ...] | None = None
+    """Several holes of the same kind in one feature (planar face only): every ``(u, v)``, the first one equal to
+    ``position``. ``None`` = one hole at ``position``."""
     origin: Vec3 | None = None
     """On a planar face: the point ``position`` is measured from (a point of the plane of the face); ``None`` = the
-    centre of the face. See ``SketchRequest.origin``."""
+    centre of the face. The executor always sends the stable origin of the face (``stable_face_origin``). See
+    ``SketchRequest.origin``."""
     standard: HoleStandard
     size: str | None = None
     diameter_mm: float = Field(gt=0)

@@ -138,6 +138,7 @@ from cotaforge.contract.geometry import (
     points_collinear,
     radial_entry,
     slide_onto_face,
+    stable_face_origin,
 )
 from cotaforge.contract.handles import (
     AnyHandle,
@@ -598,6 +599,7 @@ __all__ = [
     "export_mcp_tools_json",
     "frame_for_face",
     "slide_onto_face",
+    "stable_face_origin",
     "frame_for_normal",
     "frame_for_plane",
     "points_collinear",

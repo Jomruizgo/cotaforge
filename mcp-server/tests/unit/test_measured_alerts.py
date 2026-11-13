@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from cotaforge.adapters.fake import FakeAdapter
 
-from cotaforge_mcp import bearing_seats, design_memory, measured_alerts, pocket_corners
+from cotaforge_mcp import bearing_seats, design_memory, measured_alerts, pocket_corners, turned_ends
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.server import make_session
 from tests.conftest import Caller, DrawingFake, declare
@@ -50,6 +50,7 @@ def pocket_open(call: Caller) -> tuple[str, Fix]:
 def bearing_open(call: Caller) -> tuple[str, Fix]:
     """A bearing envelope on a plain shaft much longer than itself; the way out of it is a shorter shaft."""
     call.ok("doc", action="new", name="drive")
+    call.ok("memory", action="brief", sector="plastics", processes=["3D printing"])  # no bare-end alert here
     _cylinder(call, "shaft", 25, 0, 120)
     _cylinder(call, "env", 52, 20, 15, role="comercial")
     _cylinder(call, "env_bore", 25, 20, 15)
@@ -57,7 +58,19 @@ def bearing_open(call: Caller) -> tuple[str, Fix]:
     return bearing_seats.ENTRY_ID, lambda c: c.ok("op", edit="shaft", params={"height_mm": 28})
 
 
-CASES = [pytest.param(pocket_open, id="pocket-corners"), pytest.param(bearing_open, id="bearing-seat")]
+def turned_open(call: Caller) -> tuple[str, Fix]:
+    """A plain shaft with two bare ends. The fake cannot chamfer a circular edge (the real CAD can: see the integration
+    test), so the way out here is a shaft cut down to a disc, which is no longer a shaft."""
+    call.ok("doc", action="new", name="shaft")
+    _cylinder(call, "shaft", 25, 0, 120)
+    return turned_ends.ENTRY_ID, lambda c: c.ok("op", edit="shaft", params={"height_mm": 20})
+
+
+CASES = [
+    pytest.param(pocket_open, id="pocket-corners"),
+    pytest.param(bearing_open, id="bearing-seat"),
+    pytest.param(turned_open, id="turned-ends"),
+]
 
 
 def read(call: Caller, entry: str) -> None:
@@ -184,7 +197,11 @@ def test_an_unmeasured_entry_can_still_be_answered_does_not_apply(base_call: Cal
 
 
 def test_the_alerts_are_the_ones_the_harness_measures() -> None:
-    assert {d.entry_id for d in measured_alerts.detectors()} == {pocket_corners.ENTRY_ID, bearing_seats.ENTRY_ID}
+    assert {d.entry_id for d in measured_alerts.detectors()} == {
+        pocket_corners.ENTRY_ID,
+        bearing_seats.ENTRY_ID,
+        turned_ends.ENTRY_ID,
+    }
 
 
 # ---- the export of a drawing ------
