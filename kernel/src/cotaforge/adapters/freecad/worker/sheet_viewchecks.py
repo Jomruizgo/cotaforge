@@ -93,11 +93,32 @@ def _fewer_views(ctx: Context) -> list[tuple[str, float]]:
             chosen = ["front", *[k for k in ("top", "right") if k in keep], *(["iso"] if iso else [])]
             layout = sheet_layout.plan(
                 w, d, h, ctx.sheet.width, ctx.sheet.height, None, None, iso, "top" in keep, "right" in keep,
-                third=third, iso_dims=(w, d, h),
+                third=third, iso_dims=(w, d, h), own_iso_scale=False,
             )  # fmt: skip
             found.append((len(chosen), "views=[" + ", ".join(chosen) + "]", layout.scale))
     found.sort(key=lambda row: -row[0])
     return [(what, scale) for _, what, scale in found]
+
+
+def _iso_own(ctx: Context, scale: float) -> tuple[float, float] | None:
+    """``(main scale, isometric scale)`` when the isometric view drawn at a scale of its own (ISO 5455: a pictorial view may
+    have one, written under it) lets the main views take a larger standard scale on this paper: the automatic layout's
+    arithmetic. ``None`` for an assembly, a sheet without an isometric view or when nothing is gained."""
+    import sheet_layout  # noqa: PLC0415 - the layout arithmetic that chose the scale in the first place
+
+    extent = ctx.extras.get("layout_mm") or ctx.extras.get("extent_mm")
+    names = [n for n in ctx.views if n in ("front", "top", "right")]
+    iso = "isometric" in ctx.extras.get("views_extra", {}) or len(ctx.extras.get("view_boxes", [])) > len(names)
+    if extent is None or ctx.assembly is not None or "front" not in names or not iso:
+        return None
+    w, d, h = (float(v) for v in extent)
+    layout = sheet_layout.plan(
+        w, d, h, ctx.sheet.width, ctx.sheet.height, None, None, True, "top" in names, "right" in names,
+        third=ctx.extras.get("angle") == "third", iso_dims=(w, d, h),
+    )  # fmt: skip
+    if layout.iso_scale > 0 and layout.scale > scale * (1 + 1e-9):
+        return layout.scale, layout.iso_scale
+    return None
 
 
 CROWD_TIP_MM = 6.0  # two callouts whose leaders touch the part this close are crowded at one spot
@@ -188,6 +209,7 @@ def _underused(data: ReviewInput) -> list[Finding]:
         papers=papers,
         views=_view_boxes(ctx),
         fewer=_fewer_views(ctx),
+        iso_own=_iso_own(ctx, scale),
     )
     if found is None:
         return []
@@ -199,6 +221,17 @@ def _underused(data: ReviewInput) -> list[Finding]:
     if found.paper is not None:
         fix_es.append(f"cabe en una hoja menor (template={found.paper})")
         fix_en.append(f"it fits a smaller sheet (template={found.paper})")
+    if found.iso_main is not None and found.iso_scale is not None:
+        own_es, own_en = (
+            f"con la isométrica a su propia escala ({fmt_scale(found.iso_scale)}, escrita bajo la vista) las vistas "
+            f"principales caben a scale={ctx.num(found.iso_main)} ({fmt_scale(found.iso_main)}): pide esa escala y la "
+            "isométrica se ajusta sola",
+            f"with the isometric view at its own scale ({fmt_scale(found.iso_scale)}, written under the view) the main "
+            f"views fit at scale={ctx.num(found.iso_main)} ({fmt_scale(found.iso_main)}): ask for that scale and the "
+            "isometric view adjusts itself",
+        )
+        fix_es.append(own_es)
+        fix_en.append(own_en)
     if found.fewer and found.fewer_scale is not None:
         fix_es.append(f"con menos vistas ({found.fewer}) cabe la escala {fmt_scale(found.fewer_scale)}")
         fix_en.append(f"with fewer views ({found.fewer}) the scale {fmt_scale(found.fewer_scale)} fits")
@@ -237,7 +270,12 @@ def _underused(data: ReviewInput) -> list[Finding]:
             f"The block of views sits in a corner: {ctx.num(found.free_mm)} mm are free on the {found.side} and only "
             f"{ctx.num(found.opposite_mm)} mm on the opposite side; {advice}.",
         )
-    remedy = found.scale is not None or found.paper is not None or bool(found.fewer and found.fewer_scale is not None)
+    remedy = (
+        found.scale is not None
+        or found.paper is not None
+        or bool(found.fewer and found.fewer_scale is not None)
+        or found.iso_main is not None
+    )
     return [Finding("sheet_underused" if remedy else "sheet_unbalanced", "warning", text, (), key=found.reason)]
 
 

@@ -720,6 +720,8 @@ class Underused:
     ink: float = 0.0  # small: the share of the area the views themselves cover
     fewer: str = ""  # small: what to take off so a larger standard scale fits ("views=[top]")
     fewer_scale: float | None = None  # ... and the scale it would take
+    iso_main: float | None = None  # small: the scale the main views would take with the isometric view at a scale of its own
+    iso_scale: float | None = None  # ... and the scale that view would have (written under it)
 
 
 def _hull(rects: Sequence[Rect]) -> Rect | None:
@@ -738,6 +740,7 @@ def sheet_underused(
     papers: Mapping[str, tuple[float, float]] | None = None,
     views: Sequence[Rect] = (),
     fewer: Sequence[tuple[str, float]] = (),
+    iso_own: tuple[float, float] | None = None,
 ) -> Underused | None:
     """Whether the views of a sheet, with their dimensions (``rects``: the rectangles of the views and of the dimension
     strips, y up), waste the free drawing ``area``: ``None`` when the sheet is balanced.
@@ -750,6 +753,9 @@ def sheet_underused(
       than ``LOW_INK`` of the area and fewer views would take a larger standard scale (``fewer``: ``(what to take off, the
       scale it allows)``, the caller's layout arithmetic): a plate drawn in four views at 1:1 on A3 has a block that spans the
       sheet and views that are a fifth of it, and one view at 2:1 is the same drawing read better.
+    * ``small`` also when the isometric view, a pictorial one, could take a scale of its own (``iso_own``: ``(the scale the
+      main views then take, the scale of the isometric view)``, the caller's layout arithmetic) and the main views would be
+      larger: the sheet is not stuck at the scale the isometric view needs.
     * ``corner`` (only when ``corner``: an assembly keeps room for its parts list and the exploded view): the free room on one
       side of the hull is more than ``CORNER_RATIO`` times the opposite one and bigger than ``CORNER_MIN_MM``."""
     hull = _hull(rects)
@@ -771,15 +777,19 @@ def sheet_underused(
     block, free = (round(width, 1), round(height, 1)), (round(area_w, 1), round(area_h, 1))
     ink = sum(max(0.0, v[2] - v[0]) * max(0.0, v[3] - v[1]) for v in views) / (area_w * area_h) if views else coverage
     gain = next(((what, s) for what, s in fewer if s > scale * (1 + 1e-9)), None)
-    if coverage < LOW_COVERAGE and (larger or smaller_paper):
+    own = iso_own if iso_own is not None and iso_own[0] > scale * (1 + 1e-9) else None
+    iso_main, iso_scale = own if own else (None, None)
+    if coverage < LOW_COVERAGE and (larger or smaller_paper or own):
         return Underused(
             "small", coverage, block, free, max(larger) if larger else None, smaller_paper, ink=ink,
             fewer=gain[0] if gain else "", fewer_scale=gain[1] if gain else None,
+            iso_main=iso_main, iso_scale=iso_scale,
         )  # fmt: skip
-    if ink < LOW_INK and gain is not None:
+    if ink < LOW_INK and (gain is not None or own):
         return Underused(
             "small", coverage, block, free, max(larger) if larger else None, smaller_paper, ink=ink,
-            fewer=gain[0], fewer_scale=gain[1],
+            fewer=gain[0] if gain else "", fewer_scale=gain[1] if gain else None,
+            iso_main=iso_main, iso_scale=iso_scale,
         )  # fmt: skip
     if not corner:
         return None

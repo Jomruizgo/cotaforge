@@ -32,9 +32,10 @@ def record(
     iso: tuple[float, float] | None,
     size: tuple[float, float, float],
     centre: Vec3,
+    iso_scale: float = 0.0,
 ) -> dict[str, object]:
     """What the sheet spec keeps of the layout (page y UP): enough to place the views again after any reopen."""
-    return {
+    rec: dict[str, object] = {
         "scale": scale,
         "spacing": spacing,
         "front": list(front),
@@ -42,6 +43,9 @@ def record(
         "size": list(size),
         "centre": list(centre),
     }
+    if iso_scale:
+        rec["iso_scale"] = iso_scale  # the isometric view's own scale; missing: the sheet's
+    return rec
 
 
 @dataclass
@@ -83,19 +87,21 @@ def compose_views(geometry: Geometry, rec: dict[str, object]) -> Views:
         if local is None:
             msg = f"nothing of the part is seen in the {name} view"
             raise ItemError(msg)
+        k = scale
         if name == "isometric":
             ix, iy = (float(c) for c in iso_at)  # type: ignore[attr-defined,union-attr]
-            ox, oy = ix - (local[0] + local[2]) / 2 * scale, iy - (local[1] + local[3]) / 2 * scale
+            k = float(rec.get("iso_scale") or scale)  # type: ignore[arg-type]  # a scale of its own, when it has one
+            ox, oy = ix - (local[0] + local[2]) / 2 * k, iy - (local[1] + local[3]) / 2 * k
         else:
             ox, oy = where[name]
-        box = (ox + local[0] * scale, oy + local[1] * scale, ox + local[2] * scale, oy + local[3] * scale)
-        info = ViewInfo(name, ox, oy, scale, direction, xdir, centre, box)  # type: ignore[arg-type]
+        box = (ox + local[0] * k, oy + local[1] * k, ox + local[2] * k, oy + local[3] * k)
+        info = ViewInfo(name, ox, oy, k, direction, xdir, centre, box)  # type: ignore[arg-type]
         if name == "isometric":
             out.iso = info
         else:
             out.infos[name] = info
         out.rects.append(box)
-        placed = place(list(projection.visible), ox, oy, scale)
+        placed = place(list(projection.visible), ox, oy, k)
         out.groups[name] = placed
         out.entities += placed
     return out

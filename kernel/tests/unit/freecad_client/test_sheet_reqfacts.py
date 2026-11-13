@@ -258,7 +258,7 @@ def test_the_paper_is_chosen_from_the_part_when_nobody_chose_one() -> None:
     assert layout.auto_paper(20, 20, 20, True, True, True, iso_dims=(20, 20, 20)) == ("A4", 2.0)  # a cube: A4, enlarged
     paper, scale = layout.auto_paper(100, 60, 8, True, True, True, iso_dims=(100, 60, 8))
     assert (paper, scale) == ("A3", 1.0)  # the plate: full size on A3
-    assert layout.auto_paper(100, 100, 50, True, True, True, iso_dims=(100, 100, 50)) == ("A4", 0.5)  # not a bigger sheet for a 1:1 it does not need
+    assert layout.auto_paper(100, 100, 50, True, True, True, iso_dims=(100, 100, 50)) == ("A3", 1.0)  # 1:1 on A3, the isometric view at 1:2 beside it (at 1:1 it would not fit)
     assert layout.auto_paper(3000, 1000, 500, True, True, True, iso_dims=(3000, 1000, 500))[1] <= 0.2  # a big part: the largest scale there is
 
 

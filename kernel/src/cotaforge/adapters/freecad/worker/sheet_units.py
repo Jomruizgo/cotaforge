@@ -26,6 +26,7 @@ KIND_EXTRA = "extra"
 TEXT_SLACK = 1.12  # the real font may be wider than ``text_width`` estimates: the SVG fragment is cut at its box
 MARGIN_MM = 1.5
 KEY_THREADS = "threads"
+KEY_ISO_SCALE = "iso_scale"  # the scale written under the isometric view when it is not the sheet's
 NATIVE_LAYERS = frozenset({DIMENSIONS, TEXT})  # what TechDraw's own dimension / annotation objects draw
 
 
@@ -207,10 +208,11 @@ def collect(
     for name, group in (views or {}).items():
         if group:
             units.append(Unit(f"view:{name}", f"view {name}", KIND_VIEW, tuple(group)))
-    if "threads" in extras:
-        a, b = extras["threads"]
-        if b > a:
-            units.append(Unit(KEY_THREADS, "thread arcs", KIND_EXTRA, tuple(entities[a:b])))
+    for key, what in ((KEY_THREADS, "thread arcs"), (KEY_ISO_SCALE, "isometric view scale")):
+        if key in extras:
+            a, b = extras[key]
+            if b > a:
+                units.append(Unit(key, what, KIND_EXTRA, tuple(entities[a:b])))
     for item in items:
         item_id = str(item["id"])
         if statuses.get(item_id) == "error" or item_id not in slices:
