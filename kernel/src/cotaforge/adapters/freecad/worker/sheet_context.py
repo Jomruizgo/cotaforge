@@ -353,6 +353,15 @@ class Geometry:
         """The full round holes of the components of an assembly (none for a part)."""
         return []
 
+    def weld_joints(self) -> "list[Any]":
+        """Where the bodies of a welded part touch (``sheet_joints.Joint``: the two bodies, the kind of joint, the seam
+        lines, the walls), measured on the model; none for a part of one body or an assembly."""
+        return []
+
+    def seam_hidden(self, point: Vec3, towards: Vec3) -> bool:
+        """Whether a body of the part stands between ``point`` (on a seam) and a viewer far away along ``towards``."""
+        return False
+
     def instance_box(self, comp_id: str) -> tuple[Vec3, Vec3]:
         """The (quick, never smaller than the part) box of one component instance in the assembly's axes."""
         msg = "component boxes are not available"
