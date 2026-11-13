@@ -112,6 +112,7 @@ from cotaforge_mcp import (
     pocket_corners,
     recovery,
     rules,
+    turned_ends,
     usage,
 )
 from cotaforge_mcp.config import Settings
@@ -1952,6 +1953,7 @@ class Session:
                 *remembered,
                 *bearing_seats.after_op(self, step_id, name, role),
                 *pocket_corners.after_op(self, step_id, name),
+                *turned_ends.after_op(self, step_id, name, role),
             ]
             return [
                 *before_lines,
