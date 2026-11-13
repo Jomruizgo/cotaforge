@@ -237,12 +237,26 @@ def _es(side: str) -> str:
 def _sides(data: ReviewInput) -> list[Finding]:
     ctx = data.ctx
     shapes: list[rules.DimShape] = ctx.extras.get("dim_shapes", [])
-    if not shapes:
+    extents = ctx.extras.get("extent_dims", [])
+    if not shapes and not extents:
         return []
     views = _views(ctx)
-    found = rules.dimension_side(shapes, _outlines(ctx, views), {n: v.box for n, v in views.items()})
+    outlines = _outlines(ctx, views)
+    found = rules.dimension_side(shapes, outlines, {n: v.box for n, v in views.items()})
     types = {str(i["id"]): str(i.get("type")) for i in data.items}
     out: list[Finding] = []
+    for g in rules.extent_gaps(extents, outlines):  # TechDraw's own overall width: its extension lines are not the item's
+        text = ctx.say(
+            f"La cota {g.owner} (overall) de la vista {g.view} está {_es(g.now)} y sus líneas de extensión suben desde las "
+            f"esquinas inferiores de la vista y cuelgan {ctx.num(g.gap_mm)} mm sobre ninguna línea de la pieza (cruzan un hueco): "
+            "parecen una arista que no existe. Una cota va del lado donde sus líneas no cruzan la vista: muévela "
+            "(overall con side=below).",
+            f"Dimension {g.owner} (overall) in the {g.view} view stands {g.now} and its extension lines rise from the lower "
+            f"corners of the view and hang {ctx.num(g.gap_mm)} mm over no line of the part (they cross a gap): they look like "
+            "an edge that does not exist. A dimension goes on the side where its lines do not cross the view: move it "
+            "(overall with side=below).",
+        )
+        out.append(Finding("dimension_side", "warning", text, (g.owner,), key=g.owner))
     for f in found:
         name = f"{f.owner} ({types[f.owner]})" if f.owner in types else f.owner
         if f.reason == "length":

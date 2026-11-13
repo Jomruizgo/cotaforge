@@ -337,7 +337,8 @@ def place_balloons(
 def _view_name(ctx: Context, spec: dict[str, Any]) -> str:
     if spec.get("view"):
         return spec["view"]
-    return "exploded" if "exploded" in ctx.extras.get("views_extra", {}) else "front"
+    extra = ctx.extras.get("views_extra", {})  # the pictorial views: the balloons read best on them (ISO 6433 practice)
+    return "exploded" if "exploded" in extra else "isometric" if "isometric" in extra else "front"
 
 
 def visible_dots(

@@ -56,8 +56,12 @@ UNSUPPORTED: dict[str, str] = {
         "sides, all around or field)"
     ),
     "keyway_dims": (
-        "keyway_dims is made into plain dim items when it is added (drawing add) and is never stored: if you read this, "
-        "the part has no keyway whose walls can be dimensioned"
+        "keyway_dims is made into plain dim items when it is added (drawing add) and is never stored: if you read "
+        "this, the part has no keyway whose walls can be dimensioned"
+    ),
+    "chamfer_dims": (
+        "chamfer_dims is made into plain dim items (kind chamfer) when it is added (drawing add) and is never "
+        "stored: if you read this, the part has no chamfer without a dimension"
     ),
 }
 

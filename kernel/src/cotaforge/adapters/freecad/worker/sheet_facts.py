@@ -5,9 +5,8 @@ whether the part is sheet metal. Read from the B-rep of the bodies, like ``holes
 (``sheet_checks.PartFacts``), so the checks themselves import no FreeCAD."""
 
 import math
-from typing import Any
-
 import re
+from typing import Any
 
 import geometry as g
 import holes
@@ -31,6 +30,37 @@ def _key(axis: g.Vec3, centre: g.Vec3, radius: float, concave: bool) -> tuple[An
         round(radius, 4),
         concave,
     )
+
+
+def collect_assembly(doc: reg.DocumentRec) -> sck.PartFacts:
+    """The whole cylinders of the components of an assembly (their bodies, placed): the convex ones (spacers, pins, bosses) and
+    the walls of the holes (``bore``: nobody lists the holes of an assembly). Faces have no id an item could name here, so a
+    cylinder is called ``<component>/cylinder<n>``. Cylinders of different bodies stay apart: they are different parts."""
+    facts = sck.PartFacts(assembly=True)
+    for comp_id, comp in doc.components.items():
+        for body_id in comp.body_ids:
+            shape = reg.placed_component_body(doc, comp, body_id)
+            if shape.isNull() or not shape.Solids:
+                continue
+            groups: dict[tuple[Any, ...], list[tuple[Any, float, float]]] = {}
+            for face in shape.Faces:
+                if g.surface_kind(face) != "cylinder":
+                    continue
+                surf = face.Surface
+                u0, u1, v0, v1 = face.ParameterRange
+                key = _key(g.unit(g.vec(surf.Axis)), g.vec(surf.Center), float(surf.Radius), holes._is_concave(face))  # noqa: SLF001
+                groups.setdefault(key, []).append((face, u1 - u0, v1 - v0))
+            for number, (key, members) in enumerate(groups.items(), start=1):
+                if sum(arc for _, arc, _ in members) < FULL_TURN:
+                    continue  # a fillet or a round corner, not a cylinder that goes all the way round
+                face = members[0][0]
+                surf = face.Surface
+                axis = g.unit(g.vec(surf.Axis))
+                centre = g.vec(surf.Center)
+                foot = g.add(centre, g.scale(axis, g.dot(g.sub(g.vec(face.CenterOfMass), centre), axis)))
+                length = max(extent for _, _, extent in members)
+                facts.bosses.append(sck.Boss(f"{comp_id}/cylinder{number}", key[2], foot, axis, length, bore=key[3]))
+    return facts
 
 
 def collect(doc: reg.DocumentRec, bodies: list[reg.BodyRec]) -> sck.PartFacts:
