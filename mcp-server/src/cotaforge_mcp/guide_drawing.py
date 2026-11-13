@@ -82,6 +82,36 @@ WINDOW_LINE = (
     "through drawing(...); a change made by hand in the window is put back by the next add, remove or export."
 )
 
+SHEET_WINDOW_LINE = (
+    "THIS PROJECT BUILDS A SHEET IN ONE ORDER (drawing_flow: sheet): drawing(action=plan) -> ask -> drawing(action=compose, "
+    "decisions={...}) -> capture -> review -> fix the points one by one. The sheet is built whole, in the FreeCAD window, "
+    "in one call; the engineer sees the plan BEFORE it and the sheet after. Never rebuild with add what compose derives. "
+    "cad_guide(topic=drawing:compose) has the shape of the decisions."
+)
+
+COMPOSE_LINES = (
+    "PLAN: drawing(action=plan, sheet?) draws no annotation: it makes the views and the title block when the document has "
+    "no sheet (the facts are measured on it) and lists (1) what the harness puts on by itself: views, paper and scale, "
+    "overall sizes, the positions of the holes from the datums or the declared symmetry, callouts with the thread and "
+    "the fit the model declares, axes, chamfers, keyway, parts list and balloons, notes with the intent file's own words, "
+    "title block; (2) the decisions it needs, each with its question and the key that answers it. Ask the engineer "
+    "those questions one at a time, with the proposal the plan gives; when he is present show him the plan and wait for "
+    "his go-ahead before compose.",
+    "COMPOSE: drawing(action=compose, decisions={...}) creates the sheet in one order. Every decision is a list of items "
+    "of the types that exist, WITHOUT placement and without ids: datums [{letter, face}] | relations [dim | datum_dims "
+    "items: from where the positions and sizes are counted; a datum_dims takes the place of the default location, so the "
+    "holes are never dimensioned twice] | fits [hole_dim | dim with fit=] | tol [dim | hole_dim with tol=] | gdt [gdt "
+    "items] | finish [finish items] | sections [section | detail | aux_view] | welds [weld items] | notes [text | note] | "
+    "sheet {template?, angle?, scale?, title?, title_block?, symmetry?...: only what the engineer fixed} | answers "
+    '{"req.coating": "no aplica: why"} (a row that does not apply; a measured one only on his order, with by= and reason=).',
+    "compose REFUSES, before it changes anything, while a decision the plan listed is missing (it lists them: answer each "
+    "with its key or with answers). It never guesses a datum, a fit or a tolerance. A paper the engineer did not fix is "
+    "raised (A4, A3, A2) when the annotations do not fit, and the reply says so; give sheet.template to fix it. A "
+    "second compose takes off what the first one put (ids dc_...) and puts the new decisions; what you added or placed "
+    "by hand (add, side, offset_mm) stays. After it: capture and look at it, review, and correct with add / remove / "
+    "update; never rebuild with add what compose derives (rq_... items: remove one only with reason=).",
+)
+
 ITEM_INTRO = (
     'ITEMS: drawing(action=add, items=[{...}, ...]) puts items on a sheet; each is {"type": ..., "id"?: ..., ...} '
     '(the id defaults to a letter + number: use it to remove one: drawing(action=remove, items=["h2"]) takes THAT '
@@ -483,8 +513,15 @@ INDEX_LINE = (
 )
 
 
-def drawing_text(tools: Collection[str], part: str = "") -> str:
-    """The guide for the drawing tools this CAD has: the sheet (``part`` empty) or one group of its items."""
+TOPIC_COMPOSE = "drawing:compose"
+COMPOSE_INDEX_LINE = "drawing:compose (this project builds a sheet in one order) plan, the decisions, compose"
+
+
+def drawing_text(tools: Collection[str], part: str = "", flow: str = "steps") -> str:
+    """The guide for the drawing tools this CAD has: the sheet (``part`` empty) or one group of its items. ``flow`` is the
+    project's ``drawing_flow``: ``steps`` is the text of always; ``sheet`` swaps the line that asks for small steps."""
+    if part == TOPIC_COMPOSE:
+        return "\n".join(f"- {line}" for line in COMPOSE_LINES)
     if part:
         groups = {
             TOPIC_ITEMS: [ITEM_INTRO[0], *ITEM_LINES[0:4]],
@@ -498,7 +535,11 @@ def drawing_text(tools: Collection[str], part: str = "") -> str:
         return "\n".join(f"- {line}" for line in groups[part])
     lines = [SHEET_RULES[0]]
     if "annotate_drawing" in tools:
-        lines += [SHEET_RULES[1], UPDATE_LINE, WINDOW_LINE, NATIVE_LINE, VIEWS_LINE, SPANISH_LINE, INDEX_LINE]
+        if flow == "sheet":
+            lines += [SHEET_RULES[1], UPDATE_LINE, SHEET_WINDOW_LINE, NATIVE_LINE, VIEWS_LINE, SPANISH_LINE]
+            lines += [f"{INDEX_LINE} | {COMPOSE_INDEX_LINE}"]
+        else:
+            lines += [SHEET_RULES[1], UPDATE_LINE, WINDOW_LINE, NATIVE_LINE, VIEWS_LINE, SPANISH_LINE, INDEX_LINE]
     else:
         lines += [SHEET_RULES[2], SHEET_RULES[3], PROJECTION_LINE, VIEW_LINE]
     return "\n".join(f"- {line}" for line in lines)
