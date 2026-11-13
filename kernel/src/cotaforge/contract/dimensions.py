@@ -26,6 +26,8 @@ DIMENSION_FIELDS: dict[str, frozenset[str]] = {
     "sweep": frozenset(),
     "hole": frozenset(
         {
+            "position",
+            "positions",
             "diameter_mm",
             "depth_mm",
             "counterbore.diameter_mm",

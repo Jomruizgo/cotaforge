@@ -2711,7 +2711,7 @@ def review_report(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """The review of one sheet: (findings, questions of judgement), each with the id an answer names and the answer the
     sheet holds for it (``None``: pending)."""
-    findings, questions, _ = review_bundle(doc, page, spec, number, total, op, with_facts=False)
+    findings, questions, _, _ = review_bundle(doc, page, spec, number, total, op, with_facts=False)
     return findings, questions
 
 
@@ -2734,7 +2734,8 @@ def review_bundle(
         {"id": q.id, "text": q.text, "answer": answers.get(q.id)} for q in sheet_checks.judgement(_last_input(ctx))
     ]
     facts = sheet_reqfacts.facts(_last_input(ctx)) if with_facts else {}
-    return findings, questions, facts
+    given = sheet_reqfacts.measures(_last_input(ctx)) if with_facts else {}
+    return findings, questions, facts, given
 
 
 def _last_input(ctx: sc.Context) -> sheet_review.ReviewInput:
@@ -2873,7 +2874,8 @@ def describe(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         row["printed"] = _printed(composed)
         row["native"] = sheet_output.listed(sheet_output.native_rows(page))
         if params.get("review"):
-            row["findings"], row["questions"], row["facts"] = review_bundle(doc, page, spec, number, total, op)
+            row["findings"], row["questions"], row["facts"], given = review_bundle(doc, page, spec, number, total, op)
+            row.update(given)
         sheets.append(row)
     return {"sheets": sheets}
 

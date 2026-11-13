@@ -391,7 +391,7 @@ Each change is one step and `undo` reverts it. `view` with `action="focus"` show
 
 A **face** is a surface of the part. The agent names it by description: "the +Z normal face created by step `s2`". A reference must match exactly one face; if it matches several, the error lists the candidates and the agent refines.
 
-- Positions on a face are measured **from the face's center**, not the model origin. "Centered on the top face" is position `(0, 0)`. A hole also accepts `at=[x, y, z]` (projected onto the face), and a sketch on a face accepts `frame="world"`.
+- Positions on a face are measured **from the face's center**, not the model origin. "Centered on the top face" is position `(0, 0)`. For a hole the center is that of the face's bounding box, so it does not move when holes are drilled in the face; on an L-shaped or notched face that point can lie outside the material (it is only the reference). Models saved before this change keep their holes where they were. A hole also accepts `at=[x, y, z]` (projected onto the face), and a sketch on a face accepts `frame="world"`. One `hole` call makes every hole of one kind as one feature: `positions=[[u, v], ...]` (a rectangular pattern is its corners) or `bolt_circle={diameter_mm, count, center, start_angle_deg}`.
 - On the base planes the sketch coordinates are world ones: XY is `u=X, v=Y`; YZ is `u=Y, v=Z`; XZ is `u=X, v=-Z`.
 - Internal face ids change as operations apply, so the agent asks for faces by the step that created them.
 

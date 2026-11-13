@@ -387,7 +387,7 @@ def review() -> list[dict[str, Any]]:
 
 def check_the_review_of_a_complete_sheet_has_only_the_unlocated_slope_hole() -> None:
     base = build_bracket()
-    call("create_drawing", op("d", template="A3", scale=1.0))
+    call("create_drawing", op("d", template="A3", scale=1.0, symmetry=True))  # symmetry is declared intent, not shape
     add(
         {"type": "view_lines"},
         {"type": "hole_dim", "all": True},
@@ -402,11 +402,20 @@ def check_the_review_of_a_complete_sheet_has_only_the_unlocated_slope_hole() -> 
     own = [f for f in found if not f["code"].startswith("notes_") and f["code"] != "hidden_dense"]
     warnings = [f["code"] for f in own if f["severity"] == "warning"]
     # the hole square to the slope is in no standard view's datum table; it is also a plain hole of a dowel size;
-    # the right view and the section carry no dimension on this sheet
-    assert warnings == ["hole_not_located", "view_adds_nothing", "view_adds_nothing", "fit_hole_no_tolerance"], found
+    # the right view and the section carry no dimension on this sheet; the views fill 19 % of the A3 the test chose
+    # (sheet_underused, merged in 6c22a27)
+    assert warnings == [
+        "hole_not_located",
+        "view_adds_nothing",
+        "view_adds_nothing",
+        "fit_hole_no_tolerance",
+        "sheet_underused",
+    ], found
     assert {f["message"].split()[2] for f in own if f["code"] == "view_adds_nothing"} == {"right", "A-A"}, found
     assert found[0]["features"], found
-    assert all(f["id"] and f["blocking"] for f in found) and len({f["id"] for f in found}) == len(found), found
+    # sheet_underused is advice about paper, never blocking; every other finding blocks until fixed or answered
+    assert all(f["id"] and (f["blocking"] or f["code"] == "sheet_underused") for f in found), found
+    assert len({f["id"] for f in found}) == len(found), found
 
 
 def check_the_review_of_a_bad_sheet_names_what_is_wrong_and_where() -> None:

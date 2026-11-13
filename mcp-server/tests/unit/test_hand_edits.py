@@ -306,9 +306,9 @@ def test_the_refusal_of_a_rebuild_ignores_the_other_document_and_says_how_to_go_
     drilled_plate(call)
     hand = call.session.hand_edits
     hand.push(_notice("Length: 8 -> 9", document="elsewhere"))
-    call.ok("op", edit="s3", params={"position": [-30, 0]})  # a rebuild: nothing of this document was touched
+    call.ok("op", edit="s3", params={"end_condition": "blind", "depth_mm": 4})  # a rebuild: no hand edit here
     hand.push(_notice("Length: 8 -> 9", document=call.session.doc_name))
-    text = call.err("op", edit="s3", params={"position": [30, 0]})
+    text = call.err("op", edit="s3", params={"end_condition": "through_all", "depth_mm": None})
     assert "drop what the engineer made by hand" in text and "undo" in text and "new step" in text
     hand.push(_notice("Length: 9 -> 8", document=call.session.doc_name))
-    call.ok("op", edit="s3", params={"position": [30, 0]})
+    call.ok("op", edit="s3", params={"end_condition": "through_all", "depth_mm": None})
