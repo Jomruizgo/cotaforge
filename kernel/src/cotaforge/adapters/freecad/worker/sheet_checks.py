@@ -25,6 +25,8 @@ from typing import Any
 import iso286
 import sheet_collide
 import sheet_review  # circular on purpose: both import each other as modules and use each other only when called
+import sheet_section
+import sheet_seen
 from items_holes import _select as select_callout_holes
 from items_holes import _stacks
 from sheet_context import Context, HoleInfo, ItemError
@@ -52,12 +54,14 @@ class Boss:
     axis_point: tuple[float, float, float]  # on the axis, halfway along the cylinder
     axis_dir: tuple[float, float, float]
     length: float = 0.0  # along the axis (0: not known)
+    bore: bool = False  # the wall of a hole all the way round (only read in an assembly, whose holes nobody lists)
 
 
 @dataclass
 class PartFacts:
     rounds: list[RoundFace] = field(default_factory=list)
     bosses: list[Boss] = field(default_factory=list)
+    assembly: bool = False  # the cylinders of the components of an assembly: some are hidden behind other parts
     sheet_metal: bool = False
     keyways: int = 0  # slots with parallel walls along the axis of a cylindrical face (``sheet_keyway``)
     keyway_slots: list[Any] = field(default_factory=list)  # the same slots with their faces (``sheet_keyway.Slot``)
@@ -411,10 +415,21 @@ def _marks(data: Any) -> list[Any]:
         for v in ctx.views.values():
             if v.looks_along(boss.axis_dir):
                 point = v.project(boss.axis_point)
-                if not _marked(segments, point):
+                if not _marked(segments, point) and not (facts.assembly and not sheet_seen.circle_seen(ctx, v, boss)):
                     missing.append(v.name)
             elif v.shows_axis_along(boss.axis_dir) and not _marked(segments, v.project(boss.axis_point)):
+                if boss.bore or (facts.assembly and not sheet_seen.side_on_seen(ctx, v, boss)):
+                    continue  # a bore is inside the material here, and a cylinder behind another part shows no sides
                 missing.append(v.name)
+        for label, view in ctx.extras.get("sections", {}).items():  # a section cuts the cylinders whose axis lies in its plane
+            plane = ctx.extras.get("section_planes", {}).get(label)
+            if (
+                plane is not None
+                and boss.length > 0
+                and sheet_section.in_plane(plane[0], plane[1], boss.axis_point, boss.axis_dir)
+                and not _marked(segments, view.project(boss.axis_point))
+            ):
+                missing.append(label)
         if missing:
             text = ctx.say(
                 f"Cilindro Ø{ctx.num(2 * boss.radius)} ({boss.face_id}) sin eje o marca de centro en la vista "

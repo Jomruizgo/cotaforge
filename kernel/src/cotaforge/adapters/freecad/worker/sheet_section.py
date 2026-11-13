@@ -111,7 +111,16 @@ def _same_line(a: Line, b: Line) -> bool:
         return False
     off = abs((b.x1 - a.x1) * uy - (b.y1 - a.y1) * ux) / size
     off2 = abs((b.x2 - a.x1) * uy - (b.y2 - a.y1) * ux) / size
-    return off < 0.1 and off2 < 0.1
+    if off >= 0.1 or off2 >= 0.1:
+        return False
+    # on one straight line AND over the same stretch of it: the line of the next cylinder on the same axis (a plate above a
+    # spacer) is another line, not this one drawn twice. ``a`` is the new line: it is a repeat when its middle lies on ``b``.
+    bx, by = b.x2 - b.x1, b.y2 - b.y1
+    blen2 = bx * bx + by * by
+    if blen2 < 1e-12:
+        return False
+    along = (((a.x1 + a.x2) / 2 - b.x1) * bx + ((a.y1 + a.y2) / 2 - b.y1) * by) / blen2
+    return -0.01 <= along <= 1.01
 
 
 def thread_lines(view: ViewInfo, hole: HoleInfo, size: str, depth: float | None) -> list[Entity]:

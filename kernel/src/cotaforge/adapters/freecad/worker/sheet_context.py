@@ -236,6 +236,20 @@ class ChamferInfo:
 
 
 @dataclass
+class ConeChamfer:
+    """A chamfer on a round edge (a conical face between a shaft's end and its cylinder): the two circles it joins, its legs
+    and the axis it turns about. ``leg_a`` is the longer leg, ``angle_deg`` the angle the chamfer makes with it."""
+
+    face: str
+    leg_a: float
+    leg_b: float
+    angle_deg: float
+    axis: Vec3
+    small: tuple[Vec3, float]  # centre and radius of the circle at the end of the chamfer that is nearer the axis
+    big: tuple[Vec3, float]
+
+
+@dataclass
 class Projection:
     """A part seen from one direction, in the view's own coordinates (scale 1, y up): its ``visible`` and ``hidden``
     edges, and for a section the ``cut_loops`` (the outlines of the faces the plane cut, holes included)."""
@@ -267,6 +281,10 @@ class Geometry:
     def chamfer(self, face_id: str) -> ChamferInfo:
         msg = "chamfer legs are not available"
         raise ItemError(msg)
+
+    def cone_chamfer(self, face_id: str) -> "ConeChamfer | None":
+        """The chamfer ``face_id`` when it is the conical face of a chamfer on a round edge, else ``None``."""
+        return None
 
     def round_extent(self) -> tuple[Vec3, float] | None:
         """``(axis, diameter)`` when the part is a body of revolution about a coordinate axis whose overall size across

@@ -1107,6 +1107,40 @@ def _auto_paper(
     )
 
 
+def _expand_chamfer_dims(
+    doc: reg.DocumentRec, stored: list[dict[str, Any]], requested: list[Any], op: str | None
+) -> list[Any]:
+    """``chamfer_dims`` is not an item of its own: it is a callout (``1 × 45°``) for every chamfer of the part that no
+    dimension of the sheet gives yet, made now from the faces the chamfer features created as ``dim`` items of kind
+    ``chamfer`` (``<id>``, ``<id>2``...), so the sheet keeps plain dimensions."""
+    if not any(isinstance(i, dict) and i.get("type") == "chamfer_dims" for i in requested):
+        return requested
+    dimensioned = {
+        str(f)
+        for i in stored
+        if i.get("type") == "dim" and i.get("kind") == "chamfer"
+        for f in ([i["face"]] if isinstance(i.get("face"), str) else list(i.get("face") or ()))
+    }
+    faces = [
+        feature.faces[0]
+        for feature in feature_infos(doc)
+        if feature.kind == "chamfer" and feature.faces and not dimensioned & set(feature.faces)
+    ]
+    out: list[Any] = []
+    for item in requested:
+        if not (isinstance(item, dict) and item.get("type") == "chamfer_dims"):
+            out.append(item)
+            continue
+        prefix = str(item.get("id") or "chamfer")
+        if not faces:
+            raise invalid_request("every chamfer of the part has a dimension already (chamfer_dims)", op)
+        out.extend(
+            {"type": "dim", "id": prefix if number == 1 else f"{prefix}{number}", "kind": "chamfer", "face": face}
+            for number, face in enumerate(faces, start=1)
+        )
+    return out
+
+
 def _expand_keyway_dims(
     doc: reg.DocumentRec, spec: dict[str, Any], requested: list[Any], op: str | None
 ) -> list[Any]:
@@ -1439,6 +1473,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         _sync_template_fields(fc_doc, op)
         return _result(doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), [], op, changed=tuple(wanted))
     requested = _expand_keyway_dims(doc, spec, list(params.get("items") or ()), op)
+    requested = _expand_chamfer_dims(doc, items, requested, op)
     if not requested:
         raise invalid_request('add needs items: a list like [{"type": "hole_dim", "all": true}]', op)
     if len(items) + len(requested) > sheet_items.MAX_ITEMS:
@@ -1741,6 +1776,14 @@ def _symmetry_of(shape: Any) -> dict[str, float]:
     return found
 
 
+def _exact_box(shape: Any) -> Any:
+    """The bounding box of ``shape`` from its exact geometry (not from a triangulation, which cuts the curves short)."""
+    try:
+        return shape.optimalBoundingBox(False, False)
+    except Exception:  # noqa: BLE001 - an older FreeCAD, or a shape it cannot box: the plain box is what there is
+        return shape.BoundBox
+
+
 class LiveGeometry(drawing_assembly.AssemblyRays, sc.Geometry):
     """The lookups items make into the model, on the live document."""
 
@@ -1851,7 +1894,9 @@ class LiveGeometry(drawing_assembly.AssemblyRays, sc.Geometry):
         return found
 
     def round_extent(self) -> tuple[sc.Vec3, float] | None:
-        boxes = [shape.BoundBox for shape in self._shapes]
+        # ``BoundBox`` of a curved solid is the box of its triangulation when one exists: a Ø12 shaft measures 11.97 x 11.99
+        # and would never match its own diameter, so the exact (analytic) box is asked for
+        boxes = [_exact_box(shape) for shape in self._shapes]
         if not boxes:
             return None
         low = (min(b.XMin for b in boxes), min(b.YMin for b in boxes), min(b.ZMin for b in boxes))
@@ -1922,6 +1967,25 @@ class LiveGeometry(drawing_assembly.AssemblyRays, sc.Geometry):
             runs.append((start, high))
         runs = [r for r in runs if r[1] > r[0]]
         return max(runs, key=lambda r: r[1] - r[0]) if runs else None
+
+    def cone_chamfer(self, face_id: str) -> sc.ConeChamfer | None:
+        face, _ = self._face(face_id)
+        if g.surface_kind(face) != "cone":
+            return None
+        circles = [e for e in face.Edges if g.curve_kind(e) == "circle"]
+        if len(circles) != 2:
+            return None
+        axis = g.unit(g.vec(face.Surface.Axis))
+        ends = sorted(((g.vec(e.Curve.Center), float(e.Curve.Radius)) for e in circles), key=lambda c: c[1])
+        (c_small, r_small), (c_big, r_big) = ends
+        axial = abs(g.dot(g.sub(c_big, c_small), axis))
+        radial = r_big - r_small
+        leg_a, leg_b = max(axial, radial), min(axial, radial)
+        if leg_a < 1e-6:
+            return None
+        return sc.ConeChamfer(
+            face_id, leg_a, leg_b, math.degrees(math.atan2(leg_b, leg_a)), axis, (c_small, r_small), (c_big, r_big)
+        )
 
     def chamfer(self, face_id: str) -> sc.ChamferInfo:
         face, solid = self._face(face_id)
@@ -2127,7 +2191,7 @@ def _compose_pass(
             else sheet_thread.external_threads(thread_records.read_threads(doc.fc_doc))
         )
         cache["facts"] = (
-            None
+            sheet_facts.collect_assembly(doc)  # the whole cylinders of the components: spacers, pins, the bores
             if _is_assembly(doc, spec.get("body"))
             else sheet_facts.collect(doc, _bodies(doc, spec.get("body"), op))
         )

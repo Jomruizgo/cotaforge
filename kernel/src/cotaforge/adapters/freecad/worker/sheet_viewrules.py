@@ -201,6 +201,64 @@ def dimension_side(
     return out
 
 
+EXTENT_GAP_MM = 1.0  # an extension line of an overall dimension that hangs this long over no line of the part is across the view
+
+
+def uncovered_run(p: tuple[float, float], q: tuple[float, float], outline: Sequence[Segment], tol: float = 0.05) -> float:
+    """How much of the path ``p``-``q`` (an axis-aligned extension line, as long as the view it crosses) lies over NO line of
+    the part: the length not covered by the ``outline`` segments that lie on the same line (within ``tol``). A box dimensioned
+    over its width has its extension lines on its own two sides (0); two plates held apart by spacers have them across the
+    gap between the plates (the height of the gap): the reader takes that line for an edge of the part."""
+    length = math.hypot(q[0] - p[0], q[1] - p[1])
+    if length < 1e-9:
+        return 0.0
+    ux, uy = (q[0] - p[0]) / length, (q[1] - p[1]) / length
+    spans: list[tuple[float, float]] = []
+    for s in outline:
+        d1 = abs((s[0] - p[0]) * uy - (s[1] - p[1]) * ux)
+        d2 = abs((s[2] - p[0]) * uy - (s[3] - p[1]) * ux)
+        if d1 > tol or d2 > tol:
+            continue
+        a = (s[0] - p[0]) * ux + (s[1] - p[1]) * uy
+        b = (s[2] - p[0]) * ux + (s[3] - p[1]) * uy
+        lo, hi = max(0.0, min(a, b)), min(length, max(a, b))
+        if hi > lo:
+            spans.append((lo, hi))
+    covered = 0.0
+    reach = 0.0
+    for lo, hi in sorted(spans):
+        lo = max(lo, reach)
+        if hi > lo:
+            covered += hi - lo
+            reach = hi
+    return max(0.0, length - covered)
+
+
+@dataclass(frozen=True)
+class ExtentGap:
+    owner: str
+    view: str
+    now: str  # above | below
+    gap_mm: float  # what its extension lines hang over no line of the part
+
+
+def extent_gaps(
+    extents: Sequence[tuple[str, str, str, Sequence[Segment]]], outlines: Mapping[str, Sequence[Segment]]
+) -> list[ExtentGap]:
+    """The overall dimensions whose extension lines cross the view of the part over nothing: ``extents`` are
+    ``(owner, view, side, runs)`` with ``runs`` the extension lines as TechDraw draws them (from the far edge of the view to
+    the edge of the view the dimension is on); ``outlines`` is the visible outline of each view."""
+    out: list[ExtentGap] = []
+    for owner, view, side, runs in extents:
+        outline = outlines.get(view)
+        if not outline:
+            continue
+        gap = sum(uncovered_run((r[0], r[1]), (r[2], r[3]), outline) for r in runs)
+        if gap >= EXTENT_GAP_MM:
+            out.append(ExtentGap(owner, view, side, round(gap, 2)))
+    return out
+
+
 FREE_REACH_MM = 12.0  # how far out from the view the free strip of the other side is looked for (a row and its text)
 EDGE_MM = 0.2  # a dimension line this near the edge of its view is not outside it
 
