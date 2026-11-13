@@ -2,9 +2,9 @@
 
 from cotaforge.contract import DocumentKind
 
-from cotaforge_mcp import catalog, guide_ops, memory_tools, recipes
+from cotaforge_mcp import catalog, design_memory, guide_ops, memory_tools, recipes
 from cotaforge_mcp.foreign import PARASOLID_SUFFIXES
-from cotaforge_mcp.guide_drawing import SUBTOPICS, drawing_text, pointing_text
+from cotaforge_mcp.guide_drawing import SUBTOPICS, TOPIC_COMPOSE, drawing_text, pointing_text
 from cotaforge_mcp.guide_memory import MEMORY_TEXT
 from cotaforge_mcp.reply import ToolError
 from cotaforge_mcp.schemas import visible_tools
@@ -373,7 +373,13 @@ def _assembly_topic(session: Session) -> str:
 def _drawing_topic(session: Session, part: str = "") -> str:
     if "create_drawing" not in session.capabilities.tools:
         return f"drawings are not available with {session.adapter.name}."
-    return drawing_text(session.capabilities.tools, part)
+    flow = design_memory.load_brief(session.settings).drawing_flow
+    if part == TOPIC_COMPOSE and flow != "sheet":
+        return (
+            "drawing:compose exists only in a project that builds sheets in one order (drawing_flow: sheet in its "
+            "brief.yaml: the engineer's choice); this one builds them in steps (cad_guide(topic=drawing))"
+        )
+    return drawing_text(session.capabilities.tools, part, flow)
 
 
 def _pointing_topic(session: Session) -> str:
@@ -418,7 +424,7 @@ def _answer(session: Session, key: str) -> str:
         return recipes.plate_text()
     if key == "drawing":
         return _drawing_topic(session)
-    if key in SUBTOPICS:
+    if key in SUBTOPICS or key == TOPIC_COMPOSE:
         return _drawing_topic(session, key)
     if key == "assembly":
         return _assembly_topic(session)

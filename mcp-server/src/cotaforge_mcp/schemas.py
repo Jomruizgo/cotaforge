@@ -172,6 +172,8 @@ class DrawingArgs(Strict):
         "request_review",
         "review_choice",
         "review_report",
+        "plan",
+        "compose",
     ]
     sheet: str | None = Field(default=None, description="sheet (default first)")
     template: Literal["A4", "A3", "A2", "A1", "A0", "Letter"] = "A4"  # create: landscape paper
@@ -203,6 +205,10 @@ class DrawingArgs(Strict):
     text: str | None = None
     by: str | None = Field(default=None, description="approve, answer: engineer; review_*: engineer|fabricator")
     reason: str | None = None
+    decisions: dict[str, Any] | None = Field(
+        default=None,
+        description="compose: the engineer's decisions (cad_guide drawing:compose); plan states what it needs",
+    )
 
 
 class ExportArgs(Strict):
@@ -250,6 +256,9 @@ class MemoryArgs(Strict):
         default=None, description="brief: drawing review mode[:wait min] (text: his words)"
     )
     language: str | None = None  # brief: es | en
+    drawing_flow: Literal["steps", "sheet"] | None = Field(
+        default=None, description="brief: how a sheet is built (the engineer's choice)"
+    )
     new: bool = Field(default=False, description="save: confirm it is new")
     entry: dict[str, Any] | None = Field(
         default=None,
@@ -420,7 +429,34 @@ def _drawing_actions(session: "Session") -> list[str]:
         ("describe_drawing", ("list", "read", "review", "requirements")),
         ("capture_drawing", ("capture",)),
     )
-    return [action for tool, actions in pairs if tool in t for action in actions]
+    found = [action for tool, actions in pairs if tool in t for action in actions]
+    if sheet_flow(session) and {"create_drawing", "annotate_drawing", "describe_drawing"} <= set(t):
+        found += ["plan", "compose"]  # only the project that chose drawing_flow=sheet sees them
+    return found
+
+
+def sheet_flow(session: "Session") -> bool:
+    """The project builds a sheet in one order (``drawing_flow: sheet`` of its brief): ``plan`` and ``compose`` exist."""
+    from cotaforge_mcp import design_memory  # noqa: PLC0415 - design_memory needs this module's world, not the reverse
+
+    try:
+        return design_memory.load_brief(session.settings).drawing_flow == "sheet"
+    except Exception:  # noqa: BLE001 - a schema is never refused for a brief it cannot read
+        return False
+
+
+def _drawing_hidden(session: "Session") -> tuple[str, ...]:
+    return () if sheet_flow(session) else ("decisions",)
+
+
+def _memory_hidden(session: "Session") -> tuple[str, ...]:
+    return () if sheet_flow(session) else ("drawing_flow",)
+
+
+SHEET_FLOW_NOTE = (
+    ' plan (what the harness puts on the sheet by itself and what it asks) | compose(decisions) (the whole sheet in one '
+    'order: cad_guide(topic="drawing:compose")).'
+)
 
 
 TOOLS: tuple[ToolDef, ...] = (
@@ -500,6 +536,7 @@ TOOLS: tuple[ToolDef, ...] = (
         'drawing(action="add", items=[{"type":"hole_dim","all":true}])',
         _drawing_actions,
         lambda session: bool(_drawing_actions(session)),
+        _drawing_hidden,
     ),
     ToolDef(
         "channel",
@@ -554,6 +591,9 @@ TOOLS: tuple[ToolDef, ...] = (
         'memory(action="index|get|search|save|deactivate|approve|answer|review|brief", id?, text?, entry?, scope?, '
         "by?, stage?, sector?, processes?, drawing_review?, new?)",
         'memory(action="get", id="torno-cnc-taller-a")',
+        None,
+        lambda session: True,
+        _memory_hidden,
         needs_cad=False,
     ),
     ToolDef(
@@ -594,7 +634,9 @@ def tool_description(tool: ToolDef, session: "Session") -> str:
     """What the agent reads about ``tool``: the adapter wording (``guide_topic("tool:<name>")``) when it has one."""
     own = session.adapter.guide_topic(f"tool:{tool.name}")
     if own:
-        return own
+        return own + (SHEET_FLOW_NOTE if tool.name == "drawing" and sheet_flow(session) else "")
+    if tool.name == "drawing" and sheet_flow(session):
+        return tool.description + SHEET_FLOW_NOTE
     extra = session.adapter.import_suffixes() if tool.name == "doc" else ()
     if extra:  # the formats this CAD reads besides STEP and IGES (Parasolid...)
         return tool.description.replace(".igs, name", f".igs/{'/'.join(extra)}, name")
