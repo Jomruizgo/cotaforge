@@ -2362,6 +2362,9 @@ def _compose_pass(
             if _is_assembly(doc, spec.get("body"))
             else sheet_facts.collect(doc, _bodies(doc, spec.get("body"), op))
         )
+        cache["weldment"] = (
+            drawing_assembly.weldment_info(doc, language) if spec.get("body") is None and not _is_assembly(doc, None) else None
+        )
         cache["views"] = {} if hlr else view_infos(page)
         cache["view_entities"] = [] if hlr else view_entities(page)
     geometry = cache["geometry"]
@@ -2382,7 +2385,7 @@ def _compose_pass(
             hlr_views = sheet_hlr.compose_views(geometry, spec["hlr"])
         except sc.ItemError as exc:
             raise error("geometry_failed", f"the part could not be projected: {exc}", op) from exc
-        sheet_hlr.apply(ctx, hlr_views, _is_assembly(doc, spec.get("body")))
+        sheet_hlr.apply(ctx, hlr_views, _is_assembly(doc, spec.get("body")) or cache["weldment"] is not None)
     else:
         ctx.extras["view_boxes"] = view_rects(page)
     ctx.extras["main_scale"] = scale
@@ -2404,8 +2407,9 @@ def _compose_pass(
     ctx.extras["symmetry"] = cache["symmetry"] if declared else {}  # the planes the design says it is symmetric across
     if cache["model_box"] is not None and not _is_assembly(doc, spec.get("body")):
         ctx.extras["model_box"] = cache["model_box"]  # the silhouette a position is counted from (see items_datum)
-    if _is_assembly(doc, spec.get("body")):
-        ctx.assembly = drawing_assembly.assembly_info(doc, language)
+    ctx.weldment = cache["weldment"]
+    if _is_assembly(doc, spec.get("body")) or ctx.weldment is not None:
+        ctx.assembly = drawing_assembly.assembly_info(doc, language) if ctx.weldment is None else None
         iso = None if hlr else iso_info(page)
         if iso is not None:
             ctx.extras["views_extra"] = {"isometric": iso}
