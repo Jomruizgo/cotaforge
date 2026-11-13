@@ -167,6 +167,7 @@ def draw_parts_list(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         "rect": rect,
         "positions": [g.position for g, _ in rows],
         "unnamed": [g.position for g, cells in rows if welded and cells[2] == UNNAMED[ctx.language]],
+        "names": {g.position: cells[2] for g, cells in rows if welded and cells[2] != UNNAMED[ctx.language]},
     }
     ctx.table_bottom = bottom
     note = f"{len(rows)} position(s), {sum(g.quantity for g, _ in rows)} component(s), above the title block"

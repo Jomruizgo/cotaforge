@@ -961,6 +961,15 @@ def _views_for_part(doc: reg.DocumentRec, body: Any, op: str | None) -> tuple[li
     revolution, ``None`` for any other part (all the standard views, as always). A revolved part with a bore has everything
     in the view that looks along its axis (what is cut, where) and the section through the axis (the profile, the bore, the
     threads); a solid one, the one view that shows its profile."""
+    if body is None and doc.kind != "assembly" and len(doc.live_bodies()) > 1:  # a weldment: no view that repeats another
+        import sheet_weldment  # noqa: PLC0415
+
+        boxes = LiveGeometry(doc, [], op).body_boxes()
+        kept = sheet_weldment.views_without_repeats(boxes) if boxes else None
+        if kept is not None and len(kept) < len(sheet_weldment.VIEW_AXES):
+            gone = ", ".join(v for v in sheet_weldment.VIEW_AXES if v not in kept)
+            return kept, False, f"the {gone} view would draw the same as another one: left out"
+        return None
     found = LiveGeometry(doc, _shapes(doc, body, op), op).round_extent()
     if found is None:
         return None
@@ -1116,7 +1125,7 @@ def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     else:
         if params.get("isometric") is False:
             spec["isometric"] = False
-        picked = _views_for_part(doc, body, op) if projection == "techdraw" and not assembly else None
+        picked = _views_for_part(doc, body, op) if projection == "techdraw" and not assembly else None  # noqa: E501
         if picked is not None:
             spec["views"], section_wanted, why = picked
             spec["views"] = [*spec["views"], "iso"] if params.get("isometric") is not False else spec["views"]

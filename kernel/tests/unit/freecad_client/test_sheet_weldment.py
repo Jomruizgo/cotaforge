@@ -32,7 +32,14 @@ def facts(plates: int = 1, tubes: int = 4) -> list[weld.BodyFact]:
 VISIBLE = {"body:1": (20.0, 0.0, 6.0), "body:2": (60.0, 0.0, 70.0), "body:3": (100.0, 0.0, 70.0), "body:4": (80.0, 0.0, 50.0), "body:5": (40.0, 0.0, 30.0)}
 
 
+NOTE = {"type": "note", "text": "Soldadura de filete a=4 mm en todas las uniones, MAG, ISO 13920-B"}
+BOXES = [((0, 0, 0), (400, 40, 40)), ((0, 300, 0), (400, 340, 40)), ((0, 0, 300), (400, 40, 340)), ((0, 300, 300), (400, 340, 340)), ((-6, 0, 0), (0, 340, 340))]
+
+
 class FrameGeometry(PlateGeometry):
+    def body_boxes(self) -> list[tuple[sc.Vec3, sc.Vec3]]:
+        return BOXES  # type: ignore[return-value]
+
     def instance_anchors(
         self, instances: list[str], frame: Any, offsets: dict[str, sc.Vec3], margin_mm: float, outward: bool = False
     ) -> dict[str, list[sc.Vec3]]:
@@ -96,7 +103,7 @@ def test_the_cut_list_prints_quantity_length_material_and_asks_for_the_designati
 def test_a_complete_cut_list_with_balloons_raises_no_finding() -> None:
     ctx = context()
     rows = [{"component": "body:1", "name": "Tubo 40×40×3"}, {"component": "body:5", "name": "Chapa 6"}]
-    found = reviewed(ctx, {"type": "parts_list", "rows": rows}, {"type": "balloons", "view": "front"})
+    found = reviewed(ctx, {"type": "parts_list", "rows": rows}, {"type": "balloons", "view": "front"}, NOTE)
     assert [c for c in codes(found) if c.startswith("weld_") or c in ("item_without_balloon", "balloon_not_in_list")] == []
 
 
@@ -125,6 +132,72 @@ def test_a_designation_written_in_the_list_closes_the_question() -> None:
     rows = [{"component": "body:1", "name": "Tubo 40×40×3"}, {"component": "body:5", "name": "Pletina 150×6"}]
     found = reviewed(context(), {"type": "parts_list", "rows": rows}, {"type": "balloons", "view": "front"})
     assert "weld_body_unnamed" not in codes(found)
+
+
+def test_a_weldment_with_no_weld_said_is_a_question_and_a_note_closes_it() -> None:
+    found = reviewed(context(), {"type": "parts_list"}, {"type": "balloons", "view": "front"})
+    (ask,) = [f for f in found if f.code == "weld_not_specified"]
+    assert "qué uniones" in ask.message and "ISO 2553" in ask.message
+    found = reviewed(context(), {"type": "parts_list"}, {"type": "balloons", "view": "front"}, NOTE)
+    assert "weld_not_specified" not in codes(found)
+
+
+def test_a_square_frame_draws_the_same_in_front_and_top_and_the_default_views_leave_one_out() -> None:
+    assert weld.congruent_views(BOXES) == [("front", "top")]
+    assert weld.views_without_repeats(BOXES) == ["front", "right"]
+    found = reviewed(context(), {"type": "parts_list"}, {"type": "balloons", "view": "front"}, NOTE)
+    (twin,) = [f for f in found if f.code == "view_redundant"]
+    assert "top" in twin.message and "front" in twin.message
+
+
+def test_different_bodies_in_front_and_top_are_not_congruent() -> None:
+    boxes = [((0, 0, 0), (400, 40, 40)), ((0, 0, 40), (400, 200, 46))]
+    assert weld.congruent_views(boxes) == []
+
+
+def fact(name_dims: tuple[float, float, float], fill: float) -> weld.BodyFact:
+    box = name_dims[0] * name_dims[1] * name_dims[2]
+    return weld.BodyFact("body:1", box * fill, 1.0, 6, name_dims)
+
+
+def test_a_hollow_tube_designation_on_a_solid_body_is_a_mismatch() -> None:
+    solid = fact((400.0, 40.0, 40.0), 1.0)
+    verdict = weld.check_designation("Tubo 40×40×3", solid)
+    assert verdict.status == "mismatch" and "solid" in verdict.why
+    hollow = fact((400.0, 40.0, 40.0), (1600 - 34 * 34) / 1600)
+    assert weld.check_designation("Tubo 40x40x3", hollow).status == "ok"
+    assert weld.check_designation("SHS 40x40x3", hollow).status == "ok"
+
+
+def test_a_section_that_differs_from_the_measured_box_is_a_mismatch() -> None:
+    hollow = fact((400.0, 40.0, 40.0), 0.3)
+    verdict = weld.check_designation("Tubo 50×50×3", hollow)
+    assert verdict.status == "mismatch" and "40" in verdict.why and "50" in verdict.why
+    assert weld.check_designation("Pletina 50×6", fact((400.0, 50.0, 6.0), 1.0)).status == "ok"
+    assert weld.check_designation("Pletina 50×8", fact((400.0, 50.0, 6.0), 1.0)).status == "mismatch"
+    assert weld.check_designation("Chapa 6", fact((340.0, 340.0, 6.0), 1.0)).status == "ok"
+    assert weld.check_designation("Chapa 8", fact((340.0, 340.0, 6.0), 1.0)).status == "mismatch"
+
+
+def test_other_designations_are_skipped_and_said() -> None:
+    assert weld.check_designation("Tubo redondo 48,3×3", fact((400.0, 48.0, 48.0), 0.2)).status == "skipped"
+    assert weld.check_designation("Perfil IPE 100", fact((400.0, 100.0, 55.0), 0.2)).status == "skipped"
+
+
+def test_review_flags_a_mismatching_designation_blocking_and_says_what_it_skipped() -> None:
+    rows = [{"component": "body:1", "name": "Tubo 40×40×3"}, {"component": "body:5", "name": "Perfil especial"}]
+    ctx = context()
+    for group in ctx.weldment.groups:  # type: ignore[union-attr]
+        if group.position == 1:  # the canned bar is solid in this test
+            group.measured = fact((600.0, 40.0, 40.0), 1.0)
+    found = reviewed(ctx, {"type": "parts_list", "rows": rows}, {"type": "balloons", "view": "front"}, NOTE)
+    (wrong,) = [f for f in found if f.code == "weld_designation_mismatch"]
+    assert "body:1" in wrong.message and "solid" in wrong.message
+    (skipped,) = [f for f in found if f.code == "weld_designation_unchecked"]
+    assert "Perfil especial" in skipped.message
+    from sheet_checks import NON_BLOCKING  # noqa: PLC0415
+
+    assert "weld_designation_unchecked" in NON_BLOCKING and "weld_designation_mismatch" not in NON_BLOCKING
 
 
 def test_an_unknown_body_in_the_rows_is_refused_with_the_known_ones() -> None:

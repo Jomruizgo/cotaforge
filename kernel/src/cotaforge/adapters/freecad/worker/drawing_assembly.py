@@ -215,6 +215,15 @@ class AssemblyRays:
     doc: reg.DocumentRec
     op: str | None
 
+    def body_boxes(self) -> list[tuple[sc.Vec3, sc.Vec3]]:
+        out = []
+        for body in self.doc.live_bodies():
+            shape = reg.world_shape(self.doc, body)
+            if not shape.isNull():
+                b = shape.BoundBox
+                out.append(((b.XMin, b.YMin, b.ZMin), (b.XMax, b.YMax, b.ZMax)))
+        return out
+
     def _owner_ids(self) -> list[str]:
         """What the balloons point at: the components of an assembly, or the live bodies of a welded part."""
         if self.doc.components:
