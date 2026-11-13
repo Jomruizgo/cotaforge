@@ -503,7 +503,7 @@ Without a window, `view` offers only `show` and `focus`.
 | `detail` | An enlarged circle of a view, labelled `B (5:1)`. |
 | `aux_view` | The part seen head-on to an inclined face. |
 | `datum` | An ISO 5459 datum triangle with a letter, on a `face` or on the axis of a `hole_dim` or diameter `dim` (`on`). |
-| `gdt` | An ISO 1101 geometric tolerance frame (`char`, `value`, `datums`...). Citing a datum that does not exist on the sheet is an error. A geometric tolerance written as the text of a note is flagged (`gdt_as_note`), and so is a datum no frame cites (`datum_unused`). |
+| `gdt` | An ISO 1101 geometric tolerance frame (`char`, `value`, `datums`...). Citing a datum that does not exist on the sheet is an error. A geometric tolerance written as the text of a note is flagged (`gdt_as_note`), and so is a datum no frame cites (`datum_unused`). A position frame hangs under the size callout; the dimensions that locate its feature are boxed (theoretically exact; the ones you add take `exact=true`) and its first datum must fix the axis (the face the hole is perpendicular to). |
 | `finish` | Surface finish (ISO 21920-1): `ra`, `machining`, or `general=true` for the "all other surfaces" symbol. |
 
 Elements with a leader accept `offset_mm` and `side`. Without them the callout looks for free space. With them it goes exactly where asked, with a `warning` if that place is occupied. `at_mm` is a position on the sheet from its lower left corner.

@@ -289,6 +289,8 @@ def _make_dim(
         obj.EqualTolerance = False
         obj.OverTolerance = float(dim.tol[0])
         obj.UnderTolerance = float(dim.tol[1])
+    if dim.exact:
+        obj.TheoreticalExact = True
     obj.X = float(dim.label[0]) - frame.x
     obj.Y = float(dim.label[1]) - frame.y
     tag(obj, key, dim.item, sheet)

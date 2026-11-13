@@ -1396,6 +1396,13 @@ def test_view_state(params: dict[str, Any]) -> dict[str, Any]:
         if page is None:
             raise invalid_request("the document has no drawing sheet", op)
         return {"value": drawing.page_objects(page)}
+    if what == "sheet_exact":  # the labels of the dimensions the page frames as theoretically exact
+        import drawing  # noqa: PLC0415
+
+        page = drawing.find_page(fc_doc, params.get("sheet"))
+        if page is None:
+            raise invalid_request("the document has no drawing sheet", op)
+        return {"value": [str(v.Label) for v in page.Views if getattr(v, "TheoreticalExact", False)]}
     if what == "sheet_weights":  # the ISO 128 line weights now on the page's native objects
         import drawing  # noqa: PLC0415
         import sheet_mirror  # noqa: PLC0415

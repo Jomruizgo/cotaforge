@@ -503,7 +503,7 @@ Sin ventana, `view` ofrece solo `show` y `focus`.
 | `detail` | Un círculo ampliado de una vista, rotulado `B (5:1)`. |
 | `aux_view` | La pieza vista de frente a una cara inclinada. |
 | `datum` | Un triángulo de referencia ISO 5459 con una letra, sobre una `face` o sobre el eje de un `hole_dim` o de un `dim` de diámetro (`on`). |
-| `gdt` | Un marco de tolerancia geométrica ISO 1101 (`char`, `value`, `datums`...). Citar una referencia que no existe en la hoja es un error. Una tolerancia geométrica escrita como texto de una nota se señala (`gdt_as_note`), igual que una referencia que ningún marco cita (`datum_unused`). |
+| `gdt` | Un marco de tolerancia geométrica ISO 1101 (`char`, `value`, `datums`...). Citar una referencia que no existe en la hoja es un error. Una tolerancia geométrica escrita como texto de una nota se señala (`gdt_as_note`), igual que una referencia que ningún marco cita (`datum_unused`). Un marco de posición cuelga bajo la llamada de la medida; las cotas que ubican su rasgo van enmarcadas (teóricamente exactas; las que añades llevan `exact=true`) y su primer datum debe fijar el eje (la cara a la que el agujero es perpendicular). |
 | `finish` | Acabado superficial (ISO 21920-1): `ra`, `machining`, o `general=true` para el símbolo de "todas las demás superficies". |
 
 Los elementos con línea de referencia aceptan `offset_mm` y `side`. Sin ellos, la llamada busca espacio libre. Con ellos va exactamente donde se pide, con un `warning` si ese lugar está ocupado. `at_mm` es una posición en la hoja desde su esquina inferior izquierda.

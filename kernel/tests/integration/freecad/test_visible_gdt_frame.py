@@ -1,6 +1,6 @@
 # ruff: noqa: E501
-"""A geometric tolerance is a feature control frame, not a note: a block with a precision bore (Ø20 H7) carries its
-class and limits on the callout, a position tolerance to the datums A and B hung from that callout, and the two datum
+"""A geometric tolerance is a feature control frame, not a note: a block with a precision bore (Ø20 H7), its location dimensions boxed, carries its
+class and limits on the callout, a position tolerance to the datums C (the face the bore is perpendicular to), A and B hung from that callout, and the three datum
 symbols the frame cites. The sheet carries no note asking the shop to verify a table, and the review has nothing to say
 about notes, undefined datums or unused datums.
 
@@ -29,7 +29,7 @@ from cotaforge.contract import (
     RectEntity,
     SketchRequest,
 )
-from tests.integration.freecad.test_visible_live_sheet import _side, _top, visible  # noqa: F401 - the fixture is shared
+from tests.integration.freecad.test_visible_live_sheet import _side, _state, _top, visible  # noqa: F401 - the fixture is shared
 from tests.integration.freecad.test_visible_quality_sheet import _add, _measure
 
 pytestmark = [
@@ -68,6 +68,7 @@ def test_a_precision_bore_carries_its_class_and_a_position_frame_to_two_datums(
     )
     left = _side(visible, base.feature, (-1.0, 0.0, 0.0))
     front = _side(visible, base.feature, (0.0, -1.0, 0.0))
+    bottom = _side(visible, base.feature, (0.0, 0.0, -1.0))  # the face the bore is perpendicular to: the primary datum
 
     visible.create_drawing(
         DrawingRequest(operation_id="v1", template="A3", title="Bloque", views=("front", "top", "iso"))
@@ -78,6 +79,7 @@ def test_a_precision_bore_carries_its_class_and_a_position_frame_to_two_datums(
         visible,
         "a3",
         [
+            {"type": "datum", "id": "dC", "letter": "C", "face": bottom},
             {"type": "datum", "id": "dA", "letter": "A", "face": front},
             {"type": "datum", "id": "dB", "letter": "B", "face": left},
         ],
@@ -92,7 +94,7 @@ def test_a_precision_bore_carries_its_class_and_a_position_frame_to_two_datums(
                 "char": "position",
                 "value": 0.05,
                 "diameter": True,
-                "datums": ["A", "B"],
+                "datums": ["C", "A", "B"],
                 "on": "bore",
             },
             {"type": "note", "id": "n1", "text": "Rebabas eliminadas, aristas vivas rotas 0,3 x 45"},
@@ -104,10 +106,18 @@ def test_a_precision_bore_carries_its_class_and_a_position_frame_to_two_datums(
     metrics = _measure(visible, doc, None, shots, "gdt_block")
     assert frame.status == "ok", frame.detail
     texts = metrics["texts"]
+    framed = _state(visible, doc, "sheet_exact")
+    assert len(framed) >= 2, framed  # the 40 and the 30 that locate the bore are boxed by TechDraw
     assert any("H7 (+0,021/0)" in t for t in texts), texts  # the class and the limits of the table
-    assert "Ø0,05" in texts and texts.count("A") >= 2 and texts.count("B") >= 2, texts  # the frame and the two datums
+    assert "Ø0,05" in texts and all(texts.count(letter) >= 2 for letter in "CAB"), texts  # the frame and the two datums
     assert not any(w in t.lower() for t in texts for w in ("transcrit", "verificar", "verify")), texts
     flagged = {row[0] for row in metrics["review"]}
-    assert not flagged & {"gdt_as_note", "datum_undefined", "datum_unused", "gdt_not_located", "item_error"}, metrics[
-        "review"
-    ]
+    assert not flagged & {
+        "gdt_as_note",
+        "datum_undefined",
+        "datum_unused",
+        "gdt_not_located",
+        "gdt_location_not_exact",
+        "gdt_axis_not_oriented",
+        "item_error",
+    }, metrics["review"]

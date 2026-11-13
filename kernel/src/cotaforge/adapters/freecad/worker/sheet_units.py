@@ -62,6 +62,7 @@ class NativeDim:
     leader: bool = False
     rect: Rect | None = None  # the room the label and its line take (page mm), for the collision check
     arrows: str = "auto"  # inside | outside: TechDraw flips the arrowheads to match; auto leaves them to TechDraw
+    exact: bool = False  # a theoretically exact dimension: TechDraw frames its text (``TheoreticalExact``)
 
 
 @dataclass(frozen=True)
@@ -256,6 +257,7 @@ def signature(unit: Unit) -> str:
                 n.orient,
                 n.tol,
                 n.leader,
+                *(["exact"] if n.exact else []),  # only when set: a sheet made before keeps its objects
             ]
         if isinstance(n, NativeFlag):
             return ["f", n.view, n.prop]

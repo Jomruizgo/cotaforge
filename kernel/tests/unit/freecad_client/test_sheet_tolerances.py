@@ -436,21 +436,21 @@ def test_position_with_a_diameter_zone_and_a_modifier_hangs_from_the_callout() -
     frame_top = max(
         e.y2 for e in ctx.sheet.entities if isinstance(e, model.Line) and e.x1 == e.x2 and e.y2 - e.y1 == 7.0
     )
-    assert frame_top < anchor["elbow"][1]  # hangs below the shelf
+    assert frame_top == pytest.approx(anchor["elbow"][1], abs=0.1)  # under the size: its top edge is the shelf line
 
 
-def test_a_frame_with_no_room_under_the_shelf_continues_the_shelf_instead_of_overlapping() -> None:
+POSITION = {"type": "gdt", "char": "position", "value": 0.05, "diameter": True, "on": "bore", "id": "pos"}
+DATUM_C = {"type": "datum", "id": "dC", "letter": "C", "face": "face:bottom"}  # the face the bore is perpendicular to
+DATUM_B = {"type": "datum", "id": "dB", "letter": "B", "face": "face:side"}
+
+
+def test_a_frame_hangs_on_the_shelf_of_its_size_callout_and_the_room_is_kept_for_it() -> None:
     ctx = make_context()
-    draw(ctx, BORE, DATUM_A)
+    results = draw(ctx, BORE, DATUM_C, DATUM_B, {**POSITION, "datums": ["C", "B"]})
+    assert [r.status for r in results] == ["ok"] * 4, [r.detail for r in results]
     anchor = ctx.extras["anchors"]["bore"][0]
-    x, y = anchor["elbow"]
-    ctx.reserve((x - 80.0, y - 70.0, x + 120.0, y - 4.0))  # a view right under the callout
-    taken = {"bore", "a"}
-    frame = items.normalise(
-        {"type": "gdt", "char": "position", "value": 0.05, "diameter": True, "datums": ["A"], "on": "bore"}, taken, 3
-    )
-    (result,) = items.draw_all(ctx, [frame])
-    assert result.status == "ok", result.detail
+    slot = ctx.extras["frame_slots"]["bore"]
+    assert slot[3] == pytest.approx(anchor["elbow"][1], abs=0.1) and slot[3] - slot[1] == pytest.approx(7.0, abs=0.1)
     boxes = [
         (
             min(q[0] for q in e.points),
@@ -461,9 +461,94 @@ def test_a_frame_with_no_room_under_the_shelf_continues_the_shelf_instead_of_ove
         for e in ctx.sheet.entities
         if isinstance(e, model.Polyline) and e.closed and len(e.points) == 4
     ]
-    widest = max(boxes, key=lambda b: b[2] - b[0])  # the frame (the datum letters are 7 mm squares)
-    assert widest[2] - widest[0] > 14.0
-    assert widest[1] >= y - 4.0 or widest[3] <= y - 70.0  # not in the room that was taken: beside the shelf or over it
+    frame_box = max(boxes, key=lambda b: b[2] - b[0])
+    assert frame_box[3] == pytest.approx(anchor["elbow"][1], abs=0.1)  # its top edge is the shelf line
+    assert slot[0] - 1e-6 <= frame_box[0] and frame_box[2] <= slot[2] + 1e-6  # inside the room that was kept
+
+
+def exact_flags(ctx: sc.Context, item: str) -> list[bool]:
+    return [n.exact for n in ctx.extras["natives"].get(item, []) if hasattr(n, "exact")]
+
+
+def test_the_dimensions_that_locate_a_hole_with_a_position_frame_are_boxed() -> None:
+    ctx = make_context()
+    draw(ctx, BORE, DATUM_C, {"type": "datum_dims", "id": "dd"}, {**POSITION, "datums": ["C"]})
+    assert ctx.extras["ted_holes"] == {0}
+    flags = exact_flags(ctx, "dd")
+    names = {n.name: n.exact for n in ctx.extras["natives"]["dd"]}
+    assert any(flags), names
+    boxed = [
+        e for e in ctx.sheet.entities if isinstance(e, model.Polyline) and e.closed and e.layer == model.DIMENSIONS
+    ]
+    assert len(boxed) >= 1
+
+
+def test_without_a_position_frame_the_location_dimensions_are_plain() -> None:
+    ctx = make_context()
+    draw(ctx, BORE, DATUM_C, {"type": "datum_dims", "id": "dd"})
+    assert not any(exact_flags(ctx, "dd")) and exact_flags(ctx, "dd")
+
+
+def test_a_distance_dimension_can_be_theoretically_exact_and_only_a_distance() -> None:
+    ctx = make_context()
+    spec = {"type": "dim", "kind": "distance", "from": {"at": [50, 30, 20]}, "to": {"face": "face:side"}, "id": "d1"}
+    (plain,) = draw(ctx, spec)
+    assert plain.status == "ok", plain.detail
+    before = len([e for e in ctx.sheet.entities if isinstance(e, model.Polyline)])
+    ctx2 = make_context()
+    (boxed,) = draw(ctx2, {**spec, "exact": True})
+    assert boxed.status == "ok", boxed.detail
+    assert exact_flags(ctx2, "d1") == [True]
+    assert len([e for e in ctx2.sheet.entities if isinstance(e, model.Polyline)]) == before + 1
+    with pytest.raises(sc.ItemError, match="exact"):
+        items.normalise({"type": "dim", "kind": "radius", "face": ["face:bore"], "exact": True}, set(), 1)
+
+
+def location(**extra: Any) -> dict[str, Any]:
+    return {
+        "type": "dim",
+        "kind": "distance",
+        "from": {"at": [50, 30, 20]},
+        "to": {"face": "face:side"},
+        "id": "d1",
+        **extra,
+    }
+
+
+def codes(found: list[review.Finding], *wanted: str) -> list[str]:
+    return [f.code for f in found if f.code in wanted]
+
+
+def test_review_flags_a_position_frame_located_by_plain_dimensions() -> None:
+    found = reviewed(make_context(), BORE, DATUM_C, location(), {**POSITION, "datums": ["C"]})
+    flagged = [f for f in found if f.code == "gdt_location_not_exact"]
+    assert len(flagged) == 1 and flagged[0].items == ("pos", "d1") and "exact=true" in flagged[0].message
+    ok = reviewed(make_context(), BORE, DATUM_C, location(exact=True), {**POSITION, "datums": ["C"]})
+    assert codes(ok, "gdt_location_not_exact") == []
+    no_position = reviewed(
+        make_context(),
+        BORE,
+        DATUM_C,
+        location(),
+        {"type": "gdt", "char": "runout", "value": 0.02, "datums": ["C"], "on": "bore"},
+    )
+    assert codes(no_position, "gdt_location_not_exact") == []
+
+
+def test_review_flags_a_position_frame_with_no_datum_that_fixes_the_axis() -> None:
+    found = reviewed(make_context(), BORE, DATUM_B, {**POSITION, "datums": ["B"]})
+    flagged = [f for f in found if f.code == "gdt_axis_not_oriented"]
+    assert len(flagged) == 1 and flagged[0].items == ("pos",) and "C | A | B" in flagged[0].message
+    for datums, specs in (
+        (["C", "B"], (DATUM_C, DATUM_B)),
+        (["A", "B"], (DATUM_B, {"type": "datum", "letter": "A", "on": "bore"})),
+    ):
+        found = reviewed(make_context(), BORE, *specs, {**POSITION, "datums": datums})
+        assert codes(found, "gdt_axis_not_oriented") == [], (
+            datums
+        )  # the face the hole is perpendicular to, or its own axis
+    none = reviewed(make_context(), BORE, {**POSITION})
+    assert codes(none, "gdt_axis_not_oriented") == ["gdt_axis_not_oriented"]
 
 
 def test_a_frame_can_only_hang_from_a_callout_that_exists() -> None:

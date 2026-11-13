@@ -161,7 +161,11 @@ ITEM_LINES = (
     "dimension is used. A geometric tolerance is ONLY a gdt frame on the feature or hung from its dimension, with "
     "the datum items it cites: never the text of a note ('perpendicularidad 0,02 A', '⊥ Ø0,1 A'; review flags "
     "gdt_as_note), and a datum no frame cites is flagged too (datum_unused). Tolerate the FINAL feature (the bore "
-    "of H7, not the pre-machined one) and cite the datums in the order the part is located on.",
+    "of H7, not the pre-machined one). A position frame of a hole cites, FIRST, the datum that fixes its axis (the face "
+    "the hole is perpendicular to: a datum item on that face), then the edges that locate it (review: "
+    "gdt_axis_not_oriented), and the dimensions that locate it are theoretically exact: the sheet boxes the ones it "
+    "writes (loc, datum_dims); a dim distance you add for them takes exact=true (review: gdt_location_not_exact). "
+    "The frame hangs under the size callout on its shelf.",
     "overall on a part of revolution (a body whose total size is the diameter of an outer cylinder) gives Ø once, "
     "in the view where the axis lies sideways; review flags duplicate_dimension if a dim repeats an overall one.",
     "finish (ISO 1302 / 21920): ra (um), machining=required (triangle, default) | forbidden (circle) | any, "

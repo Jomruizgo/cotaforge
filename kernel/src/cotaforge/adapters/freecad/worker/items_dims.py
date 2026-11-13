@@ -34,12 +34,13 @@ from sheet_context import (
     scale,
     sub,
     unit,
+    v_bool,
     v_enum,
     v_ids,
     v_ref,
     v_view_or_section,
 )
-from sheet_draw import angle_dimension, linear_dimension
+from sheet_draw import angle_dimension, exact_box, linear_dimension
 from sheet_model import text_width
 from sheet_units import NativeDim, Ref2
 
@@ -57,6 +58,7 @@ CHECKS = {
     "to": v_ref,
     "along": v_enum("x", "y", "z"),
     "arrows": v_enum("auto", "inside", "outside"),
+    "exact": v_bool,
     "face": v_ids("face"),
     "faces": v_ids("face"),
     **sheet_tol.CHECKS,
@@ -335,6 +337,9 @@ def check(spec: dict[str, Any]) -> dict[str, Any]:
     elif "faces" not in out or len(out["faces"]) != 2:
         msg = "angle needs faces: two planar face ids"
         raise ItemError(msg)
+    if out.get("exact") and kind != "distance":
+        msg = "exact (theoretically exact, boxed) is for a distance dimension: the location of a toleranced feature"
+        raise ItemError(msg)
     sheet_tol.check_combination(out)
     if ("fit" in out or "tol" in out) and kind == "chamfer":
         msg = "a chamfer takes no fit or tolerance here: its general tolerance is the chamfer height of ISO 2768"
@@ -391,6 +396,8 @@ def _distance(ctx: Context, spec: dict[str, Any]) -> str:
     pa, pb = _edge_start(a, view, centres[0], line, orient), _edge_start(b, view, centres[1], line, orient)
     rendered, extra = _toleranced(ctx, spec, value, "linear")
     entities, taken = linear_dimension(pa, pb, orient, line, rendered.text, arrows=spec.get("arrows", "auto"))
+    if spec.get("exact"):
+        exact_box(entities)
     if rendered.stack is not None:
         sheet_tol.stack_entities(entities, rendered.stack, horizontal=orient == "h")
         grow = max(text_width(s, 2.5) for s in rendered.stack) + 2.0
@@ -423,6 +430,7 @@ def _distance(ctx: Context, spec: dict[str, Any]) -> str:
                 tol=(res.upper, res.lower) if res is not None and rendered.stack is not None else None,
                 rect=taken,
                 arrows=str(spec.get("arrows", "auto")),
+                exact=bool(spec.get("exact")),
             )
         )
     return f"{ctx.num(value)} mm along {name} in the {view.name} view ({a.label} to {b.label}){extra}"
@@ -518,7 +526,9 @@ def _diameter(ctx: Context, spec: dict[str, Any]) -> str:
         ctx.record_dimension(("dia", round(2 * face.radius, 2), OVERALL), att.view.name)
     if att.view.derived and att.circle is None and att.kind == "surface":
         return _section_diameter(ctx, spec, att, face.radius, rendered.text, extra)
-    ctx.add(place_leader(ctx, att.view, att.tip, diagonal, lines or [rendered.text], spec.get("offset_mm"), asked(spec)))
+    ctx.add(
+        place_leader(ctx, att.view, att.tip, diagonal, lines or [rendered.text], spec.get("offset_mm"), asked(spec))
+    )
     ctx.used_view(att.view.name)
     radius = face.radius * att.view.scale
     if att.circle is not None:  # seen along its axis: a circle of the view
