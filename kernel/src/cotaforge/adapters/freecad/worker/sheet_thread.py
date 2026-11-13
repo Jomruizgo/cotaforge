@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from sheet_context import Context, ThreadInfo, dot, parallel, sub, unit
-from sheet_model import THREAD, Arc, Entity, Line
+from sheet_model import CONTOUR, THREAD, Arc, Entity, Line
 
 _SIZE = re.compile(r"^M(\d+(?:\.\d+)?)")
 
@@ -182,4 +182,8 @@ def external_entities(ctx: Context) -> list[Entity]:
                 for sign in (1.0, -1.0):
                     n = (-u[1] * sign * r, u[0] * sign * r)
                     out.append(Line(a[0] + n[0], a[1] + n[1], b[0] + n[0], b[1] + n[1], THREAD))
+                # where the full thread ends: a transverse line across the whole shaft, wide like the outline (ISO 6410: the
+                # limit of the useful thread length is a continuous wide line; the text of the standard was not opened here)
+                nx, ny = -u[1] * t.major / 2 * view.scale, u[0] * t.major / 2 * view.scale
+                out.append(Line(b[0] + nx, b[1] + ny, b[0] - nx, b[1] - ny, CONTOUR))
     return out

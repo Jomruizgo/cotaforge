@@ -462,7 +462,10 @@ def _feature_dimensions(data: ReviewInput) -> list[Finding]:
                     f"{feature.kind} {feature.id} has no dimension or note: dimension it or cover it with a general "
                     f"note.",
                 )
-                out.append(Finding("feature_no_dimension", "info", text, (), (feature.id,)))
+                if feature.kind == "chamfer":  # the harness measures a chamfer and dimensions it itself (``chamfer_dims``)
+                    out.append(Finding("chamfer_no_dimension", "info", text, (), (feature.id,)))
+                else:
+                    out.append(Finding("feature_no_dimension", "info", text, (), (feature.id,)))
             continue
         if not size and not place:
             text = ctx.say(
@@ -752,6 +755,16 @@ def _assembly_lists(data: ReviewInput) -> list[Finding]:
                 f"Balloons without a row in the parts list: {shown}.",
             )
             out.append(Finding("balloon_without_row", "warning", text, (*list_ids, *balloon_ids)))
+    shown_in = {str(v) for v in book.get("view", {}).values()}
+    pictorial = {n for n in ctx.extras.get("views_extra", {}) if n in ("isometric", "exploded")}
+    if balloons and pictorial and shown_in and not shown_in & pictorial:
+        text = ctx.say(
+            f"Los globos están en la vista {', '.join(sorted(shown_in))} y la hoja tiene {' y '.join(sorted(pictorial))}: los "
+            f"globos van en la vista isométrica, donde se ve cada pieza (balloons con view={sorted(pictorial)[0]}).",
+            f"The balloons are on the {', '.join(sorted(shown_in))} view and the sheet has a {' and '.join(sorted(pictorial))} "
+            f"view: balloons go on the pictorial view, where each part is seen (balloons with view={sorted(pictorial)[0]}).",
+        )
+        out.append(Finding("balloons_off_isometric", "warning", text, balloon_ids))
     rect = ctx.extras.get("parts_list", {}).get("rect")
     if rect is not None:
         for name, box in _rects(data).items():

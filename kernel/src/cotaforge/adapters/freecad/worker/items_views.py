@@ -14,6 +14,7 @@ from typing import Any
 
 import sheet_hatch
 import sheet_section
+import sheet_seen
 from items_common import VIEW_ORDER, mark_once
 from items_holes import _stacks
 from sheet_clip import HATCH_ANGLE_DEG, bbox, clip_to_circle, clip_to_rect, hatch, hatch_spacing, place, relayer
@@ -772,13 +773,18 @@ def draw_lines(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         facts = ctx.extras.get("facts")  # the whole cylinders of the part (pins, shafts, bosses) get theirs too
         for boss in facts.bosses if facts is not None else ():
             d = unit(boss.axis_dir)
+            hidden_behind = facts.assembly  # the cylinders of an assembly: only where the view really shows them
             for view in ctx.views.values():
                 if view.looks_along(d):
+                    if hidden_behind and not sheet_seen.circle_seen(ctx, view, boss):
+                        continue
                     c = view.project(boss.axis_point)
                     if mark_once(ctx, view, c):
                         ctx.add(centre_mark(c[0], c[1], boss.radius * view.scale))
                         marks += 1
                 elif boss.length > 0 and view.shows_axis_along(d):
+                    if boss.bore or (hidden_behind and not sheet_seen.side_on_seen(ctx, view, boss)):
+                        continue  # a bore is inside the material; a cylinder behind another part shows no sides
                     half = boss.length / 2
                     pa = view.project(tuple(p - u * half for p, u in zip(boss.axis_point, d, strict=True)))  # type: ignore[arg-type]
                     pb = view.project(tuple(p + u * half for p, u in zip(boss.axis_point, d, strict=True)))  # type: ignore[arg-type]
@@ -787,7 +793,13 @@ def draw_lines(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
                         continue
                     ux, uy = (pb[0] - pa[0]) / length, (pb[1] - pa[1]) / length
                     over = HOLE_AXIS_REACH_MM
-                    ctx.add([Line(pa[0] - ux * over, pa[1] - uy * over, pb[0] + ux * over, pb[1] + uy * over, AXES)])
+                    line = Line(pa[0] - ux * over, pa[1] - uy * over, pb[0] + ux * over, pb[1] + uy * over, AXES)
+                    drawn = ctx.extras.setdefault("axis_lines", set())
+                    key = (view.name, *sorted(((round(line.x1, 1), round(line.y1, 1)), (round(line.x2, 1), round(line.y2, 1)))))
+                    if key in drawn:
+                        continue
+                    drawn.add(key)
+                    ctx.add([line])
                     ctx.used_view(view.name)
                     axes += 1
         if marks or axes:

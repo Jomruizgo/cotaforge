@@ -57,6 +57,7 @@ FACT_NAMES = (
     "process_on_sheet",
     "parts_lists",
     "balloons",
+    "chamfers",
 )
 
 THREAD_PRINTED = re.compile(r"(?<![A-Za-z0-9])M\s?\d{1,3}(?:\s?[x×]\s?\d+(?:[.,]\d+)?)?|UN[CF]\b|\bNPT\b|\bBSP\b|\bG\s?\d/\d", re.I)
@@ -132,7 +133,7 @@ def _boss_radii_undimensioned(data: Any) -> int:
 
 def _round_extent(data: Any) -> bool:
     ctx = data.ctx
-    if ctx.extras.get("facts") is None:
+    if ctx.extras.get("facts") is None or ctx.assembly is not None:  # an assembly is not a turned part
         return False
     try:
         return ctx.geometry.round_extent() is not None
@@ -193,5 +194,6 @@ def facts(data: Any) -> dict[str, int]:
         "process_on_sheet": 1 if PROCESS.search("\n".join(notes)) else 0,
         "parts_lists": len(sheet_review._of(data, "parts_list")),
         "balloons": len(sheet_review._of(data, "balloons")),
+        "chamfers": sum(1 for f in data.features if f.kind == "chamfer"),
     }
     return out
