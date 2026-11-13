@@ -102,11 +102,14 @@ COMPOSE_LINES = (
     "items: from where the positions and sizes are counted; a datum_dims takes the place of the default location, so the "
     "holes are never dimensioned twice] | fits [hole_dim | dim with fit=] | tol [dim | hole_dim with tol=] | gdt [gdt "
     "items] | finish [finish items] | sections [section | detail | aux_view] | welds [weld items] | notes [text | note] | "
+    "a WELDED PART also: bodies [{component, name}: the designation of each body of the cut list] | welding {process, "
+    "quality: B|C|D (ISO 5817), tolerance: A|B|C|D (ISO 13920): the weld note and the title block come from it} | "
     "sheet {template?, angle?, scale?, title?, title_block?, symmetry?...: only what the engineer fixed} | answers "
     '{"req.coating": "no aplica: why"} (a row that does not apply; a measured one only on his order, with by= and reason=).',
     "compose REFUSES, before it changes anything, while a decision the plan listed is missing (it lists them: answer each "
     "with its key or with answers). It never guesses a datum, a fit or a tolerance. A paper the engineer did not fix is "
-    "raised (A4, A3, A2) when the annotations do not fit, and the reply says so; give sheet.template to fix it. A "
+    "raised (A4, A3, A2) when the annotations do not fit, keeping the scale (a paper is never bigger only for a bigger "
+    "scale), and the reply says so; give sheet.template to fix it. A "
     "second compose takes off what the first one put (ids dc_...) and puts the new decisions; what you added or placed "
     "by hand (add, side, offset_mm) stays. After it: capture and look at it, review, and correct with add / remove / "
     "update; never rebuild with add what compose derives (rq_... items: remove one only with reason=).",

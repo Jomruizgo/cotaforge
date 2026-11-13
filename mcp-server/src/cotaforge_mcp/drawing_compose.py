@@ -18,7 +18,7 @@ from cotaforge.contract import AdapterError, AnnotateDrawingRequest, DrawingRequ
 from cotaforge.language import say
 from pydantic import ValidationError
 
-from cotaforge_mcp import design_memory, drawing_gate
+from cotaforge_mcp import design_memory, drawing_gate, drawing_weld_questions
 from cotaforge_mcp import drawing_requirements as reqs
 from cotaforge_mcp.reply import Reply, ToolError, ok
 from cotaforge_mcp.schemas import DrawingArgs
@@ -33,6 +33,9 @@ PAPER_STEPS = ("A4", "A3", "A2")
 LAYOUT_CODES = frozenset({"views_overlap", "view_outside_frame", "item_outside_frame", "text_outside_frame"})
 """The findings that say the views and annotations do not fit the paper (a local ``collision`` between two annotations is
 the placement's to solve, not a reason for a bigger paper)."""
+LEGIBLE_SCALE = 0.2
+"""The legibility floor of a sheet (ISO 5455, 1:5; the same one the CAD uses to choose a paper): a bigger paper keeps the scale of
+the smaller one, and a scale below the floor rises to it."""
 LOCATION_CODES = frozenset({"hole_not_located", "hole_partly_located"})
 
 KEYS: dict[str, tuple[str, ...]] = {
@@ -53,7 +56,11 @@ SHEET_KEYS = frozenset(
         "general_tolerances", "company", "title_block", "symmetry", "views", "isometric", "body",
     }
 )  # fmt: skip
-KNOWN = frozenset({*KEYS, "sheet", "answers"})
+WELD_KEYS = ("bodies", "welding")
+"""The decisions of a welded part that are not items of their own: ``bodies`` (the designation of each position of the cut
+list: it becomes the rows of its ``parts_list``) and ``welding`` (process, ISO 5817 quality level and ISO 13920 class: it
+becomes the weld note)."""
+KNOWN = frozenset({*KEYS, *WELD_KEYS, "sheet", "answers"})
 ROW_KEYS: dict[str, tuple[str, ...]] = {
     "req.thread": ("fits", "notes"),
     "req.fit_class": ("fits", "tol"),
@@ -78,6 +85,8 @@ class Question:
     keys: tuple[str, ...]
     text: str
     row: str = ""
+    joints: tuple[str, ...] = ()
+    """The joints of a welded part this question is about (``body:1+body:5``): it is covered when weld items name them all."""
 
 
 @dataclass
@@ -181,8 +190,11 @@ def _bad(problems: list[str]) -> ToolError:
     )
 
 
-def normalise(decisions: dict[str, Any] | None) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, str]]:
-    """The decisions as ``(items, sheet settings, answers by row)``; a decision that is not valid refuses the whole order."""
+def normalise(
+    decisions: dict[str, Any] | None, language: str = "es"
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, str]]:
+    """The decisions as ``(items, sheet settings, answers by row)``; a decision that is not valid refuses the whole order.
+    ``language`` is the one the weld note is written in."""
     data = decisions or {}
     problems: list[str] = []
     unknown = sorted(set(data) - KNOWN)
@@ -211,6 +223,12 @@ def normalise(decisions: dict[str, Any] | None) -> tuple[list[dict[str, Any]], d
     if not isinstance(sheet, dict) or set(sheet) - SHEET_KEYS:
         problems.append(f"sheet is an object with {', '.join(sorted(SHEET_KEYS))}")
         sheet = {}
+    sheet = dict(sheet)
+    items += _body_rows(data.get("bodies"), problems)
+    note, tolerance = _weld_note(data.get("welding"), language, problems)
+    if note:
+        items.append(note)
+        sheet.setdefault("general_tolerances", tolerance)  # the title block says the same class as the note
     answers = data.get("answers") or {}
     if not isinstance(answers, dict) or not all(isinstance(v, str) for v in answers.values()):
         problems.append("answers is {row id: 'applies: how, here' | 'no aplica: why'}")
@@ -218,6 +236,53 @@ def normalise(decisions: dict[str, Any] | None) -> tuple[list[dict[str, Any]], d
     if problems:
         raise _bad(problems)
     return items, sheet, dict(answers)
+
+
+def _body_rows(bodies: Any, problems: list[str]) -> list[dict[str, Any]]:
+    """The designations of the cut list of a welded part as the rows of ONE ``parts_list`` item."""
+    if not bodies:
+        return []
+    fields = ("name", "reference", "material", "remarks")
+    if not isinstance(bodies, list) or not all(
+        isinstance(b, dict) and isinstance(b.get("component"), str) and isinstance(b.get("name"), str) and b["name"].strip() and set(b) <= {"component", *fields}
+        for b in bodies
+    ):
+        problems.append('bodies is a list of {"component": "body:1", "name": "<designation: profile and size>"} (a name is never empty)')
+        return []
+    return [{"type": "parts_list", "id": f"{COMPOSED_PREFIX}bodies1", "rows": [dict(b) for b in bodies]}]
+
+
+def _level(value: Any, standard: str, allowed: str, what: str, problems: list[str]) -> str:
+    """The letter of a level or class (``C``, ``ISO 5817-C``, ``5817 C``); empty (and a problem said) when it is not valid."""
+    text = str(value or "").strip().upper()
+    letter = text[-1:] if text else ""
+    if letter not in allowed or (len(text) > 1 and standard not in text):
+        problems.append(f"welding.{what} is one of {', '.join(allowed)} (of ISO {standard}), not {value!r}")
+        return ""
+    return letter
+
+
+def _weld_note(welding: Any, language: str, problems: list[str]) -> tuple[dict[str, Any] | None, str]:
+    """The weld note of a welded part from the designer's decision (process, ISO 5817 quality level, ISO 13920 class of the
+    general tolerances), and the general tolerance for the title block. It never states a size: the symbols do."""
+    if not welding:
+        return None, ""
+    keys = {"process", "quality", "tolerance"}
+    if not isinstance(welding, dict) or set(welding) != keys or not str(welding.get("process") or "").strip():
+        problems.append('welding is {"process": "MAG", "quality": "C" (ISO 5817: B, C or D), "tolerance": "B" (ISO 13920: A, B, C or D)}')
+        return None, ""
+    before = len(problems)
+    quality = _level(welding["quality"], "5817", "BCD", "quality", problems)
+    cls = _level(welding["tolerance"], "13920", "ABCD", "tolerance", problems)
+    if len(problems) > before:
+        return None, ""
+    process = str(welding["process"]).strip()
+    text = say(
+        language,
+        f"Proceso de soldadura {process}; nivel de calidad ISO 5817-{quality}; tolerancias generales de la construcción soldada ISO 13920-{cls}",
+        f"Welding process {process}; quality level ISO 5817-{quality}; general tolerances of the welded construction ISO 13920-{cls}",
+    )
+    return {"type": "note", "id": f"{COMPOSED_PREFIX}welding1", "text": text}, f"ISO 13920-{cls}"
 
 
 def _check_items(items: list[dict[str, Any]]) -> None:
@@ -249,7 +314,7 @@ def _create_args(args: DrawingArgs, sheet: dict[str, Any]) -> DrawingArgs:
 # --- what the harness knows ---------------------------------------------------------------------------------------------
 
 
-def _survey(session: Session, sheet: str | None, extra: list[dict[str, Any]] | None = None) -> Survey:
+def _survey(session: Session, sheet: str | None, extra: list[dict[str, Any]] | None = None, again: bool = True) -> Survey:
     """What the sheet is, what the harness adds by itself and what it still has to ask."""
     info = drawing_gate.sheet_info(session, sheet, review=True)
     if info is None:
@@ -266,6 +331,7 @@ def _survey(session: Session, sheet: str | None, extra: list[dict[str, Any]] | N
             assembly=bool(info.facts.get("assembly")),
             views=tuple(info.views),
             external_threads=bool(info.facts.get("thread_features")),
+            weldment=bool(info.facts.get("weldment")),
         )
         if mode != "none" and info.facts
         else []
@@ -291,8 +357,13 @@ def _survey(session: Session, sheet: str | None, extra: list[dict[str, Any]] | N
             continue
         if r.row.auto in ("callouts", "view_lines", "chamfers", "parts_list", "keyway") and r.id not in ROW_KEYS:
             continue  # the harness meets it when the model shows it (nothing to decide)
+        if r.id == "req.welds" and info.weldment is not None and info.weldment.joints:
+            continue  # asked joint group by joint group below
         keys = ROW_KEYS.get(r.id, ("notes", "answers"))
         questions.append(Question(keys, reqs.question_of(r, language), r.id))
+    recompose = again and any(i.id.startswith(COMPOSED_PREFIX) for i in info.items)  # a new compose takes them off: everything is asked again
+    for ask in drawing_weld_questions.ask(info.weldment, language, recompose, bool(info.facts.get("weld_class_on_sheet"))):
+        questions.append(Question(ask.keys, ask.text, "", ask.joints))
     located = any(f.code in LOCATION_CODES and not reqs.finding_closed(f) for f in info.findings)
     if located and mode != "none":
         questions.insert(
@@ -377,6 +448,8 @@ def _ratio(scale: float) -> str:
 def _covered(question: Question, decided: dict[str, Any], items: list[dict[str, Any]], answers: dict[str, str]) -> bool:
     if question.row and question.row in answers:
         return True
+    if question.joints:  # a group of joints: every one of them has a weld item
+        return set(question.joints) <= drawing_weld_questions.weld_keys(items)
     for key in question.keys:
         if key == "answers":
             continue
@@ -412,7 +485,7 @@ def _check_answers(session: Session, survey: Survey, answers: dict[str, str], by
 
 def compose(session: Session, args: DrawingArgs, make_request: Any) -> Reply:
     require_sheet_flow(session, "compose")
-    items, sheet_over, answers = normalise(args.decisions)
+    items, sheet_over, answers = normalise(args.decisions, design_memory.load_brief(session.settings).lang)
     _check_items(items)
     paper_fixed = "template" in sheet_over or "template" in args.model_fields_set
     fixed_scale = sheet_over.get("scale") or (args.scale if "scale" in args.model_fields_set else None)
@@ -448,7 +521,10 @@ def compose(session: Session, args: DrawingArgs, make_request: Any) -> Reply:
 
 
 def _problems(info: Any) -> set[str]:
-    return {f.code for f in info.findings if f.code in LAYOUT_CODES}
+    """The layout findings of the review; on a welded part also the collisions: its cut list, notes, balloons and symbols crowd
+    a small paper, and a bigger one (at the same scale) is what gives them room."""
+    codes = LAYOUT_CODES | ({"collision"} if info.facts.get("weldment") else set())
+    return {f.code for f in info.findings if f.code in codes}
 
 
 def _open(info: Any, layout: Layout | None) -> int:
@@ -472,14 +548,15 @@ def _raise_paper(
             break
         bigger = PAPER_STEPS[PAPER_STEPS.index(key) + 1]
         before = _open(info, layout)
-        stated: dict[str, Any] = {"template": bigger, **({"scale": fixed_scale} if fixed_scale else {})}
+        # the bigger paper is for the room the annotations need, not for a bigger scale: the scale stays (the legibility floor
+        # at least), a scale the engineer fixed is kept
+        keep = fixed_scale or _ratio(max(info.scale, LEGIBLE_SCALE))
+        stated: dict[str, Any] = {"template": bigger, "scale": keep}
         request = make_request(session, DrawingArgs(action="create", sheet=sheet, **stated))
-        if not fixed_scale:  # the largest standard scale that fits the new paper, not the old one
-            request = request.model_copy(update={"scale": None, "unset": tuple(n for n in request.unset if n != "scale")})
         planned = lay_out(session, request, [], [], relayout=True)
         after = drawing_gate.sheet_info(session, sheet, review=True)
         if after is None or _open(after, planned) >= before:  # a bigger paper that does not help is put back
-            back = make_request(session, DrawingArgs(action="create", sheet=sheet, **{**stated, "template": key}))
+            back = make_request(session, DrawingArgs(action="create", sheet=sheet, template=key, **({"scale": fixed_scale} if fixed_scale else {})))
             if not fixed_scale:
                 back = back.model_copy(update={"scale": None, "unset": tuple(n for n in back.unset if n != "scale")})
             layout = lay_out(session, back, [], [], relayout=True)
@@ -506,7 +583,7 @@ def _layout_lines(layout: Layout | None) -> list[str]:
 
 
 def _report(session: Session, sheet: str, items: list[dict[str, Any]], derived: list[dict[str, Any]], removed: list[str], notes: list[str], layout: Layout | None = None) -> list[str]:
-    survey = _survey(session, sheet)
+    survey = _survey(session, sheet, again=False)
     info = survey.info
     mine = {i["id"] for i in items} | {d["id"] for d in derived}
     broken = [i for i in info.items if i.id in mine and i.status in ("error", "refused")]
