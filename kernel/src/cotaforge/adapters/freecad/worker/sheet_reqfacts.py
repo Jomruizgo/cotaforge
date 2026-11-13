@@ -18,6 +18,7 @@ from typing import Any
 
 import sheet_checks
 import sheet_review
+from items_assembly import rows_of
 from items_holes import _select as select_callout_holes
 from sheet_context import ItemError
 
@@ -139,6 +140,57 @@ def _round_extent(data: Any) -> bool:
         return ctx.geometry.round_extent() is not None
     except Exception:  # noqa: BLE001 - a part that cannot be tested is not called turned
         return False
+
+
+def _diameter_of_face(ctx: Any, spec: dict[str, Any]) -> float | None:
+    try:
+        radius = ctx.geometry.face(spec["face"][0]).radius
+    except (ItemError, KeyError, IndexError):
+        return None
+    return None if radius is None else (2 * radius if spec.get("kind") == "diameter" else radius)
+
+
+def measures(data: Any) -> dict[str, list[dict[str, Any]]]:
+    """What the dimensions of the sheet GIVE, one by one (the server matches them with the functional dimensions the intent
+    file declares): measures are the values a single dimension item states (a distance between two features, a diameter
+    or radius, the overall size, the diameter of a hole called out), each with whether it carries a tolerance or fit;
+    components the parts list of an assembly with the reference (the drawing number) each row prints. A value no
+    dimension states by itself (it could only be got by adding or subtracting others) is NOT in the list."""
+    ctx = data.ctx
+    out: list[dict[str, Any]] = []
+    for m in sheet_review._measure(data):
+        out.append(
+            {"id": m.spec["id"], "kind": "distance", "value_mm": round(m.hi - m.lo, 4), "toleranced": "fit" in m.spec or "tol" in m.spec}
+        )
+    for spec in sheet_review._of(data, "dim"):
+        if spec.get("kind") in ("diameter", "radius"):
+            value = _diameter_of_face(ctx, spec)
+            if value is not None:
+                out.append({"id": spec["id"], "kind": spec["kind"], "value_mm": round(value, 4), "toleranced": "fit" in spec or "tol" in spec})
+    for spec in sheet_review._of(data, "overall"):
+        for axis in sheet_review.AXES:
+            extent = sheet_review._extent(ctx, axis)
+            if extent is not None:
+                out.append({"id": spec["id"], "kind": "overall", "value_mm": round(extent, 4), "toleranced": "tol" in spec})
+    for spec in sheet_review._of(data, "hole_dim"):
+        try:
+            holes = select_callout_holes(ctx, spec)
+        except ItemError:
+            continue
+        for hole in holes:
+            out.append({"id": spec["id"], "kind": "hole", "value_mm": round(hole.diameter, 4), "toleranced": bool(hole.fit) or "fit" in spec or "tol" in spec})
+    components: list[dict[str, str]] = []
+    if ctx.assembly is not None:
+        shown: dict[str, str] = {}
+        for spec in sheet_review._of(data, "parts_list"):
+            try:
+                for group, cells in rows_of(ctx, spec):
+                    shown[group.key] = cells[3]
+            except ItemError:
+                continue
+        for group in ctx.assembly.groups:
+            components.append({"name": group.name or group.instances[0], "reference": (shown.get(group.key, group.reference) or "").strip()})
+    return {"measures": out, "components": components}
 
 
 def facts(data: Any) -> dict[str, int]:
