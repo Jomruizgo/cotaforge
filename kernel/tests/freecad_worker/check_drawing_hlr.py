@@ -110,20 +110,26 @@ def check_hlr_holds_for_a_round_part_with_arcs_and_a_hole_pattern() -> None:
 
     build_part04()
     both = {}
+    # a techdraw sheet with a front view draws a turned part with its axis horizontal (f3dd2e3) and an hlr sheet never does
+    # (``drawing.turned_of``), so the scale and the place of every view differ by design. What must still match is what the
+    # sheet says: every text but the scale labels, and every circle's size in the part's own millimetres.
+    scales = {}
     for mode in ("techdraw", "hlr"):
-        call("create_drawing", op("d", template="A3", projection=mode, views=ALL_VIEWS, fresh=True))
+        made = call("create_drawing", op("d", template="A3", projection=mode, views=ALL_VIEWS, fresh=True))
+        scales[mode] = float(made["scale"])
         add({"type": "hole_dim", "all": True})
         both[mode] = composed()[0]
+
+    def said(sheet: model.Sheet) -> list[str]:
+        return sorted(t for t in texts(sheet) if " : " not in t)  # '1 : 2', 'Isométrica 1 : 2'
+
     td, hlr = both["techdraw"], both["hlr"]
-    assert sorted(texts(td)) == sorted(texts(hlr)), (
-        sorted(set(texts(td)) ^ set(texts(hlr))),
-        len(texts(td)),
-        len(texts(hlr)),
-    )
+    assert said(td) == said(hlr), (sorted(set(said(td)) ^ set(said(hlr))), len(said(td)), len(said(hlr)))
     ctd, chlr = _circles(td), _circles(hlr)
     assert len(ctd) == len(chlr) >= 7  # bore, six bolt holes (the disc outline too)
-    for a, b in zip(ctd, chlr, strict=True):
-        assert all(abs(x - y) < TOL for x, y in zip(a, b, strict=True)), (a, b)
+    radii_td = sorted(round(c[2] / scales["techdraw"], 2) for c in ctd)
+    radii_hlr = sorted(round(c[2] / scales["hlr"], 2) for c in chlr)
+    assert radii_td == radii_hlr, (radii_td, radii_hlr)
 
 
 def check_the_mode_survives_update_a_save_and_a_reopen() -> None:
