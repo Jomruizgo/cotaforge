@@ -591,13 +591,36 @@ def turned_of(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None) -> dic
     return {"axis": [float(c) for c in axis], "flip": flip, "length": high - low, "diameter": float(diameter)}
 
 
+SECTION_ROOM_MM = 42.0  # the label (9), the clear space round the view (8), the hole dimensions and the gaps
+
+
+def _section_room(
+    doc: reg.DocumentRec, spec: dict[str, Any], shown: tuple[str, ...], third: bool, op: str | None
+) -> dict[str, float]:
+    """An assembly drawn as one view and its section (no front view): the section goes where first-angle projection puts the
+    view looked at from the front -- ABOVE the plan (third angle: below it) -- so the layout keeps that room, the height of
+    the section and its label, beside the baseline of the hole dimensions."""
+    if "front" in shown or "right" in shown or not any(i.get("type") == "section" for i in spec.get("items", [])):
+        return {}
+    section = next(i for i in spec["items"] if i.get("type") == "section")
+    box = _bounds(doc, spec.get("body"), op)
+    index = {"top": 2, "front": 1, "right": 0}.get(str(section.get("view")))
+    if box is None or index is None:
+        return {}
+    room = float(box["max"][index]) - float(box["min"][index]) + SECTION_ROOM_MM
+    return {"below_mm" if third else "above_mm": room}
+
+
 def _dimension_room(
     doc: reg.DocumentRec, spec: dict[str, Any], shown: tuple[str, ...], third: bool, op: str | None
 ) -> dict[str, float]:
     """The room (mm of paper) the baseline dimensions of the holes need beyond the views, so the layout reserves it before
     it picks the scale: ``below_mm`` / ``above_mm`` for the rows of x values, ``left_mm`` for the rows of y values. One row
-    per distinct coordinate (holes that share one share its dimension), ``ROW_STEP_MM`` apart. Assemblies have none."""
-    if _is_assembly(doc, spec.get("body")) or AUTO_LOCATE_ID in spec.get("declined", ()) or spec.get("turned"):
+    per distinct coordinate (holes that share one share its dimension), ``ROW_STEP_MM`` apart. An assembly keeps the room
+    of its section."""
+    if _is_assembly(doc, spec.get("body")):
+        return _section_room(doc, spec, shown, third, op)
+    if AUTO_LOCATE_ID in spec.get("declined", ()) or spec.get("turned"):
         return {}  # a turned part's holes are called out, not stacked from a baseline: its frame is not the standard one
     axes = {"top": ((0, 1), (0.0, 0.0, 1.0)), "front": ((0, 2), (0.0, 1.0, 0.0)), "right": ((1, 2), (1.0, 0.0, 0.0))}
     rows_x = {"top": 0, "front": 0, "right": 0}

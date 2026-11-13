@@ -121,6 +121,22 @@ def thread_states_diameter(ctx: Context, diameter: float) -> bool:
     return False
 
 
+def _threaded_end(ctx: Context, view: ViewInfo, diameter: float) -> Point | None:
+    """The page direction from the middle of ``view`` to the threads of this diameter that cover only part of the part, or
+    ``None`` (no such thread): the plain part, whose Ø the overall dimension is, lies the other way."""
+    if thread_states_diameter(ctx, diameter):
+        return None
+    mids = [
+        view.project(tuple(s + d * t.length / 2 for s, d in zip(t.start, t.direction, strict=True)))  # type: ignore[arg-type]
+        for t in ctx.threads
+        if abs(t.major - diameter) < 0.05
+    ]
+    if not mids:
+        return None
+    cx, cy = (view.box[0] + view.box[2]) / 2, (view.box[1] + view.box[3]) / 2
+    return sum(m[0] for m in mids) / len(mids) - cx, sum(m[1] for m in mids) / len(mids) - cy
+
+
 def view_outline(ctx: Context, box: tuple[float, float, float, float]) -> list[tuple[float, float, float, float]]:
     """The visible outline (contour layer) of the part's ink that lies in ``box`` (a view of the sheet), as segments."""
     ink = [e for e in ctx.extras.get("view_ink", []) if getattr(e, "layer", None) == CONTOUR]
@@ -222,6 +238,9 @@ def draw_overall(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         elif not below:
             below = bool(_extent_gap(ctx, b, "above"))  # its extension lines would cross the view over nothing
         given = w_round or h_round
+        toward = _threaded_end(ctx, primary, width if w_round else height) if (w_round or h_round) else None
+        if toward is not None and asked_side is None and w_round and not by_thread_w:
+            below = toward[1] > 0  # the Ø goes at the plain end, away from the thread callout (axis along the page y)
         if by_thread_w:
             skipped.append(f"width Ø{ctx.num(width)} (the thread callout carries it)")
         else:
@@ -240,12 +259,14 @@ def draw_overall(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             if by_thread_h:
                 skipped.append(f"height Ø{ctx.num(height)} (the thread callout carries it)")
             else:
-                dist = ctx.stack_distance(name, "right", offset)
+                left = h_round and toward is not None and toward[0] > 0  # thread at the right end: the Ø goes at the plain left one
+                dist = ctx.stack_distance(name, "left" if left else "right", offset)
                 shown_h = f"Ø{ctx.num(height)}" if h_round else ctx.num(height)
-                entities, taken = linear_dimension((b[2], b[1]), (b[2], b[3]), "v", b[2] + dist, shown_h)
+                x_line = b[0] - dist if left else b[2] + dist
+                entities, taken = linear_dimension((b[0] if left else b[2], b[1]), (b[0] if left else b[2], b[3]), "v", x_line, shown_h)
                 ctx.add(entities)
                 ctx.reserve_dimension(entities, taken)
-                _record(ctx, "height", name, "v", b[2] + dist, (b[1] + b[3]) / 2, shown_h)
+                _record(ctx, "height", name, "v", x_line, (b[1] + b[3]) / 2, shown_h)
                 _record_overall(ctx, primary, False, height if h_round else None)
                 out.append(f"height {shown_h}")
                 sizes["height"] = height
