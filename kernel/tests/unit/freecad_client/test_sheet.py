@@ -67,15 +67,16 @@ def test_the_views_stay_inside_the_drawing_area_and_never_overlap(page: tuple[fl
     s, gap = plan.scale, plan.spacing
     fx, fy = plan.front
     iso_w, iso_h = layout.iso_extent(w, d, h)
+    k = plan.iso_scale or s  # the isometric view may have a scale of its own
     boxes = {
         "front": (fx - w * s / 2, fy - h * s / 2, fx + w * s / 2, fy + h * s / 2),
         "right": (fx - w * s / 2 - gap - d * s, fy - h * s / 2, fx - w * s / 2 - gap, fy + h * s / 2),
         "top": (fx - w * s / 2, fy + h * s / 2 + gap, fx + w * s / 2, fy + h * s / 2 + gap + d * s),
         "iso": (
-            plan.iso[0] - iso_w * s / 2,
-            plan.iso[1] - iso_h * s / 2,
-            plan.iso[0] + iso_w * s / 2,
-            plan.iso[1] + iso_h * s / 2,
+            plan.iso[0] - iso_w * k / 2,
+            plan.iso[1] - iso_h * k / 2,
+            plan.iso[0] + iso_w * k / 2,
+            plan.iso[1] + iso_h * k / 2,
         ),
     }
     left, top, right, bottom = layout.drawing_area(*page)

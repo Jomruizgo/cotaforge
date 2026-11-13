@@ -42,6 +42,8 @@ FRAME_MARGIN_MM = 10.0  # the frame of the ISO 5457 templates is this far from t
 TITLE_BLOCK_TOP_MM = 58.0  # the top edge of the title block, from the page's bottom (y up): a parts list sits on it
 TITLE_BLOCK_WIDTH_MM = 180.0
 PARTS_ROW_MM = 6.0  # a row of the parts list; an assembly sheet keeps room for as many rows as it has parts
+ISO_LABEL_MM = 8.0  # room under the isometric view for its own scale, written there when it is not the sheet's (ISO 5455)
+ISO_OWN_RATIO = 2.5  # the isometric view drawn at its own scale is at most one standard step smaller than the sheet's
 
 # Isometric view direction (towards the viewer) and the page's x axis in it, as TechDraw is told.
 ISO_DIRECTION = (1.0, -1.0, 1.0)
@@ -58,6 +60,7 @@ class Layout:
     front: tuple[float, float]  # centre of the front view
     iso: tuple[float, float]  # centre of the isometric view
     spacing: float = SPACING_MM
+    iso_scale: float = 0.0  # the isometric view's own scale; 0: the sheet's (``scale``)
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,17 @@ class Spec:
     left_mm: float = 0.0
     right_mm: float = 0.0
     spacing: float = SPACING_MM  # between the front view and the top / right ones
+    iso_scale: float = 0.0  # the isometric view's own scale (a pictorial view may have one); 0: the sheet's
+
+
+def own_iso(scale: float, s: Spec) -> bool:
+    """Whether the isometric view of ``s`` is drawn at a scale of its own (not the sheet's)."""
+    return s.iso[0] > 0 and s.iso_scale > 0 and abs(s.iso_scale - scale) > 1e-9
+
+
+def iso_factor(scale: float, s: Spec) -> float:
+    """The scale the isometric view is drawn at: its own when it has one, else the sheet's."""
+    return s.iso_scale if own_iso(scale, s) else scale
 
 
 def iso_extent(width: float, depth: float, height: float) -> tuple[float, float]:
@@ -147,7 +161,9 @@ def _needed_spec(scale: float, s: Spec) -> tuple[float, float]:
     """(width, height) the views, their dimensions and the isometric view take at ``scale``."""
     block_w, block_h, _, _ = _extents(scale, s)
     gap = ISO_GAP_MM if s.iso[0] > 0 else 0.0  # no isometric view: nothing to the right of the group
-    return block_w + gap + s.iso[0] * scale, max(block_h, s.iso[1] * scale + DIM_MARGIN_MM if s.iso[0] > 0 else block_h)
+    k = iso_factor(scale, s)
+    below = DIM_MARGIN_MM + (ISO_LABEL_MM if own_iso(scale, s) else 0.0)  # its scale is written under it
+    return block_w + gap + s.iso[0] * k, max(block_h, s.iso[1] * k + below if s.iso[0] > 0 else block_h)
 
 
 def _drop(needed_h: float, area_h: float | None) -> float:
@@ -170,7 +186,9 @@ def _blocks_spec(
     iso_x = start + block_w + ISO_GAP_MM
     blocks = [(start, top, start + block_w, top + block_h)]
     if s.iso[0] > 0:
-        blocks.append((iso_x, top, iso_x + s.iso[0] * scale, top + s.iso[1] * scale + DIM_MARGIN_MM))
+        k = iso_factor(scale, s)
+        below = DIM_MARGIN_MM + (ISO_LABEL_MM if own_iso(scale, s) else 0.0)
+        blocks.append((iso_x, top, iso_x + s.iso[0] * k, top + s.iso[1] * k + below))
     return blocks
 
 
@@ -243,6 +261,7 @@ def plan(
     right_mm: float = 0.0,
     spacing_mm: float = SPACING_MM,
     iso_dims: tuple[float, float, float] | None = None,
+    own_iso_scale: bool = True,
     _comfort_checked: bool = False,
 ) -> Layout:
     """The layout of a part ``w`` (x) by ``d`` (y) by ``h`` (z) mm on a page; ``scale`` is the ratio asked for
@@ -251,11 +270,18 @@ def plan(
     ``has_top`` / ``has_right`` / ``isometric`` say which views the sheet has: a view that is not there takes no room,
     so the others are laid out again and the scale grows to the largest standard one that fits. ``third`` is third-angle
     projection; ``below_mm`` / ``above_mm`` / ``left_mm`` the room the stacked baseline dimensions of the holes need beyond
-    the views; ``iso_dims`` the part's size for the isometric view when ``w``, ``d`` and ``h`` are those of another view."""
+    the views; ``iso_dims`` the part's size for the isometric view when ``w``, ``d`` and ``h`` are those of another view.
+    The isometric view is a pictorial one and may be drawn at a scale of its own (ISO 5455, written under it): when the
+    sheet's scale is chosen, or asked for, and the isometric view does not fit beside the main views at that scale, it takes
+    the largest standard scale that does (at most one step smaller; none for an assembly sheet or ``own_iso_scale=False``);
+    ``Layout.iso_scale`` is 0 when it has the sheet's."""
     if scale is None and not _comfort_checked and (right_mm or spacing_mm != SPACING_MM):
         # the room for the callouts is a comfort: a scale smaller than the sheet would have without it is not worth it
         args = (w, d, h, page_w, page_h, None, reserve, isometric, has_top, has_right)
-        keep = {"third": third, "below_mm": below_mm, "above_mm": above_mm, "left_mm": left_mm, "iso_dims": iso_dims}
+        keep = {
+            "third": third, "below_mm": below_mm, "above_mm": above_mm, "left_mm": left_mm, "iso_dims": iso_dims,
+            "own_iso_scale": own_iso_scale,
+        }  # fmt: skip
         roomy = plan(*args, **keep, right_mm=right_mm, spacing_mm=spacing_mm, _comfort_checked=True)
         tight = plan(*args, **keep, _comfort_checked=True)
         return roomy if roomy.scale >= tight.scale else tight
@@ -281,9 +307,28 @@ def plan(
             return False
         return held is None or _clear_of(_blocks_spec(s, sp, left, area_w, top, free_h), held)
 
+    def own_scales(main: float) -> list[Spec]:
+        """The isometric view at a scale of its own, the largest first: at most one standard step below the sheet's. Only a
+        part sheet (an assembly's exploded view and balloons are laid out at the sheet's scale)."""
+        if not iso[0] or reserve is not None or not own_iso_scale:
+            return []
+        return [
+            replace(spec, iso_scale=t)
+            for t in STANDARD_SCALES
+            if t < main * (1 - 1e-9) and t >= main / ISO_OWN_RATIO * (1 - 1e-9)
+        ]
+
     standard = True
     if scale is None:
-        chosen = next((s for s in STANDARD_SCALES if fits_at(s)), None)
+        chosen = None
+        for candidate in STANDARD_SCALES:  # the main views first: the largest scale at which they, with the isometric view
+            if fits_at(candidate):  # at the same scale, fit; else with the isometric view at a scale of its own
+                chosen = candidate
+                break
+            own = next((sp for sp in own_scales(candidate) if fits_at(candidate, sp)), None)
+            if own is not None:
+                chosen, spec = candidate, own
+                break
         if chosen is None:
             standard = False
             # no standard scale fits: solve for the largest one that does (every term is linear in the scale, except
@@ -296,7 +341,10 @@ def plan(
                     break
                 chosen *= 0.95
         scale = chosen
-    fits = fits_at(scale)
+    elif not fits_at(scale):  # a scale that was asked for: the isometric view gives way before the sheet overflows
+        own = next((sp for sp in own_scales(scale) if fits_at(scale, sp)), None)
+        spec = own or spec
+    fits = fits_at(scale, spec)
     if fits:  # room to spare: the views move apart (the scale stays what it was)
         spec = _spread(spec, lambda sp: fits_at(scale, sp))
     needed = _needed_spec(scale, spec)
@@ -304,8 +352,12 @@ def plan(
     top += _drop(needed[1], free_h)  # ... and down it
     block_w, _, front_x, front_y = _extents(scale, spec)
     front = (start + front_x, top + front_y)
-    iso_centre = (start + block_w + ISO_GAP_MM + iso[0] * scale / 2, top + DIM_MARGIN_MM + iso[1] * scale / 2)
-    return Layout(scale=scale, standard=standard, fits=fits, front=front, iso=iso_centre, spacing=spec.spacing)
+    k = iso_factor(scale, spec)
+    iso_centre = (start + block_w + ISO_GAP_MM + iso[0] * k / 2, top + DIM_MARGIN_MM + iso[1] * k / 2)
+    return Layout(
+        scale=scale, standard=standard, fits=fits, front=front, iso=iso_centre, spacing=spec.spacing,
+        iso_scale=k if own_iso(scale, spec) else 0.0,
+    )  # fmt: skip
 
 
 AUTO_PAPERS = ("A4", "A3", "A2", "A1", "A0")
