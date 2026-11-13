@@ -59,7 +59,7 @@ import registry as reg
 import sketch_defined
 from FreeCAD import Placement, Rotation, Vector
 from protocol import WorkerError, error, geometry_failed, invalid_request
-from queries import face_descriptor
+from queries import face_descriptor, face_is_planar
 
 PRIMITIVE_TYPES = {"box": "Part::Box", "cylinder": "Part::Cylinder"}
 EDITABLE_KINDS = frozenset({"box", "cylinder", "move_body"})
@@ -560,7 +560,7 @@ def _hole_moves(doc: reg.DocumentRec, edit: Edit) -> list[tuple[int, str, float]
         raise dim_edit.NotInPlaceError("the face of the hole is not recorded")
     try:
         rec, comp = reg.resolve_face(doc, face["id"], None)
-        planar = face_descriptor(doc, rec, comp)["normal"] is not None
+        planar = face_is_planar(doc, rec, comp)
     except WorkerError as exc:
         raise dim_edit.NotInPlaceError(f"the face {face['id']} the hole sits on no longer exists") from exc
     if not planar:
@@ -703,22 +703,33 @@ def capture(doc: reg.DocumentRec, analysis: Analysis, *, interference: bool) -> 
     state = State()
     fc_doc = doc.fc_doc
     for body in doc.live_bodies():
-        state.bodies[body.id] = measure(_body_shape(doc, body), full=body.id in analysis.bodies)
+        reading = state.bodies[body.id] = measure(_body_shape(doc, body), full=body.id in analysis.bodies)
+        if body.id in analysis.bodies:
+            body._valid = reading["valid"]  # checked on this very shape: the validity check of the registry keeps it
+    # The document does not change while it is captured, and the volume a feature leaves is the base of the next one
+    # (a chain of holes asks for each object twice or more): every object is measured once.
+    volumes: dict[str | None, tuple[float, int]] = {}
+
+    def volume_of(name: str | None) -> tuple[float, int]:
+        if name not in volumes:
+            volumes[name] = _object_volume(fc_doc, name)
+        return volumes[name]
+
     dependent = {rec.id: rec for rec in analysis.recomputed}
     for rec in dependent.values():
         if rec.kind in ("boolean", "box", "cylinder") or rec.kind in dim_edit.FEATURE_KINDS:
-            state.results[rec.id] = _object_volume(fc_doc, rec.fc_main)
+            state.results[rec.id] = volume_of(rec.fc_main)
         obj = fc_doc.getObject(rec.fc_main) if rec.fc_main else None
         if rec.kind == "boolean" and rec.params.get("kind") == "subtract":
             base = getattr(obj, "Base", None) if obj is not None else None
-            base_volume, _ = _object_volume(fc_doc, base.Name if base is not None else None)
-            result_volume, _ = _object_volume(fc_doc, rec.fc_main)
+            base_volume, _ = volume_of(base.Name if base is not None else None)
+            result_volume, _ = volume_of(rec.fc_main)
             state.cuts[rec.id] = base_volume - result_volume
         elif rec.kind in ("cut", "hole") and obj is not None:  # a pocket or a hole removes what its base feature had
             base = getattr(obj, "BaseFeature", None)
             if base is not None:
-                base_volume, _ = _object_volume(fc_doc, base.Name)
-                result_volume, _ = _object_volume(fc_doc, rec.fc_main)
+                base_volume, _ = volume_of(base.Name)
+                result_volume, _ = volume_of(rec.fc_main)
                 state.cuts[rec.id] = base_volume - result_volume
     # (a feature inside a body has a Placement the recompute derives; the bodies and the loose objects are what moves)
     state.poses = {
@@ -1757,7 +1768,7 @@ def _hole_off_face(doc: reg.DocumentRec, rec: reg.FeatureRec) -> str | None:
         return None
     try:
         frec, comp = reg.resolve_face(doc, face["id"], None)
-        if face_descriptor(doc, frec, comp)["normal"] is None:
+        if not face_is_planar(doc, frec, comp):
             return None  # across a curved face: its sketch is placed by its entry point
     except WorkerError:
         return None
