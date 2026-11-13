@@ -160,7 +160,11 @@ ITEM_LINES = (
     "otherwise review flags gdt_not_located; theoretically exact dimensions (boxed) do not exist yet: the normal "
     "dimension is used.",
     "overall on a part of revolution (a body whose total size is the diameter of an outer cylinder) gives Ø once, "
-    "in the view where the axis lies sideways; review flags duplicate_dimension if a dim repeats an overall one.",
+    "in the view where the axis lies sideways; review flags duplicate_dimension if a dim repeats an overall one. When a "
+    "thread callout (dim kind=diameter on the threaded cylinder: M12 ...) says that same diameter the overall leaves the "
+    "plain Ø out (M12 already carries it). overall: side? (above|below, for the width): by default it stands above the "
+    "front view unless TechDraw's extension lines (they rise from the lower corners of the view) would cross a gap in the "
+    "part, then it goes below; review flags dimension_side when one placed above crosses it.",
     "finish (ISO 1302 / 21920): ra (um), machining=required (triangle, default) | forbidden (circle) | any, "
     "face=<face>, view?, side? -> symbol with 'Ra 1.6' (standing on the outline if the face looks up, otherwise "
     "with a leader). general=true, ra: the sheet's general symbol 'Ra 3.2 (✓)' near the title block. Threads (ISO "
@@ -217,7 +221,7 @@ ITEM_LINES = (
     "se calculan (un componente = un archivo de pieza; las instancias iguales son UNA fila con su cantidad); nombre, "
     "n. de plano, material salen de la pieza, y una pieza importada muestra su archivo de origen y 'comprado'. Va "
     "sobre el rotulo (ISO 7573), cabecera abajo. balloons (ISO 6433): view? (front|top|right|isometric|exploded; por "
-    "defecto exploded si la hoja la tiene, si no front), side?; un globo por posicion, la guia acaba en un punto sobre "
+    "defecto exploded si la hoja la tiene, si no isometric, si no front), side?; un globo por posicion, la guia acaba en un punto sobre "
     "una cara visible de UNA instancia; un componente que la vista no muestra se informa (warning) y no se dibuja: "
     "elige otra vista. exploded: view? (isometric por defecto|front|top|right), mode? radial (cada componente se "
     "aleja del base) | axis (+ axis=[x,y,z]), factor? (0-5, def. 0.6), base? (componente que no se mueve; def. el "
@@ -371,7 +375,12 @@ WELD_LINE = (
 KEYWAY_LINE = (
     "keyway_dims (no fields): the dimensions of the keyways the walls of the part show -- width, depth as the standards give "
     "it (d - t1 on a shaft, d + t2 in a hub), length, position -- as dim items <id>_w, _t, _l, _p. The harness adds them "
-    "itself (rq_keyway); only the width's fit class is asked."
+    "itself (rq_keyway); only the width's fit class is asked. chamfer_dims (no fields): a callout (size x angle) of every "
+    "chamfer no dimension gives yet, flat or on a round edge (a shaft end), as dim items kind=chamfer; the harness adds it "
+    "itself (rq_chamfers). Assemblies: the harness also adds the parts list and a balloon per position on the isometric "
+    "view (rq_parts_list, rq_balloons), and the axis lines of the sleeves and pins the views show side-on (rq_view_lines, "
+    "without hidden lines); review flags cylinder_no_axis (also in a section), balloons_off_isometric and view_adds_nothing "
+    "(a view with no dimension: only the engineer's order lets it stay)."
 )
 
 SPANISH_LINE = (

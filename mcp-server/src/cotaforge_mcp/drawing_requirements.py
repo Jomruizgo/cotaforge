@@ -81,7 +81,8 @@ class Row:
     the hole operations declared print by themselves), ``view_lines`` (the centre lines), ``intent_note`` (a note with the
     line of the intent file that declares it, in the designer's own words) or ``title`` (the title block ``create`` fills:
     material, general tolerance, scale, projection) or ``keyway`` (the dimensions of a keyway the walls of the part show:
-    width, depth, length, position; its fit class stays a question)."""
+    width, depth, length, position; its fit class stays a question) or ``parts_list`` (the parts list and a balloon per position on the
+    isometric view of an assembly: both are read from its components) or ``chamfers`` (a callout of every chamfer no dimension gives)."""
 
 
 def _n(fact: str, es: str, en: str) -> Need:
@@ -311,6 +312,25 @@ ROWS: tuple[Row, ...] = (
         intent=("datums", "relations", "dimensions"),
     ),
     Row(
+        id="req.chamfers",
+        auto="chamfers",
+        title=("Chaflanes acotados", "Chamfers dimensioned"),
+        must=(
+            "cada chaflán lleva su tamaño y su ángulo (1 × 45°) en la vista donde se ve de perfil",
+            "every chamfer carries its size and angle (1 x 45 deg) on the view where it is seen in profile",
+        ),
+        standard="ISO 129-1, ISO 13715",
+        question=(
+            "¿Qué tamaño y ángulo lleva cada chaflán, o se cubre con una nota general de aristas?",
+            "Which size and angle does each chamfer carry, or is it covered by a general edge note?",
+        ),
+        proposal=("el tamaño y el ángulo que mide el modelo", "the size and angle the model measures"),
+        only="part",
+        triggers=("chamfers",),
+        codes=("chamfer_no_dimension",),
+        measured=("chamfers",),
+    ),
+    Row(
         id="req.centre_lines",
         auto="view_lines",
         title=("Ejes y marcas de centro", "Centre lines and centre marks"),
@@ -324,8 +344,7 @@ ROWS: tuple[Row, ...] = (
             "Does any hole or cylinder lack its axis (view_lines draws them all)?",
         ),
         proposal=("añadir view_lines", "add view_lines"),
-        only="part",
-        triggers=("holes", "bosses"),
+        triggers=("holes", "bosses"),  # an assembly too: the sleeves, pins and bores of its components
         codes=("centre_mark_missing", "cylinder_no_axis"),
         measured=("holes", "bosses"),
     ),
@@ -437,6 +456,7 @@ ROWS: tuple[Row, ...] = (
     ),
     Row(
         id="req.parts_list",
+        auto="parts_list",
         title=("Lista de piezas y globos", "Parts list and balloons"),
         must=(
             "una lista de piezas y un globo por posición, con los números de la lista",
@@ -461,6 +481,7 @@ ROWS: tuple[Row, ...] = (
             "balloon_without_row",
             "parts_list_over_view",
             "instance_hidden",
+            "balloons_off_isometric",
         ),
         measured=("assembly", "weld_items"),
     ),
@@ -532,13 +553,15 @@ MEASURED_FINDINGS = frozenset(
         "balloon_without_row",
         "parts_list_over_view",
         "instance_hidden",
+        "view_adds_nothing",
+        "cylinder_no_axis",
+        "chamfer_no_dimension",
     }
 )
 """Review findings that state a fact the harness measured on the part or the sheet (a hole with no position, a thread with
 no callout, an item that cannot be drawn, two views on top of each other): an answer ``does not apply`` cannot dismiss
 them, only the engineer's order can. The ones that are a judgement stay answerable: ``collision`` (accepted when no free
-place exists), ``fit_hole_no_tolerance`` (a diameter that LOOKS like a dowel), ``text_over_part``, ``view_adds_nothing``,
-the ``notes_*`` (a part may have no heat treatment), the style ones."""
+place exists), ``fit_hole_no_tolerance`` (a diameter that LOOKS like a dowel), ``text_over_part``, the ``notes_*`` (a part may have no heat treatment), the style ones."""
 
 NOT_APPLIES = "not_applies"
 APPLIES = "applies"
@@ -767,6 +790,9 @@ AUTO_PREFIX = "rq_"
 CALLOUTS_ID = AUTO_PREFIX + "callouts"
 VIEW_LINES_ID = AUTO_PREFIX + "view_lines"
 KEYWAY_ID = AUTO_PREFIX + "keyway"
+CHAMFERS_ID = AUTO_PREFIX + "chamfers"
+PARTS_LIST_ID = AUTO_PREFIX + "parts_list"
+BALLOONS_ID = AUTO_PREFIX + "balloons"
 CALLOUT_CODES = frozenset({"thread_no_callout", "hole_no_callout", "fit_hole_no_tolerance"})
 
 
@@ -778,6 +804,10 @@ def auto_item_id(row: Row) -> str:
         return VIEW_LINES_ID
     if row.auto == "keyway":
         return KEYWAY_ID
+    if row.auto == "parts_list":
+        return PARTS_LIST_ID
+    if row.auto == "chamfers":
+        return CHAMFERS_ID
     if row.auto == "intent_note":
         return AUTO_PREFIX + row.id.removeprefix(PREFIX)
     return ""
@@ -786,7 +816,11 @@ def auto_item_id(row: Row) -> str:
 def owns(row: Row, item_id: str) -> bool:
     """Whether ``item_id`` is an item the harness added for ``row`` (the keyway's dimensions: ``rq_keyway_w``, ``_t``...)."""
     mine = auto_item_id(row)
-    return bool(mine) and (item_id == mine or (row.auto == "keyway" and item_id.startswith(mine)))
+    return bool(mine) and (
+        item_id == mine
+        or (row.auto in ("keyway", "chamfers") and item_id.startswith(mine))
+        or (row.auto == "parts_list" and item_id == BALLOONS_ID)
+    )
 
 
 def rows_of_item(item_id: str) -> list[Row]:
@@ -804,18 +838,38 @@ class Addition:
     what: str
 
 
-def plan_additions(rows: list[Requirement], items: list[Any]) -> list[Addition]:
+def plan_additions(
+    rows: list[Requirement], items: list[Any], assembly: bool = False, views: tuple[str, ...] = ()
+) -> list[Addition]:
     """What the harness adds to the sheet for the DETERMINED rows that are not met: callouts of every hole when the part has
-    threaded or fitted holes nobody called out (the thread and the fit come from the hole operations), the centre lines, and
-    a note carrying the line of the intent file that declares what the row asks for. A row that was answered (the item was
-    removed with a reason) is never added again, and the agent's own items come first: callouts are not added while the
-    sheet has a ``hole_dim`` of its own."""
+    threaded or fitted holes nobody called out (the thread and the fit come from the hole operations), the centre lines (of an
+    assembly without hidden lines), the parts list and a balloon per position on the isometric view of an assembly (both read
+    the components of the model), and a note carrying the line of the intent file that declares what the row asks for. A row
+    that was answered (the item was removed with a reason) is never added again, and the agent's own items come first:
+    callouts are not added while the sheet has a ``hole_dim`` of its own, nor a list while it has a ``parts_list``."""
     have = {i.id for i in items}
     kinds = {i.type for i in items}
     dimensioned = any(i.id.startswith(KEYWAY_ID) for i in items)
     out: dict[str, Addition] = {}
     for r in rows:
         row = r.row
+        if row.auto == "parts_list":
+            if not assembly or r.state == MET or r.answer is not None or not (r.codes or r.lacking):
+                continue
+            if "parts_list" not in kinds and PARTS_LIST_ID not in have:
+                out[PARTS_LIST_ID] = Addition(
+                    (row.id,),
+                    {"type": "parts_list", "id": PARTS_LIST_ID},
+                    "the parts list: one row per distinct part with its quantity, read from the components of the model",
+                )
+            if "balloons" not in kinds and BALLOONS_ID not in have:
+                view = "isometric" if "isometric" in views or not views else views[0]
+                out[BALLOONS_ID] = Addition(
+                    (row.id,),
+                    {"type": "balloons", "id": BALLOONS_ID, "view": view},
+                    f"a balloon per position on the {view} view, numbered as the list",
+                )
+            continue
         item_id = auto_item_id(row)
         if not item_id or r.state == MET or r.answer is not None or item_id in have:
             continue
@@ -825,6 +879,8 @@ def plan_additions(rows: list[Requirement], items: list[Any]) -> list[Addition]:
         if row.auto == "callouts" and (not wants_callouts or "hole_dim" in kinds):
             continue
         if row.auto == "view_lines" and (not r.codes or "view_lines" in kinds):
+            continue
+        if row.auto == "chamfers" and "chamfer_no_dimension" not in r.codes:
             continue
         if row.auto == "intent_note" and not r.intent_line:
             continue
@@ -836,6 +892,11 @@ def plan_additions(rows: list[Requirement], items: list[Any]) -> list[Addition]:
             what = "a callout of every hole: the thread and the fit the hole operations declared print with it"
         elif row.auto == "view_lines":
             item, what = {"type": "view_lines", "id": item_id}, "the centre lines and marks of every hole and cylinder"
+            if assembly:
+                item["hidden"] = []  # the hidden edges of a whole assembly are not what the shop reads: only the axes
+        elif row.auto == "chamfers":
+            item = {"type": "chamfer_dims", "id": item_id}
+            what = "a callout (size x angle) of every chamfer, measured on the model, on the view that shows it in profile"
         elif row.auto == "keyway":
             item = {"type": "keyway_dims", "id": item_id}
             what = "the width, the depth (d - t1 / d + t2), the length and the position of the keyway, measured on the model"

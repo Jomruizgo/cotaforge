@@ -78,7 +78,10 @@ def test_every_finding_a_row_takes_in_is_a_code_the_worker_can_make() -> None:
     claimed = {c for row in dr.ROWS for c in row.codes}
     assert claimed <= made, claimed - made
     assert dr.MEASURED_FINDINGS <= made, dr.MEASURED_FINDINGS - made
-    assert not dr.MEASURED_FINDINGS & {"collision", "fit_hole_no_tolerance", "text_over_part", "view_adds_nothing", "notes_edges"}
+    assert not dr.MEASURED_FINDINGS & {"collision", "fit_hole_no_tolerance", "text_over_part", "notes_edges"}
+    # a view with no dimension, callout or balloon is a fact the harness counted: the agent cannot dismiss it with its own
+    # reason (it dimensions the view, removes it, or the engineer orders it to stay)
+    assert "view_adds_nothing" in dr.MEASURED_FINDINGS
 
 
 # --- what activates a row, and its state --------------------------------------------------------------------------------------

@@ -289,7 +289,9 @@ def determine(session: Session, info: DrawingSheetInfo) -> tuple[DrawingSheetInf
     decision stay questions. Returns the sheet as it is after and what was added. Nothing in mode ``none``."""
     if mode_of(session) == "none" or not info.facts or "annotate_drawing" not in session.capabilities.tools:
         return info, []
-    adds = reqs.plan_additions(sheet_requirements(session, info), list(info.items))
+    adds = reqs.plan_additions(
+        sheet_requirements(session, info), list(info.items), assembly=bool(info.facts.get("assembly")), views=tuple(info.views)
+    )
     if not adds:
         return info, []
     try:
@@ -328,7 +330,12 @@ def hand_over(session: Session, sheet: str | None, items: list[Any]) -> list[str
     """The agent adds a callout or centre lines of its own: the ones the harness added come off first (never two of
     them on the sheet). Returns the line that says so."""
     kinds = {i.get("type") for i in items if isinstance(i, dict)}
-    mine = {"hole_dim": reqs.CALLOUTS_ID, "view_lines": reqs.VIEW_LINES_ID}
+    mine = {
+        "hole_dim": reqs.CALLOUTS_ID,
+        "view_lines": reqs.VIEW_LINES_ID,
+        "parts_list": reqs.PARTS_LIST_ID,
+        "balloons": reqs.BALLOONS_ID,
+    }
     wanted = [item_id for kind, item_id in mine.items() if kind in kinds]
     if not wanted or "describe_drawing" not in session.capabilities.tools:
         return []
