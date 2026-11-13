@@ -43,8 +43,8 @@ async def test_a_clean_plate_sheet_has_its_positions_and_closes_with_few_points(
             "memory", action="brief", drawing_review="propio", text="Ana: el agente revisa el plano por su cuenta"
         )
         created = await cad.ok(
-            "drawing", action="create", template="A3", views=["top"], scale="1:1", title="Placa 19", author="Taller Sur"
-        )
+            "drawing", action="create", views=["top", "iso"], title="Placa 19", author="Taller Sur"
+        )  # every manufacturing sheet carries the isometric view and fills its paper (the sheet gaps decision)
         lines += ["=== create", created, ""]
         await declare_references(cad)
         await cad.ok(

@@ -125,5 +125,5 @@ async def test_the_headless_cad_names_every_native_object_it_cannot_draw(workspa
         await finish_drawing(cad)
         pdf = workspace / "placa.pdf"
         exported = await cad.ok("export", action="pdf", path=str(pdf))
-        assert "cotaforge's own writer of the sheet" in exported and "NOT DRAWN here (3)" in exported
+        assert "CotaForge's own writer of the sheet" in exported and "NOT DRAWN here (3)" in exported
         assert pdf_check.check_pdf(pdf, pages=1).ok

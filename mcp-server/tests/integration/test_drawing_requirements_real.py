@@ -189,7 +189,7 @@ async def test_a_threaded_fitted_shaft_activates_measured_rows_that_only_the_eng
         await cad.ok("memory", action="brief", drawing_review="propio", text="la prueba: el agente revisa el plano por su cuenta")
         write_intent(workspace, "eje", SHAFT_INTENT)
         await make_shaft(cad)
-        created = await cad.ok("drawing", action="create", title="Eje", views=["front", "top"])
+        created = await cad.ok("drawing", action="create", title="Eje", views=["front", "right"])
         out.say("create (shaft)", created)
         listing = rows_of(created)
         assert "added automatically" in created and "rq_callouts" in created
@@ -228,6 +228,9 @@ async def test_a_threaded_fitted_shaft_activates_measured_rows_that_only_the_eng
         )
         pending, _, _ = await pending_points(cad)
         out.say("what is still open", f"findings {pending}; rows {await pending_rows(cad)}")
+        entry = "machining-inner-radius-and-cavity-depth"  # the keyway has sharp corners: a measured alert, open for the export
+        await cad.ok("memory", action="get", id=entry)
+        await cad.ok("memory", action="answer", id=entry, by="Ana", text="does not apply: Ana: el chavetero se fresa con esquinas vivas")
         await finish_drawing(cad)
         exported = await cad.ok("export", action="pdf", path="eje.pdf")
         out.say("export (shaft)", exported)

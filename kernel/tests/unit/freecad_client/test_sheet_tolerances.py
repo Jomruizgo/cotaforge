@@ -811,6 +811,17 @@ def test_a_datum_no_frame_cites_is_still_flagged_by_the_review() -> None:
     assert len(unused) == 1 and "datum A" in unused[0].message
 
 
+def test_a_datum_face_the_hole_positions_count_from_is_not_reported_as_unused() -> None:
+    import sheet_viewchecks  # noqa: PLC0415
+
+    ctx = make_context()
+    face_datum = {"type": "datum", "id": "dC", "letter": "C", "face": ["face:1"]}
+    located = review.ReviewInput([face_datum, {"type": "datum_dims", "id": "loc", "auto": True}], {}, ctx, ctx.sheet)
+    assert sheet_viewchecks._unused_datums(located) == []  # the review itself asks for this datum to count positions
+    alone = review.ReviewInput([face_datum], {}, ctx, ctx.sheet)
+    assert [f.code for f in sheet_viewchecks._unused_datums(alone)] == ["datum_unused"]
+
+
 def test_the_review_does_not_flag_the_tolerance_items_as_dimensions_or_errors() -> None:
     found = reviewed(make_context(general="ISO 2768-mK"), *acceptance_items())
     flagged = {f.code for f in found}
