@@ -32,7 +32,7 @@ def facts(plates: int = 1, tubes: int = 4) -> list[weld.BodyFact]:
 VISIBLE = {"body:1": (20.0, 0.0, 6.0), "body:2": (60.0, 0.0, 70.0), "body:3": (100.0, 0.0, 70.0), "body:4": (80.0, 0.0, 50.0), "body:5": (40.0, 0.0, 30.0)}
 
 
-NOTE = {"type": "note", "text": "Soldadura de filete a=4 mm en todas las uniones, MAG, ISO 13920-B"}
+NOTE = {"type": "note", "text": "Soldadura de filete a=4 mm en todas las uniones, MAG, nivel ISO 5817-C"}
 BOXES = [((0, 0, 0), (400, 40, 40)), ((0, 300, 0), (400, 340, 40)), ((0, 0, 300), (400, 40, 340)), ((0, 300, 300), (400, 340, 340)), ((-6, 0, 0), (0, 340, 340))]
 
 

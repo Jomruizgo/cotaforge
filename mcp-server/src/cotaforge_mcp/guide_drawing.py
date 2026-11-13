@@ -370,13 +370,13 @@ QUALITY_LINES = (
 )
 
 WELD_LINE = (
-    "weld: a part welded from several bodies says how they join (ISO 2553 symbol). between=[face of one body, face of the "
-    "other] (the faces that meet), kind? (fillet), size_mm (leg; size_kind=throat for the throat), sides? (arrow | other | "
-    "both), all_around?, field?, length_mm + pitch_mm (intermittent), view?, side?, offset_mm?. A CAD with no weld symbol "
-    "refuses it and says so: put the weld in a note. ONE SYMBOL PER JOINT: a symbol on both sides of the reference line "
-    "(sides=both) already means both sides of the joint; a second weld item on the same joint is a duplicate "
-    "(weld_duplicate). A welded sheet carries a parts list (the weldment cut list) and a balloon per body, numbered as "
-    "the list: review says weld_list_missing, item_without_balloon and balloon_not_in_list."
+    "weld: ISO 2553 symbol of a joint of a welded part. Joints are MEASURED (bodies that "
+    "touch); review lists each identical group with the usual weld as a PROPOSAL: ask the DESIGNER once per group, "
+    "never apply it unasked. between=[body, body], also=[[body, body], ...] (identical joints: one symbol, '4x'), kind? "
+    "(fillet | v | square), size_mm (throat a; size_kind=leg: z), sides? (arrow | other | both), all_around?, field?, "
+    "length_mm + pitch_mm, view?, side?, offset_mm?. A joint with no symbol blocks the export (weld_joint_unspecified); "
+    "sides=both is one symbol (weld_duplicate). The weld quality level is ISO 5817, not ISO 13920 (weld_class_13920). A "
+    "welded sheet needs a parts list and a balloon per body (weld_list_missing, item_without_balloon, balloon_not_in_list)."
 )
 
 KEYWAY_LINE = (

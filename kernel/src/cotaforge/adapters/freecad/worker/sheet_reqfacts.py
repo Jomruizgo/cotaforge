@@ -18,6 +18,7 @@ from typing import Any
 
 import sheet_checks
 import sheet_review
+import sheet_weldreview
 from items_assembly import rows_of
 from items_holes import _select as select_callout_holes
 from sheet_context import ItemError
@@ -67,7 +68,7 @@ KEYWAY_FIT = re.compile(r"(?<![A-Za-z0-9])(?:P9|N9|JS9|Js9|D10)(?![A-Za-z0-9])")
 KEYWAY = re.compile(r"keyway|key\s*seat|key\s*slot|chavetero|ranura\s+de\s+chaveta|asiento\s+de\s+chaveta", re.I)
 BEND = re.compile(r"doblez|doblado|pliegue|bend|fold|radio\s+interior|inside\s+radius|desarrollo|flat\s+pattern", re.I)
 WELD_NOTE = re.compile(r"solda|weld", re.I)
-WELD_CLASS = re.compile(r"13920", re.I)
+WELD_CLASS = re.compile(r"5817", re.I)  # the quality levels of a weld (B, C, D); ISO 13920 is the general tolerance
 QUANTITY = re.compile(r"cantidad|quantity|\bqty\b|\b\d+\s*(?:pzas?|pcs|uds?|unidades|piezas|off)\b|\bx\s?\d+\s*(?:pzas?|pcs|uds?)\b", re.I)
 PROCESS = re.compile(
     r"proceso|process|mecaniz|machin|torne|turn(?:ed|ing)|fres|mill|corte\s+(?:l[aá]ser|por\s+agua|plasma)|laser|waterjet|plasma|"
@@ -233,7 +234,9 @@ def facts(data: Any) -> dict[str, int]:
         "gdt_items": gdt,
         "datum_items": len(sheet_review._of(data, "datum")),
         "weld_items": len(sheet_review._of(data, "weld")),
-        "weld_marked_on_sheet": len(sheet_review._of(data, "weld")) + (1 if WELD_NOTE.search("\n".join(notes)) else 0),
+        # with joints measured the symbols are the weld: a note alone does not mark them
+        "weld_marked_on_sheet": len(sheet_review._of(data, "weld"))
+        + (1 if WELD_NOTE.search("\n".join(notes)) and not (ctx.weldment is not None and sheet_weldreview.joints_of(ctx)) else 0),
         "weld_class_on_sheet": 1 if WELD_CLASS.search(printed) else 0,
         "keyways": (part.keyways if part is not None else 0)
         or sum(1 for f in data.features if KEYWAY.search(f"{f.id} {f.label}")),  # by geometry, else by name

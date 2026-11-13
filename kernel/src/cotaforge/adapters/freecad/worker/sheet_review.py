@@ -1067,22 +1067,11 @@ WELD_TEXT = re.compile(r"solda|weld|cord[oó]n|bead|2553", re.I)
 
 
 def _weldment_welds(data: ReviewInput) -> list[Finding]:
-    """A welded part with no weld said anywhere on its sheet cannot be welded: which joints, which weld. FreeCAD draws no
-    weld symbol (the ``weld`` item is refused), so the answer goes in a note."""
-    ctx = data.ctx
-    if _of(data, "weld"):
-        return []
-    if any(WELD_TEXT.search(str(n.get("text", ""))) for n in _of(data, "note")):
-        return []
-    text = ctx.say(
-        "La pieza soldada no dice cómo se sueldan las uniones. Pregunta al diseñador qué uniones se sueldan y con qué soldadura "
-        "(tipo, garganta o cateto, todo el contorno o intermitente, proceso, clase ISO 13920) y escríbelo en un note: FreeCAD "
-        "no dibuja símbolos de soldadura (ISO 2553).",
-        "The welded part does not say how its joints are welded. Ask the designer which joints are welded and with which weld "
-        "(kind, throat or leg, all around or intermittent, process, ISO 13920 class) and write it in a note: FreeCAD draws no "
-        "weld symbols (ISO 2553).",
-    )
-    return [Finding("weld_not_specified", "warning", text, ())]
+    """The welds of a welded part (``sheet_weldreview``): a symbol on every measured joint, one per joint, no ISO 13920 as a
+    quality class."""
+    import sheet_weldreview  # noqa: PLC0415
+
+    return sheet_weldreview.findings(data)
 
 
 def _assembly_lists(data: ReviewInput) -> list[Finding]:
