@@ -582,6 +582,7 @@ def _brief(session: "Session", args: MemoryArgs) -> Reply:
         or args.processes is not None
         or args.drawing_review is not None
         or args.language is not None
+        or args.drawing_flow is not None
     ):
         if mode is not None and mode != design_memory.DEFAULT_DRAWING_REVIEW and not (args.text or "").strip():
             raise ToolError(
@@ -592,7 +593,7 @@ def _brief(session: "Session", args: MemoryArgs) -> Reply:
                 usage='memory(action="brief", drawing_review="own", text="Ana: I review the drawing myself, no fabricator")',
             )
         said = args.text if mode is not None else None
-        brief = design_memory.save_brief(settings, args.sector, args.processes, mode, wait_min, said, args.language)
+        brief = design_memory.save_brief(settings, args.sector, args.processes, mode, wait_min, said, args.language, args.drawing_flow)
         verb = "brief updated"
     else:
         brief = design_memory.load_brief(settings)
@@ -620,6 +621,8 @@ def _brief(session: "Session", args: MemoryArgs) -> Reply:
     review = f"; drawing review {brief.drawing_review}"
     if brief.drawing_review == "engineer_or_fabricator":
         review += f" (the engineer chooses within {brief.drawing_review_wait_min} min, else the manufacturer)"
+    if brief.drawing_flow != design_memory.DEFAULT_DRAWING_FLOW:
+        review += f"; drawing flow {brief.drawing_flow}"
     stated = "" if brief.language else " (the default: none stated)"
     return ok(f"{verb}: sector {sector}; processes {processes}{review}; language {brief.lang}{stated}{hint}")
 

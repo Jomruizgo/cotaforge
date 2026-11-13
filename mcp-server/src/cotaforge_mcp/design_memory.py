@@ -41,6 +41,10 @@ DRAWING_REVIEWS = ("engineer_or_fabricator", "fabricator", "engineer", "own", "n
 in time, the manufacturer agent | the manufacturer agent | the engineer | the drawing agent itself (the points of the
 review) | nobody."""
 DEFAULT_DRAWING_REVIEW = "engineer_or_fabricator"
+DRAWING_FLOWS = ("steps", "sheet")
+"""How the drawing agent builds a sheet (``drawing_flow`` of the brief): ``steps`` (create, then a few items per add) |
+``sheet`` (plan, then ONE compose from the model and the engineer's decisions)."""
+DEFAULT_DRAWING_FLOW = "steps"
 OLD_DRAWING_REVIEWS = {
     "ingeniero_o_fabricante": "engineer_or_fabricator",
     "fabricante": "fabricator",
@@ -103,6 +107,8 @@ class Brief:
     """The engineer's words that set a mode other than the default (kept so the file says who decided)."""
     language: str | None = None
     """The engineer's language (``es`` / ``en``) as the project states it; ``None``: it never did (see ``lang``)."""
+    drawing_flow: str = DEFAULT_DRAWING_FLOW
+    """How a sheet is built (``DRAWING_FLOWS``); an unknown value reads as the default."""
 
     @property
     def lang(self) -> str:
@@ -140,9 +146,16 @@ def _brief_of(
     wait_min: int = DEFAULT_REVIEW_WAIT_MIN,
     said: str = "",
     language: str | None = None,
+    flow: str = DEFAULT_DRAWING_FLOW,
 ) -> Brief:
     resolution = table.resolve(sector)
-    return Brief(sector, processes, resolution.ids, resolution.ambiguous, review, wait_min, said, language)
+    return Brief(sector, processes, resolution.ids, resolution.ambiguous, review, wait_min, said, language, flow)
+
+
+def drawing_flow_mode(value: object) -> str:
+    """The flow a brief value names (``steps`` or ``sheet``); anything else reads as the default."""
+    text = str(value or "").strip().lower()
+    return text if text in DRAWING_FLOWS else DEFAULT_DRAWING_FLOW
 
 
 def _wait_minutes(value: Any) -> int:
@@ -200,6 +213,7 @@ def load_brief(settings: Settings) -> Brief:
         _wait_minutes(data.get("drawing_review_wait_min", DEFAULT_REVIEW_WAIT_MIN)),
         str(data.get("drawing_review_said") or "").strip(),
         normalize(data.get("language")),
+        drawing_flow_mode(data.get("drawing_flow")),
     )
 
 
@@ -211,6 +225,7 @@ def save_brief(
     wait_min: int | None = None,
     said: str | None = None,
     language: str | None = None,
+    drawing_flow: str | None = None,
 ) -> Brief:
     """Keep what the engineer wrote in ``sector`` and the ids it resolves to in ``sector_ids`` (informative: the ids
     are resolved again on every load, so a sector added to ``sectors.yaml`` later takes effect), and how his drawings
@@ -228,6 +243,7 @@ def save_brief(
         current.drawing_review_wait_min if wait_min is None else wait_min,
         current.drawing_review_said if said is None else " ".join(said.split()),
         normalize(language) or current.language,
+        current.drawing_flow if drawing_flow is None else drawing_flow_mode(drawing_flow),
     )
     data: dict[str, Any] = {}
     if brief.language:
@@ -244,6 +260,8 @@ def save_brief(
             data["drawing_review_said"] = brief.drawing_review_said
     if brief.drawing_review_wait_min != DEFAULT_REVIEW_WAIT_MIN:
         data["drawing_review_wait_min"] = brief.drawing_review_wait_min
+    if brief.drawing_flow != DEFAULT_DRAWING_FLOW:
+        data["drawing_flow"] = brief.drawing_flow
     path = settings.workspace / BRIEF_FILE
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return brief

@@ -40,7 +40,7 @@ from cotaforge.contract import (
 from cotaforge.ir import FaceRef
 from pydantic import ValidationError
 
-from cotaforge_mcp import design_memory, drawing_gate, feature_tools, pdf_check, rules
+from cotaforge_mcp import design_memory, drawing_compose, drawing_gate, feature_tools, pdf_check, rules
 from cotaforge_mcp.reply import Image, Reply, ToolError, first_validation_issues, ok
 from cotaforge_mcp.schemas import DrawingArgs, ExportArgs, ViewArgs
 from cotaforge_mcp.session import Session
@@ -473,36 +473,58 @@ def _requirements_block(session: Session, sheet: str) -> list[str]:
         return []
 
 
+def _create_request(session: Session, args: DrawingArgs) -> DrawingRequest:
+    """The request of a ``create``: what the call states; what it leaves out stays as the sheet has it on a rebuild."""
+    return DrawingRequest(
+        operation_id="drawing",
+        template=args.template,
+        title=args.title or session.doc_name or None,
+        author=args.author,
+        date=args.date,
+        material=args.material or session.design_attributes().material,
+        scale=_parse_scale(args.scale),
+        angle=args.angle,
+        title_block=args.title_block or {},
+        language=args.language or session.language,
+        drawing_number=args.drawing_number,
+        revision=args.revision,
+        general_tolerances=args.general_tolerances or "ISO 2768-mK",
+        company=args.company,
+        sheet=args.sheet,
+        body=BodyHandle(id=args.body) if args.body else None,
+        isometric=args.isometric,
+        views=tuple(args.views) if args.views else None,
+        projection=args.projection,
+        fresh=args.fresh,
+        symmetry=args.symmetry,
+        unset=tuple(n for n in REBUILD_SETTINGS if n not in args.model_fields_set),
+    )
+
+
+STEPS_NEXT = (
+    'next: ask what the requirements above lack BEFORE drawing it, then drawing(action="add", items=[...]) a '
+    "few at a time (one feature or group per call: the engineer "
+    'watches the sheet window and each item shows as it is added; cad_guide(topic="drawing")); '
+    'export(action="pdf" or "dxf") to write it'
+)
+SHEET_NEXT = (
+    'next: this project builds a sheet in one order: drawing(action="plan") says what the harness puts on it by itself and '
+    'what it asks; then drawing(action="compose", decisions={...}); cad_guide(topic="drawing:compose"); '
+    'export(action="pdf" or "dxf") to write it'
+)
+
+
 def drawing(session: Session, args: DrawingArgs) -> Reply:
     with session.lock:
         session.require_executor()
         action = args.action
+        if action in ("plan", "compose"):
+            drawing_compose.require_sheet_flow(session, action)
+            run = drawing_compose.plan if action == "plan" else drawing_compose.compose
+            return run(session, args, _create_request)
         if action == "create":
             session.need("create_drawing", "drawing create")
-            request = DrawingRequest(
-                operation_id="drawing",
-                template=args.template,
-                title=args.title or session.doc_name or None,
-                author=args.author,
-                date=args.date,
-                material=args.material or session.design_attributes().material,
-                scale=_parse_scale(args.scale),
-                angle=args.angle,
-                title_block=args.title_block or {},
-                language=args.language or session.language,
-                drawing_number=args.drawing_number,
-                revision=args.revision,
-                general_tolerances=args.general_tolerances or "ISO 2768-mK",
-                company=args.company,
-                sheet=args.sheet,
-                body=BodyHandle(id=args.body) if args.body else None,
-                isometric=args.isometric,
-                views=tuple(args.views) if args.views else None,
-                projection=args.projection,
-                fresh=args.fresh,
-                symmetry=args.symmetry,
-                unset=tuple(n for n in REBUILD_SETTINGS if n not in args.model_fields_set),
-            )
+            request = _create_request(session, args)
             result = session.adapter.create_drawing(request)
             session.dirty = True
             summary = _sheet_summary(result)
@@ -513,10 +535,7 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                 f"ready: every view finished computing ({result.waited_s:g} s)",
                 *[f"warning: {w}" for w in result.warnings],
                 *_requirements_block(session, result.sheet),
-                'next: ask what the requirements above lack BEFORE drawing it, then drawing(action="add", items=[...]) a '
-                "few at a time (one feature or group per call: the engineer "
-                'watches the sheet window and each item shows as it is added; cad_guide(topic="drawing")); '
-                'export(action="pdf" or "dxf") to write it',
+                SHEET_NEXT if drawing_compose.flow_of(session) == "sheet" else STEPS_NEXT,
             ]
             return ok("\n".join(lines), limit=REVIEW_REPLY_CHARS)
         if action in ("add", "remove", "remove_sheet", "update", "add_view", "remove_view"):
