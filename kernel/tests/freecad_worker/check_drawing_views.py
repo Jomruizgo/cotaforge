@@ -286,8 +286,10 @@ def build_sleeve() -> dict[str, Any]:
 
 def check_a_section_of_a_sleeve_is_a_view_with_its_axis_thread_lines_and_items_on_it() -> None:
     build_sleeve()
-    call("create_drawing", op("d", template="A3", scale=1.0, views=["front", "top"]))
-    first = add({"type": "section", "id": "sec", "holes": "all", "view": "top"})[-1]
+    # with a front view the sheet turns the sleeve's axis horizontal (f3dd2e3): "top" no longer sees its bore as a circle,
+    # the "right" view (the end view) does
+    call("create_drawing", op("d", template="A3", scale=1.0, views=["front", "right"]))
+    first = add({"type": "section", "id": "sec", "holes": "all", "view": "right"})[-1]
     assert (
         first["status"] == "ok"
         and "1 centre line(s)" in first["detail"]
