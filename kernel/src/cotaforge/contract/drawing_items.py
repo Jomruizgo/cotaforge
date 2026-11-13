@@ -72,6 +72,7 @@ ITEM_FIELDS: dict[str, frozenset[str]] = {
     "weld": frozenset(
         {
             "between",
+            "also",
             "kind",
             "size_mm",
             "size_kind",

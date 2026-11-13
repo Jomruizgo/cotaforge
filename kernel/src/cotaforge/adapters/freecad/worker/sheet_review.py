@@ -1069,22 +1069,11 @@ WELD_TEXT = re.compile(r"solda|weld|cord[oó]n|bead|2553", re.I)
 
 
 def _weldment_welds(data: ReviewInput) -> list[Finding]:
-    """A welded part with no weld said anywhere on its sheet cannot be welded: which joints, which weld. FreeCAD draws no
-    weld symbol (the ``weld`` item is refused), so the answer goes in a note."""
-    ctx = data.ctx
-    if _of(data, "weld"):
-        return []
-    if any(WELD_TEXT.search(str(n.get("text", ""))) for n in _of(data, "note")):
-        return []
-    text = ctx.say(
-        "La pieza soldada no dice cómo se sueldan las uniones. Pregunta al diseñador qué uniones se sueldan y con qué soldadura "
-        "(tipo, garganta o cateto, todo el contorno o intermitente, proceso, clase ISO 13920) y escríbelo en un note: FreeCAD "
-        "no dibuja símbolos de soldadura (ISO 2553).",
-        "The welded part does not say how its joints are welded. Ask the designer which joints are welded and with which weld "
-        "(kind, throat or leg, all around or intermittent, process, ISO 13920 class) and write it in a note: FreeCAD draws no "
-        "weld symbols (ISO 2553).",
-    )
-    return [Finding("weld_not_specified", "warning", text, ())]
+    """The welds of a welded part (``sheet_weldreview``): a symbol on every measured joint, one per joint, no ISO 13920 as a
+    quality class."""
+    import sheet_weldreview  # noqa: PLC0415
+
+    return sheet_weldreview.findings(data)
 
 
 def _assembly_lists(data: ReviewInput) -> list[Finding]:
@@ -1326,6 +1315,10 @@ def _layout(data: ReviewInput) -> list[Finding]:
     return out
 
 
+def _box(x0: float, y0: float, x1: float, y1: float) -> str:
+    return f"[{x0:.2f}, {y0:.2f}, {x1:.2f}, {y1:.2f}]"
+
+
 def _item_places(data: ReviewInput, frame: Rect, flagged: set[str]) -> list[Finding]:
     """An item whose drawing (lines, frames, text) runs outside the frame or over the title block: placed by the
     placer, or asked for with ``at_mm`` -- either way the sheet would be printed wrong, and the finding names the item."""
@@ -1338,8 +1331,8 @@ def _item_places(data: ReviewInput, frame: Rect, flagged: set[str]) -> list[Find
         x0, y0, x1, y1 = unit.rect
         if unit.key not in flagged and (x0 < frame[0] or y0 < frame[1] or x1 > frame[2] or y1 > frame[3]):
             text = ctx.say(
-                f"{unit.key} ({unit.item_type}) se sale del marco del plano: muévelo (offset_mm, side o at_mm).",
-                f"{unit.key} ({unit.item_type}) runs outside the frame of the sheet: move it (offset_mm, side or at_mm).",
+                f"{unit.key} ({unit.item_type}) se sale del marco del plano ({_box(x0, y0, x1, y1)} frente a {_box(*frame)}): muévelo (offset_mm, side o at_mm).",
+                f"{unit.key} ({unit.item_type}) runs outside the frame of the sheet ({_box(x0, y0, x1, y1)} against {_box(*frame)}): move it (offset_mm, side or at_mm).",
             )
             out.append(Finding("item_outside_frame", "warning", text, (unit.key,)))
         if block is not None and unit.item_type != "parts_list" and _overlap((x0, y0, x1, y1), block):

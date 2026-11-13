@@ -23,7 +23,7 @@ def _worker_registry() -> object:
 
 def test_the_contract_table_is_the_one_the_worker_has() -> None:
     worker = _worker_registry()
-    # a type the worker does not draw (weld) is in its UNSUPPORTED table, refused in its own words
+    # a type the worker does not draw is in its UNSUPPORTED table, refused in its own words
     assert set(table.ITEM_FIELDS) == set(worker.REGISTRY) | set(worker.UNSUPPORTED)  # type: ignore[attr-defined]
     assert table.PLANNED_ITEMS == worker.PLANNED  # type: ignore[attr-defined]
     for name, fields in table.ITEM_FIELDS.items():

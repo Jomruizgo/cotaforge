@@ -32,7 +32,7 @@ def facts(plates: int = 1, tubes: int = 4) -> list[weld.BodyFact]:
 VISIBLE = {"body:1": (20.0, 0.0, 6.0), "body:2": (60.0, 0.0, 70.0), "body:3": (100.0, 0.0, 70.0), "body:4": (80.0, 0.0, 50.0), "body:5": (40.0, 0.0, 30.0)}
 
 
-NOTE = {"type": "note", "text": "Soldadura de filete a=4 mm en todas las uniones, MAG, ISO 13920-B"}
+NOTE = {"type": "note", "text": "Soldadura de filete a=4 mm en todas las uniones, MAG, nivel ISO 5817-C"}
 BOXES = [((0, 0, 0), (400, 40, 40)), ((0, 300, 0), (400, 340, 40)), ((0, 0, 300), (400, 40, 340)), ((0, 300, 300), (400, 340, 340)), ((-6, 0, 0), (0, 340, 340))]
 
 
@@ -211,3 +211,58 @@ def test_a_part_with_no_bodies_to_list_refuses_the_items() -> None:
     ctx.geometry = FrameGeometry()
     results = draw(ctx, {"type": "parts_list"})
     assert results[0].status == "error" and "welded" in results[0].detail
+
+
+def test_the_cut_list_stays_inside_the_title_block_width_and_on_the_frame_whatever_the_text() -> None:
+    ctx = context()
+    long_name = "Tubo estructural cuadrado 40x40x3, corte a inglete en ambos extremos, S235JR"
+    draw(ctx, {"type": "parts_list", "rows": [{"component": "body:1", "name": long_name}]})
+    left, _, right, _ = ctx.extras["parts_list"]["rect"]
+    assert right == 410.0 and right - left <= 180.0 + 1e-9  # the frame is at 410 and the title block is 180 wide
+    short = context()
+    draw(short, {"type": "parts_list", "rows": [{"component": "body:1", "name": "Tubo"}, {"component": "body:5", "name": "Chapa"}]})
+    sl, _, sr, _ = short.extras["parts_list"]["rect"]
+    assert sr == 410.0 and sr - sl < 180.0  # as wide as its content, not as wide as the title block
+    assert all(line.x2 <= 410.0 + 1e-9 for line in short.sheet.entities if hasattr(line, "x2"))
+
+
+def test_the_review_finds_the_cut_list_inside_the_frame() -> None:
+    found = reviewed(context(), {"type": "parts_list", "id": "cut", "rows": [{"component": "body:1", "name": "Tubo 40×40×3"}, {"component": "body:5", "name": "Chapa 6"}]})
+    assert "item_outside_frame" not in codes(found)
+    import sheet_units  # noqa: PLC0415
+
+    for language in ("es", "en"):  # the box the review measures holds the estimated width of every text, slack included
+        ctx = context(language)
+        draw(ctx, {"type": "parts_list", "rows": [{"component": "body:1", "name": "Tubo 40×40×3"}, {"component": "body:5", "name": "Chapa 6"}]})
+        box = sheet_units.bounds(ctx.sheet.entities)
+        assert box is not None and box[2] <= 410.0 + 1e-9, (language, box)
+
+
+def placed_right_edge(rect: tuple[float, float, float, float], origins: list[float]) -> float:
+    """Where the right edge of the table ends once the sheet window has placed it: a symbol whose centre is within 6 mm of a
+    view origin is pulled onto it (the centre takes the origin's x), so the whole table moves with it."""
+    centre = (rect[0] + rect[2]) / 2
+    for x in origins:
+        if abs(centre - x) <= 6.0:
+            return rect[2] + (x - centre)
+    return rect[2]
+
+
+def test_no_edge_of_the_cut_list_passes_the_inner_frame_line_after_the_window_placed_it_wherever_the_views_are() -> None:
+    for view_x in range(250, 411, 2):  # a view origin anywhere over where the table can stand
+        ctx = context()
+        iso = sc.ViewInfo("isometric", float(view_x), 150.0, 0.2, (1, 1, 1), (1, -1, 0), (0, 0, 0), (250.0, 100.0, 395.0, 200.0))
+        ctx.extras["views_extra"] = {"isometric": iso}
+        draw(ctx, {"type": "parts_list", "rows": [{"component": "body:1", "name": "Tubo 40×40×3"}, {"component": "body:5", "name": "Chapa 6"}]})
+        rect = ctx.extras["parts_list"]["rect"]
+        origins = [v.x for v in (*ctx.views.values(), iso)]
+        assert placed_right_edge(rect, origins) <= 410.0 + 1e-9, (view_x, rect)
+
+
+def test_the_centre_of_the_cut_list_keeps_clear_of_the_view_origins_the_window_snaps_to() -> None:
+    ctx = context()
+    iso = sc.ViewInfo("isometric", 322.5, 150.0, 0.2, (1, 1, 1), (1, -1, 0), (0, 0, 0), (250.0, 100.0, 395.0, 200.0))
+    ctx.extras["views_extra"] = {"isometric": iso}
+    draw(ctx, {"type": "parts_list", "rows": [{"component": "body:1", "name": "Tubo 40×40×3"}]})
+    left, _, right, _ = ctx.extras["parts_list"]["rect"]
+    assert abs((left + right) / 2 - 322.5) > 7.0 and right == 410.0

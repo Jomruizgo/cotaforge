@@ -151,15 +151,18 @@ def test_the_registry_has_the_built_types_and_names_the_planned_ones() -> None:
         "balloons",
         "exploded",
         "finish",
+        "weld",
     }
     assert not set(items.PLANNED) & set(items.REGISTRY)
     assert not set(items.UNSUPPORTED) & set(items.REGISTRY)
 
 
-def test_a_weld_is_refused_by_freecad_in_its_own_words() -> None:
-    with pytest.raises(sc.ItemError, match=r"FreeCAD draws no weld symbols on a sheet, so nothing was drawn.*note"):
-        items.normalise({"type": "weld", "between": []}, set(), 1)
-    assert "weld" in items.all_types()
+def test_a_weld_needs_the_two_bodies_and_the_size() -> None:
+    with pytest.raises(sc.ItemError, match=r"two bodies that touch"):
+        items.normalise({"type": "weld", "between": [], "size_mm": 3}, set(), 1)
+    with pytest.raises(sc.ItemError, match=r"size_mm is required"):
+        items.normalise({"type": "weld", "between": ["body:1", "body:2"]}, set(), 1)
+    assert "weld" in items.all_types() and "weld" in items.REGISTRY
 
 
 def test_an_unknown_type_an_unknown_field_and_a_bad_id_are_refused() -> None:

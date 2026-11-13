@@ -106,7 +106,7 @@ def test_the_notes_the_sheet_carries_are_found_by_what_they_say() -> None:
         {"type": "note", "text": "Proceso: corte láser y doblado"},
         {"type": "note", "text": "Rugosidad general Ra 3,2"},
         {"type": "note", "text": "Radio interior de doblez 2 mm, desarrollo en la hoja"},
-        {"type": "note", "text": "Soldadura en ángulo, clase ISO 13920 B"},
+        {"type": "note", "text": "Soldadura en ángulo, nivel de calidad ISO 5817 C"},
     ]
     found = facts_of(titled(views_context()), {"type": "overall"}, *notes)
     assert found["quantity_on_sheet"] == 1 and found["process_on_sheet"] == 1

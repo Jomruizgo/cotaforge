@@ -60,7 +60,7 @@ def test_the_table_has_unique_ids_both_languages_and_a_standard_by_number_only()
         assert not row.clause  # a clause is written only after the standard's text was checked: none has been
         assert re.fullmatch(r"(?:(?:ISO|DIN) [0-9]{2,5}(?:-[0-9])?(?: / ISO [0-9]{2,5})?(?: \([^)]*\))?(?:, )?)*", row.standard), row.standard
     the_standards = {row.standard for row in dr.ROWS}
-    assert {"ISO 6410", "ISO 286-1, ISO 286-2", "ISO 13715", "ISO 2553, ISO 13920"} <= the_standards
+    assert {"ISO 6410", "ISO 286-1, ISO 286-2", "ISO 13715", "ISO 2553, ISO 5817"} <= the_standards
 
 
 def test_every_fact_the_table_reads_is_one_the_worker_counts() -> None:

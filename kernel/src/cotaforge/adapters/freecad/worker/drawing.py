@@ -2098,7 +2098,7 @@ def _exact_box(shape: Any) -> Any:
         return shape.BoundBox
 
 
-class LiveGeometry(drawing_assembly.AssemblyRays, sc.Geometry):
+class LiveGeometry(drawing_assembly.AssemblyRays, drawing_assembly.WeldJoints, sc.Geometry):
     """The lookups items make into the model, on the live document."""
 
     def __init__(self, doc: reg.DocumentRec, shapes: list[Any], op: str | None) -> None:
