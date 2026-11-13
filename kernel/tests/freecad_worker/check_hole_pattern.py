@@ -54,7 +54,9 @@ def _hole(top: dict[str, Any], name: str, diameter: float, **kw: Any) -> dict[st
 
 
 def _edit(feature: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
-    result = call("edit_feature", op("edit", edits=[{"feature": feature, "kind": "hole", "request": request}], dry_run=False))
+    result = call(
+        "edit_feature", op("edit", edits=[{"feature": feature, "kind": "hole", "request": request}], dry_run=False)
+    )
     assert result["applied"], result
     return result
 
@@ -194,3 +196,91 @@ def check_a_multi_hole_feature_is_edited_in_place_by_its_diameter_and_its_counte
     assert not _axes(6.0) and not _axes(11.0)
     body = next(o for o in main.WORKER.active.fc_doc.Objects if o.TypeId == "PartDesign::Body")
     assert len([o for o in body.Group if o.TypeId == "PartDesign::Hole"]) == 1
+
+
+def check_a_hole_moved_in_place_leaves_the_features_after_it_where_they_are() -> None:
+    ids = _plate()
+    first = _hole(ids["top"], "first", 8.0, position=[-30.0, -20.0])
+    _hole(ids["top"], "second", 6.0, position=[30.0, -20.0])
+    _hole(ids["top"], "third", 5.0, position=[30.0, 20.0])
+    result = _edit(first["feature"], _params(ids["top"], "first", 8.0, position=[-25.0, -12.5]))
+    assert not result.get("failure"), result
+    _same(_axes(8.0), [(25.0, 17.5)])
+    _same(_axes(6.0), [(80.0, 10.0)])  # the ones made after it did not move
+    _same(_axes(5.0), [(80.0, 50.0)])
+    expected = PLATE[0] * PLATE[1] * PLATE[2] - math.pi * PLATE[2] * (4.0**2 + 3.0**2 + 2.5**2)
+    body = next(o for o in main.WORKER.active.fc_doc.Objects if o.TypeId == "PartDesign::Body")
+    assert abs(body.Shape.Volume - expected) < 1e-3, (body.Shape.Volume, expected)
+    # and back to where it was: the same plate as the first time
+    _edit(first["feature"], _params(ids["top"], "first", 8.0, position=[-30.0, -20.0]))
+    _same(_axes(8.0), [(20.0, 10.0)])
+
+
+def check_the_points_of_a_multi_hole_feature_move_in_place_one_by_one() -> None:
+    ids = _plate()
+    corners = [(-30.0, -15.0), (30.0, -15.0), (30.0, 15.0), (-30.0, 15.0)]
+    made = _hole(ids["top"], "pattern", 6.0, position=list(corners[0]), positions=[list(c) for c in corners])
+    moved = [(-30.0, -15.0), (35.0, -15.0), (35.0, 10.0), (-30.0, 10.0)]
+    _edit(
+        made["feature"],
+        _params(ids["top"], "pattern", 6.0, position=list(moved[0]), positions=[list(c) for c in moved]),
+    )
+    _same(_axes(6.0), [(50.0 + u, 30.0 + v) for u, v in moved])
+
+
+def check_a_hole_moved_onto_an_axis_of_its_sketch_is_not_edited_in_place() -> None:
+    """There is no distance for a centre on the axis: the edit says so and the caller rebuilds."""
+    ids = _plate()
+    first = _hole(ids["top"], "first", 8.0, position=[-30.0, -20.0])
+    dry = call(
+        "edit_feature",
+        op(
+            "edit",
+            edits=[
+                {
+                    "feature": first["feature"],
+                    "kind": "hole",
+                    "request": _params(ids["top"], "first", 8.0, position=[0.0, -20.0]),
+                }
+            ],
+            dry_run=True,
+        ),
+    )
+    assert dry["refused"], dry
+
+
+def _try_edit(feature: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+    return call(
+        "edit_feature", op("edit", edits=[{"feature": feature, "kind": "hole", "request": request}], dry_run=False)
+    )
+
+
+def _body_volume() -> float:
+    body = next(o for o in main.WORKER.active.fc_doc.Objects if o.TypeId == "PartDesign::Body")
+    return float(body.Shape.Volume)
+
+
+def check_a_hole_moved_off_the_face_is_rolled_back_with_the_message_of_a_rebuild() -> None:
+    ids = _plate()
+    first = _hole(ids["top"], "first", 8.0, position=[-30.0, -20.0])
+    _hole(ids["top"], "second", 6.0, position=[30.0, -20.0])
+    volume = _body_volume()
+    result = _try_edit(first["feature"], _params(ids["top"], "first", 8.0, position=[-60.0, -20.0]))  # plate is +-50
+    assert not result["applied"], result
+    assert "is not on face" in str(result.get("failure") or result), result
+    _same(_axes(8.0), [(20.0, 10.0)])  # nothing moved, nothing stuck
+    _same(_axes(6.0), [(80.0, 10.0)])
+    assert abs(_body_volume() - volume) < 1e-6
+
+
+def check_a_hole_moved_over_a_hole_made_after_it_is_rolled_back() -> None:
+    ids = _plate()
+    first = _hole(ids["top"], "first", 8.0, position=[-30.0, -20.0])
+    _hole(ids["top"], "second", 6.0, position=[30.0, -20.0])
+    volume = _body_volume()
+    result = _try_edit(first["feature"], _params(ids["top"], "first", 8.0, position=[30.0, -20.0]))
+    assert not result["applied"], result
+    assert "is not on face" in str(result.get("failure") or result), result
+    _same(_axes(8.0), [(20.0, 10.0)])
+    _same(_axes(6.0), [(80.0, 10.0)])
+    assert abs(_body_volume() - volume) < 1e-6
