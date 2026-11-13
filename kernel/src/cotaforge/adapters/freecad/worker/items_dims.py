@@ -354,8 +354,6 @@ def _toleranced(
     res = sheet_tol.resolve(spec, value)
     if res is None:
         return sheet_tol.Rendered(f"{prefix}{ctx.num(value)}{unit}"), sheet_tol.general_note(ctx, general, value)
-    if res.iso:
-        sheet_tol.mark_iso286(ctx)
     rendered = sheet_tol.render(ctx, value, res, prefix, unit, stackable=general == "linear" and not prefix)
     stacked = f" (deviations stacked: {rendered.stack[0]} over {rendered.stack[1]})" if rendered.stack else ""
     return rendered, f"; toleranced{stacked}"

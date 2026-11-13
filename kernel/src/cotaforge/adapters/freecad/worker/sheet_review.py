@@ -10,7 +10,7 @@ ids of the items and features involved.
 Findings: holes and cut features nobody dimensions or calls out, features whose position is not given, a distance given
 twice (an ordinate set plus a chain between the same holes, a chain that closes on the overall size, the same pair twice),
 threads (a threaded hole without its callout, holes whose thread is unknown), datums a GD&T frame cites and no datum item
-defines, items that cannot be drawn (stale ids), and layout (views overlapping each other or the title block, text outside
+defines, a geometric tolerance written as the text of a note instead of a frame, items that cannot be drawn (stale ids), and layout (views overlapping each other or the title block, text outside
 the frame).
 """
 
@@ -74,6 +74,7 @@ def review(data: ReviewInput) -> list[Finding]:
         _feature_dimensions,
         _over_dimensioning,
         _datums,
+        _gdt_as_note,
         _gdt_located,
         _view_lines,
         _unused_views,
@@ -667,6 +668,48 @@ def _datums(data: ReviewInput) -> list[Finding]:
                 f"{frame['id']} cites datum {', '.join(missing)} and no datum item defines it.",
             )
             out.append(Finding("datum_undefined", "warning", text, (frame["id"],)))
+    return out
+
+
+_NUMBER = r"(?:Ø|⌀)?\s?\d+[.,]\d+"
+_GDT_STRONG = (
+    r"planitud|rectitud|circularidad|redondez|cilindricidad|paralelismo|perpendicularidad|angularidad|concentricidad|"
+    r"coaxialidad|salto (?:radial|axial|total|circular)|flatness|straightness|roundness|circularity|cylindricity|"
+    r"parallelism|perpendicularity|angularity|concentricity|coaxiality|(?:total |circular )?runout"
+)
+_GDT_WEAK = (
+    r"posici.n|simetr.a|perfil de (?:l.nea|superficie)|position|symmetry|profile of (?:a )?(?:line|surface)"
+)
+_GDT_SYMBOLS = "⊥∥⌖◎⌭⌒⌓↗⌯⏥"
+GDT_IN_TEXT = re.compile(
+    rf"(?:{_GDT_STRONG})\b[^.;\n]{{0,40}}?{_NUMBER}"
+    rf"|(?:toleranc\w+|tolerance)\s+(?:de |of )?(?:{_GDT_WEAK})\b[^.;\n]{{0,40}}?{_NUMBER}"
+    rf"|(?:{_GDT_WEAK})\b[^.;\n]{{0,25}}?(?:toleranc\w+|tolerance)[^.;\n]{{0,25}}?{_NUMBER}"
+    rf"|[{_GDT_SYMBOLS}]\s?{_NUMBER}",
+    re.IGNORECASE,
+)
+
+
+def _gdt_as_note(data: ReviewInput) -> list[Finding]:
+    """A geometric tolerance written as the text of a note (``perpendicularidad 0,02 A``, ``⊥ Ø0,1 A``): a shop reads a
+    feature control frame (ISO 1101) on the feature, not a sentence in the notes block. The note is flagged and the
+    answer is a ``gdt`` item (and its ``datum`` items); a note that only names a characteristic without a value is quiet."""
+    ctx = data.ctx
+    out: list[Finding] = []
+    for note in _of(data, "note"):
+        text = str(note.get("text") or "")
+        if not GDT_IN_TEXT.search(text):
+            continue
+        shown = text if len(text) <= 60 else text[:57] + "..."
+        message = ctx.say(
+            f'{note["id"]} escribe una tolerancia geométrica como texto ("{shown}"): va en un marco ISO 1101 sobre el rasgo '
+            "o colgado de su cota, con sus datums definidos y usados. Usa un ítem gdt (char, value, datums, face u on) y "
+            "borra la nota; si no es una tolerancia geométrica, respóndelo como decisión (no aplica: <por qué>).",
+            f'{note["id"]} writes a geometric tolerance as text ("{shown}"): it belongs in an ISO 1101 frame on the feature '
+            "or hung from its dimension, with its datums defined and used. Use a gdt item (char, value, datums, face or on) "
+            "and remove the note; if it is not a geometric tolerance, answer it as a decision (not applicable: <why>).",
+        )
+        out.append(Finding("gdt_as_note", "warning", message, (str(note["id"]),), key=str(note["id"])))
     return out
 
 

@@ -130,9 +130,7 @@ def check_fits_datums_frames_finish_and_the_thread_arc_come_out_of_the_real_part
     sheet, _ = composed()
     found = texts(sheet)
     assert "Ø8 H8 (+0,022/0) pasante" in found, found
-    assert any(t.endswith("Tablas ISO 286 transcritas; verificar contra la norma") for t in found), (
-        found
-    )  # a numbered note
+    assert not any("transcritas" in t for t in found), found  # a fit prints its limits, never a note to verify them
     assert "Ra 1,6" in found and "Ra 3,2" in found and "Ø0,1" in found, found
     assert texts(sheet, model.DIMENSIONS).count("A") == 2  # the datum feature and the one the frame cites
     arcs = [e for e in sheet.entities if isinstance(e, model.Arc) and e.layer == model.THREAD]

@@ -32,7 +32,7 @@ GROUP_ITEM_ROLES = {
     "Rear": "rear",
     "Bottom": "bottom",
 }
-EXTRA_KEYS = {"threads": "thread arcs", "iso286": "ISO 286 note"}
+EXTRA_KEYS = {"threads": "thread arcs"}
 
 
 @dataclass

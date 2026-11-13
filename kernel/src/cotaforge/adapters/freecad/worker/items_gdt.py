@@ -353,8 +353,18 @@ def _value(ctx: Context, value: float) -> str:
     return text.replace(".", ",") if ctx.comma else text
 
 
+def _clear(ctx: Context, rect: tuple[float, float, float, float]) -> bool:
+    """Free of other labels and of the views (a frame lying on the outline of a view is a collision)."""
+    boxes = list(ctx.extras.get("view_boxes", [])) or [v.box for v in ctx.views.values()]
+    return ctx.free(rect) and not any(
+        rect[0] < b[2] and b[0] < rect[2] and rect[1] < b[3] and b[1] < rect[3] for b in boxes
+    )
+
+
 def _hang(ctx: Context, spec: dict[str, Any], cells: list[tuple[str, ...]], summary: str) -> tuple[str, str]:
-    """Hang the frame under the shelf of the callout of the dimension item ``on``."""
+    """Hang the frame under the shelf of the callout of the dimension item ``on``; when there is no room under it, it
+    continues the shelf at its far end (ISO 1101 allows a frame joined to the end of the leader line) or stands on the
+    callout's text."""
     target = spec["on"]
     anchors = ctx.extras.get("anchors", {}).get(target)
     if not anchors:
@@ -377,11 +387,21 @@ def _hang(ctx: Context, spec: dict[str, Any], cells: list[tuple[str, ...]], summ
         rect = (x0, y0, x0 + width, elbow[1])
         if first is None:
             first = (entities, rect)
-        if ctx.free((x0, y0, x0 + width, y0 + CELL_MM)):
+        if _clear(ctx, (x0, y0, x0 + width, y0 + CELL_MM)):
             free = True
             break
     assert first is not None
     chosen = (entities, rect) if free else first
+    if not free:  # nothing free under the shelf (the callout stands on a view): beside it or over its text
+        text_rect = anchor["rect"]
+        end = elbow[0] + direction * (text_rect[2] - text_rect[0])
+        far_x = end if direction > 0 else end - width
+        over = max(text_rect[1], text_rect[3]) + 1.0
+        for x0, y0 in ((far_x, elbow[1] - CELL_MM / 2), (min(text_rect[0], text_rect[2]), over)):
+            box = (x0, y0, x0 + width, y0 + CELL_MM)
+            if ctx.inside(box) and _clear(ctx, box):
+                chosen, free = (frame(x0, y0, cells)[0], box), True
+                break
     ctx.reserve((chosen[1][0], chosen[1][1], chosen[1][2], chosen[1][1] + CELL_MM))
     ctx.add(chosen[0])
     text = f"{summary} hung from the callout of {target}"

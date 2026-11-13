@@ -143,9 +143,9 @@ ITEM_LINES = (
     "show=symbol|deviations|both|limits (fit: both by default, 'Ø12 H7 (+0.018/0)'; tol: deviations, '20 +0.1/-0.05' "
     "stacked on linear dimensions; limits: 'Ø12.018 / 12.000'). dim kind=diameter, face=<cylinder that is NOT a hole "
     "wall> gives 'Ø24 g6 (-0.007/-0.02)' (a hole is toleranced with hole_dim fit=). A threaded hole takes no fit. "
-    "The ISO 286 tables are TRANSCRIBED: the sheet prints a note that they are transcribed and must be checked "
-    "against the standard until the engineer confirms them. A dimension with no tolerance of its own reports in its "
-    "answer the sheet's general ISO 2768 tolerance (field general_tolerances).",
+    "A fit prints its class and its limits and nothing else: never write a note that asks the shop to verify a "
+    "tolerance or a table. A dimension with no tolerance of its own reports in its answer the sheet's general ISO "
+    "2768 tolerance (field general_tolerances).",
     "datum: letter (A-Z without I, O, Q) and ONE of face=<plane seen edge-on> (the triangle rests on its outline) or "
     "on=<id of a hole_dim or dim kind=diameter> (AXIS of a cylinder, ISO 5459: the triangle rests on the ledge of "
     "that dimension's callout, in line with it, and the letter hangs below; a cylinder is NOT given by face=). One "
@@ -158,7 +158,10 @@ ITEM_LINES = (
     "diameter require it). Form tolerances take no datums; orientation, location and runout do require them. "
     "position and profile need the feature LOCATED from the datums by a dimension (datum_dims or dim distance), "
     "otherwise review flags gdt_not_located; theoretically exact dimensions (boxed) do not exist yet: the normal "
-    "dimension is used.",
+    "dimension is used. A geometric tolerance is ONLY a gdt frame on the feature or hung from its dimension, with "
+    "the datum items it cites: never the text of a note ('perpendicularidad 0,02 A', '⊥ Ø0,1 A'; review flags "
+    "gdt_as_note), and a datum no frame cites is flagged too (datum_unused). Tolerate the FINAL feature (the bore "
+    "of H7, not the pre-machined one) and cite the datums in the order the part is located on.",
     "overall on a part of revolution (a body whose total size is the diameter of an outer cylinder) gives Ø once, "
     "in the view where the axis lies sideways; review flags duplicate_dimension if a dim repeats an overall one.",
     "finish (ISO 1302 / 21920): ra (um), machining=required (triangle, default) | forbidden (circle) | any, "
@@ -167,7 +170,7 @@ ITEM_LINES = (
     "6410): a hole with a thread declared by the hole operation carries ONLY the thin 3/4 arc at the major diameter "
     "in the view where it shows as a circle (THREADS layer), with no item.",
     "note: text (numbered in a NOTAS block at the bottom left; at_mm puts it elsewhere; the sheet's own notes -- "
-    'thickness, ISO 286 -- are numbered in the same block); view="A-A" writes it, unnumbered, under that section '
+    'thickness -- is numbered in the same block); view="A-A" writes it, unnumbered, under that section '
     "view (else beside it). "
     'revision: index ("A"), description, date?, by? -- a row of the revision table of the title block (the last 5 '
     "show) and the sheet's revision field. overall: the three overall dimensions (made by create; remove it and add "
@@ -347,8 +350,8 @@ QUALITY_LINES = (
     "hole_dim fit=H7 dowel=true -> ◎ 4× Ø6 H7 (+0.012/0) through and a ring round each hole; review asks "
     "(dowel_unmarked: no hold) for a through hole of 25 mm or less with a hole fit of grade 8 or finer.",
     "NOTES: numbered in the NOTAS block, the thickness first ('19 de espesor': the sheet writes it when it has ONE "
-    "standard view), yours in the order added, the ISO 286 transcription note last (it goes in the block, never "
-    "floating). Part-specific fabrication notes go there too (which ones the part needs: the requirements).",
+    "standard view), yours in the order added. A note is for fabrication and general remarks, never for a geometric "
+    "tolerance (that is a gdt frame). Part-specific fabrication notes go there too (which ones the part needs: the requirements).",
     "VIEWS OF A REVOLVED PART: without views, a body of revolution about x, y or z gets, with a bore, the view along its "
     "axis and a section A-A through it (item section holes=axis), solid the one view that shows its profile; the reply "
     "says it chose, and views=[front, top, right, iso] gives all four. Any other part gets the four. A rebuild without "

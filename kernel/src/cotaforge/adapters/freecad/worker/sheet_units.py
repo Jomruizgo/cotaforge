@@ -26,7 +26,6 @@ KIND_EXTRA = "extra"
 TEXT_SLACK = 1.12  # the real font may be wider than ``text_width`` estimates: the SVG fragment is cut at its box
 MARGIN_MM = 1.5
 KEY_THREADS = "threads"
-KEY_ISO286 = "iso286"
 NATIVE_LAYERS = frozenset({DIMENSIONS, TEXT})  # what TechDraw's own dimension / annotation objects draw
 
 
@@ -198,7 +197,7 @@ def collect(
     """The units of a composed sheet, in the order they should stack on the page.
 
     ``slices`` maps an item id to the range of ``entities`` it drew; an item that failed (status ``error``) or drew
-    nothing makes no unit. ``extras`` is the same for the pieces no item owns (``threads``, ``iso286``). ``views`` are
+    nothing makes no unit. ``extras`` is the same for the pieces no item owns (``threads``). ``views`` are
     the views of an ``hlr`` sheet (they are not TechDraw objects there, so the window needs them). ``native`` maps the
     id of an item that TechDraw's own objects hold (the overall dimensions of a ``techdraw`` sheet) to what the
     mirror needs to put them where the sheet draws them. ``natives`` maps an item id to the TechDraw dimension and
@@ -230,10 +229,6 @@ def collect(
                 tuple((natives or {}).get(item_id, ())),
             )
         )
-    if "iso286" in extras:
-        a, b = extras["iso286"]
-        if b > a:
-            units.append(Unit(KEY_ISO286, "ISO 286 note", KIND_EXTRA, tuple(entities[a:b])))
     return units
 
 

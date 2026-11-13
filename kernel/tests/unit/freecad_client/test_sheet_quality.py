@@ -506,12 +506,11 @@ def test_the_dowel_callout_has_its_marker_its_fit_with_deviations_and_a_ring_on_
 # --- notes --------------------------------------------------------------------------------------------------------------------
 
 
-def test_the_notes_are_numbered_with_the_thickness_first_and_the_iso_286_note_last() -> None:
+def test_the_notes_are_numbered_with_the_thickness_first() -> None:
     ctx, _ = plate(one_view=True)
     draw(
         ctx,
         {"type": "note", "id": "n1", "text": "Fabricar de lámina rectificada"},
-        {"type": "note", "id": "n286", "auto": "iso286"},
         {"type": "note", "id": "tn", "auto": "thickness"},
         {"type": "note", "id": "n2", "text": "Rebabas eliminadas"},
     )
@@ -520,8 +519,12 @@ def test_the_notes_are_numbered_with_the_thickness_first_and_the_iso_286_note_la
         "1. 19 de espesor",
         "2. Fabricar de lámina rectificada",
         "3. Rebabas eliminadas",
-        "4. Tablas ISO 286 transcritas; verificar contra la norma",
     ]
+
+
+def test_the_iso_286_note_is_no_longer_a_note_a_sheet_writes() -> None:
+    with pytest.raises(sc.ItemError, match="auto"):
+        items.normalise({"type": "note", "auto": "iso286"}, set(), 1)
 
 
 def test_an_auto_note_takes_no_text_and_a_note_without_either_is_refused() -> None:

@@ -192,7 +192,7 @@ def test_each_item_shows_in_the_sheet_window_as_it_is_added(visible: FreeCADAdap
             expected.add(key)
             if key == "tbl":
                 expected.discard("loc")  # the table locates every hole: nothing is left for the default one
-            assert {row[3] for row in objects} - {"threads", "iso286", "n286"} == expected, (key, objects)
+            assert {row[3] for row in objects} - {"threads"} == expected, (key, objects)
             assert "new" in result.window, result.window  # (the default location may be redrawn by what is added)
         digest = _digest(shot)
         assert digest != previous, f"the window did not change after adding {key}"

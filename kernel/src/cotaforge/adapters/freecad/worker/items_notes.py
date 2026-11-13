@@ -9,7 +9,6 @@ the last five revisions show) and sets the ``revision_index`` field to the lates
 import textwrap
 from typing import Any
 
-import iso286
 from sheet_context import (
     SECTION_LABEL,
     Context,
@@ -29,7 +28,7 @@ LINE_STEP_MM = 5.0
 NOTE_HEIGHT = 3.5
 BLOCK_MARGIN_MM = 2.0
 
-AUTO_NOTES = ("thickness", "iso286")  # the notes the sheet writes by itself (``drawing`` adds and takes them off)
+AUTO_NOTES = ("thickness",)  # the notes the sheet writes by itself (``drawing`` adds and takes them off)
 
 
 def _v_section(value: Any) -> str:
@@ -46,7 +45,7 @@ REVISION_CHECKS = {"index": v_str(4), "description": v_str(80), "date": v_str(12
 def check_note(spec: dict[str, Any]) -> dict[str, Any]:
     out = check_fields(spec, NOTE_CHECKS)
     if "auto" in out and ("text" in out or "at_mm" in out or "view" in out):
-        msg = "auto is a note the sheet writes itself (thickness, iso286): it takes no text, no at_mm and no view"
+        msg = "auto is a note the sheet writes itself (thickness): it takes no text, no at_mm and no view"
         raise ItemError(msg)
     if "view" in out and "at_mm" in out:
         msg = "a note on a view goes under it: give view or at_mm, not both"
@@ -59,12 +58,10 @@ def check_note(spec: dict[str, Any]) -> dict[str, Any]:
 
 def note_text(ctx: Context, spec: dict[str, Any]) -> str:
     """What a note says: its text, or -- for the notes the sheet writes itself -- the thickness of a part drawn in ONE view
-    (measured on the model, along the way that view looks) or the ISO 286 transcription note."""
+    (measured on the model, along the way that view looks)."""
     kind = spec.get("auto")
     if kind is None:
         return str(spec["text"])
-    if kind == "iso286":
-        return iso286.TRANSCRIPTION_NOTE["es" if ctx.language == "es" else "en"]
     extent = ctx.extras.get("extent_mm")
     if extent is None or not ctx.views:
         msg = "the thickness is measured on the part: the sheet has no part geometry here"
@@ -75,8 +72,8 @@ def note_text(ctx: Context, spec: dict[str, Any]) -> str:
 
 
 def _rank(spec: dict[str, Any]) -> int:
-    """The order of the numbered notes: the part's thickness first, then the engineer's, the ISO 286 footnote last."""
-    return {"thickness": 0, "iso286": 2}.get(str(spec.get("auto")), 1)
+    """The order of the numbered notes: the part's thickness first, then the engineer's."""
+    return {"thickness": 0}.get(str(spec.get("auto")), 1)
 
 
 def check_revision(spec: dict[str, Any]) -> dict[str, Any]:
