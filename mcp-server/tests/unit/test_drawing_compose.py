@@ -241,12 +241,36 @@ def test_a_view_the_engineer_chose_is_not_replaced_by_the_single_view_rule(setti
 # --- the paper ---------------------------------------------------------------------------------------------------------------------
 
 
+def bigger_paper_fits(fake: DrawingFake) -> None:
+    """A CAD on which the views overlap on A4 and not on a bigger paper."""
+    overlap = finding("views_overlap", "two views overlap")
+    fake.findings = (*fake.findings, overlap)
+    make = fake.create_drawing
+
+    def create(request: Any) -> Any:
+        result = make(request)
+        fake.findings = tuple(f for f in fake.findings if f.code != "views_overlap")
+        if request.template == "A4":
+            fake.findings = (*fake.findings, overlap)
+        return result
+
+    fake.create_drawing = create  # type: ignore[method-assign]
+
+
 def test_the_composer_raises_a_paper_nobody_fixed_when_the_annotations_do_not_fit_and_says_so(settings: Settings) -> None:
     call, fake = sheet_shaft(settings)
-    fake.findings = (*fake.findings, finding("views_overlap", "two views overlap"))
+    bigger_paper_fits(fake)
     text = composed(call, {"answers": na_all(call)})
-    assert "paper raised from A4 to A3" in text
-    assert [c.template for c in fake.created][-1] in ("A3", "A2")
+    assert "paper raised from A4 to A3" in text and "1 layout finding(s) before, 0 after" in text
+    assert [c.template for c in fake.created][-1] == "A3"
+
+
+def test_a_bigger_paper_that_does_not_help_is_put_back(settings: Settings) -> None:
+    call, fake = sheet_shaft(settings)
+    fake.findings = (*fake.findings, finding("views_overlap", "two views overlap"))  # no paper makes it go
+    text = composed(call, {"answers": na_all(call)})
+    assert "tried and put back" in text and "paper raised" not in text
+    assert [c.template for c in fake.created][-2:] == ["A3", "A4"]
 
 
 def test_a_paper_the_engineer_fixed_is_never_raised(settings: Settings) -> None:
