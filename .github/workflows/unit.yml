@@ -26,10 +26,10 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e kernel -e mcp-server pytest
+          python -m pip install -e "kernel[dev]" -e "mcp-server[dev]"
       - name: Kernel unit tests
         working-directory: kernel
-        run: python -m pytest tests/unit -p no:cacheprovider -o addopts="" -q
+        run: python -m pytest tests/unit
       - name: MCP server unit tests
         working-directory: mcp-server
-        run: python -m pytest tests/unit -p no:cacheprovider -o addopts="" -q
+        run: python -m pytest tests/unit
