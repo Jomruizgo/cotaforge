@@ -59,6 +59,10 @@ UNSUPPORTED: dict[str, str] = {
         "keyway_dims is made into plain dim items when it is added (drawing add) and is never stored: if you read "
         "this, the part has no keyway whose walls can be dimensioned"
     ),
+    "thread_dims": (
+        "thread_dims is made into plain dim items (kind diameter) when it is added (drawing add) and is never "
+        "stored: if you read this, every external thread of the part has its callout"
+    ),
     "chamfer_dims": (
         "chamfer_dims is made into plain dim items (kind chamfer) when it is added (drawing add) and is never "
         "stored: if you read this, the part has no chamfer without a dimension"

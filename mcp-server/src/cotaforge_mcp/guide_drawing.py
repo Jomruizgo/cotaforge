@@ -387,7 +387,7 @@ QUALITY_LINES = (
     "dimension lines; review says leader_crossing / leader_crosses_part when it cannot. Dowel or registration holes: "
     "hole_dim fit=H7 dowel=true -> ◎ 4× Ø6 H7 (+0.012/0) through and a ring round each hole; review asks "
     "(dowel_unmarked: no hold) for a through hole of 25 mm or less with a hole fit of grade 8 or finer.",
-    "NOTES: numbered in the NOTAS block, the thickness first ('19 de espesor': the sheet writes it when it has ONE "
+    "NOTES: numbered in the NOTAS block, the thickness first ('Espesor 19': the sheet writes it when it has ONE "
     "standard view), yours in the order added. A note is for fabrication and general remarks, never for a geometric "
     "tolerance (that is a gdt frame). Part-specific fabrication notes go there too (which ones the part needs: the requirements).",
     "VIEWS OF A REVOLVED PART: without views, a body of revolution about x, y or z gets, with a bore, the view along its "
@@ -493,6 +493,13 @@ TOPIC_ASSEMBLY = "drawing:assembly"
 TOPIC_OUTPUT = "drawing:output"
 TOPIC_QUALITY = "drawing:quality"
 TOPIC_DONE = "drawing:done"
+LAYOUT_LINE = (
+    "A sheet built in one order (compose) has its dimensions and leaders placed by one global layout: it writes side and offset_mm "
+    "on a dim, and elbow_mm [dx, dy] (the vector from the tip of a leader to its elbow, page mm, y up) on a callout; "
+    "what it cannot place it lists as layout_unplaced. thread_dims (no fields): the callout of every external thread, as "
+    "dim items kind=diameter (the harness adds it itself: rq_threads)."
+)
+
 SUBTOPICS = (
     TOPIC_ITEMS,
     TOPIC_MARKS,
@@ -526,7 +533,7 @@ def drawing_text(tools: Collection[str], part: str = "", flow: str = "steps") ->
         groups = {
             TOPIC_ITEMS: [ITEM_INTRO[0], *ITEM_LINES[0:4]],
             TOPIC_MARKS: [*ITEM_LINES[4:9], WELD_LINE, KEYWAY_LINE],
-            TOPIC_VIEWS: [*ITEM_LINES[9:12], ITEM_LINES[13]],
+            TOPIC_VIEWS: [*ITEM_LINES[9:12], ITEM_LINES[13], LAYOUT_LINE],
             TOPIC_ASSEMBLY: [ITEM_LINES[12]],
             TOPIC_OUTPUT: [SHEET_RULES[2], PROJECTION_LINE, VIEW_LINE],
             TOPIC_QUALITY: QUALITY_LINES,

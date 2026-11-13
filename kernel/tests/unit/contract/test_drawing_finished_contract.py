@@ -146,7 +146,7 @@ def test_the_sheet_info_carries_the_reports_the_request_and_the_choice_through_j
         },
         review_request=DrawingReviewRequest(at=2.0),
         review_choice="fabricator",
-        printed=("19 de espesor",),
+        printed=("Espesor 19",),
         edits=5,
     )
     again = DescribeDrawingResult.model_validate_json(DescribeDrawingResult(sheets=(info,)).model_dump_json()).sheets[0]

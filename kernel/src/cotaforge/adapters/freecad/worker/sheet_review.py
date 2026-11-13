@@ -58,6 +58,8 @@ class FeatureInfo:
     label: str
     faces: list[str]
     edges: list[str] = field(default_factory=list)
+    outline: bool = False
+    """A corner the outline sketch cut (seen whole in the view along the thickness), not a feature of its own."""
 
 
 @dataclass

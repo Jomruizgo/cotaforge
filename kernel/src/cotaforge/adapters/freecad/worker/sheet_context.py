@@ -741,4 +741,5 @@ COMMON_FIELDS: dict[str, Check] = {
     "view": v_enum(*VIEW_NAMES),
     "offset_mm": v_num(0.0, 500.0),
     "side": v_enum("above", "below", "left", "right"),
+
 }

@@ -282,3 +282,62 @@ def test_a_paper_the_engineer_fixed_is_never_raised(settings: Settings) -> None:
 
 def test_compose_needs_the_cad_to_draw(settings: Settings) -> None:
     assert drawing_compose.KEYS and set(drawing_compose.ROW_KEYS) <= set(dr.ROW_IDS)
+
+
+# --- the global layout ------------------------------------------------------------------------------------------------------------
+
+
+def test_compose_asks_for_the_global_layout_once_after_everything_is_put(settings: Settings) -> None:
+    call, fake = sheet_shaft(settings)
+    fake.layout_report = {"layout_placed": ("dc_rel1",), "layout_unplaced": (), "layout_fits": True}
+    text = composed(call, {"answers": na_all(call)})
+    actions = [r.action for r in fake.annotated]
+    assert actions.count("layout") == 1 and actions.index("layout") == actions.index("add") + 1  # right after the last add
+    assert "layout: 1 dimension(s) placed by the global planner" in text and "NOT PLACED" not in text
+
+
+def test_what_the_layout_cannot_place_is_in_the_reply_never_dropped(settings: Settings) -> None:
+    call, fake = sheet_shaft(settings)
+    fake.layout_report = {"layout_unplaced": ("d7: no free place: text over text (6 candidates)",), "layout_fits": True}
+    text = composed(call, {"answers": na_all(call)})
+    assert "NOT PLACED d7: no free place" in text and "side or offset_mm" in text
+
+
+def test_a_sheet_the_cad_cannot_plan_keeps_the_placement_of_every_add_and_says_so(settings: Settings) -> None:
+    call, fake = sheet_shaft(settings)
+    fake.layout_fails = "the worker has no layout"
+    text = composed(call, {"answers": na_all(call)})
+    assert "composed sheet" in text and "the CAD could not plan the sheet (the worker has no layout)" in text
+
+
+def test_views_that_do_not_fit_make_the_composer_raise_the_paper_and_plan_again(settings: Settings) -> None:
+    call, fake = sheet_shaft(settings)
+    answers = {"layout_fits": False, "layout_needed": (400.0, 250.0)}
+    fake.layout_report = answers
+    make = fake.create_drawing
+
+    def create(request: Any) -> Any:
+        if request.template == "A3":  # on the bigger paper the planner finds room
+            fake.layout_report = {"layout_fits": True}
+        return make(request)
+
+    fake.create_drawing = create  # type: ignore[method-assign]
+    text = composed(call, {"answers": na_all(call)})
+    assert "paper raised from A4 to A3" in text and "1 layout finding(s) before, 0 after" in text
+    assert [r.action for r in fake.annotated].count("layout") == 2  # once on A4, once more on A3
+
+
+def test_a_paper_the_engineer_fixed_is_not_raised_when_the_views_do_not_fit(settings: Settings) -> None:
+    call, fake = sheet_shaft(settings)
+    fake.layout_report = {"layout_fits": False, "layout_needed": (400.0, 250.0)}
+    text = composed(call, {"sheet": {"template": "A4"}, "answers": na_all(call)})
+    assert "paper raised" not in text and "need 400 x 250 mm and do not fit the paper" in text
+
+
+def test_an_external_thread_is_derived_as_its_own_callout_not_asked_as_a_fit(settings: Settings) -> None:
+    call, fake = sheet_shaft(settings)
+    fake.facts = {**fake.facts, "thread_features": 1}
+    plan = call.ok("drawing", action="plan")
+    assert "rq_threads: a callout (size, pitch, usable length) of every external thread" in plan
+    composed(call, {"answers": na_all(call)})
+    assert items_of(fake)["rq_threads"]["type"] == "thread_dims"

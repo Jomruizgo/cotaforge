@@ -887,6 +887,8 @@ CALLOUTS_ID = AUTO_PREFIX + "callouts"
 VIEW_LINES_ID = AUTO_PREFIX + "view_lines"
 KEYWAY_ID = AUTO_PREFIX + "keyway"
 CHAMFERS_ID = AUTO_PREFIX + "chamfers"
+THREADS_ID = AUTO_PREFIX + "threads"
+THREAD_ROW = PREFIX + "thread"
 PARTS_LIST_ID = AUTO_PREFIX + "parts_list"
 BALLOONS_ID = AUTO_PREFIX + "balloons"
 CALLOUT_CODES = frozenset({"thread_no_callout", "hole_no_callout", "fit_hole_no_tolerance"})
@@ -916,6 +918,7 @@ def owns(row: Row, item_id: str) -> bool:
         item_id == mine
         or (row.auto in ("keyway", "chamfers") and item_id.startswith(mine))
         or (row.auto == "parts_list" and item_id == BALLOONS_ID)
+        or (row.id == THREAD_ROW and item_id.startswith(THREADS_ID))
     )
 
 
@@ -935,20 +938,34 @@ class Addition:
 
 
 def plan_additions(
-    rows: list[Requirement], items: list[Any], assembly: bool = False, views: tuple[str, ...] = ()
+    rows: list[Requirement],
+    items: list[Any],
+    assembly: bool = False,
+    views: tuple[str, ...] = (),
+    external_threads: bool = False,
 ) -> list[Addition]:
     """What the harness adds to the sheet for the DETERMINED rows that are not met: callouts of every hole when the part has
     threaded or fitted holes nobody called out (the thread and the fit come from the hole operations), the centre lines (of an
     assembly without hidden lines), the parts list and a balloon per position on the isometric view of an assembly (both read
     the components of the model), and a note carrying the line of the intent file that declares what the row asks for. A row
     that was answered (the item was removed with a reason) is never added again, and the agent's own items come first:
-    callouts are not added while the sheet has a ``hole_dim`` of its own, nor a list while it has a ``parts_list``."""
+    callouts are not added while the sheet has a ``hole_dim`` of its own, nor a list while it has a ``parts_list``. With
+    ``external_threads`` (the part holds an ``external_thread`` feature) the callout of each threaded cylinder is added too
+    (``thread_dims``: a diameter dimension that prints the thread, measured on the model, nothing to decide)."""
     have = {i.id for i in items}
     kinds = {i.type for i in items}
     dimensioned = any(i.id.startswith(KEYWAY_ID) for i in items)
     out: dict[str, Addition] = {}
     for r in rows:
         row = r.row
+        if external_threads and row.id == THREAD_ROW and r.answer is None and not any(
+            i.id.startswith(THREADS_ID) for i in items
+        ):
+            out[THREADS_ID] = Addition(
+                (row.id,),
+                {"type": "thread_dims", "id": THREADS_ID},
+                "a callout (size, pitch, usable length) of every external thread, measured on the model",
+            )
         if row.auto == "parts_list":
             if not assembly or r.state == MET or r.answer is not None or not (r.codes or r.lacking):
                 continue

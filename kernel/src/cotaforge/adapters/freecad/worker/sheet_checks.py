@@ -73,6 +73,7 @@ class PartFacts:
 NON_BLOCKING = frozenset(
     {
         "window_differs",
+        "layout_unplaced",
         "native_fallback",
         "native_unread",
         "hidden_check_partial",

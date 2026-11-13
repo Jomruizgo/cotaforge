@@ -166,7 +166,7 @@ def test_the_plate_meets_the_floor_in_three_variants(visible: FreeCADAdapter, tm
     _add(visible, "b2", _notes()[:2], sheet="Una")
     metrics = _measure(visible, doc, "Una", shots, "v2_one_view")
     transcript.append(f"v2 texts: {metrics['texts']}")
-    assert any("de espesor" in t and "19" in t for t in metrics["texts"]), metrics["texts"]
+    assert any("Espesor" in t and "19" in t for t in metrics["texts"]), metrics["texts"]
     problems += _floor("v2", metrics)
 
     # 3. third angle: the symbol and the views placed the other way round
