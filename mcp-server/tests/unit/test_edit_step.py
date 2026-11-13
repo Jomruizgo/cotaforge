@@ -13,6 +13,8 @@ from cotaforge.contract import AdapterError, ErrorCode, ErrorInfo, ManualEditNot
 from tests.conftest import PLATE_SKETCH, TOP, Caller, MakeSession, NativeFake, plate
 
 HOLE = {"face": TOP, "position": [30, 0], "standard": "simple", "diameter_mm": 6, "end_condition": "through_all"}
+BLIND = {"end_condition": "blind", "depth_mm": 4}  # not a dimension of a hole: the steps are rebuilt
+THROUGH = {"end_condition": "through_all", "depth_mm": None}
 PLATE_VOLUME = 100 * 60 * 8
 
 
@@ -116,10 +118,10 @@ def test_an_entitys_own_dimension_is_named_entity_dot_attribute(call: Caller) ->
 # --- by replay: what a dimension cannot say ---------------------------------------------------------------------------
 
 
-def test_a_hole_that_moves_is_rebuilt_and_says_so(call: Caller) -> None:
+def test_a_hole_that_changes_its_end_condition_is_rebuilt_and_says_so(call: Caller) -> None:
     drilled_plate(call)
-    text = call.ok("op", edit="s3", params={"position": [-30, 0]})
-    assert "method: rebuilt from s3" in text and "regenerated: s3" in text and "position" in text
+    text = call.ok("op", edit="s3", params=BLIND)
+    assert "method: rebuilt from s3" in text and "regenerated: s3" in text and "end_condition" in text
     assert step_ids(call) == ["s1", "s2", "s3"]
 
 
@@ -147,9 +149,9 @@ def test_a_rebuild_that_would_drop_a_hand_made_change_is_refused(call: Caller) -
             name="Pad",
         )
     )
-    text = call.err("op", edit="s3", params={"position": [-30, 0]})
+    text = call.err("op", edit="s3", params=BLIND)
     assert "drop what the engineer made by hand" in text and "Pad" in text and "state: unchanged" in text
-    assert call.session.executor.plan.operations[2].position == (30, 0)  # type: ignore[union-attr]
+    assert call.session.executor.plan.operations[2].end_condition == "through_all"  # type: ignore[union-attr]
     call.ok("op", edit="s3", params={"diameter_mm": 10})  # a dimension is set in place: nothing is dropped
 
 
@@ -337,7 +339,7 @@ def test_the_length_of_a_line_of_a_triangle_edits_a_closed_profile(call: Caller)
 def test_a_rebuild_puts_the_steps_after_the_edited_one_back_where_they_were(call: Caller) -> None:
     drilled_plate(call)
     call.ok("op", name="hole", params={**HOLE, "position": [-30, -20], "diameter_mm": 4})
-    text = call.ok("op", edit="s3", params={"position": [-30, 0]})
+    text = call.ok("op", edit="s3", params=BLIND)
     assert "method: rebuilt from s3" in text and "regenerated: s3, s4" in text
     assert "could not stay" not in text
     steps = {s.op_id: s for s in call.session.require_executor().trace().active_steps()}
@@ -375,7 +377,7 @@ def test_a_rebuild_that_cannot_restore_says_what_the_model_holds_and_the_record_
     drilled_plate(call)
     call.ok("op", name="hole", params={**HOLE, "position": [-30, -20], "diameter_mm": 4})
     adapter.broken = True
-    text = call.err("op", edit="s3", params={"position": [-30, 0]})
+    text = call.err("op", edit="s3", params=BLIND)
     assert "edit_restore_failed" in text
     assert "the model now holds: s1, s2, s3" in text and "lost (not rebuilt): s4" in text
     assert "volume:" in text  # the measure of the model as it is
@@ -401,7 +403,7 @@ def test_a_face_selected_by_its_centre_follows_the_face_when_an_earlier_step_mov
     selector = call.session.require_executor().plan.operations[-1].face.select  # type: ignore[attr-defined]
     assert tuple(selector.center) == pytest.approx((50, 30, 12))  # the plan says where the face is now
     # the edit that failed in the field: a later step is edited, and the steps are rebuilt from the plan
-    text = call.ok("op", edit="s3", params={"position": [-30, 0]})
+    text = call.ok("op", edit="s3", params=THROUGH)
     assert "method: rebuilt from s3" in text
     assert step_ids(call) == ["s1", "s2", "s3"]
 

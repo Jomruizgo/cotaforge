@@ -39,6 +39,8 @@ DIMENSION_FIELDS: dict[str, frozenset[str]] = {
     "sweep": frozenset(),
     "hole": frozenset(
         {
+            "position",
+            "positions",
             "diameter_mm",
             "depth_mm",
             "counterbore.diameter_mm",
@@ -257,6 +259,53 @@ def datum_changes(
                 f"{name or f'constraint {index}'} is a {kind} dimension: only lengths are set in place"
             )
         changes.append((index, name, after))
+    return changes
+
+
+POSITION_EPS = 1e-9  # mm: the same point
+HAND_EPS = 1e-6  # mm: a datum of the sketch that is not where the recorded request left it was changed by hand
+
+
+def hole_points(request: dict[str, Any]) -> list[tuple[float, float]]:
+    """The (u, v) of every circle of a hole request, in the order of its sketch."""
+    points = request.get("positions")
+    if points is None:
+        points = [request["position"]]
+    return [(float(p[0]), float(p[1])) for p in points]
+
+
+def hole_position_changes(
+    old: dict[str, Any], new: dict[str, Any], rows: list[tuple[Any, ...]], values: list[float]
+) -> list[tuple[int, str, float]]:
+    """``[(index, name, value)]`` of the datums that move the circles of a hole sketch from the points of the old
+    request to those of the new one: the DistanceX / DistanceY from the sketch origin to the centre of each circle
+    (``rows`` and ``values``: the structure and the values of the live constraints, as ``datum_changes`` reads them).
+    Another number of holes, a centre that has no such datum (on an axis of the sketch, or a hole across a tube wall,
+    whose sketch is placed by its entry point) or a datum that is not where the recorded request left it raise
+    ``NotInPlaceError``."""
+    before, after = hole_points(old), hole_points(new)
+    if len(before) != len(after):
+        raise NotInPlaceError("the number of holes of the feature changes")
+    changes: list[tuple[int, str, float]] = []
+    for circle, (was, now) in enumerate(zip(before, after, strict=True)):
+        for kind, axis in (("DistanceX", 0), ("DistanceY", 1)):
+            if abs(was[axis] - now[axis]) <= POSITION_EPS:
+                continue
+            found = [
+                i
+                for i, row in enumerate(rows)
+                if row[0] == kind and row[1:5] == (-1, 1, circle, 3) and row[7]  # origin to centre, driving
+            ]
+            if len(found) != 1:
+                raise NotInPlaceError(
+                    f"the sketch of the hole has no {kind} from its origin to the centre of hole {circle + 1}"
+                )
+            index = found[0]
+            if abs(values[index] - was[axis]) > HAND_EPS:
+                raise NotInPlaceError("the sketch of the hole is not where its request says (changed by hand)")
+            if abs(now[axis]) <= POSITION_EPS:
+                raise NotInPlaceError("a centre on an axis of the sketch is not a distance")
+            changes.append((index, str(rows[index][8]), now[axis]))
     return changes
 
 

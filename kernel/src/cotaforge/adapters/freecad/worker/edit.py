@@ -337,6 +337,7 @@ class Analysis:
         self.recomputed: list[reg.FeatureRec] = []
         self.pd = False  # some edit is a PartDesign feature (its dimensions or those of its sketch)
         self.sets: dict[str, list[tuple[Any, str, Any]]] = {}  # feature id -> (object, property, value) to set
+        self.moves: dict[str, list[tuple[int, str, float]]] = {}  # hole id -> datums of its sketch that move it
 
 
 def analyse(doc: reg.DocumentRec, edits: list[Edit]) -> Analysis:
@@ -512,6 +513,15 @@ def _analyse_feature(doc: reg.DocumentRec, edit: Edit, graph: set[str], result: 
     ]
     if bound:
         return f"{', '.join(bound)} is bound to an expression: a value set directly would be overwritten"
+    moves: list[tuple[int, str, float]] = []
+    if edit.kind == "hole":
+        try:
+            moves = _hole_moves(doc, edit)
+        except dim_edit.NotInPlaceError as exc:
+            return str(exc)
+        held = dim_edit.bound_by_expression(_expression_paths(_profile_sketch(obj)), moves)
+        if held:
+            return f"{', '.join(held)} of the sketch of {rec.label} is bound to an expression"
     dependents, bodies, blocker = _feature_dependents(doc, edit)
     if blocker is None:
         for dep in dependents:
@@ -524,7 +534,33 @@ def _analyse_feature(doc: reg.DocumentRec, edit: Edit, graph: set[str], result: 
     result.dependents[rec.id] = dependents
     result.bodies |= bodies
     result.sets[rec.id] = sets
+    if moves:
+        result.moves[rec.id] = moves
     return None
+
+
+def _hole_moves(doc: reg.DocumentRec, edit: Edit) -> list[tuple[int, str, float]]:
+    """The datums of the sketch of a hole that put its circles at the new points (empty: they do not move). The hole
+    stays where the recorded origin puts it: only the distances from that origin change, so the feature is edited in
+    place and the document is recomputed once. A hole across a tube wall is placed by its entry point, not by a
+    distance: only a rebuild moves it."""
+    old, new = edit.rec.params, edit.request
+    if dim_edit.hole_points(old) == dim_edit.hole_points(new):
+        return []
+    face = old.get("face")
+    if not isinstance(face, dict) or not isinstance(face.get("id"), str):
+        raise dim_edit.NotInPlaceError("the face of the hole is not recorded")
+    try:
+        rec, comp = reg.resolve_face(doc, face["id"], None)
+        planar = face_descriptor(doc, rec, comp)["normal"] is not None
+    except WorkerError as exc:
+        raise dim_edit.NotInPlaceError(f"the face {face['id']} the hole sits on no longer exists") from exc
+    if not planar:
+        raise dim_edit.NotInPlaceError("the position of a hole across a curved face is set by its entry point")
+    sk = _profile_sketch(edit.obj)
+    if sk is None:
+        raise dim_edit.NotInPlaceError(f"the hole {edit.rec.label} has no sketch")
+    return dim_edit.hole_position_changes(old, new, _rows(sk), [float(c.Value) for c in sk.Constraints])
 
 
 # --- measures ---------------------------------------------------------------------------------------------------------
@@ -1477,7 +1513,9 @@ def edit_feature(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]
         if not _same_pose(pose, obj.Placement, DRIFT_TOL):
             sets.append(("Placement", pose))
         plan.append((obj, sets))
-    has_feature_change = any(analysis.sets.values()) or any(e.sketch is not None for e in edits)
+    has_feature_change = (
+        any(analysis.sets.values()) or any(analysis.moves.values()) or any(e.sketch is not None for e in edits)
+    )
     if not has_feature_change and not any(sets for _, sets in plan):
         return finish(warnings=["nothing changed: the new requests equal the values the document already has"])
 
@@ -1508,6 +1546,8 @@ def edit_feature(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]
                 fc.set_prop(obj, prop, value)
             if edit.kind == "hole" and any(p == "Diameter" for _, p, _ in analysis.sets.get(edit.rec.id, ())):
                 _sync_hole_sketch(edit)
+            for index, _, value in analysis.moves.get(edit.rec.id, ()):
+                fc.call(_profile_sketch(edit.obj), "setDatum", index, float(value))
             if edit.kind == "linear_pattern" and edit.sketch is None:
                 saved_features.setdefault(edit.rec.id, (dict(edit.rec.named_dimensions), edit.rec.instance_count))
                 edit.rec.instance_count = int(edit.request["count"]) * int(edit.request.get("count2") or 1)
