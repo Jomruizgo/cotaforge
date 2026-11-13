@@ -77,7 +77,7 @@ def build_part() -> dict[str, Any]:
         params = {"standard": "simple", "size": None, "end_condition": "through_all", "depth_mm": None}
         params.update(fields)
         face = top()
-        centre = face["center"]
+        centre = [(a + b) / 2 for a, b in zip(face["bbox"]["min"], face["bbox"]["max"], strict=True)]  # box, not mass
         call("hole", op(name, face=face["handle"], position=[where[0] - centre[0], where[1] - centre[1]], **params))
 
     for number, where in enumerate(DOWELS, start=1):

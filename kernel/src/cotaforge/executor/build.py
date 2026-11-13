@@ -70,6 +70,7 @@ from cotaforge.contract import (
     plain_op_name,
     sketch_profiles,
     slide_onto_face,
+    stable_face_origin,
 )
 from cotaforge.executor.context import ExecutionContext
 from cotaforge.executor.errors import ResolutionError
@@ -317,7 +318,7 @@ def _hole_position_from_point(op: Any, face: Any, resolver: Resolver) -> tuple[f
                 "on the outer wall of a tube or shaft use position = [axial_mm, angle_deg]"
             ),
         )
-    frame = frame_for_face(face)
+    frame = frame_for_face(face, stable_face_origin(face))
     u, v, _ = frame.to_local(tuple(float(c) for c in op.at))
     point = frame.to_world(u, v)
     box = face.bbox
@@ -353,8 +354,31 @@ def build_hole(op: Any, ctx: ExecutionContext, resolver: Resolver) -> HoleReques
             ),
         )
     thread = HoleThread(size=op.size, depth_mm=op.thread_depth_mm) if op.standard is HoleStandard.iso_tapped else None
-    position = op.position if op.at is None else _hole_position_from_point(op, face, resolver)
-    origin = _held_origin(ctx, op.id, face) if op.at is None and face.surface is SurfaceType.plane else None
+    points = op.points()
+    if points is not None and face.surface is not SurfaceType.plane:
+        raise ResolutionError(
+            op_id=op.id,
+            path="face",
+            ref=op.face,
+            candidates=1,
+            message=(
+                f"several holes in one op (positions / bolt_circle) need a planar face, but {face.handle.id} is "
+                f"{face.surface.value}; on a tube or shaft wall give one op per hole with "
+                "position = [axial_mm, angle_deg]"
+            ),
+        )
+    if points is not None:
+        position = points[0]
+    elif op.at is None:
+        position = op.position
+    else:
+        position = _hole_position_from_point(op, face, resolver)
+    # (u, v) is measured from a point that holes drilled in the face do not move: the one a rebuild holds, else the
+    # centre of the face's bounding box (never its centre of mass)
+    origin = None
+    if face.surface is SurfaceType.plane:
+        held = _held_origin(ctx, op.id, face) if op.at is None else None
+        origin = held if held is not None else stable_face_origin(face)
     up_to = resolver.face(op.up_to_face, op.id, "up_to_face").handle if op.up_to_face is not None else None
     # FreeCAD's default point (angled) applies to a hole with a bottom on a flat face: a through hole has none, and a
     # hole across a tube wall is a plain cylinder; only an explicit request for a point there is passed on (and refused)
@@ -367,6 +391,7 @@ def build_hole(op: Any, ctx: ExecutionContext, resolver: Resolver) -> HoleReques
         operation_id=op.id,
         face=face.handle,
         position=position,
+        positions=points,
         origin=origin,
         standard=op.standard,
         size=op.size,

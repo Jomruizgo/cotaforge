@@ -61,7 +61,7 @@ def _build() -> dict[str, Any]:
     base = extrude("base", sketch("s0", "XY", [rect("outline", (50, 30), PLATE[0], PLATE[1])]), PLATE[2])
     for name, where, diameter, extra, colour in HOLES:
         face = select_face(faces_of(base["feature"]), normal=(0, 0, 1))
-        centre = face["center"]
+        centre = [(a + b) / 2 for a, b in zip(face["bbox"]["min"], face["bbox"]["max"], strict=True)]
         fields = {"standard": "simple", "size": None, "end_condition": "through_all", "depth_mm": None}
         if "thread" in extra:
             fields.update(standard="iso_tapped", size="M6", end_condition="blind", depth_mm=12.0)

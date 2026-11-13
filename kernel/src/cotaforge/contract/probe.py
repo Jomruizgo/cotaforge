@@ -11,6 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from cotaforge.contract.geometry import Vec3
 from cotaforge.contract.handles import BodyHandle, FaceHandle, SketchHandle
 from cotaforge.contract.requests import Request
 
@@ -21,6 +22,8 @@ class HoleTool(BaseModel, frozen=True, allow_inf_nan=False):
 
     face: FaceHandle
     position: tuple[float, float]
+    origin: Vec3 | None = None
+    """The point ``position`` is measured from (a point of the plane of the face); ``None`` = the centre of the face."""
     outline: tuple[tuple[float, float], ...] = Field(min_length=3)
 
 

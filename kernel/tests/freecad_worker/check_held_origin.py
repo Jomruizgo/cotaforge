@@ -42,7 +42,8 @@ def check_a_hole_with_an_origin_is_measured_from_it_and_slid_onto_the_face() -> 
 
 def check_a_hole_without_an_origin_reports_the_centre_of_the_face_it_was_measured_from() -> None:
     ids = _plate()
-    centre = call("face_info", op("q", face=ids["top"]["handle"]))["center"]
+    box = call("face_info", op("q", face=ids["top"]["handle"]))["bbox"]
+    centre = [(a + b) / 2 for a, b in zip(box["min"], box["max"], strict=True)]  # the box, not the centre of mass
     request = _hole_request(ids["top"], 4.0, (25.0, 0.0))
     request["operation_id"] = "hole_2"
     result = call("hole", request)

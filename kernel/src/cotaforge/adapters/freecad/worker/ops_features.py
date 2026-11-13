@@ -30,13 +30,20 @@ def _op(params: dict[str, Any]) -> str:
 # --- sketch ------------------------------------------------------------------------------------------------------
 
 
-def _origin_on(params: dict[str, Any], desc: dict[str, Any]) -> g.Vec3:
+def _origin_on(params: dict[str, Any], desc: dict[str, Any], *, stable: bool = False) -> g.Vec3:
     """The origin of the frame on the planar face ``desc``: the ``origin`` the request names (a rebuild puts a feature
-    where it stood), slid along the normal onto the plane of the face, or the centre of the face."""
+    where it stood), slid along the normal onto the plane of the face, or the centre of the face. With ``stable``
+    (a hole) the centre of the face is the centre of its bounding box, which holes drilled in the face do not move,
+    not its centre of mass, which they do."""
     centre = tuple(desc["center"])
     wanted = params.get("origin")
     if wanted is None:
-        return centre
+        if not stable:
+            return centre
+        box = desc["bbox"]
+        middle = g.scale(g.add(g.vec(box["min"]), g.vec(box["max"])), 0.5)
+        n = g.unit(tuple(desc["normal"]))
+        return g.add(middle, g.scale(n, g.dot(g.sub(centre, middle), n)))
     n = g.unit(tuple(desc["normal"]))
     point = g.vec(wanted)
     return g.add(point, g.scale(n, g.dot(g.sub(centre, point), n)))
@@ -607,6 +614,9 @@ def hole(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     angled = params.get("drill_point", "flat") == "angled" and end != "through_all"  # a through hole has no bottom
     if counterbore is not None and countersink is not None:
         raise invalid_request("a hole takes a counterbore or a countersink, not both", op)
+    positions = params.get("positions")
+    if positions is not None and (cylindrical or end == "up_to_face"):
+        raise not_supported("several holes in one op need a planar face and a through_all or blind end", op)
     if cylindrical and (counterbore or countersink or angled or end == "up_to_face"):
         raise not_supported(
             "counterbore, countersink, an angled drill point and up_to_face are supported on planar faces only: a "
@@ -619,10 +629,11 @@ def hole(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         _, frame, drill = _radial_entry(doc, rec, desc, face_id, position, diameter, body, op)
         centre = [0.0, 0.0]  # the sketch origin IS the entry point
     else:
-        frame = g.frame_for_face(_origin_on(params, desc), tuple(desc["normal"]))
+        frame = g.frame_for_face(_origin_on(params, desc, stable=True), tuple(desc["normal"]))
         drill = g.scale(tuple(desc["normal"]), -1.0)
         centre = [float(position[0]), float(position[1])]
-        _check_planar_entry(doc, rec, frame, body, face_id, centre, op)
+        for point in positions if positions is not None else [position]:
+            _check_planar_entry(doc, rec, frame, body, face_id, [float(point[0]), float(point[1])], op)
     emulation: str | None = None
     if end == "up_to_face":
         depth = _depth_to_face(doc, params, frame, centre, drill, face_id, op)
@@ -632,9 +643,13 @@ def hole(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
             f"{params['up_to_face']['id']} now; edit or re-run the step to measure it again"
         )
     thread = params.get("thread")
+    centres = [[float(p[0]), float(p[1])] for p in positions] if positions is not None else [centre]
     spec = {
         "operation_id": op,
-        "entities": [{"kind": "circle", "name": "hole", "center": centre, "diameter": diameter}],
+        "entities": [
+            {"kind": "circle", "name": "hole" if i == 0 else f"hole_{i + 1}", "center": c, "diameter": diameter}
+            for i, c in enumerate(centres)
+        ],
     }
     circle = reg.SketchRec(doc.next_id("sketch"), spec, frame, oc.sketch_profiles(spec["entities"], op))
     circle.on_face = face_id

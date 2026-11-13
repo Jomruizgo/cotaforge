@@ -162,7 +162,12 @@ FIELD_NOTES: dict[tuple[str, str], str] = {
     ("cut", "depth_mm"): "required when end_condition is blind",
     ("cut", "direction"): "negative = into the material for a sketch on a face",
     ("revolve", "axis"): "u|v (sketch axes) or the name of a line entity of the sketch; profile on ONE side of it",
-    ("hole", "position"): "(u, v) mm from the face CENTRE in the face frame, not world coordinates; or give at",
+    ("hole", "position"): "(u, v) mm in the face frame, not world coordinates, measured from the centre of the face's "
+    "BOUNDING BOX (it does not move when holes are drilled in the face; the centre of mass does); or give at",
+    ("hole", "positions"): "several holes in ONE call and one feature: a list of (u, v), each as position (e.g. the 4 "
+    "corners of a rectangular pattern); no two closer than one diameter; not with up_to_face",
+    ("hole", "bolt_circle"): "holes equally spaced on a circle in ONE feature: {diameter_mm (pitch circle), count, "
+    "center [u, v] (default [0, 0]), start_angle_deg (from +u towards +v, default 0)}",
     ("hole", "at"): "world point [x, y, z] mm instead of position: projected onto the face, refused (by how many mm) "
     "when outside it",
     ("hole", "size"): "required for iso_clearance / iso_tapped, e.g. M6",
