@@ -168,8 +168,8 @@ ITEM_LINES = (
     "The frame hangs under the size callout on its shelf.",
     "overall on a part of revolution (a body whose total size is the diameter of an outer cylinder) gives Ø once, "
     "in the view where the axis lies sideways; review flags duplicate_dimension if a dim repeats an overall one. When a "
-    "thread callout (dim kind=diameter on the threaded cylinder: M12 ...) says that same diameter the overall leaves the "
-    "plain Ø out (M12 already carries it). overall: side? (above|below, for the width): by default it stands above the "
+    "thread callout (dim kind=diameter on the threaded cylinder: M12 ...) runs the whole part the overall leaves the "
+    "plain Ø out; a thread on one end leaves the plain part its Ø. overall: side? (above|below, for the width): by default it stands above the "
     "front view unless TechDraw's extension lines (they rise from the lower corners of the view) would cross a gap in the "
     "part, then it goes below; review flags dimension_side when one placed above crosses it.",
     "finish (ISO 1302 / 21920): ra (um), machining=required (triangle, default) | forbidden (circle) | any, "
@@ -182,7 +182,7 @@ ITEM_LINES = (
     "view (else beside it). "
     'revision: index ("A"), description, date?, by? -- a row of the revision table of the title block (the last 5 '
     "show) and the sheet's revision field. overall: the three overall dimensions (made by create; remove it and add "
-    "it back to change it).",
+    "it back to change it). hole_positions (assembly, auto): Ø, centre and edge distances of the through holes.",
     "view_lines: hidden edges (dashed, layer OCULTAS) and centre lines (layer EJES) in the standard views. hidden? "
     '(true = front and right, false, or a list like ["front","top"]), centres? (default true: a cross on every hole '
     "or whole cylinder seen as a circle and a centre line along every one seen from the side). Add it to every part "

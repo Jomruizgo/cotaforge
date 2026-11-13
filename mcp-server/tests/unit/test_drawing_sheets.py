@@ -287,7 +287,7 @@ def test_review_asks_the_cad_for_findings_and_lists_warnings_first(sheet: tuple[
     text = call.ok("drawing", action="review")
     assert fake.described[-1].review is True
     assert "review: 1 warning(s), 1 to confirm" in text
-    assert "warning hole_no_callout [feature:4]: Agujero sin llamada" in text and "info no_view_lines" in text
+    assert "BLOCKS EXPORT hole_no_callout [feature:4]: Agujero sin llamada" in text and "BLOCKS EXPORT no_view_lines" in text
     fake.findings = ()
     assert "nothing found" in call.ok("drawing", action="review")
     call.ok("drawing", action="list")

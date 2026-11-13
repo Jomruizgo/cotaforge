@@ -42,7 +42,7 @@ from sheet_context import (
     v_point3,
     v_points3,
 )
-from sheet_draw import arrow, centre_mark
+from sheet_draw import arrow, centre_mark, linear_dimension
 from sheet_model import AXES, CONTOUR, DIMENSIONS, HIDDEN, TEXT, Circle, Entity, Line, Text, fmt
 from sheet_units import NativeFlag
 
@@ -467,6 +467,14 @@ def draw_section(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     ctx.extras.setdefault("sections", {})[label] = info
     ctx.extras.setdefault("section_items", {})[label] = item_id
     ctx.extras.setdefault("section_planes", {})[label] = (at, normal)
+    if ctx.assembly is not None and not {"front", "right"} & set(ctx.views):
+        # the section of an assembly is its main view when no outside view shows the height: it carries the overall height
+        dist = ctx.stack_distance(label, "right", None)
+        text = ctx.num((box[3] - box[1]) / k)
+        entities, taken = linear_dimension((box[2], box[1]), (box[2], box[3]), "v", box[2] + dist, text)
+        ctx.add(entities)
+        ctx.reserve_dimension(entities, taken)
+        ctx.used_view(label)
     axes, axis_count = sheet_section.centre_lines(ctx, info, at, normal)
     threads, thread_count = sheet_section.threads_cut(ctx, info, at, normal)
     ctx.add(axes + threads)

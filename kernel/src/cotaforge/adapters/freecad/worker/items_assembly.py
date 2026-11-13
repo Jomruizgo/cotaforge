@@ -384,6 +384,9 @@ def draw_balloons(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     book["hidden"].update({n: (w, name) for n, w in hidden.items()})
     for number in placed:
         book["view"][number] = name
+    pointed = {n: first for n, (first, _) in shown.items()}
+    shares = ctx.geometry.visible_share(list(pointed.values()), (view.centre, view.xdir, view.direction), offsets) if pointed else {}
+    book.setdefault("share", {}).update({n: shares[i] for n, i in pointed.items() if i in shares})  # how much of each part the view shows
     problems = []
     if hidden:
         listed = ", ".join(f"{n} ({w})" for n, w in sorted(hidden.items()))

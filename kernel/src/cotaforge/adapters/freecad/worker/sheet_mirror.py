@@ -274,6 +274,11 @@ def _sync_overall(fc_doc: Any, page: Any, units: list[su.Unit], report: Report) 
         if abs(float(obj.X) - x) > POSITION_TOL_MM or abs(float(obj.Y) - y) > POSITION_TOL_MM:
             obj.X, obj.Y = x, y
             report.updated.append(key)
+        text = str(info.get("text", ""))
+        if text.startswith("Ø") and str(obj.FormatSpec) != text:
+            obj.Arbitrary = True  # the extent dimension measures a number: a diameter is written with its symbol
+            obj.FormatSpec = text
+            report.updated.append(key)
 
 
 def _symbols(objects: list[Any]) -> list[Any]:
