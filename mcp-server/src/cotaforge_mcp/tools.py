@@ -206,8 +206,8 @@ def _run(
                 lines = session.edit_step(args.edit, args.params, args.intent)
             lines += design_memory.after_action(session, "edit_feature", {"step": args.edit})
             lines += bearing_seats.after_action(session, "edit_feature")
-            lines += pocket_corners.after_action(session, "edit_feature")
-            if not moves_holes:  # a hole moved is no new sharp end: reading every face of the part again is not needed
+            if not moves_holes:  # a hole moved is no new sharp end nor pocket corner: the faces are not read again
+                lines += pocket_corners.after_action(session, "edit_feature")
                 lines += turned_ends.after_action(session, "edit_feature")
             return ok("\n".join(lines), limit=2500)
         with session.listening(progress):
