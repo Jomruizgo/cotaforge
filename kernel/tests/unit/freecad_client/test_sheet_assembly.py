@@ -434,15 +434,13 @@ def test_a_leader_that_must_cross_a_dimension_is_tried_only_when_no_clean_place_
 # --- names, trails, no isometric view, the reference finding --------------------------------------------------------------
 
 
-def test_the_name_a_part_shows_is_the_one_the_engineer_gave_digits_and_all() -> None:
+def test_the_name_a_part_shows_is_its_designation_not_the_name_of_its_document_or_file() -> None:
     import assembly_names as names
 
-    assert names.display_name("eje_d20", "", "/x/3_eje_d.FCStd", "comp:4") == "eje_d20"
-    assert names.display_name("rodamiento_6204", "Rodamiento", "", "comp:5") == "rodamiento_6204"
-    assert names.display_name("eje_d20.step", "", "", "comp:4") == "eje_d20", "an import name without its extension"
-    assert names.display_name("", "Soporte 2", "/x/soporte.FCStd", "comp:1") == "Soporte 2", "then the sheet's title"
-    assert names.display_name("", "", r"C:\piezas\placa_M8.FCStd", "comp:1") == "placa_M8", "then the file's stem"
-    assert names.display_name("", "", "", "comp:7") == "comp:7"
+    assert names.designation("Eje D20", "") == "Eje D20"
+    assert names.designation("", "Soporte 2") == "Soporte 2", "then the title of the part's own sheet"
+    assert names.designation("", "") == "", "never the stem of the file or the id: the review asks the designer"
+    assert names.without_extension("eje_d20.step") == "eje_d20", "an import name without its extension (kept for the metadata)"
 
 
 def test_a_trail_covers_only_the_gap_between_the_assembled_and_the_drawn_place() -> None:
@@ -473,13 +471,17 @@ def test_the_exploded_view_draws_trails_in_the_gaps_and_leaves_out_the_ones_that
     assert off[0].status in ("ok", "warning")
 
 
-def test_without_the_isometric_view_the_group_stays_left_and_leaves_room_to_the_right() -> None:
-    with_iso = layout.plan(160, 100, 87, 420, 297)
-    without = layout.plan(160, 100, 87, 420, 297, isometric=False)
+def test_without_the_isometric_view_an_assembly_group_stays_left_and_a_part_sheet_is_centred() -> None:
+    parts_list = (180.0, 30.0)
+    with_iso = layout.plan(160, 100, 87, 420, 297, reserve=parts_list)
+    without = layout.plan(160, 100, 87, 420, 297, reserve=parts_list, isometric=False)
     assert without.scale >= with_iso.scale
     left = layout.drawing_area(420, 297)[0]
     assert without.front[0] < with_iso.front[0] and without.front[0] - 100 * without.scale < left + 100
-    assert layout.plan(160, 100, 87, 420, 297) == with_iso, "a part sheet's layout is what it was"
+    alone = layout.plan(160, 100, 87, 420, 297, isometric=False)  # nothing will take the room on the right: no corner
+    area = layout.drawing_area(420, 297)
+    block_left = alone.front[0] - 160 * alone.scale / 2 - 100 * alone.scale - alone.spacing
+    assert abs((block_left - area[0]) - (area[2] - (alone.front[0] + 160 * alone.scale / 2))) < 40.0
 
 
 def test_review_says_which_own_parts_have_no_drawing_number_or_reference() -> None:

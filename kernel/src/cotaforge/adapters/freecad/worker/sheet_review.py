@@ -179,24 +179,56 @@ def _unused_views(data: ReviewInput) -> list[Finding]:
         if by_hand.get(name) or any(types.get(i) in CARRYING_TYPES for i in use.get(name, ())):
             continue
         owner = ctx.extras.get("section_items", {}).get(name, "")
-        if name in sections and owner:
-            how = ctx.say(
-                f"quita su elemento {owner} (drawing action=remove, ids=[{owner}])",
-                f"remove its item {owner} (drawing action=remove, ids=[{owner}])",
-            )
-        else:
-            how = ctx.say(
-                f"quítala (drawing action=remove_view, view={name}) y las demás se reparten el espacio",
-                f"drop it (drawing action=remove_view, view={name}) and the others share the room",
-            )
+        out.append(_view_without_job(ctx, name, name in sections, owner))
+    return out
+
+
+def _view_without_job(ctx: Context, name: str, is_section: bool, owner: str) -> Finding:
+    """The finding for a view that carries nothing (``view_adds_nothing``), worded for the case: the end view of a turned part
+    that only repeats circles the diameters already give, the section of an assembly (which may stay without a dimension only
+    if it shows what the other views do not: how the parts fit, the fits), any other view."""
+    turned = ctx.geometry.round_extent() if ctx.assembly is None and ctx.geometry is not None else None
+    view = ctx.views.get(name)
+    if is_section and owner:
+        how = ctx.say(
+            f"quita su elemento {owner} (drawing action=remove, ids=[{owner}])",
+            f"remove its item {owner} (drawing action=remove, ids=[{owner}])",
+        )
+    else:
+        how = ctx.say(
+            f"quítala (drawing action=remove_view, view={name}) y las demás se reparten el espacio",
+            f"drop it (drawing action=remove_view, view={name}) and the others share the room",
+        )
+    if turned is not None and view is not None and view.looks_along(turned[0]):
+        text = ctx.say(
+            f"La vista {name} es la vista de extremo de una pieza torneada y no lleva ninguna cota: solo repite círculos que "
+            f"ya dan los Ø y la rosca de la vista principal, que lo lleva todo. {how[0].upper() + how[1:]}. Solo se queda si "
+            "enseña lo que la principal no enseña (un chavetero visto de frente, caras planas, un patrón de agujeros en la "
+            "cara): acótalo entonces; o el ingeniero lo ordena con su razón.",
+            f"The {name} view is the end view of a turned part and carries no dimension: it only repeats circles that the "
+            f"diameters and the thread of the main view already give, and the main view carries everything. {how[0].upper() + how[1:]}. "
+            "It stays only if it shows what the main view does not (a keyway seen end-on, flats, a hole pattern on the face): "
+            "dimension it then; or the engineer orders it with his reason.",
+        )
+    elif is_section and ctx.assembly is not None:
+        text = ctx.say(
+            f"El corte {name} no lleva ninguna cota. En un plano de conjunto un corte solo se queda sin cotas si enseña lo "
+            "que las otras vistas no enseñan: el montaje (cómo encajan las piezas entre sí) o los ajustes. Acota el ajuste o "
+            f"el espesor que muestra, o {how}; si enseña el montaje o los ajustes, el ingeniero lo ordena diciendo qué "
+            "enseña (by=, reason=).",
+            f"Section {name} carries no dimension. In an assembly sheet a section may stay without one only if it shows what "
+            "the other views do not: the assembly (how the parts fit together) or the fits. Dimension the fit or the "
+            f"thickness it shows, or {how}; if it shows the assembly or the fits, the engineer orders it saying what it "
+            "shows (by=, reason=).",
+        )
+    else:
         text = ctx.say(
             f"La vista {name} no lleva ninguna cota, llamada de agujero ni globo: acótala (dim, overall, hole_dim) o {how}. "
             "Si debe quedarse así, responde con la razón (no aplica: <por qué>).",
             f"The {name} view carries no dimension, hole callout or balloon: dimension it (dim, overall, hole_dim) or {how}. "
             "If it must stay as it is, answer with the reason (not_applies: <why>).",
         )
-        out.append(Finding("view_adds_nothing", "warning", text, (name,)))
-    return out
+    return Finding("view_adds_nothing", "warning", text, (name,))
 
 
 def _ok(data: ReviewInput, spec: dict[str, Any]) -> bool:
@@ -871,9 +903,22 @@ def _assembly_lists(data: ReviewInput) -> list[Finding]:
             rows = rows_of(ctx, lists[0])
         except ItemError:
             rows = []
+        unnamed = [g for g, cells in rows if not cells[2].strip()]
+        if unnamed:
+            shown = ", ".join(f"{g.position} ({g.instances[0]})" for g in unnamed)
+            first = unnamed[0]
+            text = ctx.say(
+                f"Piezas sin designación en la lista de piezas: {shown}. Pregunta al diseñador cómo se llama cada una "
+                "(en español, no el nombre del archivo) y escríbela: doc(action=set_title, name=...) en el documento de la "
+                f'pieza, o rows=[{{"component": "{first.instances[0]}", "name": "<designación>"}}] en la lista.',
+                f"Parts with no designation in the parts list: {shown}. Ask the designer what each is called (in the "
+                "project language, not the file name) and write it: doc(action=set_title, name=...) in the part's "
+                f'document, or rows=[{{"component": "{first.instances[0]}", "name": "<designation>"}}] in the list.',
+            )
+            out.append(Finding("part_unnamed", "warning", text, list_ids))
         bare = [g for g, cells in rows if not cells[3].strip() and not g.bought]
         if bare:
-            shown = ", ".join(f"{g.position} ({g.name})" for g in bare)
+            shown = ", ".join(f"{g.position} ({g.label})" for g in bare)
             text = ctx.say(
                 f"Piezas propias sin Nº de plano / Referencia en la lista: {shown}. Dales número de plano (campo "
                 "drawing_number de su hoja) o escríbelo con rows.",
@@ -885,7 +930,7 @@ def _assembly_lists(data: ReviewInput) -> list[Finding]:
     listed = set(ctx.extras.get("parts_list", {}).get("positions", []))
     drawn = set(book.get("drawn", set()))
     if lists and balloons:
-        names = {g.position: g.name for g in ctx.assembly.groups}
+        names = {g.position: g.label for g in ctx.assembly.groups}
         missing = sorted(listed - drawn)
         if missing:
             shown = ", ".join(f"{n} ({names.get(n, '?')})" for n in missing)
@@ -953,8 +998,8 @@ def _hidden_instances(data: ReviewInput) -> list[Finding]:
         position = ctx.assembly.position_of(cid)
         group = next(g for g in ctx.assembly.groups if g.position == position)
         text = ctx.say(
-            f"El componente {cid} (posición {position}, {group.name}) no se ve en ninguna vista del plano.",
-            f"Component {cid} (position {position}, {group.name}) is not visible in any view of the sheet.",
+            f"El componente {cid} (posición {position}, {group.label}) no se ve en ninguna vista del plano.",
+            f"Component {cid} (position {position}, {group.label}) is not visible in any view of the sheet.",
         )
         out.append(Finding("instance_hidden", "warning", text))
     if len(ctx.assembly.instances()) > HIDDEN_CHECK_LIMIT:

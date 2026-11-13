@@ -23,7 +23,7 @@ import sheet_project
 
 META_MATERIAL = "cotaforge_design.material"
 META_SOURCE = "cotaforge_import.source"  # written by import_geometry: the file a part came from
-META_NAME = "cotaforge_doc.name"  # written by new_document / import_geometry: the name the engineer gave the document
+META_TITLE = "cotaforge_design.title"  # written by ``doc set_title``: the designation the designer gave the part
 MATERIAL_PROPERTY = "CotaforgeMaterial"
 SPEC_PROP = "CotaforgeSpec"
 BOUGHT = {"es": "comprado", "en": "purchased"}
@@ -91,11 +91,8 @@ def assembly_info(doc: reg.DocumentRec, language: str) -> sc.Assembly | None:
         source = str(meta.get(META_SOURCE, "") or "")
         bought = bool(source) or bool(comp.foreign)
         number = _sheet_field(fc_part, "drawing_number") if fc_part is not None else ""
-        name = assembly_names.display_name(
-            str(meta.get(META_NAME, "") or ""),
-            _sheet_field(fc_part, "title") if fc_part is not None else "",
-            str(getattr(fc_part, "FileName", "") or "") if fc_part is not None else "",
-            comp_id,
+        name = assembly_names.designation(
+            str(meta.get(META_TITLE, "") or ""), _sheet_field(fc_part, "title") if fc_part is not None else ""
         )
         groups[key] = sc.PartGroup(
             position=len(groups) + 1,

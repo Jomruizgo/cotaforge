@@ -593,6 +593,9 @@ MEASURED_FINDINGS = frozenset(
         "parts_list_over_view",
         "instance_hidden",
         "view_adds_nothing",
+        "sheet_underused",
+        "part_unnamed",
+        "no_isometric",
         "cylinder_no_axis",
         "chamfer_no_dimension",
     }

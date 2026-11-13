@@ -174,8 +174,8 @@ def test_the_schema_cost_of_the_sweep_stays_small(session: Session) -> None:
     # inspect holes (+77, measured)
     # 7776 with validity (+11) and import sew (+187); 8220 with feature edit/delete, reload, focus
     assert (
-        sum(cost(t) for t in TOOLS if t.visible(session)) < 9800
-    )  # 9394 with the convention action; +56 brief language
+        sum(cost(t) for t in TOOLS if t.visible(session)) < 9850
+    )  # 9394 with the convention action; +56 brief language; +~50 set_title
     # 8220 with feature edit, reload, focus; 8724 with memory v2; 9025 measured with the native drawing sheet
     # (unchanged: the drawing tool is not in this session; on its own it went 1932 -> 2184 characters);
     # +21 with memory M1.1 (related, replaces, sources and two provenance sources in the memory tool): 9046
