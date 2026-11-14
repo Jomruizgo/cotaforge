@@ -1374,6 +1374,11 @@ def _expand_thread_dims(
     return out
 
 
+_KEYWAY_FALLBACK: dict[str, list[dict[str, Any]]] = {}
+"""The width and the depth of a keyway as plain dimensions, by the id of the removed section that was to carry them: a section that
+finds no room on the sheet is refused and its dimensions go where the sheet has a place for them (``add`` puts them back)."""
+
+
 def _expand_keyway_dims(
     doc: reg.DocumentRec, spec: dict[str, Any], requested: list[Any], op: str | None
 ) -> list[Any]:
@@ -1384,7 +1389,8 @@ def _expand_keyway_dims(
         return requested
     import items_views  # noqa: PLC0415 - the letters of the views
 
-    slots = sheet_facts.collect(doc, _bodies(doc, spec.get("body"), op)).keyway_slots
+    _KEYWAY_FALLBACK.clear()
+    slots =sheet_facts.collect(doc, _bodies(doc, spec.get("body"), op)).keyway_slots
     shown = tuple(views_of(spec))
     views_made = [i for i in [*spec.get("items", ()), *requested] if isinstance(i, dict) and i.get("type") in ("section", "detail", "aux_view")]
     taken = {str(i["letter"]) for i in views_made if i.get("letter")}
@@ -1407,7 +1413,8 @@ def _expand_keyway_dims(
         for number, slot in enumerate(slots, start=1):
             name = prefix if len(slots) == 1 else f"{prefix}{number}"
             section = None
-            if item.get("section", True) and sheet_keyway.axis_name(slot.cylinder.axis) is not None:
+            end_view = sheet_keyway.PROFILE_VIEW.get(sheet_keyway.axis_name(slot.cylinder.axis) or "")
+            if item.get("section", True) and end_view is not None and end_view not in shown:  # a sheet with the end view keeps its dimensions there
                 # the keyway is shown in a REMOVED section across it, on the extension of its cutting line: it carries the width
                 # (with its class) and the depth, and the end view of the part is not needed for them
                 free = [letter for letter in items_views.LETTERS if letter not in taken]
@@ -1416,6 +1423,9 @@ def _expand_keyway_dims(
             dims = sheet_keyway.dimension_specs(slot, name, shown, section, item.get("fit"), depth_tol)
             if section and any(d.get("view") == section for d in dims):  # no width or depth to carry: no section
                 taken.add(section[0])
+                _KEYWAY_FALLBACK[f"{name}_sec"] = [
+                    d for d in sheet_keyway.dimension_specs(slot, name, shown, None, item.get("fit"), depth_tol) if str(d["id"]).endswith(("_w", "_t"))
+                ]
                 made.append(
                     {"type": "section", "id": f"{name}_sec", "at": [round(v, 4) for v in sheet_keyway.middle_of(slot)],
                      "normal": list(slot.cylinder.axis), "letter": section[0], "removed": True}
@@ -1819,6 +1829,21 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         added.append(done)
     waited = wait_views(fc_doc, page, op)
     refused, tried = _refused(doc, page, spec, items, added, op)
+    lost = [sid for sid in refused if sid in _KEYWAY_FALLBACK]
+    if lost:  # a removed section of a keyway found no room: its width and depth stand on the sheet as plain dimensions
+        survivors = [a for a in added if a["id"] not in refused]
+        names = {a["id"] for a in survivors} | {i["id"] for i in items}
+        again: list[dict[str, Any]] = []
+        for sid in lost:
+            for raw in _KEYWAY_FALLBACK[sid]:
+                try:
+                    done = sheet_items.normalise(raw, names, spec["next"])
+                except sc.ItemError:
+                    continue
+                names.add(done["id"])
+                again.append(done)
+        added = survivors + again
+        refused, tried = _refused(doc, page, spec, items, added, op)
     keep = [a for a in added if a["id"] not in refused]
     spec["items"] = items + keep
     _sync_auto_items(doc, spec, op)
