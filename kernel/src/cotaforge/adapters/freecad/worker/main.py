@@ -40,6 +40,8 @@ import geometry as g
 import gui
 import hole_colours
 import holes
+import mould
+import mould_split
 import ops_assembly
 import ops_features
 import ops_joints
@@ -98,6 +100,8 @@ MUTATING_METHODS = frozenset(
         "move_body",
         "copy_body",
         "mirror_body",
+        "shrink_body",
+        "mould_split",
         "split",
         "edit_feature",
         "remove_feature",
@@ -296,6 +300,8 @@ class Worker:
             "move_body": lambda p: ops_primitives.move_body(d(p), p),
             "copy_body": lambda p: ops_primitives.copy_body(d(p), p),
             "mirror_body": lambda p: ops_primitives.mirror_body(d(p), p),
+            "shrink_body": lambda p: ops_primitives.shrink_body(d(p), p),
+            "mould_split": lambda p: mould_split.mould_split(d(p), p),
             "split": lambda p: ops_primitives.split(d(p), p),
             "edit_feature": lambda p: edit.edit_feature(d(p), p),
             "measure_bodies": lambda p: edit.measure_bodies(d(p), p),
@@ -326,6 +332,8 @@ class Worker:
             "is_valid": lambda p: queries.is_valid(d(p), p),
             "body_interference": lambda p: queries.body_interference(d(p), p),
             "list_holes": lambda p: holes.list_holes(d(p), p),
+            "draft_analysis": lambda p: mould.draft_analysis(d(p), p),
+            "parting_analysis": lambda p: mould_split.parting_analysis(d(p), p),
             "tool_overlap": lambda p: overlap.tool_overlap(d(p), p),
             "mass_properties": lambda p: queries.mass_properties(d(p), p),
             "bounding_box": lambda p: queries.bounding_box(d(p), p),

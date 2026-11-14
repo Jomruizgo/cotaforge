@@ -2,19 +2,27 @@ name: windows-installer
 
 # Builds the Windows installer, installs it on the runner (silently), checks it and uninstalls it.
 # On a version tag it also leaves a DRAFT release with the .exe attached; publishing it is a human decision.
+# Pull requests run it only when they touch what the installer packs or runs at install time (packaging, plugin, package
+# metadata, the command line and launcher, the manuals). Every push to develop and main runs it, so a code change that
+# breaks the install is caught right after its merge.
 
 on:
   pull_request:
     paths:
-      - "kernel/**"
-      - "mcp-server/**"
-      - "plugin/**"
       - "packaging/**"
+      - "plugin/**"
       - ".claude-plugin/**"
+      - "kernel/pyproject.toml"
+      - "mcp-server/pyproject.toml"
+      - "mcp-server/src/cotaforge_mcp/cli.py"
+      - "mcp-server/src/cotaforge_mcp/launcher.py"
       - "docs/manual-usuario.md"
       - "docs/user-manual.md"
       - ".github/workflows/windows-installer.yml"
   push:
+    branches:
+      - develop
+      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -138,7 +146,7 @@ jobs:
           $process = Start-Process -FilePath $env:SETUP -Wait -PassThru -ArgumentList @(
             "/VERYSILENT", "/LANG=english", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/SP-", "/LOG=$log")
           if ($process.ExitCode -ne 0) { Get-Content $log; throw "update exited with $($process.ExitCode)" }
-          if (-not $busy.HasExited) { Stop-Process -Id $busy.Id -Force; throw "the update left the running server alive" }
+          if (-not $busy.HasExited) { $busy.Kill(); throw "the update left the running server alive" }
           & $python -I -m cotaforge_mcp.cli version
           if ($LASTEXITCODE -ne 0) { Get-Content $log; throw "the updated program does not run" }
           Write-Host "updated over a running server; it was closed by its PID"
@@ -173,7 +181,7 @@ jobs:
           $deadline = (Get-Date).AddSeconds(180)
           while ((Test-Path $env:APP) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
           if (Test-Path $env:APP) { throw "$env:APP is still there after the uninstall" }
-          if (-not $busy.HasExited) { Stop-Process -Id $busy.Id -Force; throw "the uninstall left the running server alive" }
+          if (-not $busy.HasExited) { $busy.Kill(); throw "the uninstall left the running server alive" }
           # Projects are never touched by an uninstall.
           if (-not (Test-Path (Join-Path $env:RUNNER_TEMP "design space\.mcp.json"))) { throw "the design space was removed" }
           Write-Host "uninstalled; the design space is intact"

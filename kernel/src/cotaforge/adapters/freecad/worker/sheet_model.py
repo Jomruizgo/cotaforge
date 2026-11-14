@@ -25,6 +25,9 @@ THREAD = "ROSCAS"
 FLAT_FACES = "CARAS_PLANAS"  # the diagonals of a flat face of a turned part: a layer no native object draws
 ISO_SHADE = "ISO_COLOR"  # the shaded picture under the lines of the isometric view (``Sheet.underlay``), never DXF
 
+CENTRE_OVERSHOOT_MM = 2.5  # a centre line goes this far past the feature it marks, at EVERY end (ISO 128-24)
+CENTRE_CLEAR_MM = 1.0  # ... and stops this far short of a dimension line or a dimension text (it never reaches one)
+
 
 @dataclass(frozen=True)
 class LayerStyle:

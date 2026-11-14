@@ -168,13 +168,15 @@ def test_the_schema_cost_of_the_sweep_stays_small(session: Session) -> None:
     def cost(tool: ToolDef) -> int:
         return len(json.dumps(input_schema(tool, session), separators=(",", ":"))) + len(tool.description)
 
-    assert cost(TOOLS_BY_NAME["inspect"]) < 1330  # 1302 with the sweep, +51 with the edge-set preview (where)
+    assert (
+        cost(TOOLS_BY_NAME["inspect"]) < 1650
+    )  # 1593 with the draft action (+300, measured); 1302 with the sweep, +51 with the edge-set preview (where)
     # 6777 with develop's catalog tool, set_purpose and overwrite merged in; 7501 with develop's drawing tool,
     # bom and sheet-metal ops on top (the sum of both sides' legitimate additions); 7578 with doc import and
     # inspect holes (+77, measured)
     # 7776 with validity (+11) and import sew (+187); 8220 with feature edit/delete, reload, focus
     assert (
-        sum(cost(t) for t in TOOLS if t.visible(session)) < 9850
+        sum(cost(t) for t in TOOLS if t.visible(session)) < 10200
     )  # 9394 with the convention action; +56 brief language; +~50 set_title
     # 8220 with feature edit, reload, focus; 8724 with memory v2; 9025 measured with the native drawing sheet
     # (unchanged: the drawing tool is not in this session; on its own it went 1932 -> 2184 characters);

@@ -1,8 +1,7 @@
-"""A crash of the real FreeCAD worker (simulated by killing the worker THIS test's session spawned, by its own PID):
+"""A crash of the real FreeCAD worker (simulated by ending the worker THIS test's
+session spawned, through its own handle):
 the next call relaunches it, reopens the last saved file and reports what was lost."""
 
-import os
-import signal
 import threading
 import time
 from pathlib import Path
@@ -23,7 +22,7 @@ BOX = 'b = doc.addObject("Part::Box", "Late")\nb.Placement = Placement(Vector(50
 def kill_own_worker(adapter: FreeCADAdapter) -> int:
     pid = adapter.worker_pid
     assert pid is not None
-    os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+    adapter.crash_worker()
     deadline = time.monotonic() + 30
     while adapter.session_alive() and time.monotonic() < deadline:
         time.sleep(0.1)

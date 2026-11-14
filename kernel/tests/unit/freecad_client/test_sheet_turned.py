@@ -66,9 +66,9 @@ def test_the_layout_arranges_length_across_and_diameter_up() -> None:
     assert turned.layout_sizes(60.0, 12.0) == (60.0, 12.0, 12.0)
 
 
-def test_a_plain_turned_part_is_one_view_and_only_a_keyway_adds_the_end_view() -> None:
+def test_a_turned_part_is_one_view_a_keyway_adds_a_removed_section_not_an_end_view() -> None:
     assert turned.views_for(False) == ["front"]
-    assert turned.views_for(True) == ["front", "right"]
+    assert turned.views_for(True) == ["front"]
 
 
 # --- the end view that adds nothing ------------------------------------------------------------------------------------------

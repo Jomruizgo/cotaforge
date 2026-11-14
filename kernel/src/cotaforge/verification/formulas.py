@@ -334,6 +334,14 @@ def bbox_scale(box: BoundingBox, factor: float, about: Vec3) -> BoundingBox:
     return bbox_of_points(scale_point(c, factor, about) for c in bbox_corners(box))
 
 
+def bbox_scale_axes(box: BoundingBox, scale_: Vec3) -> BoundingBox:
+    """The box of a body scaled about the origin by a factor per axis (positive factors keep it axis-aligned)."""
+    return BoundingBox(
+        min=tuple(c * s for c, s in zip(box.min, scale_, strict=True)),  # type: ignore[arg-type]
+        max=tuple(c * s for c, s in zip(box.max, scale_, strict=True)),  # type: ignore[arg-type]
+    )
+
+
 def swept_profile_bbox(frame: SketchFrame, bbox_uv: tuple[Point2, Point2], start: float, end: float) -> BoundingBox:
     """Box of a profile's uv-box swept along the frame normal from offset ``start`` to ``end``."""
     (u0, v0), (u1, v1) = bbox_uv
