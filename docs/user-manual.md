@@ -530,6 +530,12 @@ The DXF is R12, with layers by role (`CONTORNO`, `OCULTAS`, `COTAS`, `TEXTO`, `R
 
 **`drawing` `review`.** It draws nothing and changes nothing. It lists, without a language model, what a reviewer would flag, each finding with an `id` and the element involved: holes without a callout or position, features without a dimension, over-dimensioning, undefined datums, references to faces that no longer exist, layout collisions and (on assemblies) parts-list and balloon problems. `warning` is a probable error and `info` something to confirm. Use it while you build the sheet; it does not replace looking at `capture`.
 
+### Geometric tolerance frames (ISO 1101)
+
+FreeCAD's symbol library has no frame for position, profile, run-out, symmetry or angularity, none with two or three datum cells and none with modifiers. CotaForge installs those frames as ordinary TechDraw symbols, in `%LOCALAPPDATA%\Programs\cotaforge\symbols\cotaforge-gdt`, one folder per characteristic (`position`, `profile-line`, `total-runout`...) and one file per number of datum cells (`position-3-datums.svg`; the `-wide` file has a longer tolerance cell for texts such as `Ø0,05 Ⓜ CZ`).
+
+To place one by hand: in the TechDraw sheet, *Insert SVG Symbol*, browse to that folder and choose the file. To change the values, select the symbol and edit its `EditableTexts` in FreeCAD's property editor: the first is the tolerance cell (`Ø0,1 Ⓜ`), the next ones the datum cells (`A`, `B`, `C`). Nothing in FreeCAD's preferences is changed.
+
 ### Finished drawing: who reviews and what blocks export
 
 `export` `pdf` (or `dxf` without `face` or `flat`) is **rejected until someone other than the agent that drew the sheet has reviewed it and nothing is left unresolved**. The response says which case the sheet is in and what is missing. The server does not decide that a drawing is good. It forces the agent to have someone else look at the sheet and to answer every point.

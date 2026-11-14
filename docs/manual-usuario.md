@@ -530,6 +530,12 @@ El DXF es R12, con capas por rol (`CONTORNO`, `OCULTAS`, `COTAS`, `TEXTO`, `ROTU
 
 **`drawing` `review`.** No dibuja nada ni cambia nada. Lista, sin modelo de lenguaje, lo que marcaría un revisor, cada hallazgo con un `id` y el elemento implicado: agujeros sin llamada o posición, rasgos sin cota, sobreacotado, referencias sin definir, referencias a caras que ya no existen, colisiones de disposición y (en ensambles) problemas de lista de piezas y globos. `warning` es un error probable e `info` algo por confirmar. Úsalo mientras construyes la hoja; no reemplaza mirar `capture`.
 
+### Marcos de tolerancia geométrica (ISO 1101)
+
+La biblioteca de símbolos de FreeCAD no tiene marco de posición, perfil, alabeo, simetría ni angularidad, ninguno con dos o tres casillas de referencia y ninguno con modificadores. CotaForge instala esos marcos como símbolos normales de TechDraw, en `%LOCALAPPDATA%\Programs\cotaforge\symbols\cotaforge-gdt`, una carpeta por característica (`position`, `profile-line`, `total-runout`...) y un archivo por número de casillas de referencia (`position-3-datums.svg`; el archivo `-wide` tiene la casilla de tolerancia más larga, para textos como `Ø0,05 Ⓜ CZ`).
+
+Para colocar uno a mano: en la hoja de TechDraw, *Insertar símbolo SVG*, ve a esa carpeta y elige el archivo. Para cambiar los valores, selecciona el símbolo y edita sus `EditableTexts` en el editor de propiedades de FreeCAD: el primero es la casilla de tolerancia (`Ø0,1 Ⓜ`), los siguientes las casillas de referencia (`A`, `B`, `C`). No se cambia ninguna preferencia de FreeCAD.
+
 ### Plano terminado: quién lo revisa y qué bloquea la exportación
 
 `export` `pdf` (o `dxf` sin `face` ni `flat`) **se rechaza hasta que alguien distinto del agente que dibujó la hoja la haya revisado y no quede nada sin resolver**. La respuesta dice en qué caso está la hoja y qué falta. El servidor no decide que un plano esté bien. Obliga al agente a que otro mire la hoja y a que responda cada punto.
