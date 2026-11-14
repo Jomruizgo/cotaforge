@@ -1,6 +1,7 @@
 name: unit
 
-# Fast unit suites on every pull request, whatever files it touches: the check branch protection requires.
+# Fast unit suites on every pull request, whatever files it touches, on Linux and on Windows (where the product runs).
+# The `unit` job at the end is the check branch protection requires: it passes only when both systems pass.
 
 on:
   pull_request:
@@ -15,9 +16,14 @@ permissions:
   contents: read
 
 jobs:
-  unit:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+  suites:
+    name: unit (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -33,3 +39,16 @@ jobs:
       - name: MCP server unit tests
         working-directory: mcp-server
         run: python -m pytest tests/unit
+
+  unit:
+    needs: suites
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Both systems passed
+        run: |
+          if [ "${{ needs.suites.result }}" != "success" ]; then
+            echo "unit suites: ${{ needs.suites.result }}"
+            exit 1
+          fi
