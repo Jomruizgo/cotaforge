@@ -424,6 +424,14 @@ KEYWAY_LINE = (
     "(a view with no dimension: only the engineer's order lets it stay)."
 )
 
+PATTERN_LINE = (
+    "pattern_dim (at, kind?, about?, view?, side?, offset_mm?): a bolt circle (equal holes on one circle about a bore, a boss or the "
+    "part's axis; not a rectangle's four corners) is located by its pitch circle Ø and the angle of its first hole, never by X / Y: "
+    "pd1 (Ø) and pd1a (angle, off a centre line) come by themselves, with radial centre lines; hole_dim gives the count. at = a "
+    "point on a hole's axis. A lone hole on a radius is yours to ask for (kind=angle at it, about=[x,y,z] its axis). Coordinates, "
+    "or the pitch circle only in a note: pattern_not_polar."
+)
+
 SPANISH_LINE = (
     "The engineer reads Spanish: notes, revision rows and the title block fields go in Spanish (the title block "
     "labels and the callouts are Spanish when language=es), numbers use the decimal comma on the sheet."
@@ -540,7 +548,7 @@ def drawing_text(tools: Collection[str], part: str = "", flow: str = "steps") ->
         groups = {
             TOPIC_ITEMS: [ITEM_INTRO[0], *ITEM_LINES[0:4]],
             TOPIC_MARKS: [*ITEM_LINES[4:9], WELD_LINE, KEYWAY_LINE],
-            TOPIC_VIEWS: [*ITEM_LINES[9:12], ITEM_LINES[13], LAYOUT_LINE],
+            TOPIC_VIEWS: [*ITEM_LINES[9:12], ITEM_LINES[13], PATTERN_LINE, LAYOUT_LINE],
             TOPIC_ASSEMBLY: [ITEM_LINES[12]],
             TOPIC_OUTPUT: [SHEET_RULES[2], PROJECTION_LINE, VIEW_LINE],
             TOPIC_QUALITY: QUALITY_LINES,
