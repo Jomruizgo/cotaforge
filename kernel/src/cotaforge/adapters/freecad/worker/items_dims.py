@@ -800,8 +800,24 @@ def _turned_diameter(ctx: Context, att: Any, radius_mm: float, text: str, extra:
     ctx.add(entities)
     ctx.reserve_dimension(entities, taken)
     ctx.used_view(view.name)
-    # no native TechDraw dimension: TechDraw would set the (long) text centred on its line, over the silhouette; the sheet's own
-    # ink puts it beyond the arrow, clear of the outline
+    # TechDraw's own dimension (a DrawViewDimension between the two silhouette points); its text is put beyond the upper (right)
+    # arrow, where the sheet's ink would put it, clear of the outline
+    reach = text_width(text, 3.5)
+    label = (chosen, taken[3] - reach / 2) if vertical else (taken[2] - reach / 2, chosen)
+    ctx.native(
+        NativeDim(
+            item=str(ctx.extras["current"]),
+            name="d1",
+            kind="distance",
+            view=view.name,
+            refs=(Ref2("point", a), Ref2("point", b)),
+            label=label,
+            expected=2 * radius_mm,
+            text=text,
+            orient="v" if vertical else "h",
+            rect=taken,
+        )
+    )
     return f"{text} in the {view.name} view, between its two silhouette lines on the step{extra}"
 
 
