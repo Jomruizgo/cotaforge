@@ -126,6 +126,24 @@ def normalise(spec: Any, taken: set[str], next_number: int) -> dict[str, Any]:
     return {"id": item_id, **checked}
 
 
+def edited(item: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    """The stored ``item`` with ``patch`` applied (a field set to ``None`` is taken off), checked by its own type. The id
+    and the type never change. Raises ``ItemError`` with what to change."""
+    kind = str(item["type"])
+    if patch.get("type", kind) != kind:
+        msg = f"an edit never changes the type ({kind}); remove the item and add the other one"
+        raise ItemError(msg)
+    merged = {k: v for k, v in item.items() if k != "id"}
+    for key, value in patch.items():
+        if key in ("id", "type"):
+            continue
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+    return {"id": item["id"], **REGISTRY[kind].check(merged)}
+
+
 def prepare_all(ctx: Context, items: list[dict[str, Any]]) -> None:
     """Let each item type see all its items before any is drawn (the title block needs the revisions, the notes block
     needs to know how many lines it has)."""

@@ -140,5 +140,5 @@ def test_the_adapter_can_word_the_description_of_a_tool(make: MakeSession) -> No
             return "OWN DRAWING TOOL" if topic == "tool:drawing" else None
 
     drawing = TOOLS_BY_NAME["drawing"]
-    assert tool_description(drawing, make(Worded())) == "OWN DRAWING TOOL"
-    assert tool_description(drawing, make(FakeAdapter())) == drawing.description
+    assert tool_description(drawing, make(Worded())).startswith("OWN DRAWING TOOL")  # then the note of the default flow
+    assert tool_description(drawing, make(FakeAdapter())).startswith(drawing.description)
