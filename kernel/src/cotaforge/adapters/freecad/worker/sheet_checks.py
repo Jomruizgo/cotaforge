@@ -629,6 +629,15 @@ def _material_consistency(data: Any) -> list[Any]:
                 )
                 out.append(_finding("material_title_block_empty", "warning", msg, note["id"], (note["id"],)))
             continue
+        if not field_material and said:
+            msg = ctx.say(
+                f"{note['id']} dice el material («{said}») y el campo de material del rótulo está vacío: el material va en el "
+                "rótulo (doc set_material, o material= al crear la hoja) y la nota no lo repite.",
+                f"{note['id']} states the material ('{said}') and the title block's material field is empty: the material belongs in "
+                "the title block (doc set_material, or material= when the sheet is created) and the note does not repeat it.",
+            )
+            out.append(_finding("material_only_in_note", "warning", msg, note["id"], (note["id"],)))
+            continue
         a, b = _norm(said), _norm(field_material)
         if field_material and a and b and a not in b and b not in a:
             msg = ctx.say(

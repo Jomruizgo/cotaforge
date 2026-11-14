@@ -6,6 +6,7 @@ page position (``at_mm``). A revision is a row of the revision table in the titl
 the last five revisions show) and sets the ``revision_index`` field to the latest one.
 """
 
+import re
 import textwrap
 from typing import Any
 
@@ -69,6 +70,15 @@ def note_text(ctx: Context, spec: dict[str, Any]) -> str:
     view = next(iter(ctx.views.values()))
     thickness = sum(abs(a) * e for a, e in zip(view.direction, extent, strict=True))
     return ctx.say(f"Espesor {ctx.num(round(thickness, 2))}", f"Thickness {ctx.num(round(thickness, 2))}")
+
+
+THICKNESS_NOTE = re.compile(r"\b(?:espesor|thickness)\b\s*[:=]?\s*\d", re.IGNORECASE)
+
+
+def states_thickness(text: str) -> bool:
+    """Whether a note says the thickness itself (``Espesor 19 mm``): the sheet's own thickness note is then left out, never
+    repeated."""
+    return THICKNESS_NOTE.search(text) is not None
 
 
 def _rank(spec: dict[str, Any]) -> int:
