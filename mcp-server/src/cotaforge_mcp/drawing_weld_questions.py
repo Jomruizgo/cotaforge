@@ -4,6 +4,7 @@ harness MEASURED as the proposal), the weld of each group of identical joints (w
 process with its quality level. The harness measures; the designer decides: nothing here is applied, and the answers are the
 decisions ``bodies``, ``welds`` and ``welding`` of ``compose``."""
 
+import json
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -124,6 +125,109 @@ def _joint(group: Any, language: str) -> Ask:
     return Ask(("welds",), text, tuple(joint_key(a, b) for a, b in group.pairs))
 
 
+VIEW_ALONG = {0: "right", 1: "front", 2: "top"}
+"""The standard view that looks along each axis (it shows a plate whose thin side is that axis face-on)."""
+AXIS_NAMES = "xyz"
+FLUSH_MM = 0.5
+
+
+def _merged(intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    out: list[tuple[float, float]] = []
+    for low, high in sorted(intervals):
+        if out and low <= out[-1][1] + FLUSH_MM:
+            out[-1] = (out[-1][0], max(out[-1][1], high))
+        else:
+            out.append((low, high))
+    return out
+
+
+Fact = tuple[str, list[bool], list[tuple[str, float]]]
+
+
+def position_dims(placement: Any, views: Sequence[str]) -> tuple[list[dict[str, Any]], list[Fact]] | None:
+    """The dimensions that locate the members on the plate, measured, and what is measured about them: from each edge of the
+    plate to the first member (when it is not flush with it) and between members, along both axes of the plate, in the view
+    that shows the plate face-on. ``None`` when that view is not on the sheet or nothing needs saying."""
+    base_low, base_high = placement.base_box
+    thin = min(range(3), key=lambda i: base_high[i] - base_low[i])
+    view = VIEW_ALONG[thin]
+    if view not in views:
+        return None
+    boxes = [m.box for m in placement.members]
+    if all(high[thin] <= base_low[thin] + FLUSH_MM for _, high in boxes):
+        plane = base_low[thin]
+    else:
+        plane = base_high[thin]
+    axes = [i for i in range(3) if i != thin]
+    dims: list[dict[str, Any]] = []
+    facts: list[Fact] = []
+    for a in axes:
+        other = next(i for i in axes if i != a)
+        runs = _merged([(low[a], high[a]) for low, high in boxes])
+        pairs: list[tuple[str, float, float]] = []
+        if runs[0][0] - base_low[a] > FLUSH_MM:
+            pairs.append(("edge", base_low[a], runs[0][0]))
+        pairs += [("gap", one[1], two[0]) for one, two in zip(runs, runs[1:], strict=False)]
+        if base_high[a] - runs[-1][1] > FLUSH_MM:
+            pairs.append(("edge", runs[-1][1], base_high[a]))
+        flush = [runs[0][0] - base_low[a] <= FLUSH_MM, base_high[a] - runs[-1][1] <= FLUSH_MM]
+        facts.append((AXIS_NAMES[a], flush, [(kind, round(high - low, 1)) for kind, low, high in pairs]))
+        for _kind, low, high in pairs:
+            point = [0.0, 0.0, 0.0]
+            point[thin], point[other] = plane, base_low[other]
+            start, end = list(point), list(point)
+            start[a], end[a] = low, high
+            dims.append(
+                {
+                    "type": "dim",
+                    "kind": "distance",
+                    "from": {"at": [round(v, 2) for v in start]},
+                    "to": {"at": [round(v, 2) for v in end]},
+                    "along": AXIS_NAMES[a],
+                    "view": view,
+                }
+            )
+    return (dims, facts) if dims else None
+
+
+def _facts_text(facts: list[Fact], language: str) -> str:
+    words = {
+        (True, True): say(language, "a ras de los dos bordes", "flush with both edges"),
+        (False, False): say(language, "retranqueados de los dos bordes", "set in from both edges"),
+    }
+    out = []
+    for name, flush, sizes in facts:
+        edges = words.get((flush[0], flush[1]), say(language, "a ras de un borde y retranqueados del otro", "flush with one edge and set in from the other"))
+        said = {"edge": say(language, "al borde", "to the edge"), "gap": say(language, "entre ellos", "between them")}
+        out.append(f"{name}: {edges}" + "".join(f"; {said[kind]} {_number(size, language)}" for kind, size in sizes))
+    return " | ".join(out)
+
+
+def _positions(weldment: Any, views: Sequence[str], language: str) -> Ask | None:
+    placement = getattr(weldment, "placement", None)
+    if placement is None or not placement.members:
+        return None
+    found = position_dims(placement, views)
+    if found is None:
+        return None
+    dims, facts = found
+    items = json.dumps(dims, ensure_ascii=False, separators=(",", ":"))
+    members = ", ".join(m.id for m in placement.members)
+    measured = _facts_text(facts, language)
+    text = say(
+        language,
+        f"¿Cómo se sitúan sobre la chapa {placement.base} los cuerpos que se sueldan a ella ({members})? El soldador no los puede colocar "
+        f"sin una cota que los sitúe. Medido (mm): {measured}. Propuesta: acotar la separación entre ellos y lo que falte al borde cuando no "
+        f"están a ras (lo que está a ras se ve en la vista y no lleva cota). En positions: {items}. Si los fija un útil o no hace falta "
+        "acotarlos: positions: []",
+        f"How do the bodies welded to the plate {placement.base} ({members}) stand on it? The welder cannot place them without a "
+        f"dimension that locates them. Measured (mm): {measured}. Proposal: dimension the distance between them and what is left to the "
+        f"edge when they are not flush (what is flush shows in the view and takes no dimension). In positions: {items}. If a jig fixes "
+        "them or no dimension is needed: positions: []",
+    )
+    return Ask(("positions",), text)
+
+
 def _welding(language: str) -> Ask:
     text = say(
         language,
@@ -137,16 +241,27 @@ def _welding(language: str) -> Ask:
     return Ask(("welding",), text)
 
 
-def ask(weldment: Any, language: str, recompose: bool = False, quality_on_sheet: bool = False) -> list[Ask]:
+def ask(
+    weldment: Any,
+    language: str,
+    recompose: bool = False,
+    quality_on_sheet: bool = False,
+    views: Sequence[str] = (),
+    positioned: bool = False,
+) -> list[Ask]:
     """The questions of a welded part, in the order the designer answers them: the bodies, the weld of each group of joints,
     the process. ``recompose``: the sheet carries items of an earlier compose, which a new one takes off, so everything is
-    asked again. ``quality_on_sheet``: the sheet prints an ISO 5817 level already (the process is not asked again)."""
+    asked again. ``quality_on_sheet``: the sheet prints an ISO 5817 level already (the process is not asked again). ``positioned``:
+    the sheet carries the dimensions that locate the members (they are not asked again until a new compose takes them off)."""
     if weldment is None:
         return []
     out: list[Ask] = []
     bodies = _bodies(weldment, language, recompose)
     if bodies is not None:
         out.append(bodies)
+    positions = None if positioned and not recompose else _positions(weldment, views, language)
+    if positions is not None:
+        out.append(positions)
     out += [_joint(g, language) for g in weldment.joints if recompose or not g.welded]
     if recompose or not quality_on_sheet:
         out.append(_welding(language))

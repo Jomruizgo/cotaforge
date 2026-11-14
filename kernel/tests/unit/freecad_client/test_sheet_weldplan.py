@@ -88,3 +88,32 @@ def test_a_small_part_is_not_drawn_at_the_floor_scale_when_a_bigger_paper_reache
 )
 def test_what_reaches_full_size_keeps_its_paper(dims: tuple[float, float, float], expected: tuple[str, float]) -> None:
     assert layout.auto_paper(*dims, True, True, True, iso_dims=dims) == expected
+
+
+# --- where the members stand on the plate ----------------------------------------------------------------------------------------
+
+
+def frame_facts() -> tuple[list[sc.PartGroup], list[sj.Joint], dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]]]:
+    four = [BodyFact(f"body:{n}", 177600.0, 119288.0, 16, (400.0, 40.0, 40.0)) for n in (1, 2, 3, 4)]
+    assembly = group_bodies([*four, PLATE], "es")
+    assert assembly is not None
+    boxes = {f"body:{n}": ((0.0, y, z), (400.0, y + 40.0, z + 40.0)) for n, (y, z) in zip((1, 2, 3, 4), ((0, 0), (300, 0), (0, 300), (300, 300)), strict=True)}
+    boxes["body:5"] = ((-6.0, 0.0, 0.0), (0.0, 340.0, 340.0))
+    return assembly.groups, [tee(f"body:{n}") for n in (1, 2, 3, 4)], boxes
+
+
+def test_the_plan_says_where_the_members_stand_on_the_one_plate() -> None:
+    groups, joints, boxes = frame_facts()
+    placement = wp.plan_of(groups, joints, frozenset(), set(), boxes)["placement"]
+    assert placement["base"] == "body:5" and placement["base_box"] == boxes["body:5"]
+    assert [m["id"] for m in placement["members"]] == ["body:1", "body:2", "body:3", "body:4"]
+    assert placement["members"][1]["box"] == ((0.0, 300.0, 0.0), (400.0, 340.0, 40.0))
+
+
+def test_there_is_no_placement_without_one_plate_or_without_the_boxes() -> None:
+    groups, joints, boxes = frame_facts()
+    assert wp.plan_of(groups, joints, frozenset(), set())["placement"] is None  # a geometry that cannot say
+    two = [BodyFact("body:5", 6 * 340 * 340.0, 2 * 340 * 340.0 + 4 * 6 * 340, 6, (340.0, 340.0, 6.0)), BodyFact("body:6", 6 * 300 * 300.0, 2 * 300 * 300.0 + 4 * 6 * 300, 6, (300.0, 300.0, 6.0))]
+    assembly = group_bodies(two, "es")
+    assert assembly is not None
+    assert wp.placement_of(assembly.groups, [], {**boxes, "body:6": boxes["body:5"]}) is None  # two plates: which one is the base?

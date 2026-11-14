@@ -204,7 +204,9 @@ def _weldment(data: Any) -> dict[str, Any] | None:
         return None
     named = frozenset(str(n) for n in ctx.extras.get("parts_list", {}).get("names", {}))
     pairs = [p for spec in sheet_review._of(data, "weld") for p in sheet_weldreview.weld_pairs(spec)]
-    return sheet_weldplan.plan_of(ctx.weldment.groups, sheet_weldreview.joints_of(ctx), named, sheet_joints.covers(pairs))
+    return sheet_weldplan.plan_of(
+        ctx.weldment.groups, sheet_weldreview.joints_of(ctx), named, sheet_joints.covers(pairs), ctx.geometry.body_boxes_by_id()
+    )
 
 
 def facts(data: Any) -> dict[str, int]:
