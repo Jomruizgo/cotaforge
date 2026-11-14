@@ -441,3 +441,43 @@ def test_a_planned_sheet_with_every_kind_of_item_is_clean_and_fast() -> None:
     assert time.perf_counter() - start < 2.0
     assert not plan.unplaced, plan.unplaced
     assert pl.plan_layout(SHEET, one_view(), items) == plan  # deterministic
+
+
+def test_a_weld_symbol_stands_next_to_the_view_of_its_joint_and_its_arrows_never_enter_another_view() -> None:
+    """The frame: the end view at the left, the side view at the right of it, the joint at the left edge of the side view. The
+    reference line goes in the gap beside the side view; the arrows cross nothing but the gap."""
+    end_view, side_view = (54.6, 68.4, 122.6, 136.4), (162.6, 68.3, 243.8, 136.3)
+    views = [pl.View("end", 68.0, 68.0, at=end_view[:2]), pl.View("side", 81.2, 68.0, at=side_view[:2])]
+    tips = ((1.2, 5.0), (1.2, 62.0))  # on the plate seam at the left edge of the side view, local mm
+    weld = pl.Item("w", "weld", "side", 0.0, 0.0, tips, extra=(24.8, 5.5, 5.5))
+    plan = pl.plan_layout(SHEET, views, [weld])
+    assert not plan.unplaced, plan.unplaced
+    placed = plan.items[0]
+    ax, ay = placed.data
+    assert end_view[2] < ax < side_view[0]  # the junction is in the gap between the two views, next to the one that has the joint
+    for view in (end_view, side_view):
+        assert not pl._overlap(placed.text_box, view), "the reference line is over a view"
+    for seg in placed.segments:
+        assert not seg_hits(seg, end_view), f"an arrow runs into the other view: {seg}"
+    assert max(math.dist((side_view[0] + t[0], side_view[1] + t[1]), (ax, ay)) for t in tips) < 70.0
+
+
+def test_a_leader_to_a_hole_in_a_row_of_holes_goes_round_the_others() -> None:
+    holes = [(20.0 + 15.0 * i, 30.0) for i in range(5)]  # five holes of radius 5 in a row
+    outline = [(0.0, 0.0, 100.0, 0.0), (100.0, 0.0, 100.0, 60.0), (100.0, 60.0, 0.0, 60.0), (0.0, 60.0, 0.0, 0.0)]
+    rings = []
+    for cx, cy in holes:
+        pts = [(cx + 5.0 * math.cos(2 * math.pi * k / 24), cy + 5.0 * math.sin(2 * math.pi * k / 24)) for k in range(25)]
+        rings += [(a[0], a[1], b[0], b[1]) for a, b in zip(pts, pts[1:], strict=False)]
+    view = pl.View("front", 100.0, 60.0, at=(150.0, 100.0), outline=tuple(outline + rings))
+    target = holes[2]
+    item = pl.Item("h", "leader", "front", 26.0, 8.0, ((target[0], target[1] - 5.0),), extra=(target[0], target[1], 5.0))
+    plan = pl.plan_layout(SHEET, [view], [item])
+    assert not plan.unplaced, plan.unplaced
+    leader = plan.items[0].segments[0]
+    for cx, cy in holes:
+        if (cx, cy) == target:
+            continue
+        # the leader (page mm) keeps out of the circle of every other hole of the row
+        steps = [(leader[0] + (leader[2] - leader[0]) * t / 40, leader[1] + (leader[3] - leader[1]) * t / 40) for t in range(41)]
+        assert min(math.dist(p, (150.0 + cx, 100.0 + cy)) for p in steps) >= 5.0, (cx, leader)

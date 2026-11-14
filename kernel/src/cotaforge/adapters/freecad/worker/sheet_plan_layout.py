@@ -72,6 +72,7 @@ ARROW_MM = 3.0
 CLEAR_MM = 0.8  # clearance between two text boxes
 LINE_CLEAR_MM = 0.25  # a line grazing a text box
 STEM_MIN_MM = 5.0
+ELBOW_ROOM_MM = 1.5  # the text of a leader keeps this far from the lines on the side its elbow is
 LEADER_MIN_MM = 6.0
 GRID_MM = 20.0
 MAX_LEVELS = 8
@@ -997,7 +998,9 @@ class _Run:
                 seg = (ax, ay, ex, ey)
                 shelf = (ex, ey, ex + sx * it.w, ey)
                 base = length * 0.2 + abs((angle % 90) - 45) * 0.08 + _inside_len(seg, vb) * 0.15
-                ink = _Ink(it.id, texts=[box], segs=[(seg, "leader"), (shelf, "leader")], skip_solid=it.view)
+                # the elbow keeps a little room off the lines already there (a dimension line it would stand against)
+                judged = (ex - ELBOW_ROOM_MM, box[1], box[2], box[3]) if sx > 0 else (box[0], box[1], ex + ELBOW_ROOM_MM, box[3])
+                ink = _Ink(it.id, texts=[judged], segs=[(seg, "leader"), (shelf, "leader")], skip_solid=it.view)
                 cands.append((base, ink, (ex, ey, box, "right" if sx > 0 else "left", ax, ay)))
         why: dict[str, int] = {}
         best = self._choose(cands, why)

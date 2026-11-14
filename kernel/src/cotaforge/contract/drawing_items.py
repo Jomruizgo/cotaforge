@@ -64,7 +64,7 @@ ITEM_FIELDS: dict[str, frozenset[str]] = {
     "section": frozenset({"view", "at", "normal", "holes", "letter", "flip", "at_mm", "hatch"}),
     "detail": frozenset({"view", "at", "radius_mm", "scale", "letter", "at_mm"}),
     "aux_view": frozenset({"face", "view", "letter", "at_mm"}),
-    "datum": frozenset({"letter", "face", "on", "view", "side", "offset_mm"}),
+    "datum": frozenset({"letter", "face", "on", "view", "side", "offset_mm", "tip_at"}),
     "gdt": frozenset({"char", "value", "diameter", "modifier", "datums", "face", "on", "view", "side", "offset_mm"}),
     "finish": frozenset({"ra", "machining", "face", "general", "view", "side", "offset_mm"}),
     "parts_list": frozenset({"rows"}),

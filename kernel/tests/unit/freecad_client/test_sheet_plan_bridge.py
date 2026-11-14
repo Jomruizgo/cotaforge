@@ -195,6 +195,7 @@ def test_a_datum_is_read_and_given_a_side_and_a_stem() -> None:
     assert list(prepared.movable) == ["dC"]
     out = bridge.run(prepared)
     assert not out.unplaced and out.placements["dC"]["side"] == "below" and out.placements["dC"]["offset_mm"] >= 5.0
+    assert out.placements["dC"]["tip_at"] == [110.0, 110.0]  # the triangle stays where it touches the face: only the stem and the side are asked
 
 
 def test_the_datum_of_an_axis_stays_on_the_shelf_of_its_callout() -> None:
@@ -268,3 +269,77 @@ def test_what_the_planner_does_not_move_has_a_stated_reason() -> None:
     for kind in ("overall", "datum_dims", "note", "gdt", "finish", "balloons", "section"):
         assert bridge.FIXED_REASONS[kind].strip(), kind
     assert not set(bridge.FIXED_REASONS) & bridge.MOVABLE_TYPES
+
+
+def two_hole_unit(key: str = "h2") -> units.Unit:
+    """One hole callout item that drew a leader for each of two groups of holes (the way ``rq_callouts`` does)."""
+    first, _ = draw.leader((140.0, 140.0), (170.0, 175.0), ["4× Ø6 H7", "pasante"], "right")
+    second, _ = draw.leader((90.0, 128.0), (60.0, 100.0), ["2× Ø9", "pasante"], "left")
+    marks = (*draw.centre_mark(140.0, 148.0, 8.0), *draw.centre_mark(97.0, 128.0, 7.0))
+    return units.Unit(key, key, units.KIND_ITEM, (*first, *second, *marks), "hole_dim")
+
+
+def test_a_hole_callout_with_a_leader_for_each_group_is_planned_leader_by_leader() -> None:
+    prepared = bridge.prepare(PAGE, AREA, TITLE, {"front": FRONT}, [two_hole_unit()], [{"id": "h2", "type": "hole_dim", "all": True}])
+    assert sorted(prepared.movable) == ["h2@0", "h2@1"]
+    out = bridge.run(prepared)
+    assert set(out.placements) == {"h2"} and not out.unplaced  # one placement for the item: the leaders of all its groups
+    vectors = out.placements["h2"]["leader_mm"]
+    assert len(vectors) == 2
+    circles = [((140.0, 148.0), 8.0), ((97.0, 128.0), 7.0)]
+    used = []
+    for tip_x, tip_y, ex, ey in vectors:
+        centre, radius = next((c, r) for c, r in circles if abs(math.dist((tip_x, tip_y), c) - r) < 0.05)  # each tip stays on a circle
+        used.append(centre)
+        nx, ny = tip_x - centre[0], tip_y - centre[1]
+        assert abs(nx * (ey - tip_y) - ny * (ex - tip_x)) < 0.2 * math.hypot(nx, ny) * math.hypot(ex - tip_x, ey - tip_y)  # pointing at its centre
+    assert sorted(used) == sorted(c for c, _ in circles)  # one leader for each hole
+
+
+def test_the_centre_mark_of_a_hole_drawn_by_another_item_gives_the_circle_of_the_callout() -> None:
+    callout = hole_unit()
+    bare = units.Unit("h1", "h1", units.KIND_ITEM, tuple(e for e in callout.entities if getattr(e, "layer", None) != model.AXES), "hole_dim")
+    marks = units.Unit("vl", "vl", units.KIND_ITEM, tuple(draw.centre_mark(140.0, 148.0, 8.0)), "view_lines")
+    prepared = bridge.prepare(PAGE, AREA, TITLE, {"front": FRONT}, [bare, marks], [{"id": "h1", "type": "hole_dim", "at": [[0, 0, 0]]}, {"id": "vl", "type": "view_lines"}])
+    assert list(prepared.movable) == ["h1"]
+    assert prepared.items[0].extra[2] == 8.0  # the radius: the leader is told to point at the centre
+
+
+def test_a_place_the_planner_gave_is_taken_off_when_the_sheet_is_rebuilt_but_the_engineers_stays() -> None:
+    items = [
+        {"id": "w", "type": "dim", "side": "below", "offset_mm": 12.0},
+        {"id": "x", "type": "dim", "side": "above", "offset_mm": 30.0},
+        {"id": "h", "type": "hole_dim", "leader_mm": [[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]]},
+    ]
+    layout = {"placed": {"w": {"side": "below", "offset_mm": 12.0}, "x": {"side": "above", "offset_mm": 12.0}, "h": {"leader_mm": [[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]]}}}
+    bridge.forget_planned(items, layout)
+    assert items[0] == {"id": "w", "type": "dim"}  # the planner's: planned again for the new views
+    assert items[1] == {"id": "x", "type": "dim", "side": "above", "offset_mm": 30.0}  # the engineer changed the offset: his
+    assert items[2] == {"id": "h", "type": "hole_dim"}
+    bridge.forget_planned(items, None)  # a sheet that never had a layout
+
+
+def test_a_text_of_the_sheet_keeps_a_margin_for_the_cad_that_sets_it_a_little_off() -> None:
+    entities, _ = draw.linear_dimension((60.0, 110.0), (60.0, 160.0), "v", 40.0, "50")
+    unit = units.Unit("v", "v", units.KIND_ITEM, tuple(entities), "overall")
+    prepared = bridge.prepare(PAGE, AREA, TITLE, {"front": FRONT}, [unit], [{"id": "v", "type": "overall"}])
+    ink = collide.ink_of("v", unit.entities)
+    text = ink.texts[0][0]
+    box = prepared.items[0].fixed_box
+    assert box is not None
+    flat = bridge.flip(text, PAGE[1])
+    assert box[0] <= flat[0] - bridge.TEXT_SLACK_MM + 1e-9 and box[2] >= flat[2] + bridge.TEXT_SLACK_MM - 1e-9
+
+
+def test_the_outline_the_planner_keeps_leaders_off_has_the_circles_of_the_holes_too() -> None:
+    ink = [
+        model.Line(60.0, 110.0, 160.0, 110.0, model.CONTOUR),
+        model.Circle(100.0, 130.0, 6.0, model.CONTOUR),
+        model.Arc(120.0, 140.0, 4.0, 0.0, 90.0, model.CONTOUR),
+        model.Line(0.0, 0.0, 5.0, 5.0, model.AXES),  # a centre line is not the part
+    ]
+    pieces = bridge.view_outline(ink)
+    assert len(pieces) > 12  # the circle is many short pieces, not one box
+    assert all((s[0], s[1]) != (0.0, 0.0) for s in pieces)
+    ring = [s for s in pieces if abs(math.dist((s[0], s[1]), (100.0, 130.0)) - 6.0) < 0.01]
+    assert len(ring) >= 12
