@@ -114,3 +114,54 @@ def check_a_move_that_is_rolled_back_does_not_leave_a_measure_of_the_shape_it_tr
     again = _move_hole(ids, (-22, -11))
     assert again["applied"] and again["delta"] == [], again
     _assert_kept_is_what_the_shape_measures_now()
+
+
+def _plate_volume_with_a_hole() -> float:
+    return 100.0 * 60.0 * 8.0 - 3.141592653589793 * 9.0 * 8.0
+
+
+def check_an_undo_after_an_edit_leaves_no_measure_of_the_part_it_took_back() -> None:
+    ids = _plate()
+    assert _move_hole(ids, (-20, -10))["applied"]
+    assert close(volume(), _plate_volume_with_a_hole(), 1e-3)
+    second = _hole_request(ids["top"], (30, 15))
+    second["operation_id"] = "hole_2"
+    call("hole", second)
+    assert close(volume(), _plate_volume_with_a_hole() - 3.141592653589793 * 9.0 * 8.0, 1e-3)
+    _assert_kept_is_what_the_shape_measures_now()
+    call("undo_last", op("u1"))  # the second hole goes: the part the last edit left
+    assert close(volume(), _plate_volume_with_a_hole(), 1e-3), volume()
+    _assert_kept_is_what_the_shape_measures_now()
+    call("undo_last", op("u2"))  # the first hole goes, with the edit it carried: the plain plate
+    assert close(volume(), 100.0 * 60.0 * 8.0, 1e-3), volume()
+    _assert_kept_is_what_the_shape_measures_now()
+    # drilled again (the redo of what was undone) and edited again: the checks compare against the part as it is now
+    again = call("hole", {**_hole_request(ids["top"], (-30, -20)), "operation_id": "hole_again"})
+    assert again["rebuild_ok"], again
+    edit = {"feature": again["feature"], "kind": "hole", "request": _hole_request(ids["top"], (-10, 5))}
+    moved = call("edit_feature", op("edit", edits=[edit], dry_run=False))
+    assert moved["applied"] and moved["delta"] == [], moved
+    assert close(volume(), _plate_volume_with_a_hole(), 1e-3), volume()
+    _assert_kept_is_what_the_shape_measures_now()
+
+
+def check_a_reopened_document_is_edited_against_the_part_it_has_not_the_one_before_the_save() -> None:
+    from check_save_resume import reopen, save_and_reset, workdir
+
+    ids = _plate()
+    assert _move_hole(ids, (-20, -10))["applied"]  # measures kept with the body, then saved, then the worker is gone
+    with workdir() as directory:
+        path, state, _ = save_and_reset(directory, "plate")
+        reopen(path, state)
+        assert close(volume(), _plate_volume_with_a_hole(), 1e-3)
+        _assert_kept_is_what_the_shape_measures_now()
+        # the file was changed by hand while closed: the document that opens is the one in the file
+        doc = main.WORKER.active
+        pad = doc.fc_doc.getObject(doc.features[0].fc_main)
+        pad.Length = 12.0
+        doc.fc_doc.recompute()
+        moved = _move_hole(ids, (-25, -12))
+        assert moved["applied"], moved
+        assert moved["delta"] == [] and not moved["flags"], moved
+        assert close(volume(), 100.0 * 60.0 * 12.0 - 3.141592653589793 * 9.0 * 8.0, 1e-3), volume()
+        _assert_kept_is_what_the_shape_measures_now()
