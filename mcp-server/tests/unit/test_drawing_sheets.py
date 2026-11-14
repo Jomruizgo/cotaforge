@@ -10,12 +10,13 @@ from cotaforge.contract import drawing_items
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.guide import guide
 from cotaforge_mcp.schemas import TOOLS_BY_NAME, input_schema
-from tests.conftest import Caller, DrawingFake, MakeSession, plate, set_review
+from tests.conftest import Caller, DrawingFake, MakeSession, plate, set_flow, set_review
 
 
 @pytest.fixture
 def sheet(make: MakeSession, settings: Settings) -> tuple[Caller, DrawingFake]:
     set_review(settings, "ninguno")  # these tests are about the sheet, not about who reviews it
+    set_flow(settings, "steps")  # the small-steps flow; the default has its own tests
     adapter = DrawingFake()
     call = Caller(make(adapter))
     plate(call)
@@ -303,7 +304,7 @@ def test_the_drawing_schema_names_the_new_arguments_and_stays_small(make: MakeSe
     properties = schema["properties"]
     for name in ("sheet", "items", "language", "drawing_number", "revision", "general_tolerances", "company", "body"):
         assert name in properties, name
-    assert len(json.dumps(schema)) < 2000  # 1800 + the capture region
+    assert len(json.dumps(schema)) < 2250  # 1800 + the capture region + decisions, recompose, plan and compose (the default flow)
     assert "sheet" in input_schema(TOOLS_BY_NAME["export"], session)["properties"]
 
 
@@ -333,7 +334,10 @@ def test_every_topic_of_the_drawing_guide_fits_what_cad_guide_returns(make: Make
     assert "drawing:items" in guide(session, "drawing") and "TECHDRAW DRAWING" in guide(session, "drawing")
 
 
-def test_the_guide_has_the_item_reference_and_says_the_sheet_is_built_live_in_the_window(make: MakeSession) -> None:
+def test_the_guide_has_the_item_reference_and_says_the_sheet_is_built_live_in_the_window(
+    make: MakeSession, settings: Settings
+) -> None:
+    set_flow(settings, "steps")  # the text of the small-steps flow; the default flow says its own (test_drawing_compose)
     text = _whole_drawing_guide(make)
     for item_type in drawing_items.ITEM_FIELDS:
         assert item_type in text, item_type  # every built item type is in the reference

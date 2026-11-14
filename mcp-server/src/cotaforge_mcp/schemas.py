@@ -207,9 +207,9 @@ class DrawingArgs(Strict):
     reason: str | None = None
     decisions: dict[str, Any] | None = Field(
         default=None,
-        description="compose: the engineer's decisions (cad_guide drawing:compose); plan states what it needs",
+        description="compose: decisions (cad_guide drawing:compose)",
     )
-    recompose: bool = Field(default=False, description="compose again: his order (by, reason)")
+    recompose: bool = False  # compose again: only on the engineer's order (by, reason)
 
 
 class ExportArgs(Strict):
@@ -432,7 +432,7 @@ def _drawing_actions(session: "Session") -> list[str]:
     )
     found = [action for tool, actions in pairs if tool in t for action in actions]
     if sheet_flow(session) and {"create_drawing", "annotate_drawing", "describe_drawing"} <= set(t):
-        found += ["plan", "compose"]  # only the project that chose drawing_flow=sheet sees them
+        found += ["plan", "compose"]  # the default flow; a project that chose drawing_flow=steps does not see them
     return found
 
 
@@ -447,16 +447,18 @@ def sheet_flow(session: "Session") -> bool:
 
 
 def _drawing_hidden(session: "Session") -> tuple[str, ...]:
-    return () if sheet_flow(session) else ("decisions", "recompose")
+    sheets = {"create_drawing", "annotate_drawing", "describe_drawing"} <= set(session.capabilities.tools)
+    return () if sheet_flow(session) and sheets else ("decisions", "recompose")
 
 
 def _memory_hidden(session: "Session") -> tuple[str, ...]:
-    return () if sheet_flow(session) else ("drawing_flow",)
+    return ("drawing_flow",)  # the engineer's rare choice (steps): accepted all the same, the drawing guide says how
 
 
 SHEET_FLOW_NOTE = (
     ' plan (what the harness puts on the sheet by itself and what it asks) | compose(decisions) (the first proposal of '
-    'the whole sheet, in one order; every later fix is local: update / add / remove; cad_guide(topic="drawing:compose")).'
+    'the whole sheet, in one order; every later fix is local: update / add / remove, a second compose only when the whole '
+    'sheet changes or recompose=true on the engineer\'s order; cad_guide(topic="drawing:compose")).'
 )
 
 

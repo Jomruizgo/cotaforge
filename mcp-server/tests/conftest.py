@@ -436,6 +436,14 @@ def set_review(settings: Settings, mode: str, wait_min: int | None = None) -> No
     design_memory.save_brief(settings, None, None, mode, wait_min, "test setting")
 
 
+def set_flow(settings: Settings, flow: str) -> None:
+    """The project's ``drawing_flow`` (brief.yaml): ``steps`` for a test of the small-steps flow (the default builds the
+    first proposal of a sheet in one order and fixes it locally)."""
+    from cotaforge_mcp import design_memory
+
+    design_memory.save_brief(settings, None, None, None, None, None, None, flow)
+
+
 def declare(settings: Settings, *entries: dict[str, Any], scope: str = "project") -> None:
     """Write memory entries (plain dicts validated by the real model) into a scope of the design's memory."""
     from cotaforge.memory import MemoryEntry, Scope

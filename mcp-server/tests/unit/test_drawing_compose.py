@@ -37,25 +37,51 @@ def composed(call: Caller, decisions: dict[str, Any], **more: Any) -> str:
 GDT = {"char": "perpendicularity", "value": 0.02, "datums": ["A"], "face": "face:3"}
 
 
-# --- the option: with steps nothing changes ----------------------------------------------------------------------------------------
+# --- the default is the hybrid flow; steps stays selectable ----------------------------------------------------------------------
 
 
-def test_steps_is_the_default_and_the_tools_do_not_know_plan_or_compose(settings: Settings) -> None:
-    call, fake = shaft_session(settings)
+def choose_steps(settings: Settings) -> None:
+    design_memory.save_brief(settings, None, None, None, None, None, None, "steps")
+
+
+def test_the_hybrid_flow_is_the_default_and_the_tools_know_plan_and_compose(settings: Settings) -> None:
+    call, fake = shaft_session(settings)  # nothing chosen in the brief
     session = call.session
-    assert design_memory.load_brief(settings).drawing_flow == "steps"
+    assert design_memory.DEFAULT_DRAWING_FLOW == "sheet" and design_memory.load_brief(settings).drawing_flow == "sheet"
     drawing = TOOLS_BY_NAME["drawing"]
     schema = input_schema(drawing, session)
+    assert {"plan", "compose"} <= set(schema["properties"]["action"]["enum"])
+    assert "decisions" in schema["properties"] and "recompose" in schema["properties"]
+    described = tool_description(drawing, session)
+    assert "compose(decisions)" in described and "update / add / remove" in described
+    assert "drawing_flow" not in input_schema(TOOLS_BY_NAME["memory"], session)["properties"]  # the engineer's rare choice
+    assert "drawing flow" not in call.ok("memory", action="brief")  # the default says nothing
+    text = call.ok("drawing", action="create")
+    assert 'drawing(action="plan")' in text.split("next:")[-1]
+    guide = call.ok("cad_guide", topic="drawing")
+    assert "ONCE" in guide and "LOCAL fixes" in guide and "the default" in guide and WINDOW_LINE not in guide
+    assert "COMPOSE" in call.ok("cad_guide", topic="drawing:compose")
+
+
+def test_the_engineer_can_choose_steps_in_the_brief_and_the_tools_follow(settings: Settings) -> None:
+    call, fake = shaft_session(settings)
+    call.ok("memory", action="brief", drawing_flow="steps")  # hidden from the schema, accepted all the same
+    assert design_memory.load_brief(settings).drawing_flow == "steps"
+    assert "drawing flow steps" in call.ok("memory", action="brief")
+    assert "drawing_flow: steps" in (settings.workspace / "brief.yaml").read_text(encoding="utf-8")
+    drawing = TOOLS_BY_NAME["drawing"]
+    schema = input_schema(drawing, call.session)
     assert "plan" not in schema["properties"]["action"]["enum"] and "compose" not in schema["properties"]["action"]["enum"]
-    assert "decisions" not in schema["properties"]
-    assert "drawing_flow" not in input_schema(TOOLS_BY_NAME["memory"], session)["properties"]
-    assert tool_description(drawing, session) == drawing.description  # the text of always
+    assert "decisions" not in schema["properties"] and "recompose" not in schema["properties"]
+    assert tool_description(drawing, call.session) == drawing.description  # the text of always
     refused = call.err("drawing", action="plan")
     assert "action" in refused and "plan" in refused
-    assert "drawing_flow" not in call.ok("memory", action="brief")
+    call.ok("memory", action="brief", drawing_flow="sheet")
+    assert "drawing_flow" not in (settings.workspace / "brief.yaml").read_text(encoding="utf-8")  # the default is not written
 
 
 def test_steps_keeps_the_guide_and_the_next_line_of_create_as_they_were(settings: Settings) -> None:
+    choose_steps(settings)
     call, fake = shaft_session(settings)
     text = call.ok("drawing", action="create")
     assert 'drawing(action="add", items=[...]) a few at a time' in text and "plan" not in text.split("next:")[-1]
@@ -65,30 +91,9 @@ def test_steps_keeps_the_guide_and_the_next_line_of_create_as_they_were(settings
     assert "only in a project that builds sheets in one order" in call.ok("cad_guide", topic="drawing:compose")
 
 
-def test_the_engineer_chooses_the_flow_in_the_brief_and_the_tools_follow(settings: Settings) -> None:
-    call, fake = shaft_session(settings)
-    assert "drawing_flow" not in call.ok("memory", action="brief")
-    call.ok("memory", action="brief", drawing_flow="sheet")  # hidden from the schema of a steps project, accepted all the same
-    assert design_memory.load_brief(settings).drawing_flow == "sheet"
-    assert "drawing flow sheet" in call.ok("memory", action="brief")
-    drawing = TOOLS_BY_NAME["drawing"]
-    schema = input_schema(drawing, call.session)
-    assert {"plan", "compose"} <= set(schema["properties"]["action"]["enum"]) and "decisions" in schema["properties"]
-    assert "compose(decisions)" in tool_description(drawing, call.session)
-    assert "drawing_flow" in input_schema(TOOLS_BY_NAME["memory"], call.session)["properties"]
-    assert "drawing_flow: sheet" in (settings.workspace / "brief.yaml").read_text(encoding="utf-8")
-    text = call.ok("drawing", action="create")
-    assert 'drawing(action="plan")' in text.split("next:")[-1]
-    guide = call.ok("cad_guide", topic="drawing")
-    assert "ONE ORDER" in guide and "drawing:compose" in guide and WINDOW_LINE not in guide
-    assert "COMPOSE" in call.ok("cad_guide", topic="drawing:compose")
-    call.ok("memory", action="brief", drawing_flow="steps")
-    assert "drawing_flow" not in (settings.workspace / "brief.yaml").read_text(encoding="utf-8")
-
-
-def test_an_unknown_flow_in_the_brief_reads_as_steps(settings: Settings) -> None:
+def test_an_unknown_flow_in_the_brief_reads_as_the_default(settings: Settings) -> None:
     (settings.workspace / "brief.yaml").write_text("drawing_flow: both\n", encoding="utf-8")
-    assert design_memory.load_brief(settings).drawing_flow == "steps"
+    assert design_memory.load_brief(settings).drawing_flow == "sheet"
 
 
 # --- plan --------------------------------------------------------------------------------------------------------------------------

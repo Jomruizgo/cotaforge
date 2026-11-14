@@ -83,7 +83,7 @@ WINDOW_LINE = (
 )
 
 SHEET_WINDOW_LINE = (
-    "THIS PROJECT MAKES THE FIRST PROPOSAL OF A SHEET IN ONE ORDER (drawing_flow: sheet): drawing(action=plan) "
+    "THIS PROJECT MAKES THE FIRST PROPOSAL OF A SHEET IN ONE ORDER (drawing_flow: sheet, the default; steps = drawing_flow=steps in the brief): drawing(action=plan) "
     "-> ask -> drawing(action=compose, decisions={...}) ONCE -> capture -> review -> LOCAL fixes one item at a time "
     "(drawing(action=update, items=[{id, fields}]) moves it or changes its value, tolerance or text and nothing else on the "
     "sheet moves; add / remove put or take off one item) -> review. The sheet is built whole, in the FreeCAD window, in one "

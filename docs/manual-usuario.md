@@ -474,7 +474,7 @@ Sin ventana, `view` ofrece solo `show` y `focus`.
 
 ### Dibujos
 
-`drawing` construye los planos de taller de la pieza. Cada plano es una **hoja**; un documento puede tener varias, cada una exportada a su propio archivo (sin PDF de varias páginas). El flujo: `create` la hoja, `add` lo que falte, `review`, exportar.
+`drawing` construye los planos de taller de la pieza. Cada plano es una **hoja**; un documento puede tener varias, cada una exportada a su propio archivo (sin PDF de varias páginas). El flujo: `plan` (lo que el agente pone solo en la hoja y lo que te pregunta), `compose` (la primera propuesta de la hoja entera, en una sola orden), `capture` y `review`, luego correcciones locales de un ítem cada vez con `update`, `add` o `remove` (nada más de la hoja se mueve), `review`, exportar. Un segundo `compose` es para un cambio que afecta a toda la hoja (papel, escala, vistas, esquema de acotación). Para construir la hoja en pasos pequeños (`create` y unos pocos ítems por `add`), usa `memory(action="brief", drawing_flow="steps")`.
 
 **Construido en vivo.** Con la ventana visible, la hoja de TechDraw se abre en `create` y cada elemento aparece a medida que el agente lo añade, así que puedes interrumpir o sugerir. El agente trabaja en pasos pequeños. Sin ventana, el plano se construye igual; lo ves con `capture` o al exportar.
 

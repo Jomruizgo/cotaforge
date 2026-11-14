@@ -474,7 +474,7 @@ Without a window, `view` offers only `show` and `focus`.
 
 ### Drawings
 
-`drawing` builds the part's shop drawings. Each drawing is a **sheet**; a document can have several, each exported to its own file (no multi-page PDF). The workflow: `create` the sheet, `add` what is missing, `review`, export.
+`drawing` builds the part's shop drawings. Each drawing is a **sheet**; a document can have several, each exported to its own file (no multi-page PDF). The workflow: `plan` (what the agent puts on the sheet by itself and what it asks you), `compose` (the first proposal of the whole sheet, in one order), `capture` and `review`, then local fixes one item at a time with `update`, `add` or `remove` (nothing else on the sheet moves), `review`, export. A second `compose` is for a change that affects the whole sheet (paper, scale, views, dimensioning scheme). To build the sheet in small steps instead (`create`, then a few items per `add`), set `memory(action="brief", drawing_flow="steps")`.
 
 **Built live.** With the window visible, the TechDraw sheet opens on `create` and each element appears as the agent adds it, so you can interrupt or suggest. The agent works in small steps. Without a window the drawing is built the same; you see it with `capture` or on export.
 
