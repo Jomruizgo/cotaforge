@@ -297,14 +297,16 @@ def _candidates(att: Attach, explicit: bool) -> list[tuple[tuple[float, float], 
 
 
 def _segment_distance(a: Point, b: Point, c: Point, d: Point) -> float:
-    """The smallest distance between the segments ``ab`` and ``cd`` (0 when they cross)."""
-
-    def side(p: Point, q: Point, r: Point) -> float:
-        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
-
-    if side(a, b, c) * side(a, b, d) < 0 and side(c, d, a) * side(c, d, b) < 0:
-        return 0.0
-    return min(_point_segment(p, q, r) for p, q, r in ((a, c, d), (b, c, d), (c, a, b), (d, a, b)))
+    """The smallest distance between the segments ``ab`` and ``cd`` (0 when they cross). Called millions of times by the
+    placement of a welded sheet (every candidate place against every line of a view): no closure, no generator."""
+    if a == b:  # a point (is it on this edge?): nothing to cross, and its distance to ``cd`` is the smallest
+        return _point_segment(a, c, d)
+    abx, aby = b[0] - a[0], b[1] - a[1]
+    if (abx * (c[1] - a[1]) - aby * (c[0] - a[0])) * (abx * (d[1] - a[1]) - aby * (d[0] - a[0])) < 0:
+        cdx, cdy = d[0] - c[0], d[1] - c[1]
+        if (cdx * (a[1] - c[1]) - cdy * (a[0] - c[0])) * (cdx * (b[1] - c[1]) - cdy * (b[0] - c[0])) < 0:
+            return 0.0
+    return min(_point_segment(a, c, d), _point_segment(b, c, d), _point_segment(c, a, b), _point_segment(d, a, b))
 
 
 def _point_segment(p: Point, a: Point, b: Point) -> float:
@@ -316,6 +318,8 @@ def _point_segment(p: Point, a: Point, b: Point) -> float:
 
 def _segment_hits_rect(a: Point, b: Point, rect: Rect) -> bool:
     x0, y0, x1, y1 = rect
+    if max(a[0], b[0]) < x0 or min(a[0], b[0]) > x1 or max(a[1], b[1]) < y0 or min(a[1], b[1]) > y1:
+        return False  # the boxes of the segment and of the rectangle are apart: most segments of a view end here
     corners = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
     if x0 < a[0] < x1 and y0 < a[1] < y1 or x0 < b[0] < x1 and y0 < b[1] < y1:
         return True
