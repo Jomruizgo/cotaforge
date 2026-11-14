@@ -74,6 +74,7 @@ import sheet_render
 import sheet_reqfacts
 import sheet_review
 import sheet_svg
+import sheet_symbols
 import sheet_template
 import sheet_template_gen
 import sheet_thread
@@ -102,6 +103,28 @@ VIEW_KEYS = {"Front": "front", "Top": "top", "Right": "right"}
 DISCRETIZE_MM = 0.02  # chord deviation of the curves written as polylines
 LEGACY_ORDER = 0  # a sheet made before specs existed sorts first
 FULL_CIRCLE_DEG = 359.0  # a hole wall covers the whole circle (``list_holes`` reports the arc it covers)
+
+
+TECHDRAW_PREFS = "User parameter:BaseApp/Preferences/Mod/TechDraw/"
+DEFAULT_PREFS: tuple[tuple[str, str, float], ...] = (
+    ("Decorations", "LineGroup", 2),  # TechDraw's own list: "FC 0.50mm" (thick 0.50, thin 0.25), ISO 128-20's group for A4 to A2
+    ("Dimensions", "FontSize", sheet_native.FONT_MM),  # the 3.5 mm of ISO 3098; TechDraw's own default is 5 mm
+)
+"""What a new TechDraw object reads when the engineer adds one by hand to the sheet: the line group and the text size of the
+sheet. Measured in 1.1.3: with the preferences unset a dimension added by hand came out 0.35 mm thick and 5 mm high, next to
+the sheet's 0.25 mm and 3.5 mm."""
+
+
+def apply_techdraw_defaults() -> None:
+    """Set the TechDraw preferences of ``DEFAULT_PREFS`` the engineer has not set himself (never changes a value that is there):
+    what he adds to the sheet by hand then has the line weights and text size of the sheet's own objects."""
+    for group, key, value in DEFAULT_PREFS:
+        params = App.ParamGet(TECHDRAW_PREFS + group)
+        if isinstance(value, int):
+            if params.GetInt(key, -99) == -99:
+                params.SetInt(key, value)
+        elif params.GetFloat(key, -99.0) == -99.0:
+            params.SetFloat(key, float(value))
 
 
 def _techdraw(op: str | None) -> Any:
@@ -1135,6 +1158,7 @@ def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         spec["projection"] = "hlr"
         if angle != "first":
             raise invalid_request("angle=third needs projection=techdraw: an hlr sheet is made in first angle", op)
+    apply_techdraw_defaults()
     warnings: list[str] = []
     section_wanted: bool | str = False
     assembly_section: dict[str, Any] | None = None
@@ -1269,6 +1293,16 @@ def apply_title_block(spec: dict[str, Any], given: Any, op: str | None) -> None:
             f"the title block has no settable field {', '.join(unknown)}; it has: {', '.join(settable)}", op
         )
     spec.setdefault("fields", {}).update({str(k): str(v) for k, v in given.items()})
+
+
+def _route_title_block_notes(
+    spec: dict[str, Any], requested: list[Any], op: str | None
+) -> tuple[list[Any], list[str]]:
+    """Take out of ``requested`` the notes that state a datum the title block has a field for and put the datum in that field
+    of the sheet (``items_notes.route_title_block_notes``). Returns the items left and what was moved (said to the agent)."""
+    names = set(sheet_template.editable_fields(template_text(spec["template"], op)))
+    kept, moved = items_notes.route_title_block_notes(requested, names, spec.setdefault("fields", {}), bool(spec.get("assembly")))
+    return kept, moved
 
 
 def _auto_paper(
@@ -1848,6 +1882,11 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     requested = _expand_chamfer_dims(doc, items, requested, op)
     asked_threads = any(isinstance(i, dict) and i.get("type") == "thread_dims" for i in requested)
     requested = _expand_thread_dims(doc, items, requested, op)
+    requested, routed = _route_title_block_notes(spec, requested, op)
+    if not requested and routed:
+        write_spec(page, spec)
+        _sync_template_fields(fc_doc, op)
+        return _result(doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), routed, op)
     if not requested and asked_threads:  # every thread has its callout: the sheet stays as it is
         return _result(doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), [], op)
     if not requested:
@@ -1890,7 +1929,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     _sync_template_fields(fc_doc, op)
     waited += wait_views(fc_doc, page, op)
     return _result(
-        doc, page, _scale_of(page) or 1.0, waited, [], op, refused=refused, changed=tuple(a["id"] for a in keep), tried=tried
+        doc, page, _scale_of(page) or 1.0, waited, routed, op, refused=refused, changed=tuple(a["id"] for a in keep), tried=tried
     )
 
 
@@ -2135,7 +2174,7 @@ def _page_position(page: Any, view: Any) -> tuple[float, float]:
 
 def _view_box(view: Any) -> Any:
     """The box of the view's visible edges in the view's own coordinates (TechDraw keeps them y DOWN, like Qt)."""
-    return Part.Compound(view.getVisibleEdges()).optimalBoundingBox(False, False)
+    return Part.Compound(sheet_native.model_edges(view)).optimalBoundingBox(False, False)
 
 
 def view_key(view: Any) -> str | None:
@@ -2276,7 +2315,7 @@ def view_entities(
         if only is not None and not (standard and view_key(view) in only):
             continue
         x, y = _page_position(page, view)
-        for edge in view.getVisibleEdges():
+        for edge in sheet_native.model_edges(view):
             out += _edge_entities(edge, x, y, model.CONTOUR)
     return out
 
@@ -3059,6 +3098,13 @@ def _compose_pass(
         native,
         None if hlr else ctx.extras.get("natives"),  # an hlr sheet has no TechDraw views to measure in
     )
+    if not hlr:  # the lines TechDraw has a cosmetic edge for are asked of the view they lie on
+        shown = {n: v.box for n, v in ctx.views.items() if not v.derived and n in sheet_native.VIEW_LABELS}
+        if iso_view is not None:
+            shown["isometric"] = iso_view.box
+        ctx.extras["units"] = sheet_units.with_cosmetics(
+            ctx.extras["units"], shown, [v.box for v in ctx.views.values() if v.derived]
+        )
     ctx.extras["collisions"] = _collisions(ctx)
     return sheet, results, ctx
 
@@ -3448,6 +3494,26 @@ def review_findings(
                     "features": [],
                 }
             )
+    foreign = sheet_symbols.foreign_symbols(page, sheet_symbols.resource_dir())
+    if foreign:  # a drawing of ours that is not a FreeCAD object: it does not follow its view and the engineer cannot edit it
+        keys = sorted({str(getattr(o, sheet_mirror.PROP_KEY, "") or o.Label) for o in foreign})
+        findings.append(
+            {
+                "code": "foreign_symbol",
+                "severity": "warning",
+                "message": ctx.say(
+                    f"La hoja tiene {len(foreign)} símbolo(s) que no son de la biblioteca de FreeCAD ({', '.join(keys)[:120]}): "
+                    "son un dibujo suelto que no sigue a su vista ni se edita línea a línea, y se queda si se borra la vista. "
+                    "Debe ser un objeto nativo de TechDraw.",
+                    f"The sheet holds {len(foreign)} symbol(s) that are not from FreeCAD's library ({', '.join(keys)[:120]}): "
+                    "a loose drawing that does not follow its view, cannot be edited line by line and stays when the view is "
+                    "deleted. It must be a native TechDraw object.",
+                ),
+                "items": [k for k in keys if k in {str(i.get("id")) for i in spec.get("items", [])}],
+                "features": [],
+                "key": "",
+            }
+        )
     unread = sheet_output.native_rows(page)
     if unread:  # on the page, in the PDF and in the capture, but not in the composed sheet the review reads
         shown = "; ".join(sheet_output.listed(unread)[:5]) + (f" (+{len(unread) - 5})" if len(unread) > 5 else "")

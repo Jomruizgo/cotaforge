@@ -313,6 +313,7 @@ def sync(fc_doc: Any, page: Any, units: list[su.Unit], page_h: float, sheet: str
             report.removed.append(key)
     report.fallbacks = sheet_native.sync(fc_doc, page, [u for u in units if u.natives], sheet, have, report)
     sheet_native.sync_flags(page, [u for u in units if u.natives and u.key not in report.fallbacks])
+    report.fallbacks.update(sheet_native.sync_cosmetics(page, [u for u in units if u.natives and u.key not in report.fallbacks]))
     have = owned(page)  # the native objects were made again: what is on the page now
     for unit in units:
         shown = symbol_unit(unit, unit.key not in report.fallbacks)
@@ -459,7 +460,30 @@ def page_crosses(page: Any, page_h: float) -> list[tuple[float, float]]:
                 for a, b, c, d in _PATH.findall(group.group(0))
             ]
             found += crosses(lines)
-    return found
+    return found + _cosmetic_crosses(page)
+
+
+def _cosmetic_crosses(page: Any) -> list[tuple[float, float]]:
+    """The centre marks that live on the views as cosmetic edges (``sheet_native.sync_cosmetics``), in page mm."""
+    lines: list[tuple[float, float, float, float]] = []
+    for name in sheet_native.VIEW_LABELS:
+        view = sheet_native.view_object(page, name)
+        if view is None:
+            continue
+        frame = sheet_native.Frame(page, view)
+        for edge in view.CosmeticEdges:
+            if edge.Format.get("style") != sheet_native.ISO_STYLE["centre"]:
+                continue
+            start, end = edge.Start, edge.End
+            lines.append(
+                (
+                    frame.x + float(start.x) * frame.scale,
+                    frame.y + float(start.y) * frame.scale,
+                    frame.x + float(end.x) * frame.scale,
+                    frame.y + float(end.y) * frame.scale,
+                )
+            )
+    return crosses(lines)
 
 
 def compare(page: Any, units: list[su.Unit], page_h: float) -> list[str]:
@@ -474,6 +498,9 @@ def compare(page: Any, units: list[su.Unit], page_h: float) -> list[str]:
         problems.append(f"{key}: on the page but not on the sheet")
     for whole in units:
         objects = have.get(whole.key)
+        if not objects and sheet_native.only_view_bound(whole):
+            problems += sheet_native.cosmetic_problems(page, whole) + sheet_native.flag_problems(page, whole)
+            continue
         if not objects:
             problems.append(f"{whole.key}: on the sheet but not on the page")
             continue

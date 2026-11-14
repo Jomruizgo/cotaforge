@@ -16,6 +16,7 @@ owns) and ``CotaforgeSheet`` (the sheet name), in the group ``Cotaforge``. The v
 lives; the key ``CotaforgeKey`` is the unit the object belongs to (the item id too, for objects of items).
 """
 
+import json
 import math
 from dataclasses import dataclass, field
 from typing import Any
@@ -509,7 +510,7 @@ def compare_unit(page: Any, unit: su.Unit, objects: list[Any]) -> list[str]:
     """What differs between the native objects of ``unit`` on the page and what the sheet asks (empty: they agree): an
     object missing or moved or made for something else, and -- measured again now -- a dimension whose value is no longer
     the model's."""
-    problems: list[str] = flag_problems(page, unit)
+    problems: list[str] = [*flag_problems(page, unit), *cosmetic_problems(page, unit)]
     mine = held(objects)
     wanted = signature(unit)
     if len(mine) != object_count(unit):
@@ -557,3 +558,187 @@ def remove(fc_doc: Any, objects: list[Any]) -> None:
     for obj in objects:
         if fc_doc.getObject(obj.Name) is not None:
             fc_doc.removeObject(obj.Name)
+
+
+# --- cosmetic edges: the lines a unit draws ON a view (centre lines and marks, thread arcs, the parting line) ------------
+
+PROP_COSMETIC = "CotaforgeCosmetic"  # on a view: the cosmetic edges the sheet made, {unit key: [signature, [tags]]}
+ISO_STYLE = {"centre": 4, "thin": 1, "parting": 8}  # ISO 128-20 line numbers (TechDraw's own list): 04 long dash dot, 01, 08
+ISO_WIDTH_MM = {"centre": 0.25, "thin": 0.25, "parting": 0.5}  # the 0.5 mm group: wide 0.5, narrow 0.25 (as the PDF)
+BLACK = (0.0, 0.0, 0.0, 1.0)
+
+
+def _stored(view: Any) -> dict[str, list[Any]]:
+    if PROP_COSMETIC not in view.PropertiesList:
+        return {}
+    try:
+        data = json.loads(str(getattr(view, PROP_COSMETIC)) or "{}")
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _store(view: Any, data: dict[str, list[Any]]) -> None:
+    if PROP_COSMETIC not in view.PropertiesList:
+        view.addProperty("App::PropertyString", PROP_COSMETIC, GROUP, "Cosmetic edges the sheet made on this view")
+        view.setEditorMode(PROP_COSMETIC, 1)
+    setattr(view, PROP_COSMETIC, json.dumps(data, separators=(",", ":")))
+
+
+def _tag_alive(view: Any, tag: str) -> bool:
+    try:
+        return view.getCosmeticEdge(tag) is not None
+    except Exception:  # noqa: BLE001 - TechDraw raises when the tag is no more
+        return False
+
+
+def _drop(view: Any, tags: list[str]) -> None:
+    for tag in tags:
+        try:
+            view.removeCosmeticEdge(tag)
+        except Exception:  # noqa: BLE001 - the engineer deleted it already
+            pass
+
+
+def _make_cosmetic(frame: Frame, n: su.NativeCosmetic) -> str:
+    v = frame.view
+    if n.kind == "line":
+        a, b = frame.local((n.values[0], n.values[1])), frame.local((n.values[2], n.values[3]))
+        tag = v.makeCosmeticLine(App.Vector(a[0], a[1], 0), App.Vector(b[0], b[1], 0))
+    elif n.kind == "circle":
+        c = frame.local((n.values[0], n.values[1]))
+        tag = v.makeCosmeticCircle(App.Vector(c[0], c[1], 0), n.values[2] / frame.scale)
+    else:
+        c = frame.local((n.values[0], n.values[1]))
+        tag = v.makeCosmeticCircleArc(App.Vector(c[0], c[1], 0), n.values[2] / frame.scale, n.values[3], n.values[4])
+    edge = v.getCosmeticEdge(tag)
+    edge.Format = {
+        "style": ISO_STYLE[n.style],
+        "weight": ISO_WIDTH_MM[n.style],
+        "color": BLACK,
+        "visible": True,
+    }
+    return str(tag)
+
+
+def sync_cosmetics(page: Any, units: list[su.Unit]) -> dict[str, list[str]]:
+    """Make the cosmetic edges of the views agree with what the units ask: a unit whose edges on a view already carry the
+    signature (and still exist) is left alone, the rest are made again; a unit that is gone takes its edges with it. The edges
+    are the view's own: they move with it and go when it does. Returns, for the units that could not be made, the reasons
+    (those units keep their symbol)."""
+    problems: dict[str, list[str]] = {}
+    wanted: dict[str, dict[str, list[su.NativeCosmetic]]] = {}
+    for unit in units:
+        for n in unit.natives:
+            if isinstance(n, su.NativeCosmetic):
+                wanted.setdefault(n.view, {}).setdefault(unit.key, []).append(n)
+    for name in VIEW_LABELS:
+        view = view_object(page, name)
+        if view is None:
+            continue
+        stored = _stored(view)
+        mine = wanted.get(name, {})
+        if not stored and not mine:
+            continue
+        frame = Frame(page, view)
+        changed = False
+        for key in [k for k in stored if k not in mine]:
+            _drop(view, list(stored.pop(key)[1]))
+            changed = True
+        for key, natives in mine.items():
+            signature = su.cosmetic_signature(natives)
+            old = stored.get(key)
+            if old is not None and old[0] == signature and all(_tag_alive(view, t) for t in old[1]):
+                continue
+            if old is not None:
+                _drop(view, list(old[1]))
+            tags: list[str] = []
+            try:
+                for n in natives:
+                    tags.append(_make_cosmetic(frame, n))
+            except Exception as exc:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind
+                _drop(view, tags)
+                stored.pop(key, None)
+                problems.setdefault(key, []).append(
+                    f"the {name} view could not take its cosmetic lines ({type(exc).__name__}: {exc})"
+                )
+                changed = True
+                continue
+            stored[key] = [signature, tags]
+            changed = True
+        if changed:
+            _store(view, stored)
+    return problems
+
+
+def own_cosmetic_count(view: Any) -> int:
+    """How many cosmetic edges of ``view`` the sheet made (the rest are the engineer's own)."""
+    return sum(len(entry[1]) for entry in _stored(view).values())
+
+
+def cosmetic_problems(page: Any, unit: su.Unit) -> list[str]:
+    """The cosmetic edges ``unit`` asks for that the page does not have (deleted by hand, or never made)."""
+    problems: list[str] = []
+    by_view: dict[str, list[su.NativeCosmetic]] = {}
+    for n in unit.natives:
+        if isinstance(n, su.NativeCosmetic):
+            by_view.setdefault(n.view, []).append(n)
+    for name, natives in by_view.items():
+        view = view_object(page, name)
+        entry = _stored(view).get(unit.key) if view is not None else None
+        if entry is None or entry[0] != su.cosmetic_signature(natives):
+            problems.append(f"{unit.key}: the {name} view does not carry the {len(natives)} cosmetic line(s) the sheet draws")
+        elif not all(_tag_alive(view, t) for t in entry[1]):
+            problems.append(f"{unit.key}: the {name} view lost a cosmetic line the sheet draws (deleted by hand)")
+    return problems
+
+
+def only_view_bound(unit: su.Unit) -> bool:
+    """Whether everything ``unit`` is on the page lives on the views (hidden-line flags, cosmetic edges): it has no object of
+    its own and, once those are made, no symbol either."""
+    return bool(unit.natives) and object_count(unit) == 0 and not unit.residue
+
+
+EDGE_TOL = 1e-4
+
+
+def _same_edge(edge: Any, cosmetic: Any) -> bool:
+    """Whether the visible edge ``edge`` is the one the cosmetic edge ``cosmetic`` of the sheet made (TechDraw hands both out
+    together; the shapes it returns are y DOWN while a cosmetic edge is y UP, so a y that is mirrored matches too)."""
+    curve = type(edge.Curve).__name__
+    if hasattr(cosmetic, "Start") and curve == "Line":
+        ends = [(float(v.Point.x), float(v.Point.y)) for v in (edge.Vertexes[0], edge.Vertexes[-1])]
+        a, b = (float(cosmetic.Start.x), float(cosmetic.Start.y)), (float(cosmetic.End.x), float(cosmetic.End.y))
+        for sign in (1.0, -1.0):
+            want = [(a[0], sign * a[1]), (b[0], sign * b[1])]
+            if all(math.hypot(p[0] - q[0], p[1] - q[1]) < EDGE_TOL for p, q in zip(ends, want, strict=True)) or all(
+                math.hypot(p[0] - q[0], p[1] - q[1]) < EDGE_TOL for p, q in zip(ends, reversed(want), strict=True)
+            ):
+                return True
+        return False
+    if hasattr(cosmetic, "Radius") and curve == "Circle":
+        centre = edge.Curve.Center
+        c = cosmetic.Center
+        return abs(float(edge.Curve.Radius) - float(cosmetic.Radius)) < EDGE_TOL and (
+            math.hypot(float(centre.x) - float(c.x), float(centre.y) - float(c.y)) < EDGE_TOL
+            or math.hypot(float(centre.x) - float(c.x), float(centre.y) + float(c.y)) < EDGE_TOL
+        )
+    return False
+
+
+def model_edges(view: Any) -> list[Any]:
+    """The visible edges of ``view`` that belong to the model: TechDraw's ``getVisibleEdges`` hands out the cosmetic edges
+    too, and the ones the sheet made (centre lines, thread arcs) are not the part's outline: they are left out of what the
+    sheet measures and draws from the view."""
+    edges = list(view.getVisibleEdges())
+    for entry in _stored(view).values():
+        for tag in entry[1]:
+            try:
+                cosmetic = view.getCosmeticEdge(tag)
+            except Exception:  # noqa: BLE001 - deleted by hand
+                continue
+            for index in range(len(edges) - 1, -1, -1):  # cosmetic edges come after the part's own
+                if _same_edge(edges[index], cosmetic):
+                    del edges[index]
+                    break
+    return edges

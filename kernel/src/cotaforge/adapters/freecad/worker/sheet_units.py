@@ -11,11 +11,29 @@ the page. The key is the item id (``h1``), ``view:front`` / ``view:top`` / ... f
 
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sheet_clip import arc_points
-from sheet_model import DIMENSIONS, HIDDEN, TEXT, Arc, Circle, Entity, Glyph, Line, Polyline, Solid, Text, text_width
+from sheet_model import (
+    AXES,
+    DIMENSIONS,
+    FLAT_FACES,
+    HIDDEN,
+    PARTING,
+    TEXT,
+    THREAD,
+    ZONE,
+    Arc,
+    Circle,
+    Entity,
+    Glyph,
+    Line,
+    Polyline,
+    Solid,
+    Text,
+    text_width,
+)
 
 Rect = tuple[float, float, float, float]
 Point = tuple[float, float]
@@ -89,7 +107,31 @@ class NativeFlag:
     prop: str = "HardHidden"
 
 
-Native = NativeDim | NativeNote | NativeFlag
+@dataclass(frozen=True)
+class NativeCosmetic:
+    """A cosmetic edge of a TechDraw view (``makeCosmeticLine`` / ``makeCosmeticCircle`` / ``makeCosmeticCircleArc``): the
+    centre lines and marks, the thin arc of a thread, the parting line. It belongs to the view's own cosmetic list, so it
+    moves with the view, is edited there line by line and goes when the view does. ``values`` are in page mm (y up): a
+    ``line`` is x1, y1, x2, y2; a ``circle`` cx, cy, r; an ``arc`` cx, cy, r, start, end (degrees, counter-clockwise).
+    ``style`` is the line kind (``COSMETIC_STYLES``)."""
+
+    item: str
+    view: str  # front | top | right | isometric
+    kind: str  # line | circle | arc
+    values: tuple[float, ...]
+    style: str
+
+
+COSMETIC_STYLES = {  # the layer the compositor draws on -> the kind of line TechDraw is asked for
+    AXES: "centre",
+    THREAD: "thin",
+    FLAT_FACES: "thin",
+    PARTING: "parting",
+    ZONE: "thin",
+}
+
+
+Native = NativeDim | NativeNote | NativeFlag | NativeCosmetic
 
 
 @dataclass(frozen=True)
@@ -103,6 +145,7 @@ class Unit:
     item_type: str = ""
     native: dict[str, Any] | None = field(default=None, compare=False)  # TechDraw's own objects hold this unit
     natives: tuple[Native, ...] = field(default=(), compare=False)  # TechDraw objects that replace its dimension lines
+    covered: frozenset[int] = field(default=frozenset(), compare=False)  # ids of the entities a NativeCosmetic draws
 
     @property
     def rect(self) -> Rect:
@@ -127,8 +170,9 @@ class Unit:
         marks of a hole callout); without, everything."""
         if not self.natives:
             return self.entities
-        gone = NATIVE_LAYERS | ({HIDDEN} if any(isinstance(n, NativeFlag) for n in self.natives) else set())
-        return tuple(e for e in self.entities if getattr(e, "layer", None) not in gone)
+        objects = any(isinstance(n, NativeDim | NativeNote) for n in self.natives)
+        gone = (NATIVE_LAYERS if objects else set()) | ({HIDDEN} if any(isinstance(n, NativeFlag) for n in self.natives) else set())
+        return tuple(e for e in self.entities if getattr(e, "layer", None) not in gone and id(e) not in self.covered)
 
 
 def text_rect(e: Text) -> Rect:
@@ -265,12 +309,25 @@ def signature(unit: Unit) -> str:
             return ["f", n.view, n.prop]
         return ["n", n.name, list(n.lines), [round(v, 2) for v in n.at], n.size, n.step]
 
-    return json.dumps([dump(n) for n in unit.natives], separators=(",", ":"), default=str)
+    return json.dumps(
+        [dump(n) for n in unit.natives if not isinstance(n, NativeCosmetic)], separators=(",", ":"), default=str
+    )
+
+
+def cosmetic_signature(natives: Any) -> str:
+    """What the cosmetic edges of one view for one unit must be (a view that already carries it is left alone)."""
+    return json.dumps(
+        [[n.kind, [round(v, 2) for v in n.values], n.style] for n in natives], separators=(",", ":")
+    )
 
 
 def object_count(unit: Unit) -> int:
     """How many native objects ``unit`` is: a dimension each, a note one annotation per line."""
-    return sum(1 if isinstance(n, NativeDim) else len(n.lines) for n in unit.natives if not isinstance(n, NativeFlag))
+    return sum(
+        1 if isinstance(n, NativeDim) else len(n.lines)
+        for n in unit.natives
+        if not isinstance(n, NativeFlag | NativeCosmetic)
+    )
 
 
 def measured_problem(obj: Any, dim: NativeDim) -> str | None:
@@ -286,3 +343,77 @@ def measured_problem(obj: Any, dim: NativeDim) -> str | None:
     if abs(abs(got) - dim.expected) > tol:
         return f"{dim.item} {dim.name}: TechDraw measures {got:.3f} and the model says {dim.expected:.3f}"
     return None
+
+
+# --- the cosmetic edges of a unit (pure) --------------------------------------------------------------------------------
+
+COSMETIC_MARGIN_MM = 30.0  # a line this near the box of a TechDraw view (a centre line past the part) is the view's
+
+
+def _segments(e: Entity) -> list[tuple[str, tuple[float, ...]]]:
+    """What a cosmetic edge can be made of ``e``: ``(kind, values)``, none when it has no cosmetic form."""
+    if isinstance(e, Line):
+        return [("line", (e.x1, e.y1, e.x2, e.y2))]
+    if isinstance(e, Polyline):
+        points = list(e.points) + ([e.points[0]] if e.closed and e.points else [])
+        return [("line", (a[0], a[1], b[0], b[1])) for a, b in zip(points, points[1:], strict=False)]
+    if isinstance(e, Arc):
+        return [("arc", (e.cx, e.cy, e.r, e.start, e.end))]
+    if isinstance(e, Circle):
+        return [("circle", (e.cx, e.cy, e.r))]
+    return []
+
+
+def _anchor(kind: str, values: tuple[float, ...]) -> Point:
+    if kind == "line":
+        return (values[0] + values[2]) / 2, (values[1] + values[3]) / 2
+    return values[0], values[1]
+
+
+def _inside(p: Point, rect: Rect, margin: float = 0.0) -> bool:
+    return rect[0] - margin <= p[0] <= rect[2] + margin and rect[1] - margin <= p[1] <= rect[3] + margin
+
+
+def with_cosmetics(units: list[Unit], views: dict[str, Rect], derived: list[Rect]) -> list[Unit]:
+    """``units`` with the lines of the layers TechDraw has a cosmetic edge for (``COSMETIC_STYLES``) asked of the view they lie
+    on (``views``: TechDraw's own views by name, with the page box of what they draw; ``derived``: boxes of views the sheet drew
+    itself, whose lines are not any TechDraw view's). A line that lies on no view stays what it was: part of the unit's drawing."""
+    out: list[Unit] = []
+    for unit in units:
+        if unit.kind == KIND_VIEW:
+            out.append(unit)
+            continue
+        made: list[NativeCosmetic] = []
+        covered: set[int] = set()
+        seen: set[tuple[str, str, tuple[float, ...], str]] = set()  # the same line drawn twice is one edge
+        for e in unit.entities:
+            style = COSMETIC_STYLES.get(getattr(e, "layer", ""))
+            if style is None:
+                continue
+            parts = _segments(e)
+            if not parts:
+                continue
+            placed: list[NativeCosmetic] = []
+            for kind, values in parts:
+                point = _anchor(kind, values)
+                if any(_inside(point, box) for box in derived):
+                    placed = []
+                    break
+                near = [
+                    (((box[0] + box[2]) / 2 - point[0]) ** 2 + ((box[1] + box[3]) / 2 - point[1]) ** 2, name)
+                    for name, box in views.items()
+                    if _inside(point, box, COSMETIC_MARGIN_MM)
+                ]
+                if not near:
+                    placed = []
+                    break
+                placed.append(NativeCosmetic(unit.key, min(near)[1], kind, values, style))
+            if placed:
+                for n in placed:
+                    key = (n.view, n.kind, tuple(round(v, 2) for v in n.values), n.style)
+                    if key not in seen:
+                        seen.add(key)
+                        made.append(n)
+                covered.add(id(e))
+        out.append(replace(unit, natives=(*unit.natives, *made), covered=frozenset(covered)) if made else unit)
+    return out
