@@ -18,7 +18,8 @@ direction lacks one, so the agent asks the engineer which face or edge the posit
 from dataclasses import dataclass
 from typing import Any
 
-from items_common import mark_once
+import sheet_pattern
+from items_common import hole_mark, mark_once
 from items_holes import describe
 from sheet_context import (
     COMMON_FIELDS,
@@ -37,7 +38,7 @@ from sheet_context import (
     v_point2,
     v_points3,
 )
-from sheet_draw import centre_mark, exact_box, linear_dimension, table
+from sheet_draw import exact_box, linear_dimension, table
 from sheet_model import AXES, TEXT, Line, Text, text_width
 from sheet_units import NativeDim, Ref2
 
@@ -465,6 +466,8 @@ def located_by_others(ctx: Context, own_id: str) -> set[int]:
     ``dim`` that starts or ends on the hole (the engineer chose how those are dimensioned)."""
     located: set[int] = set()
     for item in ctx.extras.get("items", []):
+        if item.get("type") == "pattern_dim":  # a bolt circle (or a hole on a radius) is located by its radius and angle
+            located |= sheet_pattern.holes_of_item(ctx, item)
         if item.get("id") == own_id or item.get("auto"):
             continue
         if item.get("type") == "datum_dims":
@@ -576,7 +579,7 @@ def _draw_auto(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             p = view.project(hole.centre)
             widest = max(g.diameter for g in pool if parallel(g.direction, hole.direction) and g.on_axis(hole.centre))
             if mark_once(ctx, view, p):
-                ctx.add(centre_mark(p[0], p[1], widest / 2 * view.scale))
+                ctx.add(hole_mark(ctx, view, hole, p, widest / 2 * view.scale))
     if not details and not missing:
         return "ok", "no hole to locate: every one is located by another item, or none is seen as a circle"
     if missing:

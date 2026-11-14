@@ -15,7 +15,7 @@ from typing import Any
 import sheet_hatch
 import sheet_section
 import sheet_seen
-from items_common import VIEW_ORDER, mark_once
+from items_common import VIEW_ORDER, hole_mark, mark_once
 from items_holes import _stacks
 from sheet_clip import HATCH_ANGLE_DEG, bbox, clip_to_circle, clip_to_rect, hatch, hatch_spacing, place, relayer
 from sheet_context import (
@@ -756,7 +756,7 @@ def draw_lines(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
                 if view.looks_along(d):
                     c = view.project(stack[0].centre)
                     if mark_once(ctx, view, c):
-                        ctx.add(centre_mark(c[0], c[1], radius_mm * view.scale))
+                        ctx.add(hole_mark(ctx, view, stack[0], c, radius_mm * view.scale))
                         marks += 1
                     continue
                 origin = stack[0].centre

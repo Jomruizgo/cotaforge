@@ -14,10 +14,20 @@ import re
 from typing import Any
 
 import sheet_callout
+import sheet_pattern
 import sheet_section
 import sheet_thread
 import sheet_tol
-from items_common import asked, leader_at, mark_once, outward_diagonal, place_callout, place_leader, view_looking_along
+from items_common import (
+    asked,
+    hole_mark,
+    leader_at,
+    mark_once,
+    outward_diagonal,
+    place_callout,
+    place_leader,
+    view_looking_along,
+)
 from sheet_context import (
     COMMON_FIELDS,
     SECTION_LABEL,
@@ -34,9 +44,9 @@ from sheet_context import (
     v_str,
     v_view_or_section,
 )
-from sheet_draw import centre_mark
 from sheet_model import AXES, THREAD, Arc, Circle
 from sheet_units import NativeDim, Ref2
+
 
 def v_leader(value: Any) -> list[Any]:
     """The leader of a callout the global layout placed: its tip and its elbow, ``[tip x, tip y, elbow x, elbow y]`` (page mm),
@@ -296,6 +306,15 @@ def _planned_leader(spec: dict[str, Any], group: list[Any], radius: float) -> tu
     return None
 
 
+def _radial_angle(ctx: Context, view: Any, hole: HoleInfo, c: Point) -> float | None:
+    """The page angle (degrees) of the radius of the circular pattern the hole is in, seen along its axis; ``None`` otherwise."""
+    pattern = sheet_pattern.pattern_of(ctx, hole)
+    if pattern is None or not view.looks_along(pattern.direction):
+        return None
+    o = view.project(pattern.centre)
+    return math.degrees(math.atan2(c[1] - o[1], c[0] - o[0]))
+
+
 def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     stacks = [_declared_thread(ctx, spec, s) for s in _stacks(_select(ctx, spec))]
     target = _section_target(ctx, spec)
@@ -317,7 +336,8 @@ def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             key: tuple[Any, ...] = ("bore", stack[0].index)  # a bore is shown once: no shared callout
         else:
             view = view_looking_along(ctx, stack[0].direction, spec.get("view"))
-            key = _signature(stack)
+            owner = sheet_pattern.pattern_of(ctx, stack[0])  # a bolt circle is one callout with ITS count, not every equal hole
+            key = (*_signature(stack), None if owner is None else min(owner.reps))
         if view is None:
             where = f"the {spec['view']} view" if "view" in spec else "front, top or right"
             skipped.append(
@@ -375,7 +395,12 @@ def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             ctx.add(place_leader(ctx, view, tip, diagonal, lines, spec.get("offset_mm"), True))
         else:  # the shortest clean leader: no crossing, one cut of the outline, its text outside the part
             entities, chosen = place_callout(
-                ctx, view, [(c, member[-1].diameter / 2 * view.scale) for member, c, _ in group], lines, None
+                ctx,
+                view,
+                [(c, member[-1].diameter / 2 * view.scale) for member, c, _ in group],
+                lines,
+                None,
+                [_radial_angle(ctx, view, member[0], c) for member, c, _ in group],
             )
             ctx.add(entities)
             centre = group[chosen][1]
@@ -386,7 +411,7 @@ def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         if spec.get("centre_marks", True):
             for member, c, _ in group:
                 if mark_once(ctx, view, c):
-                    ctx.add(centre_mark(c[0], c[1], member[-1].diameter / 2 * view.scale))
+                    ctx.add(hole_mark(ctx, view, member[0], c, member[-1].diameter / 2 * view.scale))
         if dowel:  # a ring round each registration hole: they are found at a glance
             ctx.add(
                 [

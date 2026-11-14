@@ -5,16 +5,20 @@ free (no FreeCAD import)."""
 import math
 from typing import Any
 
+import sheet_pattern
 from sheet_collide import segment_hits_rect, segments_cross, segments_of
-from sheet_context import Context, Point, Vec3, ViewInfo
-from sheet_draw import leader
-from sheet_model import CONTOUR, Entity
+from sheet_context import Context, HoleInfo, Point, Vec3, ViewInfo
+from sheet_draw import centre_mark, leader
+from sheet_model import AXES, CONTOUR, Entity, Line
 
 VIEW_ORDER = ("top", "front", "right")  # which view shows a hole first when several look along its axis
 CALLOUT_GAP_MM = 8.0  # the elbow of a leader is this far beyond the edge of the view
 NUDGE_MM = 6.0  # a callout that lands on another is moved this much farther out, up to NUDGE_TRIES times
 NUDGE_TRIES = 10
 MIN_LEADER_MM = 6.0
+RADIAL_OVER_MM = 2.0  # a radial centre mark reaches this far past its circle (as sheet_draw.centre_mark)
+RADIAL_MIN_RUN_MM = 0.5  # the chain line from the axis to a hole is drawn when it is longer than this
+RADIAL_CLEAR_DEG = 8.0  # a leader keeps this far (degrees) from the radial centre line of its hole
 
 
 def view_looking_along(ctx: Context, direction: Vec3, wanted: str | None) -> ViewInfo | None:
@@ -39,6 +43,28 @@ def mark_once(ctx: Context, view: ViewInfo, p: Point) -> bool:
         return False
     done.add(key)
     return True
+
+
+def hole_mark(ctx: Context, view: ViewInfo, hole: HoleInfo, p: Point, radius: float) -> list[Entity]:
+    """The centre mark of a hole at page point ``p`` (``radius`` its circle on the page): the cross of its centre lines, or, when
+    the hole is in a circular pattern seen along its axis, the cross turned along its radius (ISO 128: a radial and a tangential
+    bar) with the chain line that runs from the axis of the pattern to it."""
+    pattern = sheet_pattern.pattern_of(ctx, hole)
+    if pattern is None or not view.looks_along(pattern.direction):
+        return centre_mark(p[0], p[1], radius)
+    c = view.project(pattern.centre)
+    distance = math.dist(c, p)
+    if distance < 1e-6:
+        return centre_mark(p[0], p[1], radius)
+    ux, uy = (p[0] - c[0]) / distance, (p[1] - c[1]) / distance
+    reach = radius + RADIAL_OVER_MM
+    out: list[Entity] = [
+        Line(p[0] - ux * reach, p[1] - uy * reach, p[0] + ux * reach, p[1] + uy * reach, AXES),
+        Line(p[0] + uy * reach, p[1] - ux * reach, p[0] - uy * reach, p[1] + ux * reach, AXES),
+    ]
+    if distance - reach > RADIAL_MIN_RUN_MM:
+        out.insert(0, Line(c[0], c[1], p[0] - ux * reach, p[1] - uy * reach, AXES))
+    return out
 
 
 def outward_diagonal(view: ViewInfo, point: Point, side: str | None) -> tuple[float, float]:
@@ -204,6 +230,7 @@ def place_callout(
     holes: list[tuple[Point, float]],
     lines: list[str],
     offset_mm: float | None = None,
+    radial: list[float | None] | None = None,
 ) -> tuple[list[Entity], int]:
     """The callout of a group of equal holes (each ``(centre, radius)`` on the page): ONE leader, short, to the hole and
     the side where it is cleanest. Every hole of the group, at every angle that is no centre line, is tried; the leader is
@@ -229,6 +256,8 @@ def place_callout(
     for index in order:
         centre, radius = holes[index]
         for angle in LEADER_ANGLES:
+            if radial is not None and radial[index] is not None and abs(((angle - radial[index]) + 90.0) % 180.0 - 90.0) < RADIAL_CLEAR_DEG:
+                continue  # a leader never runs along the radial centre line of a hole of a circular pattern
             rad = math.radians(angle)
             u = (math.cos(rad), math.sin(rad))
             tip = (centre[0] + u[0] * radius, centre[1] + u[1] * radius)
