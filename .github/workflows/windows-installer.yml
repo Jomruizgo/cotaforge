@@ -2,19 +2,27 @@ name: windows-installer
 
 # Builds the Windows installer, installs it on the runner (silently), checks it and uninstalls it.
 # On a version tag it also leaves a DRAFT release with the .exe attached; publishing it is a human decision.
+# Pull requests run it only when they touch what the installer packs or runs at install time (packaging, plugin, package
+# metadata, the command line and launcher, the manuals). Every push to develop and main runs it, so a code change that
+# breaks the install is caught right after its merge.
 
 on:
   pull_request:
     paths:
-      - "kernel/**"
-      - "mcp-server/**"
-      - "plugin/**"
       - "packaging/**"
+      - "plugin/**"
       - ".claude-plugin/**"
+      - "kernel/pyproject.toml"
+      - "mcp-server/pyproject.toml"
+      - "mcp-server/src/cotaforge_mcp/cli.py"
+      - "mcp-server/src/cotaforge_mcp/launcher.py"
       - "docs/manual-usuario.md"
       - "docs/user-manual.md"
       - ".github/workflows/windows-installer.yml"
   push:
+    branches:
+      - develop
+      - main
     tags:
       - "v*"
   workflow_dispatch:
