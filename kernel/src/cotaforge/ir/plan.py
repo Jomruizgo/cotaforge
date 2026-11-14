@@ -90,6 +90,7 @@ _BODY_PRODUCING_OP_NAMES: frozenset[str] = frozenset(
         "rotate",
         "copy_body",
         "mirror_body",
+        "shrink_body",
         "split",
         "extrude",
         "revolve",

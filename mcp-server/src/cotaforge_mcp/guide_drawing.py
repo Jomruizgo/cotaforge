@@ -137,9 +137,10 @@ ITEM_INTRO = (
     "outward in the order of the items; offset_mm (distance from the edge of the view) and side move one. Callouts "
     "look for free room around the dimensions, away from each other and inside the frame, never over the title "
     "block; with side or offset_mm a callout goes exactly there and, if that place is taken or outside the frame, the "
-    "item's warning says so (datum, gdt and finish too: on a flat face side only tells which way the mark would go "
-    "and the warning says when it cannot). The engineer sees each one in the window; fix an item in place with "
-    "drawing(action=update, items=[{id, offset_mm, side...}]) (nothing else moves), instead of rebuilding the sheet. A face id the part no longer has (an edit regenerated "
+    "item's warning says so (datum, gdt and finish too). "
+    "The engineer sees each one in the window; fix an item in place with "
+    "drawing(action=update, items=[{id, offset_mm, side...}]) (nothing else moves), instead of rebuilding the sheet. "
+    "A face id the part no longer has (an edit regenerated "
     "it) makes its item an error, never an old number: add it again with the new id. "
     "Positions are world mm; at_mm is a SHEET position in mm from its bottom-left corner (y up). view is front, "
     'top or right (or the label of a section, "A-A", for dim, hole_dim, note and line).',
@@ -239,7 +240,8 @@ ITEM_LINES = (
     "(a point of the plane) + normal=[x,y,z] (the direction the viewer looks; the plane must be seen edge-on in the "
     "parent view); view? (the parent, where the cutting line goes: default the first that fits), letter? (default "
     "the next "
-    "free one: A, B...), flip? (look from the other side), in_place? (true, with holes=\"axis\": the section stands IN the "
+    "free one: A, B...), flip? (look from the other side), removed? (true: a REMOVED section, ISO 128-40: the cut view stands "
+    "on the extension of its cutting line, above or below the part, centred on the line; a keyway's section is one), in_place? (true, with holes=\"axis\": the section stands IN the "
     "main view, in its frame, place and scale, and that view is not drawn; no cutting line, no letters (ISO 128-44: the "
     "plane is the axis of symmetry); a part of revolution whose features are all coaxial. Dimension it on view=A-A: each "
     "Ø (dim kind=diameter; a bore's hole_dim gives one Ø per step) and the heights direct from the seating face, never "
@@ -257,10 +259,10 @@ ITEM_LINES = (
     "that are not on one line cannot be cut by one plane (refused, says so): name the ones to cut with holes=[...].",
     "line: an axis or a line in an ISO 128 line type, drawn by the sheet (TechDraw's own cosmetic lines cannot be a chain "
     "line: see cad_guide(topic=traps)). axis=<cylindrical face> (a shaft, boss or bore: its centre line along its whole "
-    "length plus 3 mm, in every standard view that sees it from the side and a centre cross where it is seen end-on) "
+    "length plus 2.5 mm at each end, never into a dimension or its text, in every standard view that sees it from the side and a centre cross where it is seen end-on) "
     "or from={ref} + to={ref} (two places of the part, as in dim: the line between them); style? chain (long-dash "
     "dotted, default for an axis) | dashed | continuous (thin, default between two places); view? (front, top, right "
-    "or a section label), extend_mm?.",
+    "or a section label), extend_mm? (a longer reach than 2.5 mm needs reason?: why).",
     "detail: an enlarged circle of a view. at=[x,y,z] (centre, a model point), radius_mm, view? (default front), "
     "scale? (the enlargement: 5 = 5:1; default the ISO 5455 one that fills about 50 mm), letter?, at_mm?. The circle "
     'and its letter go in the parent, the view is clipped exactly at the circle and labelled "B (5:1)". Hidden lines '
@@ -427,15 +429,38 @@ WELD_LINE = (
     "welded sheet needs a parts list and a balloon per body (weld_list_missing, item_without_balloon, balloon_not_in_list)."
 )
 
+BASELINE_LINE = (
+    "baseline_dims: from=\"face:N\" (required), view?, side?. The length of every step of a turned part counted from ONE datum "
+    "face, as parallel dimensions (ISO 129-1), made into dim items <id>1, <id>2... The datum is never chosen for the engineer: it is "
+    "the axial reference the intent file names (the shoulder or the end the functional lengths are counted from) or the face "
+    "he picks when asked. The lines stack shortest nearest the part, longest outermost, 7 mm apart; a chain stays only where it is "
+    "functional (a groove width, a keyway set from its shoulder). Put the stack on one side of the long view (side=below) and "
+    "the diameters on the other: a diameter callout cannot cross a dimension line. The review HOLDS the export for parallel "
+    "dimensions in the wrong order (dimension_stack_order: the longer nearer the part), lines closer than 6,5 mm "
+    "(dimension_gap) and an extension line across another dimension's line (dimension_crossing)."
+)
+
 KEYWAY_LINE = (
-    "keyway_dims (no fields): the dimensions of the keyways the walls of the part show -- width, depth as the standards give "
-    "it (d - t1 on a shaft, d + t2 in a hub), length, position -- as dim items <id>_w, _t, _l, _p. The harness adds them "
+    "keyway_dims (fit?, depth_tol?, section?, letter?): the dimensions of the keyways the walls of the part show -- width, depth "
+    "as the standards give it (d - t1 on a shaft, d + t2 in a hub), length, position -- as dim items <id>_w, _t, _l, _p. The "
+    "width and the depth go on a REMOVED section across the keyway (a section item with removed=true, <id>_sec, placed on the "
+    "extension of its cutting line: no end view is made for a keyway); the length and the position, on the long view. fit is the "
+    "ISO 286 class of the width (P9, N9: asked, never assumed), depth_tol [upper, lower] the deviations of the depth, section=false "
+    "keeps the old end view dimensions, letter the letter of the section. The harness adds them "
     "itself (rq_keyway); only the width's fit class is asked. chamfer_dims (no fields): a callout (size x angle) of every "
     "chamfer no dimension gives yet, flat or on a round edge (a shaft end), as dim items kind=chamfer; the harness adds it "
     "itself (rq_chamfers). Assemblies: the harness also adds the parts list and a balloon per position on the isometric "
     "view (rq_parts_list, rq_balloons), and the axis lines of the sleeves and pins the views show side-on (rq_view_lines, "
     "without hidden lines); review flags cylinder_no_axis (also in a section), balloons_off_isometric and view_adds_nothing "
     "(a view with no dimension: only the engineer's order lets it stay)."
+)
+
+PATTERN_LINE = (
+    "pattern_dim (at, kind?, about?, view?, side?, offset_mm?): a bolt circle (equal holes on one circle about a bore, a boss or the "
+    "part's axis; not a rectangle's four corners) is located by its pitch circle Ø and the angle of its first hole, never by X / Y: "
+    "pd1 (Ø) and pd1a (angle, off a centre line) come by themselves, with radial centre lines; hole_dim gives the count. at = a "
+    "point on a hole's axis. A lone hole on a radius is yours to ask for (kind=angle at it, about=[x,y,z] its axis). Coordinates, "
+    "or the pitch circle only in a note: pattern_not_polar."
 )
 
 SPANISH_LINE = (
@@ -505,6 +530,7 @@ VIEWS_LINE = (
 )
 
 TOPIC_ITEMS = "drawing:items"
+TOPIC_DIMS = "drawing:dims"
 TOPIC_MARKS = "drawing:marks"
 TOPIC_VIEWS = "drawing:views"
 TOPIC_ASSEMBLY = "drawing:assembly"
@@ -523,6 +549,7 @@ LAYOUT_LINE = (
 
 SUBTOPICS = (
     TOPIC_ITEMS,
+    TOPIC_DIMS,
     TOPIC_MARKS,
     TOPIC_VIEWS,
     TOPIC_ASSEMBLY,
@@ -531,11 +558,11 @@ SUBTOPICS = (
     TOPIC_DONE,
 )
 INDEX_LINE = (
-    "MORE (the item reference is split: each reply is read in full): cad_guide(topic=drawing:items) holes, "
-    "dimensions, position dimensions, tolerances | drawing:marks datums, GD&T frames, finish, notes, hidden / centre "
+    "MORE (split; each reply is read whole): cad_guide(topic=drawing:items) holes, "
+    "dimensions, position dimensions, tolerances | drawing:dims baseline lengths, keyway section | drawing:marks datums, GD&T frames, finish, notes, hidden / centre "
     "lines | drawing:views section, detail, auxiliary view, review | drawing:assembly parts list, balloons, exploded | "
-    "drawing:output how export(action=pdf|dxf) writes the sheet, DXF layers, line weights, projection=hlr | "
-    "drawing:quality the quality floor: location of the holes, callouts, dowels, notes, title block, one view | "
+    "drawing:output export(action=pdf|dxf), layers, line weights, projection=hlr | "
+    "drawing:quality quality floor: hole location, callouts, dowels, notes, title block, one view | "
     "drawing:done WHEN A DRAWING MAY BE EXPORTED: requirements, who reviews it, answer, approve. Look at the "
     "sheet (drawing capture) before you write it."
 )
@@ -553,10 +580,11 @@ def drawing_text(tools: Collection[str], part: str = "", flow: str = "steps") ->
     if part:
         groups = {
             TOPIC_ITEMS: [ITEM_INTRO[0], *ITEM_LINES[0:4]],
-            TOPIC_MARKS: [*ITEM_LINES[4:9], WELD_LINE, KEYWAY_LINE],
-            TOPIC_VIEWS: [*ITEM_LINES[9:12], ITEM_LINES[13], LAYOUT_LINE],
+            TOPIC_DIMS: [BASELINE_LINE, KEYWAY_LINE],
+            TOPIC_MARKS: [*ITEM_LINES[4:9], WELD_LINE],
+            TOPIC_VIEWS: [*ITEM_LINES[9:12], ITEM_LINES[13], PATTERN_LINE],
             TOPIC_ASSEMBLY: [ITEM_LINES[12]],
-            TOPIC_OUTPUT: [SHEET_RULES[2], PROJECTION_LINE, VIEW_LINE],
+            TOPIC_OUTPUT: [SHEET_RULES[2], PROJECTION_LINE, VIEW_LINE, LAYOUT_LINE],
             TOPIC_QUALITY: QUALITY_LINES,
             TOPIC_DONE: list(DONE_LINES),
         }

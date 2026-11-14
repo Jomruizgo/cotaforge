@@ -335,6 +335,93 @@ def mirror_body(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+SHRINK_RATIO_TOL = 1e-4
+"""A derived body's box must be the source's box scaled, to this relative size (0.01 %)."""
+SHRINK_SPLINE_VOLUME_TOL = 2e-3
+"""The volume of a body with B-spline faces (a scale unequal on the axes) is integrated numerically by the kernel:
+measured 0.04 % off the exact product of the factors on a part with holes. It is checked for a gross error only."""
+
+
+def _exact_box(shape: Any) -> Any:
+    """The tight bounding box (the kernel's plain one may include the control polygon of a B-spline surface)."""
+    try:
+        return shape.optimalBoundingBox(False, False)
+    except (AttributeError, Part.OCCError, RuntimeError):
+        return shape.BoundBox
+
+
+def shrink_body(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
+    """Derive a body LINKED to its source and scaled per axis: a ``Draft`` clone (``Part::FeaturePython``) of the source
+    object with its ``Scale`` set. It is a live object: when the source changes, the next recompute rebuilds it. An
+    equal scale on the three axes is exact in the kernel (planes and cylinders stay what they are); an unequal one is an
+    affine map and turns curved faces into B-spline surfaces. The clone scales about the source object's own origin (its
+    placement is taken off, the scale applied, the placement put back).
+
+    The result is CHECKED on the real shape: its box against the source's box scaled by the factors, per axis, within
+    ``SHRINK_RATIO_TOL`` of the size, and its volume against the product of the factors. A body that fails either is not
+    kept (``geometry_failed``, nothing left behind)."""
+    op = _op(params)
+    source = reg.resolve_body(doc, reg.handle_id(params["source"], op, "source"), op)
+    factors = [float(c) for c in params["scale"]]
+    if len(factors) != 3 or not all(math.isfinite(c) and c > 0.0 for c in factors):
+        raise invalid_request(f"shrink_body scale must be three finite numbers above 0, got {factors!r}", op)
+    source_shape = reg.world_shape(doc, source)
+    if source_shape.isNull() or not source_shape.Solids:
+        raise geometry_failed("cannot derive a shrunk body from a body with no solid", op)
+    source_obj_name = source.fc_body if source.kind == "partdesign" else source.result_obj
+
+    def build(ctx: oc.OpContext) -> None:
+        import Draft  # noqa: PLC0415 - FreeCAD's own Draft module: it owns the linked, scaled clone
+
+        source_obj = doc.fc_doc.getObject(source_obj_name)
+        clone = Draft.make_clone(source_obj)
+        fc.recorder.record(f"import Draft; Draft.make_clone({literal(source_obj)})  # a linked clone, scaled below")
+        fc.set_prop(clone, "Scale", Vector(*factors))
+        fc.set_label(clone, ctx.label())
+        ctx.feature.fc_names.append(clone.Name)
+        ctx.feature.fc_main = clone.Name
+        ctx.check_objects.append(clone)
+        body = reg.BodyRec(ctx.doc.next_id("body"), "part", None, clone.Name, ctx.feature.id)
+        ctx.doc.bodies[body.id] = body
+        ctx.feature.created_bodies.append(body.id)
+        ctx.bodies.append(body)
+
+        def post_check() -> None:
+            body.invalidate()
+            shape = reg.world_shape(doc, body)
+            if shape.isNull() or not shape.isValid() or not shape.Solids:
+                raise unrecoverable(geometry_failed("the shrunk body is not a valid solid", op))
+            before, after = _exact_box(source_shape), _exact_box(shape)
+            for axis, size_before, size_after, factor in zip(
+                "XYZ",
+                (before.XLength, before.YLength, before.ZLength),
+                (after.XLength, after.YLength, after.ZLength),
+                factors,
+                strict=True,
+            ):
+                ratio = size_after / size_before if size_before > 0.0 else factor
+                if abs(ratio - factor) > SHRINK_RATIO_TOL * factor:
+                    raise unrecoverable(
+                        geometry_failed(
+                            f"the shrunk body is {size_after:.6g} mm along {axis} against {size_before:.6g} mm: "
+                            f"a ratio of {ratio:.6f}, not {factor:.6f} (more than 0.01 % off)",
+                            op,
+                        )
+                    )
+            expected = source_shape.Volume * factors[0] * factors[1] * factors[2]
+            equal = max(factors) - min(factors) < 1e-12
+            if abs(shape.Volume - expected) > (SHRINK_RATIO_TOL if equal else SHRINK_SPLINE_VOLUME_TOL) * expected:
+                raise unrecoverable(
+                    geometry_failed(
+                        f"the shrunk body has volume {shape.Volume:.6g} mm3, expected {expected:.6g} mm3", op
+                    )
+                )
+
+        ctx.post_check = post_check
+
+    return oc.run_op(doc, "shrink_body", params, build)
+
+
 def _half_space(origin: g.Vec3, normal: g.Vec3, positive: bool, reach: float) -> Any:
     """A box that fills one side of the plane (through ``origin``, with unit ``normal``) out to ``reach`` in every
     direction: the side the normal points to when ``positive``, the other side otherwise."""

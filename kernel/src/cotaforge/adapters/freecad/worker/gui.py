@@ -64,6 +64,7 @@ SELECTION_DEBOUNCE_S = 0.15
 HIGHLIGHT_COLOR: highlight.RGBA = (1.0, 0.55, 0.0, 0.0)
 
 _highlight_state = highlight.HighlightState()
+_appearance_state: dict[tuple[str, str], list[Any]] = {}  # (document, object) -> the ShapeAppearance before a graded paint
 
 _keep_alive: list[Any] = []  # the bridge QObject and the reader thread must outlive ``serve()``
 _keep_alive_sub: list[Any] = []  # the sheet window last looked up: its (sub-window, widget) wrappers
@@ -853,7 +854,56 @@ def clear_highlight(fc_doc: Any) -> None:
             _highlight_state.discard(doc_name, object_name)
         except Exception:  # noqa: BLE001 - one bad restore must never block the rest or crash the worker
             sys.stderr.write(traceback.format_exc())
+    _restore_appearance(fc_doc)
     Gui.updateGui()
+
+
+def _restore_appearance(fc_doc: Any) -> None:
+    """Put back the per-face appearance ``paint_faces`` replaced (one object at a time, like ``clear_highlight``)."""
+    for key in [k for k in _appearance_state if k[0] == fc_doc.Name]:
+        try:
+            obj = fc_doc.getObject(key[1])
+            original = _appearance_state[key]
+            if obj is not None and obj.ViewObject is not None:
+                faces = len(obj.Shape.Faces)
+                # a list of another length than one entry or one per face is stale (the solid changed meanwhile)
+                obj.ViewObject.ShapeAppearance = original if len(original) in (1, faces) else original[:1]
+        except Exception:  # noqa: BLE001 - one bad restore must never block the rest or crash the worker
+            sys.stderr.write(traceback.format_exc())
+        finally:
+            _appearance_state.pop(key, None)
+
+
+def paint_faces(fc_doc: Any, targets: list[tuple[Any, int, highlight.RGBA]]) -> bool:
+    """Colour faces on screen until the next ``clear_highlight`` of this document: ``targets`` are ``(the object the
+    window shows, face index, colour)``. FreeCAD 1.1 draws a per-face colour from the ``ShapeAppearance`` of the view of
+    the object the window SHOWS (the Tip of a PartDesign body, never the body: confirmed on 1.1.3, where a
+    ``DiffuseColor`` set on the body's view paints nothing). A colour is FreeCAD's own ``(r, g, b, transparency)``.
+    Returns whether something was painted; never marks the document modified."""
+    clear_highlight(fc_doc)
+    if not ACTIVE or not targets:
+        return False
+    by_object: dict[Any, list[tuple[int, highlight.RGBA]]] = {}
+    for obj, index, colour in targets:
+        by_object.setdefault(obj, []).append((index, colour))
+    painted = False
+    for obj, entries in by_object.items():
+        view = obj.ViewObject
+        if view is None or not hasattr(view, "ShapeAppearance"):
+            continue
+        original = list(view.ShapeAppearance)
+        faces = len(obj.Shape.Faces)
+        shown: list[Any] = list(original) if len(original) == faces else [original[0]] * faces
+        for index, colour in entries:
+            if 0 <= index < faces:
+                material = App.Material()
+                material.DiffuseColor = (colour[0], colour[1], colour[2], 1.0 - colour[3])
+                shown[index] = material
+        _appearance_state[(fc_doc.Name, obj.Name)] = original
+        view.ShapeAppearance = shown
+        painted = True
+    Gui.updateGui()
+    return painted
 
 
 def drop_highlight(fc_doc_name: str) -> None:
@@ -861,6 +911,8 @@ def drop_highlight(fc_doc_name: str) -> None:
     the document is about to be deleted (``_HighlightWatcher.slotDeletedDocument`` below): there is
     nothing left in FreeCAD to restore a colour on. No-op if nothing was remembered for it."""
     _highlight_state.discard_document(fc_doc_name)
+    for key in [k for k in _appearance_state if k[0] == fc_doc_name]:
+        del _appearance_state[key]
     import hole_colours  # noqa: PLC0415 - hole_colours imports this module lazily too
 
     hole_colours.forget(fc_doc_name)

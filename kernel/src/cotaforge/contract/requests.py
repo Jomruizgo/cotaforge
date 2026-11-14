@@ -405,6 +405,25 @@ class CopyBodyRequest(Request):
     scale_about: Vec3 = (0.0, 0.0, 0.0)
 
 
+class ShrinkBodyRequest(Request):
+    """Derive a NEW body from ``source``, LINKED to it (it follows the source when the source changes), scaled by
+    ``scale`` per axis (the mould's cavity of a shrinking plastic: 1.006 = the 0.6 % the plastic will shrink). The
+    scaling is about the source body's own origin. The source is untouched. A scale equal on all three axes is exact
+    (planes stay planes, cylinders stay cylinders); an unequal one is affine and turns curved faces into B-spline
+    surfaces, as in every CAD."""
+
+    source: BodyHandle
+    scale: Vec3
+
+    @field_validator("scale")
+    @classmethod
+    def _scale_positive(cls, value: Vec3) -> Vec3:
+        if not all(c > 0.0 for c in value):
+            msg = "scale must be above 0 on every axis"
+            raise ValueError(msg)
+        return value
+
+
 class SplitRequest(Request):
     """Cut ``source`` in two along ``plane`` (only its origin and normal ``n`` matter). ``positive`` is the piece on
     the side ``n`` points to, ``negative`` the other. The source is CONSUMED (it no longer exists afterwards) and the

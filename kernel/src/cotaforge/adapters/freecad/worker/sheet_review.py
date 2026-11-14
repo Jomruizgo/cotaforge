@@ -368,6 +368,7 @@ def _located_holes(data: ReviewInput) -> set[int]:
         for end in ("from", "to"):
             for h in _hole_of_ref(ctx, spec[end]):
                 located.add(h.index)
+    located |= set(ctx.extras.get("polar_located", ()))  # a bolt circle by its pitch circle and angle (items_pattern)
     return located
 
 

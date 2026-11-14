@@ -67,6 +67,7 @@ import sheet_mirror
 import sheet_model as model
 import sheet_native
 import sheet_output
+import sheet_pattern
 import sheet_plan_bridge
 import sheet_project
 import sheet_render
@@ -1009,8 +1010,8 @@ def _views_for_part(doc: reg.DocumentRec, body: Any, op: str | None) -> tuple[li
     wants_end = bool(sheet_facts.collect(doc, _bodies(doc, body, op)).keyways)
     views = sheet_turned.views_for(wants_end)
     why = (
-        f"revolved about {name}: the main view with its axis horizontal (as it is machined), and the end view because "
-        "a keyway shows in it, and the isometric view"
+        f"revolved about {name}: the main view with its axis horizontal (as it is machined) and the isometric view; the "
+        "keyway is shown in a removed section across it (keyway_dims), not in an end view"
         if wants_end
         else f"revolved about {name}: ONE main view with its axis horizontal (as it is machined); it carries the "
         "diameters, the lengths, the thread and the chamfers, an end view would repeat circles; plus the isometric view"
@@ -1222,7 +1223,7 @@ def _rebuild_report(
     """What a rebuild kept, what no longer resolves, and -- when ``fresh`` -- what it threw away, as lines for the reply."""
 
     def own(items: list[dict[str, Any]]) -> list[str]:
-        return [str(i["id"]) for i in items if not (i.get("auto") and str(i["id"]) in AUTO_IDS)]
+        return [str(i["id"]) for i in items if not (i.get("auto") and is_auto_id(str(i["id"])))]
 
     def memory(source: dict[str, Any]) -> list[str]:
         lines = []
@@ -1376,6 +1377,11 @@ def _expand_thread_dims(
     return out
 
 
+_KEYWAY_FALLBACK: dict[str, list[dict[str, Any]]] = {}
+"""The width and the depth of a keyway as plain dimensions, by the id of the removed section that was to carry them: a section that
+finds no room on the sheet is refused and its dimensions go where the sheet has a place for them (``add`` puts them back)."""
+
+
 def _expand_keyway_dims(
     doc: reg.DocumentRec, spec: dict[str, Any], requested: list[Any], op: str | None
 ) -> list[Any]:
@@ -1384,18 +1390,99 @@ def _expand_keyway_dims(
     (``<id>_w``, ``_t``, ``_l``, ``_p``), so the sheet keeps plain dimensions that follow the normal rules."""
     if not any(isinstance(i, dict) and i.get("type") == "keyway_dims" for i in requested):
         return requested
-    slots = sheet_facts.collect(doc, _bodies(doc, spec.get("body"), op)).keyway_slots
+    import items_views  # noqa: PLC0415 - the letters of the views
+
+    _KEYWAY_FALLBACK.clear()
+    slots =sheet_facts.collect(doc, _bodies(doc, spec.get("body"), op)).keyway_slots
     shown = tuple(views_of(spec))
+    views_made = [i for i in [*spec.get("items", ()), *requested] if isinstance(i, dict) and i.get("type") in ("section", "detail", "aux_view")]
+    taken = {str(i["letter"]) for i in views_made if i.get("letter")}
+    auto = sum(1 for i in views_made if not i.get("letter"))  # views that take the next free letters when they are drawn
     out: list[Any] = []
     for item in requested:
         if not (isinstance(item, dict) and item.get("type") == "keyway_dims"):
             out.append(item)
             continue
         prefix = str(item.get("id") or "keyway")
-        made = [dim for number, slot in enumerate(slots, start=1) for dim in sheet_keyway.dimension_specs(slot, prefix if len(slots) == 1 else f"{prefix}{number}", shown)]
+        try:
+            depth_tol = tuple(float(v) for v in item["depth_tol"]) if item.get("depth_tol") else None
+        except (TypeError, ValueError) as exc:
+            raise invalid_request("keyway_dims depth_tol is [upper, lower] in mm, like [0.2, 0]", op) from exc
+        if depth_tol is not None and len(depth_tol) != 2:
+            raise invalid_request("keyway_dims depth_tol is [upper, lower] in mm, like [0.2, 0]", op)
+        if item.get("fit") is not None and not isinstance(item["fit"], str):
+            raise invalid_request('keyway_dims fit is the ISO 286 class of the width, like "P9" or "N9"', op)
+        made: list[Any] = []
+        for number, slot in enumerate(slots, start=1):
+            name = prefix if len(slots) == 1 else f"{prefix}{number}"
+            section = None
+            end_view = sheet_keyway.PROFILE_VIEW.get(sheet_keyway.axis_name(slot.cylinder.axis) or "")
+            if item.get("section", True) and end_view is not None and end_view not in shown:  # a sheet with the end view keeps its dimensions there
+                # the keyway is shown in a REMOVED section across it, on the extension of its cutting line: it carries the width
+                # (with its class) and the depth, and the end view of the part is not needed for them
+                free = [letter for letter in items_views.LETTERS if letter not in taken]
+                letter = str(item.get("letter") or free[min(auto, len(free) - 1)])
+                section = f"{letter}-{letter}"
+            dims = sheet_keyway.dimension_specs(slot, name, shown, section, item.get("fit"), depth_tol)
+            if section and any(d.get("view") == section for d in dims):  # no width or depth to carry: no section
+                taken.add(section[0])
+                _KEYWAY_FALLBACK[f"{name}_sec"] = [
+                    d for d in sheet_keyway.dimension_specs(slot, name, shown, None, item.get("fit"), depth_tol) if str(d["id"]).endswith(("_w", "_t"))
+                ]
+                made.append(
+                    {"type": "section", "id": f"{name}_sec", "at": [round(v, 4) for v in sheet_keyway.middle_of(slot)],
+                     "normal": list(slot.cylinder.axis), "letter": section[0], "removed": True}
+                )  # fmt: skip
+            elif section:
+                dims = sheet_keyway.dimension_specs(slot, name, shown, None, item.get("fit"), depth_tol)
+            made += dims
         if not made:
             raise invalid_request("the part has no keyway whose walls can be dimensioned (keyway_dims)", op)
         out.extend(made)
+    return out
+
+
+def _expand_baseline_dims(
+    doc: reg.DocumentRec, spec: dict[str, Any], stored: list[dict[str, Any]], requested: list[Any], op: str | None
+) -> list[Any]:
+    """``baseline_dims`` is not an item of its own: it is the length of every step of a turned part counted from ONE datum
+    face (``from``, a shoulder or an end the engineer or the intent file named: it is never chosen here), made now as ``dim``
+    items ``<id>1``, ``<id>2``... from that face (parallel dimensions, ISO 129-1). A length the sheet already gives from that
+    face is not made again."""
+    if not any(isinstance(i, dict) and i.get("type") == "baseline_dims" for i in requested):
+        return requested
+    facts = sheet_facts.collect(doc, _bodies(doc, spec.get("body"), op))
+    skip = {f.face_id for slot in facts.keyway_slots for f in slot.ends if f.face_id}
+    spans = [(c.axis, c.lo, c.hi) for c in facts.cylinders if not c.concave]
+    given = {
+        (str((i.get("from") or {}).get("face")), str((i.get("to") or {}).get("face")))
+        for i in stored
+        if i.get("type") == "dim" and i.get("kind") == "distance" and isinstance(i.get("from"), dict) and isinstance(i.get("to"), dict)
+    }
+    out: list[Any] = []
+    for item in requested:
+        if not (isinstance(item, dict) and item.get("type") == "baseline_dims"):
+            out.append(item)
+            continue
+        datum = item.get("from")
+        if isinstance(datum, dict):
+            datum = datum.get("face")
+        if not isinstance(datum, str) or not datum.startswith("face:"):
+            raise invalid_request(
+                'baseline_dims needs from="face:N": the shoulder or the end the lengths are counted from (the face the intent file '
+                "names as the axial reference, or the one the engineer picks: it is never chosen for him)",
+                op,
+            )
+        try:
+            made = sheet_turned.baseline_dims(
+                datum, facts.planes, spans, skip, str(item.get("id") or "bl"), item.get("view"), item.get("side")
+            )
+        except sheet_turned.BaselineError as exc:
+            raise invalid_request(str(exc), op) from exc
+        fresh = [m for m in made if (datum, m["to"]["face"]) not in given and (m["to"]["face"], datum) not in given]
+        if not fresh:
+            raise invalid_request(f"every length from {datum} is on the sheet already (baseline_dims)", op)
+        out.extend(fresh)
     return out
 
 
@@ -1437,7 +1524,14 @@ AUTO_THICKNESS_ID = "tn"  # the thickness note of a sheet of one view
 LEGACY_ISO286_ID = "n286"  # the "tables transcribed" note older sheets carry: the sheet no longer writes it
 AUTO_HOLES_ID = "hp"  # the diameter, centre distance and edge distance of the through holes of an assembly
 AUTO_IDS = (AUTO_LOCATE_ID, AUTO_THICKNESS_ID, AUTO_HOLES_ID)
+AUTO_PATTERN_ID = re.compile(r"pd[0-9]+(a[0-9]*)?\Z")  # the polar dimensions of a circular pattern: pd1 (its diameter), pd1a (its angle)
 ANGLES = ("first", "third")
+
+
+def is_auto_id(item_id: str) -> bool:
+    """Whether ``item_id`` is the id of an item every sheet carries by itself (the default location, the thickness note, the
+    polar dimensions of a circular pattern)."""
+    return item_id in AUTO_IDS or bool(AUTO_PATTERN_ID.match(item_id))
 
 
 def _has_thickness(
@@ -1459,6 +1553,29 @@ def _has_thickness(
     return length <= FLAT_RATIO * diameter
 
 
+VIEW_DIRECTIONS = {"front": (0.0, 1.0, 0.0), "top": (0.0, 0.0, 1.0), "right": (1.0, 0.0, 0.0)}  # what each standard view looks along
+
+
+def _pattern_items(found: list[sc.HoleInfo], standard: list[str]) -> list[dict[str, Any]]:
+    """The polar dimensions of every circular pattern of the holes that a standard view of the sheet shows as circles: ``pd<n>``
+    (the diameter of its pitch circle) and the angle of its first hole, ``pd<n>a`` (an uneven pattern: one angle per hole,
+    ``pd<n>a<k>``). Each names a hole of the pattern by a point of its axis; what it draws is ``items_pattern``'s."""
+    out: list[dict[str, Any]] = []
+    by_index = {h.index: h for h in found}
+    for number, pattern in enumerate(sheet_pattern.find(found, sheet_pattern.axes_of_holes(found)), start=1):
+        if not any(v in VIEW_DIRECTIONS and sc.parallel(VIEW_DIRECTIONS[v], pattern.direction) for v in standard):
+            continue
+        at = [round(c, 4) for c in by_index[min(pattern.reps)].centre]
+        out.append({"id": f"pd{number}", "type": "pattern_dim", "auto": True, "at": at})
+        if pattern.even:
+            out.append({"id": f"pd{number}a", "type": "pattern_dim", "auto": True, "kind": "angle", "at": at})
+            continue
+        for k, index in enumerate(sorted(pattern.reps), start=1):
+            where = [round(c, 4) for c in by_index[index].centre]
+            out.append({"id": f"pd{number}a{k}", "type": "pattern_dim", "auto": True, "kind": "angle", "at": where})
+    return out
+
+
 def _sync_auto_items(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None) -> None:
     """Keep the items every sheet carries by itself in step with the part and the views: the baseline location of the holes
     (``loc``) when the part has holes, the thickness note (``tn``) when the sheet has ONE standard view. The engineer may
@@ -1470,8 +1587,10 @@ def _sync_auto_items(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None)
     wanted: dict[str, dict[str, Any]] = {}
     if assembly and LiveGeometry(doc, _shapes(doc, spec.get("body"), op), op).assembly_holes():
         wanted[AUTO_HOLES_ID] = {"id": AUTO_HOLES_ID, "type": "hole_positions", "auto": True}
-    if not assembly and hole_infos(doc, spec.get("body"), op):
+    found_holes = [] if assembly else hole_infos(doc, spec.get("body"), op)
+    if found_holes:
         wanted[AUTO_LOCATE_ID] = {"id": AUTO_LOCATE_ID, "type": "datum_dims", "auto": True}
+        wanted.update({i["id"]: i for i in _pattern_items(found_holes, standard)})
     if not assembly and len(standard) == 1 and _has_thickness(
         doc, spec.get("body"), standard[0], op, turned_of(doc, spec, op) is not None
     ):
@@ -1485,8 +1604,12 @@ def _sync_auto_items(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None)
     for key, item in wanted.items():
         if key not in declined and key not in have:
             items.append(item)
+    for position, i in enumerate(items):  # a pattern that moved: its items follow it (what the layout placed goes with the old one)
+        want = wanted.get(str(i["id"]))
+        if i.get("auto") and i.get("type") == "pattern_dim" and want is not None and any(i.get(k) != want.get(k) for k in ("at", "kind")):
+            items[position] = want
     spec["items"] = [
-        i for i in items if not (i.get("auto") and str(i["id"]) in AUTO_IDS and str(i["id"]) not in wanted)
+        i for i in items if not (i.get("auto") and is_auto_id(str(i["id"])) and str(i["id"]) not in wanted)
     ]
 
 
@@ -1807,7 +1930,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
             )
         items = [i for i in items if i["id"] not in set(wanted)]
         spec["items"] = items
-        taken_off = [r for r in wanted if r in AUTO_IDS]
+        taken_off = [r for r in wanted if is_auto_id(r)]
         if taken_off:  # the engineer does not want it: it does not come back
             spec["declined"] = sorted({*spec.get("declined", ()), *taken_off})
         _sync_auto_items(doc, spec, op)
@@ -1816,6 +1939,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         _sync_template_fields(fc_doc, op)
         return _result(doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), [], op, changed=tuple(wanted))
     requested = _expand_keyway_dims(doc, spec, list(params.get("items") or ()), op)
+    requested = _expand_baseline_dims(doc, spec, items, requested, op)
     requested = _expand_chamfer_dims(doc, items, requested, op)
     asked_threads = any(isinstance(i, dict) and i.get("type") == "thread_dims" for i in requested)
     requested = _expand_thread_dims(doc, items, requested, op)
@@ -1837,6 +1961,21 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         added.append(done)
     waited = wait_views(fc_doc, page, op)
     refused, tried = _refused(doc, page, spec, items, added, op)
+    lost = [sid for sid in refused if sid in _KEYWAY_FALLBACK]
+    if lost:  # a removed section of a keyway found no room: its width and depth stand on the sheet as plain dimensions
+        survivors = [a for a in added if a["id"] not in refused]
+        names = {a["id"] for a in survivors} | {i["id"] for i in items}
+        again: list[dict[str, Any]] = []
+        for sid in lost:
+            for raw in _KEYWAY_FALLBACK[sid]:
+                try:
+                    done = sheet_items.normalise(raw, names, spec["next"])
+                except sc.ItemError:
+                    continue
+                names.add(done["id"])
+                again.append(done)
+        added = survivors + again
+        refused, tried = _refused(doc, page, spec, items, added, op)
     keep = [a for a in added if a["id"] not in refused]
     spec["items"] = items + keep
     _sync_auto_items(doc, spec, op)
@@ -2605,6 +2744,7 @@ def hole_infos(doc: reg.DocumentRec, body: str | None, op: str | None) -> list[s
                 fit,
                 made_class,
                 grade,
+                float(hole.get("tip_mm") or 0.0),
             )
         )
     return out

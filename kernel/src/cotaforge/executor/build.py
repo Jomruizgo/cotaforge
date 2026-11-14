@@ -58,6 +58,7 @@ from cotaforge.contract import (
     RevolveRequest,
     SetJointRequest,
     ShellRequest,
+    ShrinkBodyRequest,
     SketchFrame,
     SketchRequest,
     SplitRequest,
@@ -647,6 +648,11 @@ def build_copy_body(op: Any, ctx: ExecutionContext, resolver: Resolver) -> CopyB
     )
 
 
+def build_shrink_body(op: Any, ctx: ExecutionContext, resolver: Resolver) -> ShrinkBodyRequest:
+    """The source body and the scale per axis (``1 + shrinkage / 100``)."""
+    return ShrinkBodyRequest(operation_id=op.id, source=resolver.body(op.source, op.id, "source"), scale=op.scale())
+
+
 def build_split(op: Any, ctx: ExecutionContext, resolver: Resolver) -> SplitRequest:
     """The source piece as a body handle and the parting plane as a frame (a base plane, a datum plane or a planar
     face; only its origin and normal matter)."""
@@ -777,6 +783,7 @@ DISPATCH: dict[str, tuple[str, Builder]] = {
     "draft": ("draft", build_draft),
     "mirror": ("mirror", build_mirror),
     "mirror_body": ("mirror_body", build_mirror_body),
+    "shrink_body": ("shrink_body", build_shrink_body),
     "split": ("split", build_split),
     "box": ("box", build_box),
     "cylinder": ("cylinder", build_cylinder),

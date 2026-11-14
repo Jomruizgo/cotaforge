@@ -308,7 +308,7 @@ El agente habla con el software de CAD solo a través de estas herramientas del 
 | `doc` | Ciclo de vida del documento (pueden estar abiertos varios) | `new`, `open`, `import` (STEP o IGES), `save`, `status`, `close`, `switch`, `set_material`, `set_route`, `set_purpose`, `convention`, `reload` |
 | `op` | Una operación de modelado, con hechos medidos | se elige con `name`; `edit` cambia un paso o rasgo; `delete` elimina un rasgo |
 | `undo` | Deshacer | `undo()`, `undo(to="<step>")`, `undo(to="start")` |
-| `inspect` | Leer hechos medidos, sin cambiar nada | `tree`, `faces`, `edges`, `face`, `edge`, `properties`, `measure`, `bom`, `validity`, `interference`, `sketch_status`, `sweep`, `holes` |
+| `inspect` | Leer hechos medidos, sin cambiar nada | `tree`, `faces`, `edges`, `face`, `edge`, `properties`, `measure`, `bom`, `validity`, `interference`, `sketch_status`, `sweep`, `holes`, `draft` |
 | `view` | Mostrarte cosas y leer tu selección | `focus`, `show`; con ventana: `selection`, `capture`, `set_view`, `style`, `section` |
 | `drawing` | Planos de producción | `create`, `add`, `remove`, `remove_sheet`, `update`, `list`, `review`, `capture`, y las acciones de revisión (mira "Dibujos") |
 | `channel` | Canal de preguntas entre la sesión del dibujante y la del diseñador | `ask`, `reply`, `dispute`, `decide`, `wait`, `done`, `list`, `open_drawing`, `reopen`, `close` |
@@ -325,7 +325,7 @@ Una llamada a `op` ejecuta **una** operación y devuelve volumen, caja envolvent
 
 - **Croquis y referencias:** `sketch`, `ref_plane`, `ref_axis`.
 - **Rasgos:** `extrude`, `cut`, `revolve`, `sweep`, `hole`, `linear_pattern`, `circular_pattern`, `chamfer`, `fillet`, `shell`, `draft`, `mirror`.
-- **Cuerpos:** `box`, `cylinder`, `boolean_union`, `boolean_subtract`, `boolean_intersect`, `translate`, `rotate`, `copy_body`, `mirror_body`, `split`.
+- **Cuerpos:** `box`, `cylinder`, `boolean_union`, `boolean_subtract`, `boolean_intersect`, `translate`, `rotate`, `copy_body`, `mirror_body`, `shrink_body`, `split`.
 - **Ensamble:** `insert_component`, `place_component`, `fix_component`, `add_joint`, `set_joint`, `mate_concentric`, `mate_coincident`, `mate_distance`, `check_interference`.
 - **Chapa metálica** (necesita un complemento, mira [Chapa metálica](#chapa-metálica-opcional)): `base_flange`, `edge_flange`, `unfold`.
 
@@ -365,6 +365,8 @@ agujeros:
 ```
 
 `inspect` con `holes` lista los agujeros cilíndricos agrupados por diámetro, con eje, profundidad y si son pasantes o ciegos. Un cajeado aparece como dos agujeros sobre un mismo eje.
+
+**Piezas moldeadas.** `inspect` con `draft` y `pull=[x, y, z]` (la dirección en que se aparta una mitad del molde) mide el ángulo de desmoldeo de cada cara y lista las caras por debajo del mínimo (`min_draft_deg`; sin él, 1 grado, una regla práctica, no una norma: pregunta al moldeador o a la hoja técnica de la resina), las caras sin desmoldeo y las contrasalidas, que son caras a las que no se llega siguiendo la dirección (un agujero transversal, un saliente sobre una pared). Un plano es exacto; una cara curva se muestrea y la respuesta dice cómo. Con `paint=true` las caras se colorean en pantalla: verde cumple el mínimo, amarillo es bajo, rojo no tiene desmoldeo o es contrasalida. `shrink_body` deriva la cavidad: un cuerpo nuevo, ligado a la pieza (la sigue cuando la pieza cambia), escalado por la contracción del plástico (`shrinkage_percent`, un número o `[x, y, z]`) respecto al origen de la pieza. `factor_source` (hoja técnica, moldeador, ingeniero) es obligatorio y la intención del paso lo guarda junto al número. La caja de la cavidad se comprueba contra la de la pieza al 0,01 %. Una contracción distinta por eje convierte las caras curvas en superficies B-spline y el volumen que da el software de CAD para ese cuerpo es solo numérico (hasta un 0,05 % de error).
 
 ### Croquis de concepto o detalle
 
