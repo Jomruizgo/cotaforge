@@ -186,17 +186,17 @@ def draw(ctx: Context, view: ViewInfo) -> list[str]:
     tip = (cx + diagonal[0] * radius * math.sqrt(0.5), cy + diagonal[1] * radius * math.sqrt(0.5))
     ctx.add(place_leader(ctx, view, tip, diagonal, lines, None))
     anchor = ctx.extras.get("anchors", {}).get(str(ctx.extras.get("current")), [])
-    if anchor:  # the callout as TechDraw's own diameter dimension of the circle, like a hole callout
+    if anchor:  # the callout as TechDraw's own radius dimension of the circle, like a hole callout (one arrow on the circle)
         x0, y0, x1, y1 = anchor[-1]["rect"]
         ctx.native(
             NativeDim(
                 item=str(ctx.extras["current"]),
                 name="c1",
-                kind="diameter",
+                kind="radius",
                 view=view.name,
                 refs=(Ref2("circle", (cx, cy, radius)),),
                 label=((x0 + x1) / 2, (y0 + y1) / 2),
-                expected=max(h.diameter for h in first.holes),
+                expected=max(h.diameter for h in first.holes) / 2,
                 text="\n".join(lines),
                 leader=True,
                 rect=anchor[-1]["rect"],

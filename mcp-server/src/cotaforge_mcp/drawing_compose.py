@@ -47,6 +47,7 @@ KEYS: dict[str, tuple[str, ...]] = {
     "finish": ("finish",),
     "sections": ("section", "detail", "aux_view"),
     "welds": ("weld",),
+    "positions": ("dim",),
     "notes": ("note",),
 }
 """The decisions that are lists of items, and the item types each takes (the first is the default type)."""
@@ -362,7 +363,7 @@ def _survey(session: Session, sheet: str | None, extra: list[dict[str, Any]] | N
         keys = ROW_KEYS.get(r.id, ("notes", "answers"))
         questions.append(Question(keys, reqs.question_of(r, language), r.id))
     recompose = again and any(i.id.startswith(COMPOSED_PREFIX) for i in info.items)  # a new compose takes them off: everything is asked again
-    for ask in drawing_weld_questions.ask(info.weldment, language, recompose, bool(info.facts.get("weld_class_on_sheet"))):
+    for ask in drawing_weld_questions.ask(info.weldment, language, recompose, bool(info.facts.get("weld_class_on_sheet")), tuple(info.views), any(i.id.startswith(f"{COMPOSED_PREFIX}positions") for i in info.items)):
         questions.append(Question(ask.keys, ask.text, "", ask.joints))
     located = any(f.code in LOCATION_CODES and not reqs.finding_closed(f) for f in info.findings)
     if located and mode != "none":
@@ -453,7 +454,10 @@ def _covered(question: Question, decided: dict[str, Any], items: list[dict[str, 
     for key in question.keys:
         if key == "answers":
             continue
-        if key == "sheet":
+        if key == "positions":
+            if decided.get("positions") is not None:  # an empty list is the decision that nothing needs locating
+                return True
+        elif key == "sheet":
             if decided.get("sheet"):
                 return True
         elif any(i["id"].startswith(f"{COMPOSED_PREFIX}{key}") for i in items):

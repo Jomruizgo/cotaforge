@@ -182,7 +182,13 @@ def pictorial_context() -> sc.Context:
     return ctx
 
 
-def test_one_symbol_for_identical_joints_has_an_arrow_on_the_seam_of_each_of_them() -> None:
+def only_the_isometric(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pictorial view as the only one the symbol may try (what a harness of the past did): the symbol is drawn there, the review flags it."""
+    monkeypatch.setattr(iw, "views_to_try", lambda ctx, wanted: [ctx.extras["views_extra"]["isometric"]])
+
+
+def test_one_symbol_for_identical_joints_has_an_arrow_on_the_seam_of_each_of_them(monkeypatch: pytest.MonkeyPatch) -> None:
+    only_the_isometric(monkeypatch)
     ctx = pictorial_context()
     (result,) = drawn(ctx, WELD)
     assert result.status == "ok", result
@@ -202,7 +208,8 @@ def test_one_symbol_for_identical_joints_has_an_arrow_on_the_seam_of_each_of_the
     assert len(heads) == 4
 
 
-def test_the_lettering_of_the_symbol_is_not_smaller_than_the_dimension_text() -> None:
+def test_the_lettering_of_the_symbol_is_not_smaller_than_the_dimension_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    only_the_isometric(monkeypatch)
     ctx = pictorial_context()
     drawn(ctx, {**WELD, "all_around": False, "length_mm": 50, "pitch_mm": 100})
     heights = [e.height for e in ctx.sheet.entities if isinstance(e, model.Text)]
@@ -223,9 +230,8 @@ def test_the_joints_a_view_hides_get_their_arrow_in_the_view_that_shows_them() -
 
     ctx.geometry.view_projection = projection  # type: ignore[method-assign]
     groups, unseen = iw.split_by_view(ctx, iw.joints_named(ctx, {**WELD}), None)
-    assert not unseen
-    assert sum(len(m) for _, m in groups) == 4  # every joint has a view
-    assert groups[0][0].name in ("front", "isometric")
+    assert all(view.name != "isometric" for view, _ in groups)  # a weld symbol never goes on the pictorial view
+    assert sum(len(m) for _, m in groups) + len(unseen) == 4  # the joints no orthographic view shows are left unseen: they need a view or a section
 
 
 def test_a_symbol_on_the_other_side_has_the_dashed_identification_line_and_one_on_both_sides_has_none() -> None:
@@ -373,3 +379,16 @@ def test_a_seam_behind_a_body_is_not_shown_even_when_an_outline_coincides_with_i
     assert "body:2 + body:5, body:4 + body:5 are hidden in every view" in result.detail
     tip = ctx.extras["segments"][0][0]
     assert tip[1] < 175 or 190 < tip[1]  # on the seam of a near tube (page y 166..174 or 226..234), not of a far one
+
+
+def test_a_weld_never_goes_on_the_isometric_view_and_one_that_does_is_flagged_by_the_review(monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = pictorial_context()
+    (result,) = drawn(ctx, WELD)  # no orthographic view shows the joints: the isometric one is not a way out
+    assert result.status == "error" and "isométrica" in result.detail
+    only_the_isometric(monkeypatch)
+    found = reviewed(pictorial_context(), {**WELD, "id": "w1"})
+    (flag,) = [f for f in found if f.code == "weld_on_pictorial"]
+    assert flag.items == ("w1",) and "ISO 2553" in flag.message
+    monkeypatch.undo()
+    orthographic = [f.code for f in reviewed(context(), WELD)]
+    assert "weld_on_pictorial" not in orthographic

@@ -3,10 +3,14 @@
 the harness MEASURED of each (the proposal for its designation) and the groups of joints with the weld it proposes. The server
 (``drawing(action=plan)``) turns it into the questions of the order; nothing here is applied."""
 
+from collections.abc import Mapping
 from typing import Any
 
 import sheet_joints
 from sheet_weldment import PROFILE_RATIO, SOLID_MIN_FILL, BodyFact
+
+
+Box = tuple[tuple[float, float, float], tuple[float, float, float]]
 
 
 def section_of(fact: BodyFact) -> dict[str, Any]:
@@ -23,8 +27,27 @@ def section_of(fact: BodyFact) -> dict[str, Any]:
     return {"kind": "plate", "section_mm": [round(thin, 1)], "wall_mm": 0.0}
 
 
+def placement_of(groups: list[Any], joints: list[Any], boxes: Mapping[str, Box]) -> dict[str, Any] | None:
+    """Where the bodies stand on the one plate of the part, measured: the base is the only body of the plate kind, the members
+    are the bodies a joint ties to it. ``None`` when there is no such plate, no member or no box to say it."""
+    plates = [g for g in groups if g.measured is not None and section_of(g.measured)["kind"] == "plate" and len(g.instances) == 1]
+    if len(plates) != 1 or plates[0].instances[0] not in boxes:
+        return None
+    base = plates[0].instances[0]
+    members = sorted(
+        {b for j in joints for b in j.bodies if base in j.bodies and b != base and b in boxes}, key=sheet_joints.natural
+    )
+    if not members:
+        return None
+    return {"base": base, "base_box": boxes[base], "members": [{"id": m, "box": boxes[m]} for m in members]}
+
+
 def plan_of(
-    groups: list[Any], joints: list[Any], named: frozenset[str], welded: set[str]
+    groups: list[Any],
+    joints: list[Any],
+    named: frozenset[str],
+    welded: set[str],
+    boxes: Mapping[str, Box] | None = None,
 ) -> dict[str, Any]:
     """``groups`` are the positions of the cut list (``sheet_context.PartGroup``), ``joints`` the measured joints,
     ``named`` the positions whose designation the sheet carries and ``welded`` the keys of the joints a weld item covers."""
@@ -56,4 +79,4 @@ def plan_of(
                 "welded": all(j.key in welded for j in group),
             }
         )
-    return {"bodies": bodies, "joints": out_joints}
+    return {"bodies": bodies, "joints": out_joints, "placement": placement_of(groups, joints, boxes or {})}

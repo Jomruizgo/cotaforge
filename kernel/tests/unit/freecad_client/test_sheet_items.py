@@ -634,3 +634,12 @@ def test_the_notes_block_only_reserves_the_width_of_its_lines() -> None:
     draw(ctx, {"type": "note", "text": "corto"})
     x0, _, x1, _ = ctx.occupied[0]
     assert x1 - x0 < 30.0  # not the 150 mm a full-width line would take
+
+
+def test_a_note_that_states_the_thickness_is_recognised_so_the_sheet_does_not_say_it_twice() -> None:
+    import items_notes  # noqa: PLC0415
+
+    assert items_notes.states_thickness("Espesor 19 mm. Romper aristas vivas 0,3 mm")
+    assert items_notes.states_thickness("Thickness: 6")
+    assert not items_notes.states_thickness("Fabricar de lámina rectificada de 19 mm")  # a stock form is not the thickness note
+    assert not items_notes.states_thickness("Espesor según plano")  # no number: it states nothing

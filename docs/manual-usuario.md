@@ -592,7 +592,7 @@ Toda hoja recibe este mínimo sin que lo pidas. El papel, la proyección y el cu
 
 - **Todo agujero localizado.** Una hoja con agujeros recibe un elemento `loc`. Nunca cuenta desde la esquina de la caja envolvente. En cada dirección cuenta desde tus referencias declaradas (cotas de línea base); si no, desde el plano de simetría de la pieza; si no, no dibuja nada y te pregunta desde qué cara o arista se cuentan las posiciones.
 - **Llamadas compactas.** Los agujeros idénticos comparten una llamada. Las líneas de referencia van al lado más limpio y no se cruzan.
-- **Agujeros de posicionamiento.** `dowel=true` añade ◎ a la llamada y un anillo en cada agujero. La función de un agujero es cosa tuya; `review` avisa de un probable agujero de posicionamiento sin marcar.
+- **Agujeros de posicionamiento.** `dowel=true` termina la llamada en «registro» y pone un anillo en cada agujero. La función de un agujero es cosa tuya; `review` avisa de un probable agujero de posicionamiento sin marcar.
 - **Notas numeradas.** El bloque `NOTAS` numera, en orden: el espesor (cuando la hoja tiene una vista estándar), y las notas del agente.
 - **Cuadro de rotulación.** Una plantilla de TechDraw guardada en el documento. `create` o `update` con `title_block={"document_type": "...", ...}` fija campos por nombre. Todavía no hay logotipo.
 - **Una sola vista.** Una placa cuyos agujeros atraviesan el espesor se puede dibujar en una vista con una nota de espesor (`views=["top"]`).
