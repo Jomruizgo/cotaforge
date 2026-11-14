@@ -26,6 +26,7 @@ PROPERTIES: dict[str, tuple[str, str]] = {
     "ThreadDirection": ("App::PropertyVector", "Unit direction along the axis, from the end face into the shaft"),
     "ThreadCylinder": ("App::PropertyString", "The cylindrical face the thread is on (handle at the time it was made)"),
     "ThreadEndFace": ("App::PropertyString", "The end face the thread starts from (handle at the time it was made)"),
+    "ThreadClass": ("App::PropertyString", "ISO 965 tolerance class (6g); empty when none was given"),
 }
 
 
@@ -67,6 +68,7 @@ def read(obj: Any) -> dict[str, Any]:
         "start": [float(start.x), float(start.y), float(start.z)],
         "direction": [float(direction.x), float(direction.y), float(direction.z)],
         "cylinder": str(obj.ThreadCylinder),
+        "tolerance_class": str(getattr(obj, "ThreadClass", "") or ""),  # a record of an older file has none
     }
 
 

@@ -110,6 +110,7 @@ def external_thread(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, A
         fc.set_prop(obj, "ThreadDirection", g.fcvec(direction))
         fc.set_prop(obj, "ThreadCylinder", cyl_id)
         fc.set_prop(obj, "ThreadEndFace", end_id)
+        fc.set_prop(obj, "ThreadClass", str(inner.get("tolerance_class") or ""))
         ctx.feature.fc_names.append(obj.Name)
         ctx.feature.fc_main = obj.Name
         ctx.feature.label = str(obj.Label)  # the feature tree says what the model tree says: ``thread_<id>``

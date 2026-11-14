@@ -151,6 +151,7 @@ def test_the_record_is_read_back_from_the_objects_of_the_document() -> None:
             "start": [0.0, 0.0, 60.0],
             "direction": [0.0, 0.0, -1.0],
             "cylinder": "face:4",
+            "tolerance_class": "",  # a record made before the class existed has none
         }
     ]
 

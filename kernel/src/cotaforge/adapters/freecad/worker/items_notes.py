@@ -226,6 +226,6 @@ def draw_revision(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
 
 
 ITEMS = (
-    ItemType("note", "n", check_note, draw_note, frozenset(NOTE_CHECKS), prepare_notes, phase=2),
+    ItemType("note", "n", check_note, draw_note, frozenset(NOTE_CHECKS), prepare_notes, phase=4),
     ItemType("revision", "r", check_revision, draw_revision, frozenset(REVISION_CHECKS), prepare_revisions, phase=2),
 )
