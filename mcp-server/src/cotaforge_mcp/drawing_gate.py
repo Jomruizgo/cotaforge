@@ -301,7 +301,11 @@ def determine(session: Session, info: DrawingSheetInfo) -> tuple[DrawingSheetInf
     if mode_of(session) == "none" or not info.facts or "annotate_drawing" not in session.capabilities.tools:
         return info, []
     adds = reqs.plan_additions(
-        sheet_requirements(session, info), list(info.items), assembly=bool(info.facts.get("assembly")), views=tuple(info.views)
+        sheet_requirements(session, info),
+        list(info.items),
+        assembly=bool(info.facts.get("assembly")),
+        views=tuple(info.views),
+        keyway_fit=reqs.find_intent(session.settings.workspace, session.doc_name).keyway_fit(),
     )
     if not adds:
         return info, []

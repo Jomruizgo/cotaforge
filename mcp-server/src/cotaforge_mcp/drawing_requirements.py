@@ -679,6 +679,10 @@ _SECTIONS = {
     "relations": ("functional relations", "relaciones funcionales"),
     "sheet": ("sheet", "hoja"),
 }
+_KEYWAY_WORDS = re.compile(r"chavetero|keyway|key\s*seat|key\s*slot|chaveta|ranura\s+de\s+chaveta", re.I)
+_KEYWAY_CLASS = re.compile(r"(?<![A-Za-z0-9])(P9|N9|JS9|D10|H9)(?![A-Za-z0-9])", re.I)
+_SHAFT_THREAD = re.compile(r"rosca\s+M\d|thread\s+M\d|M\d{1,3}\s*[x×]\s*\d+(?:[.,]\d+)?\s*[-–]\s*\d[gh]", re.I)
+"""A line of the intent file that gives the thread of a turned part with its size (``Rosca M20x1,5 - 6g``), not a fastener it takes."""
 _UNDEFINED = re.compile(r"^(?:undefined|indefinid[oa]|sin definir|por definir|tbd|pendiente|\?+|-+|—+)$", re.I)
 _HEADING = re.compile(r"^\s{0,3}(?:#{1,6}\s+|\*\*)\s*(.+?)\s*\**\s*:?\s*$")
 
@@ -714,6 +718,15 @@ class Intent:
         for line in self.text(row.intent).splitlines():
             if pattern.search(line):
                 return " ".join(line.split()).lstrip("-*• ").strip()
+        return ""
+
+    def keyway_fit(self) -> str:
+        """The ISO 286 class the intent file gives the keyway width (``P9``, ``N9``, ``JS9``, ``D10``, ``H9``), read from a line that
+        names the keyway or its key (``""``: none does; the width then stays a question)."""
+        for text in self.sections.values():
+            for line in text.splitlines():
+                if _KEYWAY_WORDS.search(line) and (found := _KEYWAY_CLASS.search(line)):
+                    return found.group(1).upper()
         return ""
 
     def silent_on(self, row: Row) -> bool:
@@ -866,6 +879,18 @@ def evaluate(
         )
         lacking = [n.en for n in row.needs if merged.get(n.fact, 0) <= 0]
         lacking += [f"{merged[n.fact]} {n.en}" for n in row.lacks if merged.get(n.fact, 0) > 0]
+        if (
+            row.id == THREAD_ROW
+            and merged.get("turned", 0) > 0
+            and not merged.get("thread_features", 0)
+            and not merged.get("threaded_holes", 0)
+            and _SHAFT_THREAD.search(lines.get(row.id, ""))
+        ):  # a note prints the designation but draws no thin lines: the thread of a shaft is a feature of the model
+            lacking.append(
+                "the thread the intent file declares is not in the model: make it with the external_thread operation (the "
+                "cylinder, its end face, size, length_mm and tolerance_class) so the sheet draws its thin lines and its "
+                "callout; a note alone draws neither"
+            )
         state = MISSING if open_codes or lacking else MET if (row.needs or row.lacks or row.codes) else NEEDS_ANSWER
         if row.functional:
             items = functional.declared(intent.text(row.intent))
@@ -954,6 +979,21 @@ class Addition:
     what: str
 
 
+def _squash(text: Any) -> str:
+    return " ".join(str(text).lower().split())
+
+
+def note_key(item: Any) -> str:
+    """What a note says, lower case on one line (``""``: ``item`` is no note, or says nothing): two notes with the same key are the
+    same note. ``item`` is a stored item (its ``spec``), an item as ``add`` takes it (a dict) or a ``SimpleNamespace`` with ``spec``."""
+    kind = item.get("type") if isinstance(item, dict) else getattr(item, "type", "")
+    if kind != "note":
+        return ""
+    spec = item if isinstance(item, dict) else getattr(item, "spec", None)
+    text = spec.get("text") if isinstance(spec, dict) else None
+    return _squash(text) if isinstance(text, str) else ""
+
+
 def plan_additions(
     rows: list[Requirement],
     items: list[Any],
@@ -961,6 +1001,7 @@ def plan_additions(
     views: tuple[str, ...] = (),
     external_threads: bool = False,
     weldment: bool = False,
+    keyway_fit: str = "",
 ) -> list[Addition]:
     """What the harness adds to the sheet for the DETERMINED rows that are not met: callouts of every hole when the part has
     threaded or fitted holes nobody called out (the thread and the fit come from the hole operations), the centre lines (of an
@@ -973,6 +1014,7 @@ def plan_additions(
     (a welded part) gets the balloons only: its cut list carries the designer's designations, so the list is his."""
     have = {i.id for i in items}
     kinds = {i.type for i in items}
+    said = {text for i in items if (text := note_key(i))}  # the notes the sheet carries: one is never written twice
     dimensioned = any(i.id.startswith(KEYWAY_ID) for i in items)
     out: dict[str, Addition] = {}
     for r in rows:
@@ -1016,6 +1058,14 @@ def plan_additions(
             continue
         if row.auto == "intent_note" and not r.intent_line:
             continue
+        if row.auto == "intent_note":
+            key = _squash(r.intent_line)
+            twin = next((k for k, a in out.items() if note_key(a.item) == key), None)
+            if twin is not None:  # another row asked for the same words (heat treatment and coating share a line): one note meets both
+                out[twin] = Addition((*out[twin].rows, row.id), out[twin].item, out[twin].what)
+                continue
+            if key in said:
+                continue
         if item_id in out:
             out[item_id] = Addition((*out[item_id].rows, row.id), out[item_id].item, out[item_id].what)
             continue
@@ -1030,7 +1080,7 @@ def plan_additions(
             item = {"type": "chamfer_dims", "id": item_id}
             what = "a callout (size x angle) of every chamfer, measured on the model, on the view that shows it in profile"
         elif row.auto == "keyway":
-            item = {"type": "keyway_dims", "id": item_id}
+            item = {"type": "keyway_dims", "id": item_id, **({"fit": keyway_fit} if keyway_fit else {})}
             what = "the width, the depth (d - t1 / d + t2), the length and the position of the keyway, measured on the model"
         else:
             item = {"type": "note", "id": item_id, "text": r.intent_line}
@@ -1058,6 +1108,12 @@ def question_of(req: Requirement, language: str) -> str:
             f"el archivo de intención dice «{req.intent_line}»: confírmalo y ponlo en la hoja",
             f"the intent file says '{req.intent_line}': confirm it and put it on the sheet",
         )
+        if any("external_thread" in text for text in req.lacking):
+            known += say(
+                language,
+                " (la rosca va al modelo con la operación external_thread: cilindro, cara de extremo, tamaño, longitud y clase; una nota no dibuja sus líneas)",
+                " (the thread goes into the model with the external_thread operation: cylinder, end face, size, length and class; a note draws no thread lines)",
+            )
         return known
     return say(language, row.question[0], row.question[1]) + " " + say(language, f"Propuesta: {proposal}", f"Proposal: {proposal}")
 

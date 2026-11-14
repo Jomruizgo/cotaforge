@@ -220,6 +220,9 @@ def normalise(
             if "id" in spec and not str(spec["id"]).startswith(COMPOSED_PREFIX):
                 problems.append(f"{key} #{number}: leave the id out (the composer names it {COMPOSED_PREFIX}{key}{number})")
                 continue
+            said = reqs.note_key({**spec, "type": kind})
+            if said and said in {reqs.note_key(i) for i in items}:
+                continue  # the same note twice: it reaches the sheet once
             items.append({**spec, "type": kind, "id": f"{COMPOSED_PREFIX}{key}{number}"})
     sheet = data.get("sheet") or {}
     if not isinstance(sheet, dict) or set(sheet) - SHEET_KEYS:
@@ -325,7 +328,7 @@ def _survey(session: Session, sheet: str | None, extra: list[dict[str, Any]] | N
     rows = drawing_gate.sheet_requirements(session, info)
     mode = drawing_gate.mode_of(session)
     placed: list[Any] = list(info.items)
-    placed += [SimpleNamespace(id=i["id"], type=i["type"]) for i in extra or []]
+    placed += [SimpleNamespace(id=i["id"], type=i["type"], spec=i) for i in extra or []]
     adds = (
         reqs.plan_additions(
             rows,
@@ -334,6 +337,7 @@ def _survey(session: Session, sheet: str | None, extra: list[dict[str, Any]] | N
             views=tuple(info.views),
             external_threads=bool(info.facts.get("thread_features")),
             weldment=bool(info.facts.get("weldment")),
+            keyway_fit=reqs.find_intent(session.settings.workspace, session.doc_name).keyway_fit(),
         )
         if mode != "none" and info.facts
         else []
