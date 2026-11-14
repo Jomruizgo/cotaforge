@@ -53,7 +53,8 @@ ITEM_FIELDS: dict[str, frozenset[str]] = {
         {"mode", "x_from", "y_from", "holes", "x_side", "y_side", "at_mm", "view", "offset_mm", "auto"}
     ),
     "note": frozenset({"text", "at_mm", "auto", "view"}),
-    "keyway_dims": frozenset(),
+    "keyway_dims": frozenset({"fit", "depth_tol", "section", "letter"}),
+    "baseline_dims": frozenset({"from", "view", "side"}),
     "chamfer_dims": frozenset(),
     "thread_dims": frozenset(),
     "revision": frozenset({"index", "description", "date", "by"}),
@@ -61,7 +62,7 @@ ITEM_FIELDS: dict[str, frozenset[str]] = {
     "hole_positions": frozenset({"auto"}),
     "view_lines": frozenset({"hidden", "centres"}),
     "line": frozenset({"style", "axis", "from", "to", "view", "extend_mm"}),
-    "section": frozenset({"view", "at", "normal", "holes", "letter", "flip", "at_mm", "hatch", "in_place"}),
+    "section": frozenset({"view", "at", "normal", "holes", "letter", "flip", "at_mm", "hatch", "in_place", "removed"}),
     "detail": frozenset({"view", "at", "radius_mm", "scale", "letter", "at_mm"}),
     "aux_view": frozenset({"face", "view", "letter", "at_mm"}),
     "datum": frozenset({"letter", "face", "on", "view", "side", "offset_mm", "tip_at"}),
@@ -95,6 +96,7 @@ PLANNED_ITEMS: dict[str, str] = {}
 
 REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "dim": ("kind",),
+    "baseline_dims": ("from",),
     "note": ("text",),
     "revision": ("index", "description"),
     "detail": ("at", "radius_mm"),

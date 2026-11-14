@@ -51,6 +51,7 @@ LABEL_HEIGHT_MM = 5.0  # the letters of a view are bigger than the dimension tex
 LABEL_ROOM_MM = 9.0  # below a view: its label
 ROOM_MARGIN_MM = 4.0  # clear space around a new view
 ROOM_GAP_MM = 18.0  # between the parent and a view placed beside it (dimensions go there)
+REMOVED_GAP_MM = 40.0  # a removed section stands this far from the part at least: the arrows and letters of its cutting line (17 mm) and its own dimension line fit between
 ROOM_STEP_MM = 8.0
 ROOM_TRIES = 30
 SCAN_STEP_MM = 10.0
@@ -139,13 +140,20 @@ def room_ok(ctx: Context, rect: Rect) -> bool:
 
 
 def find_room(
-    ctx: Context, width: float, height: float, parent: Rect, directions: list[Point], align: Point
+    ctx: Context,
+    width: float,
+    height: float,
+    parent: Rect,
+    directions: list[Point],
+    align: Point,
+    gap: float = ROOM_GAP_MM,
 ) -> Point | None:
     """The centre for a new view ``width`` x ``height`` mm: beside ``parent`` in the first of ``directions`` that has
-    room (aligned with ``align``, the page position the view is projected from), else any free place near the parent."""
+    room (aligned with ``align``, the page position the view is projected from; ``gap`` mm from the parent at least), else
+    any free place near the parent."""
     for dx, dy in directions:
         for step in range(ROOM_TRIES):
-            reach = ROOM_GAP_MM + step * ROOM_STEP_MM
+            reach = gap + step * ROOM_STEP_MM
             if abs(dx) >= abs(dy):
                 cx = parent[2] + reach + width / 2 if dx > 0 else parent[0] - reach - width / 2
                 cy = align[1]
@@ -279,6 +287,7 @@ SECTION_CHECKS = {
     "at_mm": v_point2,
     "hatch": lambda value: v_hatch(value),
     "in_place": v_bool,
+    "removed": v_bool,
 }
 
 
@@ -504,6 +513,11 @@ def draw_section(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     room = (width + 2 * ROOM_MARGIN_MM, height + LABEL_ROOM_MM + 2 * ROOM_MARGIN_MM)
     if "at_mm" in spec:
         centre: Point | None = spec["at_mm"]
+    elif spec.get("removed"):
+        # a REMOVED section stands on the extension of its cutting line: above or below the part, centred on the line (ISO 128-40),
+        # so the cut and its view read as one; beside the part only when neither side has room
+        directions = [line, (-line[0], -line[1]), gaze_page, (-gaze_page[0], -gaze_page[1])]
+        centre = find_room(ctx, room[0], room[1], parent_rect, directions, anchor, REMOVED_GAP_MM)
     else:
         align = ((parent_rect[0] + parent_rect[2]) / 2, (parent_rect[1] + parent_rect[3]) / 2)
         directions = [gaze_page, (-gaze_page[0], -gaze_page[1]), line, (-line[0], -line[1])]

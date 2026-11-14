@@ -1007,8 +1007,8 @@ def _views_for_part(doc: reg.DocumentRec, body: Any, op: str | None) -> tuple[li
     wants_end = bool(sheet_facts.collect(doc, _bodies(doc, body, op)).keyways)
     views = sheet_turned.views_for(wants_end)
     why = (
-        f"revolved about {name}: the main view with its axis horizontal (as it is machined), and the end view because "
-        "a keyway shows in it, and the isometric view"
+        f"revolved about {name}: the main view with its axis horizontal (as it is machined) and the isometric view; the "
+        "keyway is shown in a removed section across it (keyway_dims), not in an end view"
         if wants_end
         else f"revolved about {name}: ONE main view with its axis horizontal (as it is machined); it carries the "
         "diameters, the lengths, the thread and the chamfers, an end view would repeat circles; plus the isometric view"
@@ -1382,18 +1382,94 @@ def _expand_keyway_dims(
     (``<id>_w``, ``_t``, ``_l``, ``_p``), so the sheet keeps plain dimensions that follow the normal rules."""
     if not any(isinstance(i, dict) and i.get("type") == "keyway_dims" for i in requested):
         return requested
+    import items_views  # noqa: PLC0415 - the letters of the views
+
     slots = sheet_facts.collect(doc, _bodies(doc, spec.get("body"), op)).keyway_slots
     shown = tuple(views_of(spec))
+    views_made = [i for i in [*spec.get("items", ()), *requested] if isinstance(i, dict) and i.get("type") in ("section", "detail", "aux_view")]
+    taken = {str(i["letter"]) for i in views_made if i.get("letter")}
+    auto = sum(1 for i in views_made if not i.get("letter"))  # views that take the next free letters when they are drawn
     out: list[Any] = []
     for item in requested:
         if not (isinstance(item, dict) and item.get("type") == "keyway_dims"):
             out.append(item)
             continue
         prefix = str(item.get("id") or "keyway")
-        made = [dim for number, slot in enumerate(slots, start=1) for dim in sheet_keyway.dimension_specs(slot, prefix if len(slots) == 1 else f"{prefix}{number}", shown)]
+        try:
+            depth_tol = tuple(float(v) for v in item["depth_tol"]) if item.get("depth_tol") else None
+        except (TypeError, ValueError) as exc:
+            raise invalid_request("keyway_dims depth_tol is [upper, lower] in mm, like [0.2, 0]", op) from exc
+        if depth_tol is not None and len(depth_tol) != 2:
+            raise invalid_request("keyway_dims depth_tol is [upper, lower] in mm, like [0.2, 0]", op)
+        if item.get("fit") is not None and not isinstance(item["fit"], str):
+            raise invalid_request('keyway_dims fit is the ISO 286 class of the width, like "P9" or "N9"', op)
+        made: list[Any] = []
+        for number, slot in enumerate(slots, start=1):
+            name = prefix if len(slots) == 1 else f"{prefix}{number}"
+            section = None
+            if item.get("section", True) and sheet_keyway.axis_name(slot.cylinder.axis) is not None:
+                # the keyway is shown in a REMOVED section across it, on the extension of its cutting line: it carries the width
+                # (with its class) and the depth, and the end view of the part is not needed for them
+                free = [letter for letter in items_views.LETTERS if letter not in taken]
+                letter = str(item.get("letter") or free[min(auto, len(free) - 1)])
+                section = f"{letter}-{letter}"
+            dims = sheet_keyway.dimension_specs(slot, name, shown, section, item.get("fit"), depth_tol)
+            if section and any(d.get("view") == section for d in dims):  # no width or depth to carry: no section
+                taken.add(section[0])
+                made.append(
+                    {"type": "section", "id": f"{name}_sec", "at": [round(v, 4) for v in sheet_keyway.middle_of(slot)],
+                     "normal": list(slot.cylinder.axis), "letter": section[0], "removed": True}
+                )  # fmt: skip
+            elif section:
+                dims = sheet_keyway.dimension_specs(slot, name, shown, None, item.get("fit"), depth_tol)
+            made += dims
         if not made:
             raise invalid_request("the part has no keyway whose walls can be dimensioned (keyway_dims)", op)
         out.extend(made)
+    return out
+
+
+def _expand_baseline_dims(
+    doc: reg.DocumentRec, spec: dict[str, Any], stored: list[dict[str, Any]], requested: list[Any], op: str | None
+) -> list[Any]:
+    """``baseline_dims`` is not an item of its own: it is the length of every step of a turned part counted from ONE datum
+    face (``from``, a shoulder or an end the engineer or the intent file named: it is never chosen here), made now as ``dim``
+    items ``<id>1``, ``<id>2``... from that face (parallel dimensions, ISO 129-1). A length the sheet already gives from that
+    face is not made again."""
+    if not any(isinstance(i, dict) and i.get("type") == "baseline_dims" for i in requested):
+        return requested
+    facts = sheet_facts.collect(doc, _bodies(doc, spec.get("body"), op))
+    skip = {f.face_id for slot in facts.keyway_slots for f in slot.ends if f.face_id}
+    spans = [(c.axis, c.lo, c.hi) for c in facts.cylinders if not c.concave]
+    given = {
+        (str((i.get("from") or {}).get("face")), str((i.get("to") or {}).get("face")))
+        for i in stored
+        if i.get("type") == "dim" and i.get("kind") == "distance" and isinstance(i.get("from"), dict) and isinstance(i.get("to"), dict)
+    }
+    out: list[Any] = []
+    for item in requested:
+        if not (isinstance(item, dict) and item.get("type") == "baseline_dims"):
+            out.append(item)
+            continue
+        datum = item.get("from")
+        if isinstance(datum, dict):
+            datum = datum.get("face")
+        if not isinstance(datum, str) or not datum.startswith("face:"):
+            raise invalid_request(
+                'baseline_dims needs from="face:N": the shoulder or the end the lengths are counted from (the face the intent file '
+                "names as the axial reference, or the one the engineer picks: it is never chosen for him)",
+                op,
+            )
+        try:
+            made = sheet_turned.baseline_dims(
+                datum, facts.planes, spans, skip, str(item.get("id") or "bl"), item.get("view"), item.get("side")
+            )
+        except sheet_turned.BaselineError as exc:
+            raise invalid_request(str(exc), op) from exc
+        fresh = [m for m in made if (datum, m["to"]["face"]) not in given and (m["to"]["face"], datum) not in given]
+        if not fresh:
+            raise invalid_request(f"every length from {datum} is on the sheet already (baseline_dims)", op)
+        out.extend(fresh)
     return out
 
 
@@ -1721,6 +1797,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         _sync_template_fields(fc_doc, op)
         return _result(doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), [], op, changed=tuple(wanted))
     requested = _expand_keyway_dims(doc, spec, list(params.get("items") or ()), op)
+    requested = _expand_baseline_dims(doc, spec, items, requested, op)
     requested = _expand_chamfer_dims(doc, items, requested, op)
     asked_threads = any(isinstance(i, dict) and i.get("type") == "thread_dims" for i in requested)
     requested = _expand_thread_dims(doc, items, requested, op)
