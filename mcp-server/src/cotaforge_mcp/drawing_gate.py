@@ -55,7 +55,7 @@ from cotaforge.language import say
 from cotaforge.memory import MemoryEntry
 from pydantic import ValidationError
 
-from cotaforge_mcp import design_memory, measured_alerts, recovery
+from cotaforge_mcp import design_memory, drawing_look, measured_alerts, recovery
 from cotaforge_mcp import drawing_requirements as reqs
 from cotaforge_mcp.reply import ToolError
 from cotaforge_mcp.session import Session
@@ -644,10 +644,12 @@ def require_finished(session: Session, sheet: str | None, action: str) -> str | 
     if info is None:
         return sheet  # export says it better
     if mode == "none":
+        drawing_look.require(session, info, action)  # in every mode: nobody sends out a sheet nobody looked at
         return info.sheet
     info, _ = determine(session, info)  # what the harness is sure of is on the sheet that is written
     miss = missing(session, info)
     if not miss.count:
+        drawing_look.require(session, info, action)  # the points are closed; the last look must be after the last change
         return info.sheet
     block = [f"sheet {info.sheet}: {miss.count} pending (drawing review mode: {mode})"]
     if miss.state:
