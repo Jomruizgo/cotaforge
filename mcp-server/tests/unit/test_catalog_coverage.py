@@ -56,7 +56,7 @@ FULL_VOCABULARY = {
     "box", "cylinder", "boolean_union", "boolean_subtract", "boolean_intersect", "translate", "rotate", "copy_body",
     "sketch", "ref_plane", "ref_axis", "extrude", "revolve", "sweep", "cut", "hole", "linear_pattern",
     "circular_pattern", "chamfer", "fillet", "shell", "draft", "mirror", "mirror_body", "split", "insert_component",
-    "fix_component", "place_component", "mate_concentric", "mate_coincident", "mate_distance", "check_interference",
+    "fix_component", "place_component", "shrink_body", "mate_concentric", "mate_coincident", "mate_distance", "check_interference",
     "add_joint", "set_joint", "base_flange", "edge_flange", "unfold",
 }  # fmt: skip
 
