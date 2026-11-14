@@ -6,7 +6,6 @@ end-to-end protocol) lives in ``tests/unit/freecad_client/test_rpc.py``.
 
 import gc
 import os
-import signal
 import subprocess
 import sys
 import threading
@@ -565,7 +564,7 @@ def test_windows_creationflags_avoid_a_console_window(monkeypatch: pytest.Monkey
 
 def _kill_worker(worker: WorkerProcess) -> None:
     assert worker.pid is not None
-    os.kill(worker.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+    worker.crash()
 
 
 def test_a_worker_that_dies_while_a_process_it_started_holds_the_pipe_ends_the_call(

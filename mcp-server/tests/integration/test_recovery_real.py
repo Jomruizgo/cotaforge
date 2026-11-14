@@ -1,11 +1,9 @@
-"""The real FreeCAD worker ends in the middle of a TechDraw script (killed by its own PID, as a crash would): the
+"""The real FreeCAD worker ends in the middle of a TechDraw script (ended through its own handle, as a crash would): the
 copy of the unsaved work taken before the script is kept and opens with the step ids it had; the engineer's file is
 untouched; and the answers, the choice of reviewer and the report of the drawing review, which a crash takes with the
 unsaved sheet, come back when the file is opened again."""
 
 import hashlib
-import os
-import signal
 import threading
 import time
 from pathlib import Path
@@ -31,9 +29,8 @@ def sha(path: Path) -> str:
 
 
 def kill_own_worker(adapter: FreeCADAdapter) -> None:
-    pid = adapter.worker_pid
-    assert pid is not None
-    os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+    assert adapter.worker_pid is not None
+    adapter.crash_worker()
     deadline = time.monotonic() + 30
     while adapter.session_alive() and time.monotonic() < deadline:
         time.sleep(0.1)

@@ -1,8 +1,6 @@
 """FreeCADAdapter against ``fake_worker.py``: model validation, error mapping, connect handshake,
 capabilities, export_macro and the session context manager (no FreeCAD needed)."""
 
-import os
-import signal
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -391,7 +389,7 @@ def test_worker_exit_mid_call_is_session_lost_and_health_calls_never_raise(make_
 def test_a_dead_worker_is_seen_without_a_call_and_connect_relaunches_it_in_the_same_mode(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_root: Path
 ) -> None:
-    """A crash (here: the test kills the worker it spawned, by that PID) must not leave the adapter unusable:
+    """A crash (here: the test ends the worker it spawned, through its own handle) must not leave the adapter unusable:
     ``session_alive`` says so without an RPC and ``connect`` starts a new worker, visible again when it was visible."""
     modes: list[object] = []
 
@@ -405,7 +403,7 @@ def test_a_dead_worker_is_seen_without_a_call_and_connect_relaunches_it_in_the_s
     with adapter:
         pid = adapter.worker_pid
         assert pid is not None and adapter.session_alive() is True
-        os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+        adapter.crash_worker()
         deadline = time.monotonic() + 10
         while adapter.session_alive() and time.monotonic() < deadline:
             time.sleep(0.05)
