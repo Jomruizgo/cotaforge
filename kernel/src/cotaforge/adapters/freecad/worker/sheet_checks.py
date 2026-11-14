@@ -66,6 +66,8 @@ class PartFacts:
     sheet_metal: bool = False
     keyways: int = 0  # slots with parallel walls along the axis of a cylindrical face (``sheet_keyway``)
     keyway_slots: list[Any] = field(default_factory=list)  # the same slots with their faces (``sheet_keyway.Slot``)
+    cylinders: list[Any] = field(default_factory=list)  # every cylinder with where it lies along its axis (``sheet_keyway.Cylinder``: axis, radius, concave, lo, hi)
+    planes: list[Any] = field(default_factory=list)  # every planar face (``sheet_keyway.Flat``: id, normal, centre): ``baseline_dims`` finds the shoulders of a turned part among them
     thread_features: int = 0  # features named as a thread that no ``hole`` operation made (an external thread)
     flats: list[Any] = field(default_factory=list)  # the flats of a turned part (``sheet_flats.FlatFace``): a square flange, wrench flats
 
@@ -83,7 +85,6 @@ NON_BLOCKING = frozenset(
         "dowel_unmarked",
         "dimension_repeated",
         "dimension_side",
-        "dimension_crossing",
         "datum_on_line",
         "datum_unused",
         "leader_not_on_chamfer",
