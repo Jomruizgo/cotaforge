@@ -87,3 +87,10 @@ def test_a_sheet_with_a_mould_item_is_asked_even_when_the_intent_is_silent() -> 
 
 def test_a_paper_too_small_for_its_notes_is_measured_so_the_agent_cannot_dismiss_it() -> None:
     assert "paper_too_small" in dr.MEASURED_FINDINGS and "sheet_underused" in dr.MEASURED_FINDINGS
+
+
+def test_a_sheet_composed_on_a_paper_too_small_for_its_notes_is_raised_to_the_paper_that_holds_them() -> None:
+    """In one order the paper is raised while a layout finding stands; the notes over the views are one (A3 -> A2 on the box)."""
+    from cotaforge_mcp import drawing_compose
+
+    assert "paper_too_small" in drawing_compose.LAYOUT_CODES

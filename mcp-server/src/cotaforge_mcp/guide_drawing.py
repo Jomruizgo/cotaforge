@@ -101,7 +101,7 @@ COMPOSE_LINES = (
     "of the types that exist, WITHOUT placement and without ids: datums [{letter, face}] | relations [dim | datum_dims "
     "items: from where the positions and sizes are counted; a datum_dims takes the place of the default location, so the "
     "holes are never dimensioned twice] | fits [hole_dim | dim with fit=] | tol [dim | hole_dim with tol=] | gdt [gdt "
-    "items] | finish [finish items] | sections [section | detail | aux_view] | welds [weld items] | notes [text | note] | "
+    "items] | finish [finish items] | sections [section | detail | aux_view] | welds [weld items] | mould [parting_line | pull_direction | mould_zone | no_draft: a moulded part, drawing:mould] | notes [text | note] | "
     "a WELDED PART also: bodies [{component, name}: the designation of each body of the cut list] | positions [dim items: "
     "where the bodies stand on the plate, the plan measures them and proposes the dimensions; [] when a jig fixes them] | welding {process, "
     "quality: B|C|D (ISO 5817), tolerance: A|B|C|D (ISO 13920): the weld note and the title block come from it} | "
