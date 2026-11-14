@@ -41,6 +41,7 @@ import gui
 import hole_colours
 import holes
 import mould
+import mould_parts
 import mould_split
 import ops_assembly
 import ops_features
@@ -56,6 +57,7 @@ import recorder
 import registry as reg
 import reporting
 import sketches
+import slide_mech
 import validate
 import watch
 import windows
@@ -102,6 +104,8 @@ MUTATING_METHODS = frozenset(
         "mirror_body",
         "shrink_body",
         "mould_split",
+        "mould_component",
+        "slide_mechanism",
         "split",
         "edit_feature",
         "remove_feature",
@@ -302,6 +306,8 @@ class Worker:
             "mirror_body": lambda p: ops_primitives.mirror_body(d(p), p),
             "shrink_body": lambda p: ops_primitives.shrink_body(d(p), p),
             "mould_split": lambda p: mould_split.mould_split(d(p), p),
+            "mould_component": lambda p: mould_parts.mould_component(d(p), p),
+            "slide_mechanism": lambda p: slide_mech.slide_mechanism(d(p), p),
             "split": lambda p: ops_primitives.split(d(p), p),
             "edit_feature": lambda p: edit.edit_feature(d(p), p),
             "measure_bodies": lambda p: edit.measure_bodies(d(p), p),

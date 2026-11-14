@@ -186,6 +186,15 @@ from cotaforge.contract.mould import (
     classify_draft,
     proposed_block_margin,
 )
+from cotaforge.contract.mould_parts import (
+    AnglePinOption,
+    CatalogInfo,
+    MouldComponentRequest,
+    PartFrame,
+    PartSpec,
+    SlideMechanismRequest,
+    WearPlateOption,
+)
 from cotaforge.contract.native import (
     BrokenObject,
     NativeError,
@@ -401,6 +410,13 @@ __all__ = [
     "classify_draft",
     "BLOCK_MARGIN_RULE",
     "MouldSplitRequest",
+    "AnglePinOption",
+    "CatalogInfo",
+    "MouldComponentRequest",
+    "PartFrame",
+    "PartSpec",
+    "SlideMechanismRequest",
+    "WearPlateOption",
     "PartingAnalysisRequest",
     "PartingAnalysisResult",
     "PartingLoop",

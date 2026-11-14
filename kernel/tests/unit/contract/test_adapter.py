@@ -14,7 +14,7 @@ from cotaforge.contract.responses import Ack, SelectionResult, ShowEntitiesResul
 from cotaforge.contract.toolschema import TOOL_REGISTRY, Group, export_mcp_tools
 
 _REQUIRED_METHOD_COUNT = 47
-_OPTIONAL_METHOD_COUNT = 58  # + place_component + save/open/close_document + run_native + 2 design attributes
+_OPTIONAL_METHOD_COUNT = 60  # + place_component + save/open/close_document + run_native + 2 design attributes + mould_component + slide_mechanism
 # + shrink_body + draft_analysis + parting_analysis + mould_split (the mould tools)
 # + tool_overlap + body_interference + add_joint, set_joint, joint_info, sweep_joint + export_dxf + sheet metal
 # + style_bodies + section_plane + create_drawing + capture_drawing + export_drawing + import_geometry + list_holes

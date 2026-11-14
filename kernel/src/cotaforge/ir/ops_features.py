@@ -90,6 +90,9 @@ __all__ = [
     "ShellOperation",
     "ShrinkBodyOperation",
     "MouldSplitOperation",
+    "MouldComponentOperation",
+    "MouldPlacement",
+    "SlideMechanismOperation",
     "SketchOperation",
     "SplitOperation",
     "SweepOperation",
@@ -772,6 +775,161 @@ class MouldSplitOperation(OperationBase):
         return self
 
 
+class MouldPlacement(IRModel):
+    """Where a mould component sits: ``origin`` (a point in the document), ``axis`` the direction its own z axis points to
+    (for a pin: head to tip; for the base kit: from the parting face towards the core, i.e. the pull) and ``x`` a hint
+    for its x axis (made perpendicular to the axis; for the base kit x is along the base length)."""
+
+    origin: Vec3 = (0.0, 0.0, 0.0)
+    axis: AxisName | Vec3 = AxisName.Z
+    x: Vec3 | None = None
+
+
+MouldKind = Literal[
+    "mould_base",
+    "guide_pin",
+    "guide_bush",
+    "locating_ring",
+    "sprue_bush",
+    "ejector_pin",
+    "return_pin",
+    "angle_pin",
+    "wear_plate",
+]
+
+
+def _vec_text(value: Any) -> str:
+    if isinstance(value, str):
+        return str(value)
+    return "(" + ", ".join(f"{float(c):g}" for c in value) + ")"
+
+
+def _component_note(data: dict[str, Any]) -> str:
+    """The sentence a ``mould_component`` step's intent carries: what it is in the catalogue and where it goes."""
+    what = data.get("ref") or data.get("size") or "(default configuration)"
+    at = data.get("at")
+    places = [at] if isinstance(at, dict) else list(at or [{}])
+    where = "; ".join(
+        f"at {_vec_text(p.get('origin', (0, 0, 0)))} along {_vec_text(p.get('axis', 'Z'))}"
+        for p in places
+        if isinstance(p, dict)
+    )
+    return f"mould component: {data.get('kind')} {what}, DME catalogue, {where}"
+
+
+class MouldComponentOperation(OperationBase):
+    """Build a standard mould component from the DME catalogue (family DME: public tables, sources in the part's
+    properties) as native parametric bodies: every body is the CAD's own sketches, pads, pockets and revolutions, so the
+    engineer can edit any dimension by hand. Each body carries its catalogue reference, size and source as properties
+    (and they reach the bill of materials). ``kind`` and ``ref`` (the catalogue item number):
+
+    * ``mould_base``: the kit of a 2-plate base, ref ``XPA1012-17-17-35`` (size, A plate code, B plate code, rail code of
+      the catalogue page) or just ``size`` ``1012`` (the catalogue's example plates): nine plates (top clamp, A, B,
+      support, two rails, ejector retainer, ejector, bottom clamp), four leader pins and shoulder bushings, four return
+      pins, the locating ring and the sprue bushing. Base axes: origin at the centre of the parting face, z towards the
+      core (set ``at.axis`` to the pull), x along the base length. Only size 1012 (A-series) is encoded;
+    * ``guide_pin`` (``5104GL``), ``guide_bush`` (``5712``), ``locating_ring`` (``6501``), ``sprue_bush`` (``B0271``),
+      ``ejector_pin`` (``EJP-EHN-030-0160`` or size ``3x160``), ``return_pin`` (``7514``), ``angle_pin`` (``APD1260``),
+      ``wear_plate`` (``SLP0604``): one body per entry of ``at`` (none: one at the origin along Z).
+
+    A reference or size that is not in the tables is refused with what is. The step's intent always ends up carrying the
+    component and where it goes. The first body is the step's own; the others are labelled ``<step>_<role>``."""
+
+    op: Literal["mould_component"] = "mould_component"
+    kind: MouldKind
+    ref: str | None = None
+    size: str | None = None
+    at: tuple[MouldPlacement, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _intent_carries_the_component(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or data.get("kind") is None:
+            return data
+        if isinstance(data.get("at"), dict):
+            data = {**data, "at": [data["at"]]}
+        intent = data.get("intent")
+        if not isinstance(intent, str) or not intent.strip():
+            return data
+        try:
+            note = _component_note(data)
+        except (TypeError, ValueError, AttributeError):
+            return data
+        return data if note in intent else {**data, "intent": f"{intent.rstrip()} [{note}]"}
+
+    @model_validator(mode="after")
+    def _in_the_catalogue(self) -> "MouldComponentOperation":
+        from cotaforge import mouldparts  # noqa: PLC0415 - the tables are only read when a step names a component
+
+        places = [mouldparts.Placement() for _ in self.at]
+        try:
+            mouldparts.expand(self.kind, self.ref, self.size, places)
+        except mouldparts.ComponentError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
+
+
+def _slide_note(data: dict[str, Any]) -> str:
+    stroke = data.get("stroke_mm")
+    stroke_text = (
+        f"stroke {float(stroke):g} mm"
+        if stroke is not None
+        else f"stroke = undercut depth + {float(data.get('clearance_mm', 2.0)):g} mm"
+    )
+    return (
+        f"slide mechanism: slide {data.get('slide')} of {data.get('split')}, angle pin {float(data['angle_deg']):g} deg, "
+        f"locking heel +{float(data.get('wedge_extra_deg', 2.0)):g} deg, {stroke_text}, "
+        f"pin dia {float(data.get('pin_diameter_mm', 12.0)):g} mm"
+    )
+
+
+class SlideMechanismOperation(OperationBase):
+    """Add the mechanism of one slide that a ``mould_split`` step made (``split`` is that step, ``slide`` the region
+    number its report lists): a carrier behind the forming insert with a T-groove on each side and a slanted bore, two
+    T-gibs, a DME metric angle pin leaning ``angle_deg`` from the pull, a locking heel ``wedge_extra_deg`` (2 by default)
+    steeper than the pin, a ball detent that holds the open position and a DME wear plate under the carrier. Every part
+    is a native body positioned relative to the slide. The stroke is the depth the slide must travel to clear ``part``
+    (the shrunk body the split cut) plus ``clearance_mm`` (2), or ``stroke_mm`` when given (it must clear the undercut).
+    The step is REFUSED unless the stroke clears the undercut, the heel is steeper than the pin, the angle pin stays in
+    its bore over the whole stroke and no two parts overlap in the closed or in the open position (the open one is
+    worked out by moving the slide by the stroke and the pin half by the travel the angle pin needs). ``host`` is the
+    mould half the slide rides in (worked out from where the slide lies when omitted). The pockets in the plates and
+    inserts for the mechanism are not cut. The step's intent always ends up carrying the numbers."""
+
+    op: Literal["slide_mechanism"] = "slide_mechanism"
+    split: OpId
+    slide: int = Field(ge=1)
+    part: BodyRef
+    pull: AxisName | Vec3 = AxisName.Z
+    angle_deg: float = Field(gt=0, lt=45, allow_inf_nan=False)
+    stroke_mm: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    clearance_mm: float = Field(default=2.0, ge=0, allow_inf_nan=False)
+    wedge_extra_deg: float = Field(default=2.0, gt=0, le=10, allow_inf_nan=False)
+    host: Literal["cavity", "core"] | None = None
+    pin_diameter_mm: float = Field(default=12.0, gt=0, allow_inf_nan=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _intent_carries_the_mechanism(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or data.get("angle_deg") is None:
+            return data
+        intent = data.get("intent")
+        if not isinstance(intent, str) or not intent.strip():
+            return data
+        try:
+            note = _slide_note(data)
+        except (TypeError, ValueError):
+            return data
+        return data if note in intent else {**data, "intent": f"{intent.rstrip()} [{note}]"}
+
+    @model_validator(mode="after")
+    def _wedge_stays_below_the_limit(self) -> "SlideMechanismOperation":
+        if self.angle_deg + self.wedge_extra_deg >= 45:
+            msg = "the heel angle (angle_deg + wedge_extra_deg) must stay under 45 degrees"
+            raise ValueError(msg)
+        return self
+
+
 class SplitOperation(OperationBase):
     """Cut a body in two along ``plane`` (a base plane, a datum plane or a planar face; it is not required to pass
     through the origin). The source is CONSUMED. ``positive`` is the piece on the side the plane's normal points to,
@@ -949,6 +1107,8 @@ OP_NAMES: frozenset[str] = frozenset(
         "mirror_body",
         "shrink_body",
         "mould_split",
+        "mould_component",
+        "slide_mechanism",
         "split",
         "base_flange",
         "edge_flange",
@@ -1001,6 +1161,8 @@ OP_CATEGORY: dict[str, OpCategory] = {
     "mirror_body": "multibody",
     "shrink_body": "multibody",
     "mould_split": "multibody",
+    "mould_component": "multibody",
+    "slide_mechanism": "multibody",
     "split": "multibody",
     # sheet_metal: only offered by a CAD that has the sheet-metal capability (a bent part, its flat pattern).
     "base_flange": "sheet_metal",
@@ -1047,6 +1209,8 @@ Operation = Annotated[
     | MirrorBodyOperation
     | ShrinkBodyOperation
     | MouldSplitOperation
+    | MouldComponentOperation
+    | SlideMechanismOperation
     | SplitOperation
     | BaseFlangeOperation
     | EdgeFlangeOperation

@@ -245,6 +245,8 @@ _NON_EDITING_OPS = frozenset(
         "mirror_body",
         "shrink_body",
         "mould_split",
+        "mould_component",
+        "slide_mechanism",
         # no geometry at all
         "sketch",
         "ref_plane",
@@ -2419,6 +2421,35 @@ class ExpectedComputer:
                 note="the block less the part: the inserts and the slides fill it exactly",
             )
         ]
+
+    def _op_mould_component(self, op: Any, request: Any, before: StateSnapshot, adapter: Adapter) -> list[Expectation]:
+        """Catalogue parts are new bodies and nothing else changes: the document gains the sum of the volumes the
+        catalogue numbers give (worked out part by part, bores and seats subtracted). The bodies are registered under the
+        op id (the first part) and ``<op id>#<role>``; their shapes are not tracked."""
+        keys = [op.id] + [f"{op.id}#{part.role}" for part in request.parts[1:]]
+        for key in keys:
+            self._body_of_op[key] = key
+            self._shape_by_body[key] = None
+            self._edits[key] = []
+        volumes = [part.volume_mm3 for part in request.parts]
+        if any(v is None for v in volumes):
+            return []
+        return [
+            _exp(
+                "volume_delta",
+                "mm3",
+                float(sum(volumes)),  # type: ignore[arg-type]
+                note="the catalogue numbers of every part, bores and seats taken off",
+            )
+        ]
+
+    def _op_slide_mechanism(self, op: Any, request: Any, before: StateSnapshot, adapter: Adapter) -> list[Expectation]:
+        """The parts of the mechanism are new bodies sized from the slide (a carrier, gibs, a pin, a heel, a plate, a ball):
+        no volume is predicted here, the CAD checks the stroke, the wedge and the interference itself and refuses the step."""
+        self._body_of_op[op.id] = op.id
+        self._shape_by_body[op.id] = None
+        self._edits[op.id] = []
+        return []
 
     def _op_shrink_body(self, op: Any, request: Any, before: StateSnapshot, adapter: Adapter) -> list[Expectation]:
         """A derived, scaled body (scale ``sx, sy, sz`` about the origin): the document gains ``sx * sy * sz`` times the

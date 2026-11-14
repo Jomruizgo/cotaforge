@@ -169,3 +169,43 @@ def test_schemas_stay_small(tool: str, make: MakeSession) -> None:
     import json
 
     assert len(json.dumps(input_schema(TOOLS_BY_NAME[tool], make(ExportFake())))) < 1800
+
+
+# --- catalogue references in the bill of materials -----------------------------------------------------------------
+
+
+class CatalogueFake(ExportFake):
+    """Every body says it is a DME guide pin: what the CAD does for a body whose object carries the catalogue properties."""
+
+    def bodies_of(self, request: Any) -> Any:
+        result = super().bodies_of(request)
+        return result.model_copy(
+            update={"bodies": tuple(b.model_copy(update={"catalog": "DME 5104GL (guide pin GL, dia 0.875 in x 4.25 in)"}) for b in result.bodies)}
+        )
+
+
+def test_bom_shows_the_catalogue_reference_of_a_body_that_carries_one(make: MakeSession) -> None:
+    call = Caller(make(CatalogueFake()))
+    plate(call)
+    bom = call.ok("inspect", action="bom")
+    assert "DME 5104GL (guide pin GL, dia 0.875 in x 4.25 in), volume" in bom
+
+
+def test_two_bodies_of_one_reference_are_one_line_whatever_their_loose_boxes_say() -> None:
+    from cotaforge.contract import BodyHandle, BodyInfo, BoundingBox, Provenance, FeatureHandle
+
+    from cotaforge_mcp.inspect_tools import _bom_key
+
+    def body(size: tuple[float, float, float], catalog: str) -> BodyInfo:
+        return BodyInfo(
+            handle=BodyHandle(id="body:1"),
+            volume_mm3=1000.0,
+            bbox=BoundingBox(min=(0, 0, 0), max=size),
+            face_count=4,
+            provenance=Provenance(created_by=FeatureHandle(id="feature:1")),
+            catalog=catalog,
+        )
+
+    assert _bom_key(body((1, 2, 3), "DME 5104GL")) == _bom_key(body((1.5, 2, 3), "DME 5104GL"))
+    assert _bom_key(body((1, 2, 3), "DME 5104GL")) != _bom_key(body((1, 2, 3), "DME 5105GL"))
+    assert _bom_key(body((1, 2, 3), "")) != _bom_key(body((1.5, 2, 3), ""))  # a drawn part is told by its box
