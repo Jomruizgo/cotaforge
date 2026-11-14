@@ -3,12 +3,16 @@
 title-block fields but has no view objects; every number (dimensions, hole positions) is the one the default sheet gives
 on the same part; the mode survives ``update``, a save and a reopen; the default sheet is not touched by any of it."""
 
+import dataclasses
+import math
 import os
 import tempfile
 from typing import Any
 
 import drawing
 import main
+import sheet_context as sc
+import sheet_hlr
 import sheet_model as model
 from check_drawing_sheets import add, build_plate, composed, texts
 from check_save_resume import reopen, save_and_reset, workdir
@@ -105,31 +109,119 @@ def check_hlr_gives_the_same_dimensions_hole_positions_and_views_as_techdraw() -
         assert all(abs(x - y) < TOL for x, y in zip(a, b, strict=True)), (a, b)
 
 
-def check_hlr_holds_for_a_round_part_with_arcs_and_a_hole_pattern() -> None:
+DISC_R, DISC_T, BORE_R, BOLT_R, BOLT_CIRCLE = 60.0, 10.0, 15.0, 4.5, 45.0  # build_part04, mm, axis along z
+
+
+def _frames(page: Any) -> dict[str, sc.ViewInfo]:
+    """The front / top / right views of the sheet with the frame each is drawn in and where it sits, read from the sheet
+    itself: the TechDraw views' own ``Direction`` / ``XDirection`` (turned for a round part), or the record of an hlr sheet."""
+    rec = drawing.spec_of(page).get("hlr")
+    if rec is None:
+        return drawing.view_infos(page)
+    where = sheet_hlr.origins(rec)
+    centre = tuple(float(c) for c in rec["centre"])
+    return {
+        name: sc.ViewInfo(name, *where[name], float(rec["scale"]), *sheet_hlr.FRAMES[name], centre, (0.0, 0.0, 0.0, 0.0))
+        for name in sheet_hlr.GROUP
+    }
+
+
+def _flange_sheets() -> dict[str, tuple[model.Sheet, dict[str, sc.ViewInfo], float]]:
+    """The flange drawn in both modes: ``(sheet, its views, its scale)``."""
     from harness import build_part04  # noqa: PLC0415 - flange: a disc, a bore, six bolt holes
 
     build_part04()
-    both = {}
-    # a techdraw sheet with a front view draws a turned part with its axis horizontal (f3dd2e3) and an hlr sheet never does
-    # (``drawing.turned_of``), so the scale and the place of every view differ by design. What must still match is what the
-    # sheet says: every text but the scale labels, and every circle's size in the part's own millimetres.
-    scales = {}
+    out = {}
     for mode in ("techdraw", "hlr"):
         made = call("create_drawing", op("d", template="A3", projection=mode, views=ALL_VIEWS, fresh=True))
-        scales[mode] = float(made["scale"])
         add({"type": "hole_dim", "all": True})
-        both[mode] = composed()[0]
+        out[mode] = (composed()[0], _frames(_rec().fc_doc.getObject("Drawing")), float(made["scale"]))
+    return out
 
+
+def _end_view(views: dict[str, sc.ViewInfo]) -> sc.ViewInfo:
+    """The view that looks along the part's axis (z), whatever its name: the one that shows the circles."""
+    (end,) = (v for v in views.values() if abs(v.direction[2]) > 0.99)
+    return end
+
+
+def _expected_circles(view: sc.ViewInfo) -> list[tuple[float, float, float]]:
+    """``(x, y, r)`` on the page of the disc, the bore and the six bolt holes as ``view`` frames and places them."""
+    angles = [math.radians(60.0 * i) for i in range(6)]
+    wanted = [((0.0, 0.0), DISC_R), ((0.0, 0.0), BORE_R)]
+    wanted += [((BOLT_CIRCLE * math.cos(a), BOLT_CIRCLE * math.sin(a)), BOLT_R) for a in angles]
+    return [(*view.project((x, y, DISC_T / 2)), r * view.scale) for (x, y), r in wanted]
+
+
+def _unmatched(sheet: model.Sheet, wanted: list[tuple[float, float, float]]) -> tuple[list[Any], list[Any]]:
+    """What ``wanted`` has no circle for, and the circles of the sheet nothing asked for (position and size within TOL)."""
+    left = list(_circles(sheet))
+    missing = []
+    for w in wanted:
+        hit = next((c for c in left if all(abs(a - b) < TOL for a, b in zip(c, w, strict=True))), None)
+        if hit is None:
+            missing.append(w)
+        else:
+            left.remove(hit)
+    return missing, left
+
+
+def _outline_gap(sheet: model.Sheet, view: sc.ViewInfo) -> list[float]:
+    """How far the contour drawn inside the page box where ``view`` puts the disc's bounding box is from that box
+    (x0, y0, x1, y1): all zero when the view puts the outline where its own frame says."""
+    corners = [view.project((sx * DISC_R, sy * DISC_R, z)) for sx in (-1, 1) for sy in (-1, 1) for z in (0.0, DISC_T)]
+    box = (min(c[0] for c in corners), min(c[1] for c in corners), max(c[0] for c in corners), max(c[1] for c in corners))
+    inside, outside = [], 1.0
+
+    def within(*points: tuple[float, float]) -> bool:
+        return all(box[0] - outside <= x <= box[2] + outside and box[1] - outside <= y <= box[3] + outside for x, y in points)
+
+    for e in sheet.entities:
+        if e.layer != model.CONTOUR:
+            continue
+        if isinstance(e, model.Line) and within((e.x1, e.y1), (e.x2, e.y2)):
+            inside += [(e.x1, e.y1), (e.x2, e.y2)]
+        elif isinstance(e, model.Circle) and within((e.cx - e.r, e.cy - e.r), (e.cx + e.r, e.cy + e.r)):
+            inside += [(e.cx - e.r, e.cy - e.r), (e.cx + e.r, e.cy + e.r)]
+    if not inside:
+        return [float("inf")] * 4
+    drawn = (min(p[0] for p in inside), min(p[1] for p in inside), max(p[0] for p in inside), max(p[1] for p in inside))
+    return [abs(a - b) for a, b in zip(drawn, box, strict=True)]
+
+
+def check_hlr_holds_for_a_round_part_with_arcs_and_a_hole_pattern() -> None:
+    both = _flange_sheets()
+    # a techdraw sheet with a front view draws a turned part with its axis horizontal (f3dd2e3) and an hlr sheet never does
+    # (``drawing.turned_of``), so the scale and the place of every view differ by design. What must still match is what the
+    # sheet says (every text but the scale labels) and WHERE the part is drawn: each view's frame (the turn included) is read
+    # from the view and the bore, the bolt holes and the outline of the part must land where that frame puts them.
     def said(sheet: model.Sheet) -> list[str]:
         return sorted(t for t in texts(sheet) if " : " not in t)  # '1 : 2', 'Isométrica 1 : 2'
 
-    td, hlr = both["techdraw"], both["hlr"]
+    (td, td_views, _), (hlr, hlr_views, _) = both["techdraw"], both["hlr"]
     assert said(td) == said(hlr), (sorted(set(said(td)) ^ set(said(hlr))), len(said(td)), len(said(hlr)))
-    ctd, chlr = _circles(td), _circles(hlr)
-    assert len(ctd) == len(chlr) >= 7  # bore, six bolt holes (the disc outline too)
-    radii_td = sorted(round(c[2] / scales["techdraw"], 2) for c in ctd)
-    radii_hlr = sorted(round(c[2] / scales["hlr"], 2) for c in chlr)
-    assert radii_td == radii_hlr, (radii_td, radii_hlr)
+    assert len(_circles(td)) == len(_circles(hlr)) >= 7  # bore, six bolt holes (the disc outline too)
+    assert td_views["front"].xdir != hlr_views["front"].xdir, "the techdraw sheet is meant to be turned here"
+    for mode, (sheet, views, _scale) in both.items():
+        missing, extra = _unmatched(sheet, _expected_circles(_end_view(views)))
+        assert not missing and not extra, (mode, missing, extra)
+        for name, view in views.items():
+            assert max(_outline_gap(sheet, view)) < TOL, (mode, name, _outline_gap(sheet, view))
+
+
+def check_the_position_comparison_of_a_round_part_fails_on_a_wrong_projection() -> None:
+    both = _flange_sheets()
+    for mode, (sheet, views, _scale) in both.items():
+        end = _end_view(views)
+        assert _unmatched(sheet, _expected_circles(end)) == ([], []), mode  # the right expectation passes
+        turned = dataclasses.replace(end, xdir=end.ydir)  # the view a quarter of a turn off: the pattern lands elsewhere
+        assert _unmatched(sheet, _expected_circles(turned))[0], (mode, "a turned end view must not pass")
+        moved = dataclasses.replace(end, x=end.x + BOLT_CIRCLE * end.scale)  # shifted by the pitch circle radius
+        assert _unmatched(sheet, _expected_circles(moved))[0], (mode, "a shifted end view must not pass")
+        side = views["front"]
+        assert max(_outline_gap(sheet, side)) < TOL, mode
+        flat = dataclasses.replace(side, xdir=side.ydir)  # the side view with its axis the other way (horizontal <-> vertical)
+        assert max(_outline_gap(sheet, flat)) > 1.0, (mode, "an unturned side view must not pass")
 
 
 def check_the_mode_survives_update_a_save_and_a_reopen() -> None:

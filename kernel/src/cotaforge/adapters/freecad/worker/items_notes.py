@@ -20,7 +20,7 @@ from sheet_context import (
     v_point2,
     v_str,
 )
-from sheet_model import TEXT, Text, text_width
+from sheet_model import TEXT, TEXT_HEIGHT_MM, Text, text_width
 from sheet_units import NativeNote
 
 NOTE_CHARS = 70  # a note longer than this wraps
@@ -126,11 +126,13 @@ def _block_x(ctx: Context, left: float, low: float, total: int) -> float:
     """Where the numbered block stands: at the left of the drawing area, or -- when dimensions already took that room --
     the first place to the right that is free (the block moves as a whole)."""
     width = ctx.extras["note_width"]
-    x = left + BLOCK_MARGIN_MM
-    while x + width < ctx.area[2]:
-        if ctx.free((x, low, x + width, low + BLOCK_MARGIN_MM + (total + 1) * LINE_STEP_MM)):
-            return x
-        x += BLOCK_STEP_MM
+    top = low + BLOCK_MARGIN_MM + (total + 1) * LINE_STEP_MM
+    for clear in (TEXT_HEIGHT_MM, 0.0):  # a text height off the dimensions first (the block moves as a whole), else any free place
+        x = left + BLOCK_MARGIN_MM
+        while x + width < ctx.area[2]:
+            if ctx.free((x - clear, low - clear, x + width + clear, top + clear)):
+                return x
+            x += BLOCK_STEP_MM
     return left + BLOCK_MARGIN_MM
 
 

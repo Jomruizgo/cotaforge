@@ -2,7 +2,8 @@
 """The quality floor of a drawing, as review findings (no FreeCAD import): what a shop-floor reader would send back that the
 sheet's own placement should have prevented.
 
-* leaders: two callouts whose leaders cross, a leader that goes through the part more than once;
+* leaders: two callouts whose leaders cross, a leader that goes through the part more than once, a leader that crosses a
+  dimension line or an extension line (ISO 128-22: a leader crosses nothing but the outline of the part, once);
 * dimensions: a dimension line or its text inside the outline of a view;
 * positions: a hole located in one direction only (a lone "30"); a hole is located by a dimension, by a datum the default
   location counts from or by the part's own symmetry (a hole on a plane of symmetry needs no number there);
@@ -71,6 +72,7 @@ def _leaders(data: ReviewInput) -> list[Finding]:
                     f"The leaders of {' and '.join(ids)} cross: move one (side or offset_mm) so they do not.",
                 )
                 out.append(Finding("leader_crossing", "warning", text, ids, key="+".join(ids)))
+    out += _leaders_across_dimensions(data, leaders)
     if not ctx.views:
         return out
     outline = view_segments(ctx, next(iter(ctx.views.values())))
@@ -85,6 +87,45 @@ def _leaders(data: ReviewInput) -> list[Finding]:
                 "(move it with side or offset_mm to a free side).",
             )
             out.append(Finding("leader_crosses_part", "warning", text, (str(leader["item"]),), key=str(leader["item"])))
+    return out
+
+
+def _leaders_across_dimensions(data: ReviewInput, leaders: list[dict[str, Any]]) -> list[Finding]:
+    """A leader that goes through a dimension line or an extension line (of any dimension or datum of the sheet): the shop
+    reads the callout as pointing at the dimension. One finding per callout, naming it and the items it crosses. Only on a
+    sheet the global layout placed (``layout_planned``): the callouts of a sheet built item by item may cross a dimension line
+    when they must, and say so in their own row."""
+    ctx = data.ctx
+    if not ctx.extras.get("layout_planned"):
+        return []
+    kinds = {str(i["id"]) for i in data.items if i.get("type") in ("datum_dims", "overall", "datum") or _linear_dim(i)}
+    dimensions = [
+        (unit.key, ink_of(unit.key, unit.entities).lines)
+        for unit in ctx.extras.get("units", [])
+        if unit.kind == "item" and unit.key in kinds and unit.entities
+    ]
+    out: list[Finding] = []
+    seen: set[str] = set()
+    for leader in leaders:
+        item = str(leader.get("item") or "")
+        if not item or item in seen:
+            continue
+        crossed = [
+            key
+            for key, lines in dimensions
+            if key != item and any(segments_cross(part, line) for part in _parts(leader) for line in lines)
+        ]
+        if not crossed:
+            continue
+        seen.add(item)
+        ids = (item, *dict.fromkeys(crossed))
+        text = ctx.say(
+            f"La guía de {item} cruza una línea de cota o de extensión de {', '.join(ids[1:])}: una guía no cruza cotas "
+            "(ISO 128-22). Mueve la llamada (side, offset_mm o leader_mm) o la cota (offset_mm) para que quede un camino libre.",
+            f"The leader of {item} crosses a dimension line or an extension line of {', '.join(ids[1:])}: a leader crosses no "
+            "dimension (ISO 128-22). Move the callout (side, offset_mm or leader_mm) or the dimension (offset_mm) to leave a clear way.",
+        )
+        out.append(Finding("leader_crosses_dimension", "warning", text, ids, key="+".join(ids)))
     return out
 
 
