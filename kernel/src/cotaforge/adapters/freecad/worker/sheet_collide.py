@@ -11,8 +11,9 @@ by one unit -- and reports where the ink of one unit lies on the ink of another:
   rectangle: a datum or tolerance frame) of another unit even when no edge crosses it;
 * two dimension lines of different units lying on one another (collinear and overlapping).
 
-A leader crossing a dimension line, an extension line crossing an outline and centre lines under anything are how a
-drawing is made, so they are NOT collisions. The same check serves ``review`` (which names the items) and the placement
+An extension line crossing an outline and centre lines under anything are how a drawing is made, so they are NOT
+collisions. A leader crossing a dimension line is not a collision either (it is not ink on ink of two texts) but a defect of
+its own: ``sheet_quality`` reports it (``leader_crosses_dimension``) and the global layout does not draw it. The same check serves ``review`` (which names the items) and the placement
 (``drawing.compose`` nudges the later item of each pair away and composes again).
 """
 
