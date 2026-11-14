@@ -229,7 +229,11 @@ ITEM_LINES = (
     "(a point of the plane) + normal=[x,y,z] (the direction the viewer looks; the plane must be seen edge-on in the "
     "parent view); view? (the parent, where the cutting line goes: default the first that fits), letter? (default "
     "the next "
-    "free one: A, B...), flip? (look from the other side), at_mm? (centre of the cut view on the sheet), hatch? "
+    "free one: A, B...), flip? (look from the other side), in_place? (true, with holes=\"axis\": the section stands IN the "
+    "main view, in its frame, place and scale, and that view is not drawn; no cutting line, no letters (ISO 128-44: the "
+    "plane is the axis of symmetry); a part of revolution whose features are all coaxial. Dimension it on view=A-A: each "
+    "Ø (dim kind=diameter; a bore's hole_dim gives one Ø per step) and the heights direct from the seating face, never "
+    "chained; review says view_adds_nothing for an end view of such a part), at_mm? (centre of the cut view on the sheet), hatch? "
     '({"body 2": {"turn": 90, "spacing": 1.5}}: the angle, as a turn from the standard hatch, and the spacing, as a factor, of a '
     "body of the cut; the pattern is the material's and cannot be set). It draws the "
     'cutting-plane line in the parent (thick ends, thin chain, arrows and letters, ISO 128-40), the cut view as "A-A" '
@@ -394,10 +398,10 @@ QUALITY_LINES = (
     "NOTES: numbered in the NOTAS block, the thickness first ('Espesor 19': the sheet writes it when it has ONE "
     "standard view), yours in the order added. A note is for fabrication and general remarks, never for a geometric "
     "tolerance (that is a gdt frame). Part-specific fabrication notes go there too (which ones the part needs: the requirements).",
-    "VIEWS OF A REVOLVED PART: without views, a body of revolution about x, y or z gets, with a bore, the view along its "
-    "axis and a section A-A through it (item section holes=axis); solid ONE view, axis horizontal, plus the isometric; "
-    "an end view only if it shows something. views=[front, top, right, iso] gives all. A rebuild without views keeps "
-    "the sheet's. A part's designation: doc set_title.",
+    "VIEWS OF A REVOLVED PART: without views, a body of revolution gets ONE axial section in the main view if every "
+    "feature is coaxial and it is hollow (section holes=axis in_place=true; no end view, no cutting line), else with a "
+    "bore the view along its axis and a section A-A; solid ONE view, axis horizontal; plus the isometric. "
+    "views=[...] gives all. A part's designation: doc set_title.",
     'ONE VIEW: a plate or flat part whose holes go through its thickness needs one view: create(views=["top"]) (or '
     "remove_view front on a sheet that has one other standard view). review says single_view_enough (no hold: the memory principle drawing-sufficient-views covers it) when the "
     "other views add nothing. The sheet then gives width and height on that view and the thickness as a note.",
