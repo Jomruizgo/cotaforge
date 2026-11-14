@@ -211,6 +211,28 @@ def _other_side(other: Any, edge: Any, d: g.Vec3, t_rim: float, at_high_end: boo
     return "unknown"
 
 
+def _tip_beyond(shape: Any, chain: list[_Cut], d: g.Vec3, t_rim: float, at_high_end: bool) -> float:
+    """How far a drill point (a cone that narrows outward) reaches past the closed rim at ``t_rim``: its height, ``0.0``
+    for a flat bottom. The centre line of a blind hole goes as far past the tip as past the entry face."""
+    radius = chain[0].radius
+    members = [c.face for c in chain]
+    for cut in chain:
+        for edge in cut.face.Edges:
+            if not _is_rim_edge(cut, edge, d, radius, t_rim):
+                continue
+            for other in shape.ancestorsOfType(edge, Part.Face):
+                if any(other.isSame(m) for m in members) or g.surface_kind(other) != "cone":
+                    continue
+                surf = other.Surface
+                if abs(g.dot(g.unit(g.vec(surf.Axis)), d)) < PARALLEL:
+                    continue
+                apex = g.dot(g.vec(surf.Apex), d)
+                beyond = apex - t_rim if at_high_end else t_rim - apex
+                if beyond > RIM_TOL:
+                    return float(beyond)
+    return 0.0
+
+
 def _countersink_at(shape: Any, chain: list[_Cut], d: g.Vec3, t_rim: float) -> tuple[float, float] | None:
     """``(diameter, included angle in degrees)`` of the cone that widens outward from the rim at ``t_rim``:
     a countersink.
@@ -240,6 +262,7 @@ def _describe(body: reg.BodyRec, shape: Any, chain: list[_Cut]) -> dict[str, Any
     high = _rim_state(shape, chain, d, t1, at_high_end=True)
     sink = _countersink_at(shape, chain, d, t0) or _countersink_at(shape, chain, d, t1)
     through: bool | None = None
+    tip = 0.0
     start, direction = t0, d
     if low == "open" and high == "open":
         through = True
@@ -247,6 +270,9 @@ def _describe(body: reg.BodyRec, shape: Any, chain: list[_Cut]) -> dict[str, Any
         through = False
         if high == "open":  # blind: the axis runs from the open end into the material
             start, direction = t1, g.scale(d, -1.0)
+            tip = _tip_beyond(shape, chain, d, t0, at_high_end=False)
+        else:
+            tip = _tip_beyond(shape, chain, d, t1, at_high_end=True)
     anchor = chain[0].anchor
     origin = g.add(anchor, g.scale(d, start))
     recs = sorted({c.rec.id: c.rec for c in chain}.values(), key=lambda r: r.index)
@@ -256,6 +282,7 @@ def _describe(body: reg.BodyRec, shape: Any, chain: list[_Cut]) -> dict[str, Any
         "diameter_mm": 2.0 * chain[0].radius,
         "axis": g.axis_dict(origin, direction),
         "depth_mm": t1 - t0,
+        "tip_mm": tip,  # the height of the drill point of a blind hole (the cone past ``depth_mm``); 0: flat bottom
         "through": through,
         "faces": [{"id": r.id} for r in recs],
         "arc_deg": min(math.degrees(_arc_of(chain)), 360.0),

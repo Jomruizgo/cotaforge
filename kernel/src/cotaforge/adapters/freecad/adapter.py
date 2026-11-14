@@ -291,6 +291,12 @@ class FreeCADAdapter(Adapter):
     def worker_pid(self) -> int | None:
         return self._rpc.pid if self._rpc is not None and self._rpc.alive else None
 
+    def crash_worker(self) -> None:
+        """End the FreeCAD process alone and at once, as a crash would (see ``WorkerProcess.crash``). For tests of
+        recovery: the next call finds the worker gone."""
+        if self._rpc is not None:
+            self._rpc.crash()
+
     @property
     def last_script_path(self) -> Path | None:
         return self._last_script_path

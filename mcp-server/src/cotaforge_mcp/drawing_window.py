@@ -11,10 +11,13 @@ what it opened and nothing else, the window does not run ``claude`` directly but
 * it ends ``claude`` when the server that opened the window (``opener_pid``) is gone, like an external adapter's guard does for
   its instance, and marks the record ``closed`` when ``claude`` ends by any means.
 
-Closing is done by pid and only for the pid in a record whose ``beat`` is fresh (a stale record might name a pid the system
-gave to something else): never by name, never a window the harness did not open. ``claude`` itself is ended, not its
-tree: its MCP server then sees the end of its input, closes the CAD it started the way it always does, and the guard
-of the external adapter's CAD instance does its work. (``claude`` behind a ``.cmd`` shim is the exception: the tree is ended.)
+Nothing here ends a process by its pid, its name or its tree (the system recycles pids: a stale number can name somebody
+else's process). The wrapper starts ``claude`` inside a container of its own (``cotaforge.adapters.procjob``: a Windows Job
+Object that ends with its last handle, so the processes ``claude`` started go with it, even behind a ``.cmd`` shim) and
+ends it by closing that container. The server that wants the window closed does not reach for any process: it marks
+``closing`` in the record and the wrapper, which owns ``claude``, ends it at its next beat. Only a record whose ``beat`` is
+fresh is asked (a stale one belongs to a wrapper that is gone); never a window the harness did not open. ``claude``'s MCP
+server then sees the end of its input and closes the CAD it started the way it always does.
 """
 
 import json
@@ -31,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from cotaforge import paths
+from cotaforge.adapters import procjob
 
 BEAT_S = 5.0
 STALE_S = 25.0
@@ -39,7 +43,8 @@ STARTING_S = 90.0
 """How long a window that has not written its first beat is still taken for starting."""
 IDLE_S = 30.0
 """The drawing session's transcript untouched for this long: nobody is in the middle of a turn."""
-EXIT_WAIT_S = 10.0
+EXIT_WAIT_S = 15.0
+"""How long the harness waits for the wrapper to end ``claude`` after it marked ``closing`` (the wrapper looks at its next beat)."""
 FAST_FAIL_S = 20.0
 """A ``claude --resume`` that ends with an error sooner than this could not resume: the fallback takes over."""
 AGENT_RE = re.compile(r"^[A-Za-z0-9][\w-]*(:[A-Za-z0-9][\w-]*)?$")
@@ -58,19 +63,16 @@ def pid_alive(pid: int) -> bool:
         finally:
             kernel32.CloseHandle(handle)
     try:
-        os.kill(pid, 0)
+        os.getpgid(pid)  # only asks whether the process exists; it signals nothing
     except OSError:
         return False
     return True
 
 
-def kill_pid(pid: int, tree: bool) -> None:
-    """End the process ``pid`` (and its children when ``tree``). By pid only."""
-    if sys.platform.startswith("win"):
-        command = ["taskkill", "/PID", str(pid), "/F", *(["/T"] if tree else [])]
-        subprocess.run(command, capture_output=True, check=False, timeout=30)
-    else:  # the harness opens no windows here; kept so the function means the same everywhere
-        os.kill(pid, signal.SIGKILL)
+def start_claude(command: list[str]) -> Any:
+    """Start ``claude`` in its own container (see the module text). On POSIX it keeps the terminal it was started in (the
+    harness opens no windows there), so it is a plain child that is ended through its ``Popen``."""
+    return procjob.spawn(command, start_new_session=False)
 
 
 def claude_home() -> Path:
@@ -84,7 +86,11 @@ class Host:
     platform: str = field(default_factory=lambda: sys.platform)
     which: Callable[[str], str | None] = shutil.which
     popen: Callable[..., Any] = subprocess.Popen
-    kill: Callable[[int, bool], None] = kill_pid
+    """Opens the window (a launcher that is not ours to end)."""
+    spawn: Callable[[list[str]], Any] = start_claude
+    """Starts ``claude`` inside the container the wrapper ends it through."""
+    end: Callable[[Any], None] = procjob.end
+    """Ends what ``spawn`` started: the container and the process, through the ``Popen`` that was returned."""
     alive: Callable[[int], bool] = pid_alive
     now: Callable[[], float] = time.time
     sleep: Callable[[float], None] = time.sleep
@@ -147,10 +153,8 @@ def reopening_prompt(name: str) -> str:
     )
 
 
-def claude_line(
-    host: Host, agent: str, name: str, session_id: str, resume: str | None = None
-) -> tuple[list[str], bool]:
-    """The ``claude`` command and whether it needs its tree ended (behind a ``.cmd`` shim there is a ``cmd.exe``).
+def claude_line(host: Host, agent: str, name: str, session_id: str, resume: str | None = None) -> list[str]:
+    """The ``claude`` command (behind a ``.cmd`` shim it goes through ``cmd.exe``; the container takes both).
     ``resume``: the id of the conversation to continue (``--resume``) instead of a new one."""
     exe = host.which("claude") or "claude"
     if resume:
@@ -158,8 +162,8 @@ def claude_line(
     else:
         line = [exe, "--agent", agent, "--session-id", session_id, opening_prompt(name)]
     if exe.lower().endswith((".cmd", ".bat")):
-        return ["cmd.exe", "/c", *line], True
-    return line, False
+        return ["cmd.exe", "/c", *line]
+    return line
 
 
 def typed(host: Host, folder: Path, agent: str, name: str, resume: str | None = None) -> str:
@@ -192,19 +196,17 @@ def open_window(
     path = record_path(workspace, name)
     if is_open(host, read_record(path)):
         raise RuntimeError(f"the drawing session of {name} is already open")
-    claude, tree = claude_line(host, agent, name, session_id, resume)
+    claude = claude_line(host, agent, name, session_id, resume)
     record: dict[str, Any] = {
         "state": "starting",
         "started": host.now(),
         "opener_pid": host.pid,
         "session_id": resume or session_id,
-        "tree": tree,
     }
     if resume:
-        fresh, _ = claude_line(host, agent, name, session_id)
+        fresh = claude_line(host, agent, name, session_id)
         record["fallback"] = {"command": [*fresh[:-1], reopening_prompt(name)], "session_id": session_id}
     wrapper = [host.executable, "-m", "cotaforge_mcp.drawing_window", "--record", str(path), "--opener", str(host.pid)]
-    wrapper += ["--tree"] if tree else []
     wrapper += ["--", *claude]
     line = window_line(host, workspace, wrapper)
     write_record(path, record)
@@ -225,12 +227,13 @@ def open_window(
 
 
 def _supervise(
-    host: Host, record: Path, data: dict[str, Any], command: list[str], opener: int, tree: bool, beat_s: float
+    host: Host, record: Path, data: dict[str, Any], command: list[str], opener: int, beat_s: float
 ) -> tuple[int, bool, float]:
     """Run ``command`` as a child until it ends: (exit code, whether the opener went away and the child was ended for
-    it, seconds it ran). The record says which pid it is and gets a beat every ``beat_s``."""
+    it, seconds it ran). The record says which pid it is and gets a beat every ``beat_s``; at each beat the child is
+    ended when the harness marked ``closing`` or when the opener is gone."""
     try:
-        proc = host.popen(command)
+        proc = host.spawn(command)
     except OSError as exc:
         sys.stderr.write(f"cotaforge: could not start {command[0]}: {exc}\n")
         return 1, False, 0.0
@@ -243,31 +246,34 @@ def _supervise(
         try:
             code = proc.wait(timeout=beat_s)
         except subprocess.TimeoutExpired:
-            if host.alive(opener):
+            if _closing(record):  # the harness asked for this window to close: only the wrapper owns claude
+                data["closing"] = True
+                host.end(proc)
+            elif host.alive(opener):
                 data["beat"] = host.now()
                 data["closing"] = data.get("closing") or _closing(record)  # keep the harness's mark through our write
                 write_record(record, data)
                 continue
-            gone = True
-            host.kill(proc.pid, tree)  # the design session is gone: so is the window it opened
+            else:
+                gone = True
+                host.end(proc)  # the design session is gone: so is the window it opened
             code = proc.wait(timeout=EXIT_WAIT_S)
     return code, gone, host.now() - began
 
 
-def run_wrapper(
-    record: Path, opener: int, tree: bool, command: list[str], host: Host | None = None, beat_s: float = BEAT_S
-) -> int:
+def run_wrapper(record: Path, opener: int, command: list[str], host: Host | None = None, beat_s: float = BEAT_S) -> int:
     """Run ``command`` (``claude``) as a child, keep the record, and end the child if the opener goes away. A resume that
     fails at once is replaced by the new session the record names as a fallback. When ``claude`` ends without the drafter
     having said ``done`` (and not because the harness closed it or the design session ended) the channel is told, so that
     the designer hears that the window was closed early."""
     host = host or Host()
-    data: dict[str, Any] = {**(read_record(record) or {}), "opener_pid": opener, "wrapper_pid": host.pid, "tree": tree}
+    data: dict[str, Any] = {**(read_record(record) or {}), "opener_pid": opener, "wrapper_pid": host.pid}
+    data.pop("tree", None)  # a record of an older version
     fallback = data.pop("fallback", None)
-    code, gone, took = _supervise(host, record, data, command, opener, tree, beat_s)
+    code, gone, took = _supervise(host, record, data, command, opener, beat_s)
     if code != 0 and not gone and took < FAST_FAIL_S and isinstance(fallback, dict) and not _closing(record):
         data["session_id"] = fallback["session_id"]
-        code, gone, took = _supervise(host, record, data, list(fallback["command"]), opener, tree, beat_s)
+        code, gone, took = _supervise(host, record, data, list(fallback["command"]), opener, beat_s)
     closing = bool(data.get("closing")) or _closing(record)
     write_record(record, {**data, "state": "closed", "closed": host.now()})
     if not (gone or closing):
@@ -349,13 +355,19 @@ def close_window(
                 )
             host.sleep(2.0)
             idle = idle_seconds(host, workspace, record) or 0.0
-    write_record(path, {**record, "closing": True})  # the wrapper then knows it is the harness that ends claude
-    host.kill(int(record["claude_pid"]), bool(record.get("tree")))
+    # The wrapper owns claude and its container: it sees the mark at its next beat, knows it is the harness that ends
+    # claude, and ends it. Nothing is ended from here.
+    write_record(path, {**record, "closing": True})
     for _ in range(int(EXIT_WAIT_S / 0.5)):
         latest = read_record(path)
         if latest is None or latest.get("state") == "closed":
             break
         host.sleep(0.5)
+    else:
+        return False, (
+            f"the drawing window of {name} was asked to close but is still open (the wrapper answers at its next beat): "
+            "try closing again in a moment."
+        )
     resume = record.get("session_id")
     later = (
         f" To pick that session up later: `claude --resume {resume}` in the design folder (or open it again)."
@@ -366,9 +378,9 @@ def close_window(
 
 
 def main(argv: list[str]) -> int:
-    """``python -m cotaforge_mcp.drawing_window --record <file> --opener <pid> [--tree] -- <command...>``"""
+    """``python -m cotaforge_mcp.drawing_window --record <file> --opener <pid> -- <command...>``"""
     if "--" not in argv:
-        sys.stderr.write("usage: drawing_window --record <file> --opener <pid> [--tree] -- <command...>\n")
+        sys.stderr.write("usage: drawing_window --record <file> --opener <pid> -- <command...>\n")
         return 2
     cut = argv.index("--")
     options, command = argv[:cut], argv[cut + 1 :]
@@ -379,7 +391,7 @@ def main(argv: list[str]) -> int:
         sys.stderr.write("drawing_window needs --record and --opener\n")
         return 2
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # Ctrl+C is for claude, which shares the console; the wrapper stays
-    return run_wrapper(record, opener, "--tree" in options, command)
+    return run_wrapper(record, opener, command)
 
 
 if __name__ == "__main__":

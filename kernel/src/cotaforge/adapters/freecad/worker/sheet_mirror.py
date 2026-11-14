@@ -37,6 +37,7 @@ import sheet_model as sm
 import sheet_native
 import sheet_svg
 import sheet_units as su
+from sheet_draw import native_label
 
 PROP_KEY = "CotaforgeKey"
 PROP_NATIVE = "CotaforgeNative"
@@ -242,12 +243,11 @@ def page_position(page: Any, view: Any) -> tuple[float, float]:
 
 def _label_place(page: Any, obj: Any, info: dict[str, Any]) -> tuple[float, float]:
     """Where the label of the native dimension ``obj`` goes, in its view's own coordinates (y up): the dimension line is
-    the one the sheet draws, the label sits at its middle."""
+    the one the sheet draws, the label is put so that TechDraw lands its line there (``sheet_draw.native_label``)."""
     view = obj.Document.getObject(str(getattr(obj, PROP_VIEW)))
     vx, vy = page_position(page, view)
-    if info["orient"] == "h":
-        return float(info["mid"]) - vx, float(info["line"]) - vy
-    return float(info["line"]) - vx, float(info["mid"]) - vy
+    x, y = native_label(str(info["orient"]), float(info["mid"]), float(info["line"]))
+    return x - vx, y - vy
 
 
 def _split_native(page: Any, units: list[su.Unit]) -> tuple[list[su.Unit], list[su.Unit]]:
