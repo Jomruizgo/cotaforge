@@ -602,8 +602,13 @@ def check_a_sheet_made_before_specs_existed_still_works_and_gets_a_spec_when_cha
 def check_bad_items_are_refused_with_a_reason() -> None:
     build_plate()
     call("create_drawing", op("d", template="A3"))
-    error = expect_error("invalid_request", "annotate_drawing", op("a", action="add", items=[{"type": "weld"}]))
-    assert "draws no weld symbols" in error.message and "item 1 of 1" in error.message
+    # a weld is drawn since PR #30 (feat/weld-symbols): a weld item without its two bodies is what is refused now
+    error = expect_error(
+        "invalid_request",
+        "annotate_drawing",
+        op("a", action="add", items=[{"type": "weld", "between": [], "size_mm": 3}]),
+    )
+    assert "two bodies that touch" in error.message and "item 1 of 1" in error.message
     expect_error(
         "invalid_request", "annotate_drawing", op("a", action="add", items=[{"type": "hole_dim", "all": True, "x": 1}])
     )
