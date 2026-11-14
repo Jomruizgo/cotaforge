@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any
 
+from cotaforge.adapters import procjob
 from cotaforge.adapters.procstats import Vitals, sample
 
 ENV_RPC_FD = "COTAFORGE_RPC_FD"
@@ -47,7 +48,7 @@ def _windows_creationflags() -> dict[str, object]:
     (``freecadcmd``/``python.exe``); with no creation flags at all it either attaches to this process'
     console or, more commonly for the desktop build (no console anywhere in its tree), pops a brand-new
     visible one. ``CREATE_NO_WINDOW`` suppresses that; ``CREATE_NEW_PROCESS_GROUP`` is layered in too
-    (harmless together, and it gives a group a later hard-kill can target as a whole).
+    (harmless together; the worker is ended through its job, see ``adapters/procjob.py``, never by group or pid).
 
     ``getattr`` guards both Windows-only constants, neither of which exists on a POSIX Python build --
     exercised on POSIX CI by monkeypatching ``sys.platform`` and injecting them
@@ -246,20 +247,16 @@ def _kill_child(
     """``weakref.finalize`` callback: reap the child and close its handles if ``stop()`` was never
     called. Deliberately a plain function (not a bound method) so it holds no reference back to the
     ``WorkerProcess`` and does not keep it alive."""
-    if proc.poll() is None:
-        if kill_hook is not None:
-            try:
-                kill_hook(proc)
-            except Exception:  # noqa: BLE001 - a broken hook must not block the default kill
-                pass
+    if proc.poll() is None and kill_hook is not None:
         try:
-            proc.kill()
-        except OSError:
+            kill_hook(proc)
+        except Exception:  # noqa: BLE001 - a broken hook must not block the default end
             pass
-        try:
-            proc.wait(timeout=5.0)
-        except subprocess.TimeoutExpired:
-            pass
+    procjob.end(proc)  # also when the worker is gone: whatever it left running in its job goes with it
+    try:
+        proc.wait(timeout=5.0)
+    except subprocess.TimeoutExpired:
+        pass
     if channel is not None:
         _close_channel(channel, reader)
     if log is not None and not log.closed:
@@ -342,11 +339,12 @@ class WorkerProcess:
     """Spawn a child process and talk newline-delimited JSON to it (one request per line on stdin, one
     reply per line on the response channel). CAD-agnostic: ``command`` is the full argv to spawn.
 
-    ``kill_hook``, when given, is called with the live ``subprocess.Popen`` right before the default
-    ``proc.kill()`` whenever the worker is killed (timeout, lost session, or the drop-without-stop
-    finalizer) — the hook point for a platform-specific extra kill such as Windows'
-    ``taskkill.exe /PID <pid> /T /F`` for a worker reached over WSL interop. A hook that raises is
-    swallowed; the default kill still runs.
+    The worker is started inside a container of its own (``adapters/procjob.py``: a Windows Job Object that ends with
+    the last handle to it, or a process group on POSIX) and is ended by closing that container, never by pid, name or
+    process tree. ``kill_hook``, when given, is called with the live ``subprocess.Popen`` right before the container is
+    ended whenever the worker is killed (timeout, lost session, or the drop-without-stop finalizer): a hook point for
+    an adapter that has to tell its application to quit first. A hook that raises is swallowed; the default end still
+    runs.
     """
 
     def __init__(
@@ -444,7 +442,7 @@ class WorkerProcess:
                 raise WorkerLost(f"spawn failed: {exc}") from exc
             env[ENV_RPC_FD] = str(write_fd)
             try:
-                self._proc = subprocess.Popen(
+                self._proc = procjob.spawn(
                     command,
                     stdin=subprocess.PIPE,
                     stdout=self._log,
@@ -470,7 +468,7 @@ class WorkerProcess:
                 raise WorkerLost(f"spawn failed: {exc}") from exc
         else:
             try:
-                self._proc = subprocess.Popen(
+                self._proc = procjob.spawn(
                     command,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
@@ -579,6 +577,17 @@ class WorkerProcess:
             raise WorkerLost(reason, method=method, line=json.dumps(message))
         raise RpcFailure(error)
 
+    def crash(self) -> None:
+        """End the worker process alone and at once, through its own ``Popen``, and leave everything else as it is (the
+        channel, the log, the bookkeeping): what a crash of the CAD looks like from outside. For tests of recovery; the
+        container is not closed, so whatever the worker started stays until the next ``stop``."""
+        proc = self._proc
+        if proc is not None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
     def stop(self, grace_s: float = 5.0) -> None:
         """Close stdin (the worker exits on EOF), wait ``grace_s``, kill if still alive; idempotent. Final: a worker
         stopped before (or while) it starts is never spawned (or is killed by ``start`` itself)."""
@@ -598,10 +607,11 @@ class WorkerProcess:
                 if self._kill_hook is not None:
                     try:
                         self._kill_hook(proc)
-                    except Exception:  # noqa: BLE001 - a broken hook must not block the default kill
+                    except Exception:  # noqa: BLE001 - a broken hook must not block the default end
                         pass
-                proc.kill()
+                procjob.end(proc)
                 _reap(proc)
+        procjob.end(proc)  # a worker that left things running in its job has them ended with it
         if self._lost is None and proc is not None:
             self._lost = "stopped"
         self._close_files()
@@ -719,13 +729,13 @@ class WorkerProcess:
 
     def _kill(self) -> None:
         proc = self._proc
-        if proc is not None and proc.poll() is None:
-            if self._kill_hook is not None:
+        if proc is not None:
+            if proc.poll() is None and self._kill_hook is not None:
                 try:
                     self._kill_hook(proc)
-                except Exception:  # noqa: BLE001 - a broken hook must not block the default kill
+                except Exception:  # noqa: BLE001 - a broken hook must not block the default end
                     pass
-            proc.kill()
+            procjob.end(proc)
             _reap(proc)
         self._close_files()
 

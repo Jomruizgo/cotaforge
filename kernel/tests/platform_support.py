@@ -69,14 +69,14 @@ def hide_installed_freecad(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
 
 
 def pid_running(pid: int) -> bool:
-    """Whether ``pid`` is still a live process. ``os.kill(pid, 0)`` is not a probe on Windows (it calls
-    ``TerminateProcess``), so Windows goes through ``OpenProcess`` + ``WaitForSingleObject``."""
+    """Whether ``pid`` is still a live process. Nothing is signalled: Windows goes through ``OpenProcess`` +
+    ``WaitForSingleObject``, POSIX asks for the process group of ``pid`` (an error says there is no such process)."""
     if pid <= 0:
         return False
     if IS_WINDOWS:
         return _pid_running_windows(pid)
     try:
-        os.kill(pid, 0)
+        os.getpgid(pid)
     except ProcessLookupError:
         return False
     except PermissionError:
