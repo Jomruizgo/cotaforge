@@ -142,10 +142,24 @@ def vertex_descriptor(doc: reg.DocumentRec, rec: reg.VertexRec, comp: reg.Compon
     return {"handle": {"id": handle}, "point": g.clean(point), "edges": [{"id": e} for e in edges]}
 
 
+def catalog_line(doc: reg.DocumentRec, body: reg.BodyRec) -> str:
+    """``DME 5104GL (guide pin GL, dia 0.875 in x 4.25 in)``: the catalogue properties of the body's own object."""
+    obj = doc.fc_doc.getObject(body.fc_body if body.kind == "partdesign" else body.result_obj)
+    if obj is None or "CotaforgeCatalogRef" not in obj.PropertiesList:
+        return ""
+
+    def prop(name: str) -> str:
+        return str(getattr(obj, name, "") or "") if name in obj.PropertiesList else ""
+
+    size = prop("CotaforgeCatalogSize")
+    return f"{prop('CotaforgeCatalogFamily')} {prop('CotaforgeCatalogRef')}" + (f" ({size})" if size else "")
+
+
 def body_descriptor(doc: reg.DocumentRec, body: reg.BodyRec) -> dict[str, Any]:
     shape = reg.world_shape(doc, body)
     empty = shape.isNull()
     return {
+        "catalog": catalog_line(doc, body),
         "handle": {"id": body.id},
         "volume_mm3": 0.0 if empty else float(sum(reg.body_volumes(doc, body))),
         "bbox": dict(g.ZERO_BBOX) if empty else reg.body_bbox(doc, body),

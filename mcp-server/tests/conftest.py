@@ -80,6 +80,7 @@ class DrawingFake(FakeAdapter):
         self.facts: dict[str, int] = {}  # what the review counts for the table of requirements (empty: none)
         self.on_add: Any = None  # called with the items an add stored: a test makes the sheet carry what they print
         self.pdf: bytes | None = None  # the bytes the next PDF export writes (default: a sound one-page PDF)
+        self.crops: list[tuple[str, tuple[int, ...]]] = []  # the crops a whole-sheet capture with crops=True returns: (label, findings)
         self.output: dict[str, Any] = {}  # fields of the capture / export result (views, native, unrendered...)
         self.rebuilt: dict[str, tuple[str, ...]] | None = None  # kept / unresolved / discarded of the next create
         self.layout_report: dict[str, Any] = {}  # what the next layout call reports (layout_placed...)
@@ -349,9 +350,28 @@ class DrawingFake(FakeAdapter):
     def capture_drawing(self, request: Any) -> Any:
         from cotaforge.contract import CaptureDrawingResult
 
+        from cotaforge.contract import SheetCrop
+
         self.captured.append(request)
         Path(request.path).write_bytes(PNG)
-        return CaptureDrawingResult(size_px=(1, 1), region=request.region, **self.output)
+        name = request.sheet or next(iter(self.drawings), "")
+        zoomed: list[Any] = []
+        edits = self.drawings.get(name, {}).get("edits", 0)
+        if request.crops and request.region is None and request.crops_given_at != edits:
+            for n, (label, held) in enumerate(self.crops, start=1):
+                target = Path(request.path).with_name(f"{Path(request.path).stem}-crop{n}.png")
+                target.write_bytes(PNG)
+                zoomed.append(
+                    SheetCrop(label=label, view="top", region=(0, 0, 50, 40), path=str(target), size_px=(1, 1), px_per_mm=10.0, findings=held)
+                )
+        return CaptureDrawingResult(
+            size_px=(1, 1),
+            region=request.region,
+            sheet=name,
+            edits=edits,
+            zoomed=tuple(zoomed),
+            **self.output,
+        )
 
     def export_drawing(self, request: Any) -> Any:
         from cotaforge.contract import ExportDrawingResult
@@ -516,11 +536,23 @@ def make(settings: Settings) -> MakeSession:
 class Caller:
     """Direct tool calls with the error flag kept on the reply."""
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, looks: bool = True) -> None:
         self.session = session
         self.last: Reply | None = None
+        self.looks = looks
+        """Look at the sheet before an export of it, like the agent does (the export waits for a capture taken after the last
+        change): the tests of the export are about something else; the ones about the look itself pass looks=False."""
 
     def __call__(self, tool: str, **arguments: Any) -> Reply:
+        if (
+            self.looks
+            and tool == "export"
+            and arguments.get("action") in ("pdf", "dxf")
+            and arguments.get("face") is None
+            and arguments.get("flat") is None
+            and "capture_drawing" in self.session.capabilities.tools
+        ):
+            call_tool(self.session, "drawing", {"action": "capture", "sheet": arguments.get("sheet")})
         self.last = call_tool(self.session, tool, arguments)
         return self.last
 
