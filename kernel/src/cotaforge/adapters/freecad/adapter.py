@@ -132,12 +132,15 @@ from cotaforge.contract import (
     MeasureBodiesResult,
     MirrorBodyRequest,
     MirrorRequest,
+    MouldSplitRequest,
     MoveBodyRequest,
     NewDocumentRequest,
     OpenDocumentRequest,
     OpenDocumentResult,
     OperationResult,
     OperationSpec,
+    PartingAnalysisRequest,
+    PartingAnalysisResult,
     PersistentRef,
     PlaceComponentRequest,
     ProgressListener,
@@ -237,6 +240,12 @@ NATIVE_RPC_GRACE_S = 30.0
 DRAWING_METHODS = frozenset(
     {"create_drawing", "annotate_drawing", "describe_drawing", "capture_drawing", "export_drawing"}
 )
+
+
+MOULD_METHODS = frozenset({"draft_analysis", "parting_analysis", "mould_split"})
+# The mould tools read every face of the part and cast rays at its triangles (and a split cuts and checks solids): a part
+# of hundreds of faces takes minutes. Like an import they wait for as long as the CAD is alive and using CPU, never for a
+# fixed time that would kill the worker and the document with it.
 
 
 def _default_log_dir() -> Path:
@@ -356,7 +365,7 @@ class FreeCADAdapter(Adapter):
                     recoverable=False,
                 )
             )
-        if liveness is None and timeout_s is None and (method in COMPONENT_METHODS or method in DRAWING_METHODS):
+        if liveness is None and timeout_s is None and (method in COMPONENT_METHODS or method in DRAWING_METHODS or method in MOULD_METHODS):
             liveness = Liveness(
                 stall_s=self._import_stall_s,
                 max_s=self._import_max_s,
@@ -762,6 +771,9 @@ class FreeCADAdapter(Adapter):
     def shrink_body(self, request: ShrinkBodyRequest) -> OperationResult:
         return self._call("shrink_body", request, OperationResult)
 
+    def mould_split(self, request: MouldSplitRequest) -> OperationResult:
+        return self._call("mould_split", request, OperationResult)
+
     def split(self, request: SplitRequest) -> OperationResult:
         return self._call("split", request, OperationResult)
 
@@ -866,6 +878,10 @@ class FreeCADAdapter(Adapter):
     def draft_analysis(self, request: DraftAnalysisRequest) -> DraftAnalysisResult:
         """READ-ONLY draft of every face against a pull direction, with the shadow test (``worker/mould.py``)."""
         return self._call("draft_analysis", request, DraftAnalysisResult)
+
+    def parting_analysis(self, request: PartingAnalysisRequest) -> PartingAnalysisResult:
+        """READ-ONLY parting line, walls to decide and slide proposals (``worker/mould_split.py``)."""
+        return self._call("parting_analysis", request, PartingAnalysisResult)
 
     def list_holes(self, request: ListHolesRequest) -> ListHolesResult:
         """READ-ONLY concave cylindrical faces grouped into holes (``worker/holes.py``)."""

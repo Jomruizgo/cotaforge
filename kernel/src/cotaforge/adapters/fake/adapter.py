@@ -182,6 +182,8 @@ from cotaforge.contract import (
     OpenDocumentRequest,
     OpenDocumentResult,
     OperationResult,
+    PartingAnalysisRequest,
+    PartingAnalysisResult,
     PersistentRef,
     PlaceComponentRequest,
     PlaneName,
@@ -1662,6 +1664,9 @@ class FakeAdapter(Adapter):
     def import_geometry(self, request: ImportGeometryRequest) -> ImportGeometryResult:
         """A JSON stand-in for a STEP/IGES file read into a new document (``adapters.fake.foreign``)."""
         return foreign.import_geometry(self, request)
+
+    def parting_analysis(self, request: PartingAnalysisRequest) -> PartingAnalysisResult:
+        return mould.parting_analysis(self, request)
 
     def draft_analysis(self, request: DraftAnalysisRequest) -> DraftAnalysisResult:
         return mould.draft_analysis(self, request)

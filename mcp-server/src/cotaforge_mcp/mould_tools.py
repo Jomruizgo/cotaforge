@@ -1,6 +1,17 @@
-"""``inspect(action=draft)``: the draft of every face of a moulded part against a pull direction, measured by the CAD."""
+"""``inspect(action=draft)`` and ``inspect(action=parting)``: the draft of every face of a moulded part and its parting
+line against a pull direction, measured by the CAD."""
 
-from cotaforge.contract import DEFAULT_MIN_DRAFT_DEG, DraftAnalysisRequest, FaceDraft
+from typing import Literal
+
+from cotaforge.contract import (
+    BLOCK_MARGIN_RULE,
+    DEFAULT_MIN_DRAFT_DEG,
+    DraftAnalysisRequest,
+    FaceDraft,
+    PartingAnalysisRequest,
+    PartingAnalysisResult,
+    PartingLoop,
+)
 
 from cotaforge_mcp.overflow import Overflow
 from cotaforge_mcp.reply import ToolError, area_text, num
@@ -73,4 +84,92 @@ def draft(session: Session, args: InspectArgs) -> list[str]:
         if warning:
             lines.append(warning)
     lines.extend(shown)
+    return lines
+
+
+def _loop_text(loop: PartingLoop) -> str:
+    where = "planar" if loop.planar else "not planar"
+    if loop.levels_mm:
+        shown = ", ".join(num(round(h, 3)) for h in loop.levels_mm[:6])
+        where += f", at {shown} mm along the pull" if len(loop.levels_mm) == 1 else f", steps across heights {shown} mm"
+    state = "" if loop.closed else " (NOT closed)"
+    return (
+        f"loop {loop.number} ({loop.role}): {len(loop.edges)} edges, {num(round(loop.length_mm, 2))} mm, {where}{state}"
+    )
+
+
+def parting(session: Session, args: InspectArgs) -> list[str]:
+    """The parting line of the part against the pull, the walls that need the engineer's decision, the faces the
+    silhouette runs across and the slide each undercut region would need: what ``mould_split`` takes as its inputs."""
+    session.need("parting_analysis", "inspect(action=parting)")
+    session.require_executor()
+    if args.pull is None:
+        raise ToolError(
+            "parting needs the pull direction: the way the core (the moving half) opens along; the faces that look "
+            "along it are the core's, the ones that look against it the cavity's",
+            code="invalid_input",
+            field_name="pull",
+            usage='inspect(action="parting", pull=[x, y, z], id?="core"|"cavity", min_draft_deg?, body?)',
+            example='inspect(action="parting", pull=[0, 0, 1], id="cavity")',
+        )
+    if sum(c * c for c in args.pull) < 1e-12:
+        raise ToolError("pull must be a non-zero vector", code="invalid_input", field_name="pull")
+    minimum = args.min_draft_deg if args.min_draft_deg is not None else DEFAULT_MIN_DRAFT_DEG
+    body = session.body_handle(args.body, "body") if args.body else None
+    if args.id not in (None, "core", "cavity"):
+        raise ToolError(
+            f"id is the half that forms the walls with no draft: core or cavity, not {args.id!r}",
+            code="invalid_input",
+            field_name="id",
+        )
+    decision: Literal["core", "cavity"] | None = args.id  # type: ignore[assignment]
+    result: PartingAnalysisResult = session.adapter.parting_analysis(
+        PartingAnalysisRequest(
+            operation_id="parting",
+            body=body,
+            pull=tuple(args.pull),
+            min_draft_deg=minimum,
+            zero_draft_to=decision,
+        )
+    )
+    pull = ", ".join(num(c) for c in args.pull)
+    lines = [
+        f"parting against the pull ({pull}): {len(result.loops)} loop(s), {len(result.ambiguous)} group(s) of walls to "
+        f"decide, {len(result.slides)} undercut region(s)" + ("" if result.complete else ", INCOMPLETE")
+    ]
+    lines.append(f"method: {result.method}")
+    lines.extend(_loop_text(loop) for loop in result.loops)
+    if result.provisional:
+        lines.append(
+            f"loops above are computed under the proposal zero_draft_to={result.zero_draft_proposal} (the shorter "
+            "parting line; a tie goes to the cavity): the engineer decides"
+        )
+    for group in result.ambiguous:
+        faces = ", ".join(f.id for f in group.faces[:12]) + (" ..." if len(group.faces) > 12 else "")
+        lines.append(
+            f"DECIDE: {len(group.faces)} wall(s) with no draft touch both halves "
+            f"({', '.join(group.touches) or 'none'}): "
+            f"{faces}. Which half forms them? zero_draft_to=core or cavity (inspect id=, mould_split zero_draft_to=)"
+        )
+    if result.straddle:
+        faces = ", ".join(f.id for f in result.straddle[:12])
+        lines.append(
+            f"LIMIT: the silhouette runs across {faces}: FreeCAD cannot split a face along its silhouette, so "
+            "no split is possible on this pull"
+        )
+    for slide in result.slides:
+        faces = ", ".join(f.id for f in slide.faces[:8]) + (" ..." if len(slide.faces) > 8 else "")
+        if slide.direction is None:
+            lines.append(
+                f"undercut region {slide.region}: {len(slide.faces)} face(s), {area_text(slide.area_mm2)} ({faces}): "
+                "no direction frees it, so no slide can be proposed; change the part or the pull"
+            )
+        else:
+            d = ", ".join(num(round(c, 4)) for c in slide.direction)
+            lines.append(
+                f"undercut region {slide.region}: {len(slide.faces)} face(s), {area_text(slide.area_mm2)} ({faces}): "
+                f"needs a SLIDE along ({d}) ({slide.why}); accept it with mould_split slides=[{slide.region}] or all"
+            )
+    lines.extend(f"warning: {w}" for w in result.warnings)
+    lines.append(f"block: {BLOCK_MARGIN_RULE}")
     return lines
