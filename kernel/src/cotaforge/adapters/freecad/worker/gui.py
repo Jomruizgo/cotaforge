@@ -883,7 +883,7 @@ def paint_faces(fc_doc: Any, targets: list[tuple[Any, int, highlight.RGBA]]) -> 
     """Colour faces on screen until the next ``clear_highlight`` of this document: ``targets`` are ``(the object the
     window shows, face index, colour)``. FreeCAD 1.1 draws a per-face colour from the ``ShapeAppearance`` of the view of
     the object the window SHOWS (the Tip of a PartDesign body, never the body: confirmed on 1.1.3, where a
-    ``DiffuseColor`` set on the body's view paints nothing). A colour is FreeCAD's own ``(r, g, b, transparency)``.
+    ``DiffuseColor`` set on the body's view paints nothing). A colour is ``(r, g, b, opacity)`` (``appearance``).
     Returns whether something was painted; never marks the document modified."""
     clear_highlight(fc_doc)
     if not ACTIVE or not targets:
@@ -901,9 +901,7 @@ def paint_faces(fc_doc: Any, targets: list[tuple[Any, int, highlight.RGBA]]) -> 
         shown: list[Any] = list(original) if len(original) == faces else [original[0]] * faces
         for index, colour in entries:
             if 0 <= index < faces:
-                material = App.Material()
-                material.DiffuseColor = (colour[0], colour[1], colour[2], 1.0 - colour[3])
-                shown[index] = material
+                shown[index] = appearance.recolored(shown[index], colour)
         _appearance_state[(fc_doc.Name, obj.Name)] = original
         view.ShapeAppearance = shown
         painted = True
