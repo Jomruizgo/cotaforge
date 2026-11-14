@@ -152,6 +152,14 @@ foreach ($icon in "cotaforge.ico", "cotaforge-new.ico", "cotaforge-open.ico") {
   Copy-Item (Join-Path $PSScriptRoot $icon) (Join-Path $Stage $icon)
 }
 
+# The ISO 1101 frames FreeCAD's symbol library lacks: next to python\, at {app}\symbols\cotaforge-gdt. TechDraw's "Insert SVG
+# Symbol" browses to it; the harness reads the same files.
+Step "ISO 1101 frame symbols"
+$Symbols = Join-Path $Stage "symbols"
+New-Item -ItemType Directory -Force $Symbols | Out-Null
+Copy-Item (Join-Path $Repo "packaging\symbols\cotaforge-gdt") (Join-Path $Symbols "cotaforge-gdt") -Recurse
+if (@(Get-ChildItem (Join-Path $Symbols "cotaforge-gdt") -Recurse -Filter "*.svg").Count -lt 1) { throw "no symbols staged" }
+
 # --- byte-compile --------------------------------------------------------------------------------------------------
 Step "Byte-compiling the standard library and site-packages"
 # checked-hash: the byte-code stays valid whatever the timestamps are after the installer copies the files. Done
