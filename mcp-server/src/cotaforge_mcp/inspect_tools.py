@@ -258,18 +258,21 @@ def _density_of(session: Session) -> DensityLookup:
     return lookup_density(session.design_attributes().material, rules.declared_set(session.settings))
 
 
-def _bom_key(body: BodyInfo) -> tuple[int, float, tuple[float, ...]]:
-    """What makes two bodies 'the same part': face count, volume and sorted extent (rounded to ~1e-4 relative)."""
+def _bom_key(body: BodyInfo) -> tuple[int, float, tuple[float, ...], str]:
+    """What makes two bodies 'the same part': face count, volume and sorted extent (rounded to ~1e-4 relative), and the
+    catalogue reference they carry (two catalogue parts of one reference and one size are the same line)."""
     size = sorted(body.bbox.size())
     volume = body.volume_mm3 or 0.0  # only solids are grouped (bom skips surfaces)
-    return body.face_count, float(f"{volume:.4g}"), tuple(round(s, 2) for s in size)
+    if body.catalog:  # the manufacturer's reference and its volume say it: a loose box must not split a line
+        return 0, float(f"{volume:.4g}"), (), body.catalog
+    return body.face_count, float(f"{volume:.4g}"), tuple(round(s, 2) for s in size), ""
 
 
 def bom(session: Session) -> list[str]:
     """Bill of materials: one row per distinct body (identical ones grouped), measured, with the declared
     material and route, which the document carries as a whole."""
     session.require_executor()
-    groups: dict[tuple[int, float, tuple[float, ...]], list[tuple[str, BodyInfo]]] = {}
+    groups: dict[tuple[int, float, tuple[float, ...], str], list[tuple[str, BodyInfo]]] = {}
     surfaces: list[str] = []
     seen: set[str] = set()
     for label, feature in _features(session):
@@ -298,7 +301,7 @@ def bom(session: Session) -> list[str]:
         body = items[0][1]
         ids = ",".join(origin for origin, _ in items[:4]) + (",..." if len(items) > 4 else "")
         volume = body.volume_mm3 or 0.0
-        row = f"{ids} x{len(items)}: volume {num(volume)} mm3 each"
+        row = f"{ids} x{len(items)}: " + (f"{body.catalog}, " if body.catalog else "") + f"volume {num(volume)} mm3 each"
         each: float | None = None
         if body.mass_kg is not None:
             each = body.mass_kg

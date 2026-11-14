@@ -71,6 +71,9 @@ class BodyInfo(BaseModel, frozen=True):
     server computes it from the volume and the density of the declared material)."""
     mass_source: str = ""
     """Who measured ``mass_kg`` (``"ExternalCAD"``): required with it, shown to the agent."""
+    catalog: str = ""
+    """The manufacturer's reference this body stands for (``"DME 5104GL (guide pin GL, ...)"``), read from the properties of
+    the body itself; empty for a body the engineer or the agent drew."""
 
     @model_validator(mode="after")
     def _mass_has_a_source(self) -> "BodyInfo":
