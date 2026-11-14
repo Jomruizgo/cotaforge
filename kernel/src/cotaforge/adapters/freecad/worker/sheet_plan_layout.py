@@ -71,6 +71,11 @@ Segment = tuple[float, float, float, float]
 
 DIM_FIRST_MM = 10.0  # first dimension line from the outline (ISO 129-1)
 DIM_STEP_MM = 7.0  # between parallel dimension lines
+MIN_PARALLEL_GAP_MM = 6.5
+"""Two parallel dimension lines that run along each other are never closer than this (a text height, 3.5 mm, plus the room
+for the arrows and the text of the one outside): the planner stacks them ``DIM_STEP_MM`` apart, the review holds a sheet whose
+lines are closer (``dimension_gap``)."""
+STACK_TOL_MM = 1.0  # two dimensions run along each other when they share more than this; their lengths differ when they differ by more
 EXT_GAP_MM = 1.0  # extension line starts this far from the feature
 EXT_OVER_MM = 2.0  # ... and goes this far past the dimension line
 TEXT_GAP_MM = 0.8
@@ -377,7 +382,7 @@ _CROSS_COST = {
     frozenset(["leader", "ext"]): 3.0,
     frozenset(["leader", "centre"]): CENTRE_CROSS,
     frozenset(["stem", "ext"]): 3.0,
-    frozenset(["ext", "dim"]): 1.0,
+    frozenset(["ext", "dim"]): 6.0,  # an extension line across a dimension line (ISO 129): another side, when there is one, is better
     # the arrow line of a weld symbol: it crosses no leader (ISO 2553: the arrow line is read as the one that points at the joint)
     frozenset(["arrow"]): ARROW_CROSS,
     frozenset(["arrow", "leader"]): ARROW_CROSS,
@@ -707,6 +712,8 @@ class _Run:
         self.fits = True
         self.needed = (0.0, 0.0)
         self.stack_ext: dict[tuple[str, str], float] = {}
+        self.dim_lines: dict[tuple[str, str], list[tuple[float, float, float, str]]] = {}
+        """The dimension lines already on each side of each view: ``(from, to, distance from the edge of the view, owner)``."""
 
     # views
     def place_views(self) -> None:
@@ -797,7 +804,8 @@ class _Run:
         for it in self.items:
             if it.fixed_box or it.fixed_segments:
                 self.ctx.commit(_fixed_ink(it))
-        todo = [it for it in self.items if not (it.fixed_box or it.fixed_segments)]
+                self._register_fixed_dims(it)
+        todo =[it for it in self.items if not (it.fixed_box or it.fixed_segments)]
         views = {v.id: v for v in self.views}
         for it in sorted(
             (i for i in todo if i.kind == "dim"), key=lambda i: (_span(i) if len(i.anchors) == 2 else 0.0, i.id)
@@ -839,6 +847,51 @@ class _Run:
             Placed(it.id, it.kind, it.view, side, level, box, tuple(s for s, _ in ink.segs), round(cost, 3), data)
         )
 
+    def _register_fixed_dims(self, it: Item) -> None:
+        """The dimension lines a pinned item draws are part of the stacks of the views they stand beside: what is placed after
+        them keeps their order (the longer outside the shorter) and their gap."""
+        if len(it.fixed_kinds) != len(it.fixed_segments):
+            return
+        for s, kind in zip(it.fixed_segments, it.fixed_kinds, strict=True):
+            if kind != "dim":
+                continue
+            horizontal = abs(s[1] - s[3]) <= 0.05 < abs(s[0] - s[2])
+            vertical = abs(s[0] - s[2]) <= 0.05 < abs(s[1] - s[3])
+            if not (horizontal or vertical):
+                continue
+            lo, hi = (min(s[0], s[2]), max(s[0], s[2])) if horizontal else (min(s[1], s[3]), max(s[1], s[3]))
+            best: tuple[float, tuple[str, str]] | None = None
+            for v in self.views:
+                vb = self.vbox(v.id)
+                if vb is None:
+                    continue
+                if horizontal and min(hi, vb[2]) - max(lo, vb[0]) > STACK_TOL_MM:
+                    found = ((vb[1] - s[1], "top") if s[1] < vb[1] else (s[1] - vb[3], "bottom")) if not vb[1] <= s[1] <= vb[3] else None
+                elif vertical and min(hi, vb[3]) - max(lo, vb[1]) > STACK_TOL_MM:
+                    found = ((vb[0] - s[0], "left") if s[0] < vb[0] else (s[0] - vb[2], "right")) if not vb[0] <= s[0] <= vb[2] else None
+                else:
+                    continue
+                if found is not None and found[0] <= 120.0 and (best is None or found[0] < best[0]):
+                    best = (found[0], (v.id, found[1]))
+            if best is not None:
+                self.dim_lines.setdefault(best[1], []).append((lo, hi, best[0], it.id))
+
+    def _order_problem(self, key: tuple[str, str], lo: float, hi: float, dist: float) -> str | None:
+        """Why a dimension line from ``lo`` to ``hi`` at ``dist`` from the view cannot stand there: it runs along a line that is
+        already there and would be on the wrong side of it (the shorter stands nearest the part, the longer outside, ISO 129-1)
+        or closer to it than ``MIN_PARALLEL_GAP_MM``."""
+        for lo2, hi2, d2, owner in self.dim_lines.get(key, ()):
+            if min(hi, hi2) - max(lo, lo2) <= STACK_TOL_MM:
+                continue  # they share no run: they may stand on one line or apart
+            span, span2 = hi - lo, hi2 - lo2
+            if span > span2 + STACK_TOL_MM and dist < d2 + MIN_PARALLEL_GAP_MM:
+                return f"stack order (longer than {owner}, it stands outside it)"
+            if span < span2 - STACK_TOL_MM and dist + MIN_PARALLEL_GAP_MM > d2:
+                return f"stack order (shorter than {owner}, it stands inside it)"
+            if abs(span - span2) <= STACK_TOL_MM and abs(dist - d2) < MIN_PARALLEL_GAP_MM:
+                return f"gap to {owner} below {MIN_PARALLEL_GAP_MM:g} mm"
+        return None
+
     def _dim(self, it: Item, views: dict[str, View]) -> None:
         vb, v = self.vbox(it.view), views.get(it.view or "")
         if vb is None or v is None or len(it.anchors) != 2:
@@ -852,10 +905,15 @@ class _Run:
         why: dict[str, int] = {}
         best: tuple[float, _Ink, Rect, str, int] | None = None
         order = sorted(_dim_sides(it), key=lambda s: (_ext_length(v, it, s), _dim_sides(it).index(s)))
+        k = 0 if it.axis == "h" else 1
+        lo, hi = sorted(_abs(vb, a)[k] for a in it.anchors)
         for pref, side in enumerate(order):
             for level in range(MAX_LEVELS):
                 ink, box, _ = _dim_ink(it, vb, side, level)
-                bad, cost = _judge(ink, self.ctx)
+                bad = self._order_problem((it.view or "", side), lo, hi, _offset(level, it.h))
+                cost = 0.0
+                if bad is None:
+                    bad, cost = _judge(ink, self.ctx)
                 if bad:
                     why[bad] = why.get(bad, 0) + 1
                     continue
@@ -869,6 +927,7 @@ class _Run:
         total, ink, box, side, level = best
         key = (it.view or "", side)
         self.stack_ext[key] = max(self.stack_ext.get(key, 0.0), _offset(level, it.h) + 2.0)
+        self.dim_lines.setdefault(key, []).append((lo, hi, _offset(level, it.h), it.id))
         self._commit(it, ink, side, level, box, total)
 
     def _label(self, it: Item) -> None:

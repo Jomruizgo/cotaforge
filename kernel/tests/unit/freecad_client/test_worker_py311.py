@@ -29,6 +29,7 @@ FREECAD_MODULES = {
     "Part",
     "Import",
     "Sketcher",
+    "Draft",  # FreeCAD's own module (the linked clone of shrink_body)
     "PartDesign",
     "AssemblyApp",
     "JointObject",

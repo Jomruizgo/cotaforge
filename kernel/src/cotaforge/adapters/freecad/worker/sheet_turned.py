@@ -11,7 +11,12 @@ The end of the part with a thread goes to the right (the working end, away from 
 thread keeps the positive end of its axis on the right.
 """
 
+import math
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
+from typing import Any
+
+import sheet_keyway
 
 Vec3 = tuple[float, float, float]
 
@@ -70,9 +75,10 @@ def layout_sizes(length: float, diameter: float) -> tuple[float, float, float]:
 
 def views_for(keyway: bool) -> list[str]:
     """The views a solid turned part is drawn in when nobody says: the main view alone, which carries the diameters, the
-    lengths, the thread and the chamfers; the end view only when it shows something the main view does not (a keyway seen
-    end-on). A part with a bore is the section's: see ``drawing._views_for_part``."""
-    return ["front", "right"] if keyway else ["front"]
+    lengths, the thread and the chamfers. A keyway is NOT a reason for an end view: it is shown in a removed section across
+    it, on the extension of its cutting line, that carries its width and depth (``keyway_dims``). A part with a bore is the
+    section's: see ``drawing._views_for_part``."""
+    return ["front"]
 
 
 # --- the part whose every feature is coaxial: ONE axial section says it all ---------------------------------------------
@@ -144,3 +150,86 @@ def hidden_views(items: list[dict[str, object]]) -> set[str]:
         for i in items
         if i.get("type") == "section" and i.get("in_place")
     }
+
+
+# --- lengths counted from ONE datum face: parallel (baseline) dimensions ------------------------------------------------------
+
+STEP_TOL_MM = 0.05  # two faces this near along the axis are one position
+SQUARE = 1.0 - 1e-3  # |cos| of a plane normal with the axis to call the plane square to it
+
+
+class BaselineError(ValueError):
+    """The face a ``baseline_dims`` counts from cannot be one (said in words for the agent)."""
+
+
+def _along(v: Vec3, axis: Vec3) -> float:
+    return v[0] * axis[0] + v[1] * axis[1] + v[2] * axis[2]
+
+
+def baseline_dims(
+    datum: str,
+    planes: Sequence[Any],
+    spans: Sequence[tuple[Vec3, float, float]],
+    skip: Collection[str],
+    prefix: str,
+    view: str | None = None,
+    side: str | None = None,
+) -> list[dict[str, Any]]:
+    """The ``dim`` items that give the length of every step of a turned part from ONE datum face (ISO 129-1: parallel
+    dimensions from a datum, never a chain of links; the planner stacks them shortest nearest the part).
+
+    ``datum`` is the id of a planar face square to the axis (a shoulder or an end); ``planes`` the planar faces of the part
+    (``face_id``, ``normal``, ``centre``); ``spans`` the convex cylinders (their axis, where they start and where they end
+    along it, as ``sheet_keyway.Cylinder`` has them): the positions where a cylinder ends are the steps. The planes at those
+    positions and the two ends of the part (the lowest and the highest plane square to the axis: a chamfered end has no
+    cylinder that ends there) are dimensioned; ``skip`` are faces that are not steps (the ends of a keyway). A datum that is
+    not a plane square to an axis along x, y or z raises ``BaselineError``: nothing is guessed."""
+    flat = next((p for p in planes if p.face_id == datum), None)
+    if flat is None:
+        msg = f"{datum} is not a planar face of the part: baseline_dims counts from a shoulder or an end of the part (a plane square to its axis)"
+        raise BaselineError(msg)
+    size = math.sqrt(_along(flat.normal, flat.normal)) or 1.0
+    axis: Vec3 = (flat.normal[0] / size, flat.normal[1] / size, flat.normal[2] / size)
+    name = sheet_keyway.axis_name(axis)
+    if name is None:
+        msg = f"{datum} is not square to the x, y or z axis: baseline_dims counts along the axis of a turned part"
+        raise BaselineError(msg)
+    origin = _along(flat.centre, axis)
+    square = [
+        p for p in planes if p.face_id not in skip and abs(_along(p.normal, axis)) >= SQUARE * (math.sqrt(_along(p.normal, p.normal)) or 1.0)
+    ]
+    ends: set[float] = set()
+    for direction, lo, hi in spans:
+        facing = _along(direction, axis)
+        if abs(abs(facing) - 1.0) < 1e-3:
+            ends.update((lo, hi) if facing > 0 else (-lo, -hi))
+    if square:
+        ends.update((min(_along(p.centre, axis) for p in square), max(_along(p.centre, axis) for p in square)))
+    targets: dict[float, Any] = {}
+    for position in sorted(ends):
+        if abs(position - origin) <= STEP_TOL_MM or any(abs(position - q) <= STEP_TOL_MM for q in targets):
+            continue
+        here = sorted(
+            (p for p in square if abs(_along(p.centre, axis) - position) <= STEP_TOL_MM and p.face_id != datum), key=lambda p: p.face_id
+        )
+        if here:
+            targets[position] = here[0]
+    if not targets:
+        msg = f"{datum}: no other shoulder or end of the part lies square to the same axis, so there is nothing to dimension from it"
+        raise BaselineError(msg)
+    out: list[dict[str, Any]] = []
+    for number, (_position, face) in enumerate(sorted(targets.items(), key=lambda kv: abs(kv[0] - origin)), start=1):
+        item: dict[str, Any] = {
+            "type": "dim",
+            "kind": "distance",
+            "id": f"{prefix}{number}",
+            "from": {"face": datum},
+            "to": {"face": face.face_id},
+            "along": name,
+        }
+        if view:
+            item["view"] = view
+        if side:
+            item["side"] = side
+        out.append(item)
+    return out
