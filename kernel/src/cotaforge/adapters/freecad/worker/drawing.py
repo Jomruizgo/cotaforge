@@ -1722,7 +1722,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         taken.add(done["id"])
         added.append(done)
     waited = wait_views(fc_doc, page, op)
-    refused = _refused(doc, page, spec, items, added, op)
+    refused, tried = _refused(doc, page, spec, items, added, op)
     keep = [a for a in added if a["id"] not in refused]
     spec["items"] = items + keep
     _sync_auto_items(doc, spec, op)
@@ -1732,7 +1732,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     _sync_template_fields(fc_doc, op)
     waited += wait_views(fc_doc, page, op)
     return _result(
-        doc, page, _scale_of(page) or 1.0, waited, [], op, refused=refused, changed=tuple(a["id"] for a in keep)
+        doc, page, _scale_of(page) or 1.0, waited, [], op, refused=refused, changed=tuple(a["id"] for a in keep), tried=tried
     )
 
 
@@ -1901,20 +1901,23 @@ def _refused(
     existing: list[dict[str, Any]],
     added: list[dict[str, Any]],
     op: str | None,
-) -> dict[str, tuple[str, str]]:
+) -> tuple[dict[str, tuple[str, str]], tuple[dict[str, Any], tuple[model.Sheet, list[sc.ItemResult], sc.Context]]]:
     """Draw the sheet with the new items and drop (by id, with its type and the reason) the ones that fail; the rest are
-    drawn again without them, since a refused item must not leave its dimension slot taken."""
+    drawn again without them, since a refused item must not leave its dimension slot taken. Also the spec of the last
+    drawing and what it drew: when the sheet ends up with exactly that spec, the result does not draw it a third time."""
     refused: dict[str, tuple[str, str]] = {}
     trial = added
-    for _ in range(len(added) + 1):
-        trial_spec = dict(spec, items=existing + trial)
-        _, results = compose_sheet(doc, page, trial_spec, 1, 1, op)
-        failed = {r.id: (r.type, r.detail) for r in results if r.status == "error" and r.id in {a["id"] for a in trial}}
+    trial_spec = dict(spec, items=existing + trial)
+    drawn = compose(doc, page, trial_spec, 1, 1, op)
+    for _ in range(len(added)):
+        failed = {r.id: (r.type, r.detail) for r in drawn[1] if r.status == "error" and r.id in {a["id"] for a in trial}}
         if not failed:
             break
         refused.update(failed)
         trial = [a for a in trial if a["id"] not in failed]
-    return refused
+        trial_spec = dict(spec, items=existing + trial)
+        drawn = compose(doc, page, trial_spec, 1, 1, op)
+    return refused, (trial_spec, drawn)
 
 
 # --- composing --------------------------------------------------------------------------------------------------------
@@ -2684,6 +2687,15 @@ def _all_sheets(doc: reg.DocumentRec, wanted: str | None, op: str | None) -> lis
 # --- results ----------------------------------------------------------------------------------------------------------
 
 
+def _same_spec(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Whether two specs draw the same sheet (a tuple and a list that hold the same numbers are the same; the count of
+    changes and the approval, which the sheet does not draw, are not compared)."""
+    mute = {"edits", "approval"}
+    left = {k: v for k, v in a.items() if k not in mute}
+    right = {k: v for k, v in b.items() if k not in mute}
+    return json.dumps(left, sort_keys=True, default=str) == json.dumps(right, sort_keys=True, default=str)
+
+
 def _item_rows(results: list[sc.ItemResult], refused: dict[str, tuple[str, str]] | None = None) -> list[dict[str, str]]:
     rows = [{"id": r.id, "type": r.type, "status": r.status, "detail": r.detail} for r in results]
     for item_id, (kind, why) in (refused or {}).items():
@@ -2700,11 +2712,15 @@ def _result(
     op: str | None,
     refused: dict[str, tuple[str, str]] | None = None,
     changed: tuple[str, ...] = (),
+    tried: tuple[dict[str, Any], tuple[model.Sheet, list[sc.ItemResult], sc.Context]] | None = None,
 ) -> dict[str, Any]:
     spec = spec_of(page)
     size, language = split_key(spec["template"])
     found = pages(doc.fc_doc)
-    sheet, results, ctx = compose(doc, page, spec, found.index(page) + 1, len(found), op)
+    if tried is not None and len(found) == 1 and _same_spec(tried[0], spec):
+        sheet, results, ctx = tried[1]  # drawn a moment ago from this very spec (one page: the same numbering, the views untouched)
+    else:
+        sheet, results, ctx = compose(doc, page, spec, found.index(page) + 1, len(found), op)
     window, failed = mirror(doc, page, ctx, sheet)
     warnings = [*warnings, *ctx.extras.get("iso_notes", []), *failed]
     width, depth, height = _extents(doc, spec.get("body"), op)
@@ -2925,10 +2941,12 @@ def review_bundle(
     total: int,
     op: str | None,
     with_facts: bool = True,
+    drawn: tuple[model.Sheet, list[sc.ItemResult], sc.Context] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
     """``review_report`` and, with ``with_facts``, the facts the table of requirements of a drawing reads
-    (``sheet_reqfacts``), counted on the same composed sheet."""
-    findings, ctx = review_findings(doc, page, spec, number, total, op)
+    (``sheet_reqfacts``), counted on the same composed sheet (``drawn``: the one the caller has just composed from this
+    very ``spec``, so that it is not composed a second time)."""
+    findings, ctx = review_findings(doc, page, spec, number, total, op, drawn)
     answers = spec.get("answers", {})
     for row in findings:
         row["answer"] = answers.get(row["id"])
@@ -2946,10 +2964,16 @@ def _last_input(ctx: sc.Context) -> sheet_review.ReviewInput:
 
 
 def review_findings(
-    doc: reg.DocumentRec, page: Any, spec: dict[str, Any], number: int, total: int, op: str | None
+    doc: reg.DocumentRec,
+    page: Any,
+    spec: dict[str, Any],
+    number: int,
+    total: int,
+    op: str | None,
+    drawn: tuple[model.Sheet, list[sc.ItemResult], sc.Context] | None = None,
 ) -> tuple[list[dict[str, Any]], sc.Context]:
     """The findings of one sheet as rows (``sheet_review``), with their ids, and the context they were found in."""
-    sheet, results, ctx = compose(doc, page, spec, number, total, op)
+    sheet, results, ctx = drawn if drawn is not None else compose(doc, page, spec, number, total, op)
     items: list[dict[str, Any]] = []
     taken: set[str] = set()
     for position, raw in enumerate(spec.get("items", []), start=1):
@@ -3057,7 +3081,8 @@ def describe(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     op = params.get("operation_id")
     sheets = []
     for page, spec, number, total in _all_sheets(doc, params.get("sheet"), op):
-        composed, results = compose_sheet(doc, page, spec, number, total, op)
+        drawn = compose(doc, page, spec, number, total, op)
+        composed, results, _ = drawn
         by_id = {r.id: r for r in results}
         size, language = split_key(spec["template"])
         row: dict[str, Any] = {
@@ -3091,7 +3116,9 @@ def describe(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         row["printed"] = _printed(composed)
         row["native"] = sheet_output.listed(sheet_output.native_rows(page))
         if params.get("review"):
-            row["findings"], row["questions"], row["facts"], given = review_bundle(doc, page, spec, number, total, op)
+            row["findings"], row["questions"], row["facts"], given = review_bundle(
+                doc, page, spec, number, total, op, drawn=drawn
+            )
             row.update(given)
         sheets.append(row)
     return {"sheets": sheets}
