@@ -24,7 +24,9 @@ from sheet_review import Finding, ReviewInput
 from sheet_units import KIND_ITEM
 
 DIMENSION_TYPES = frozenset({"dim", "overall", "datum_dims"})
-CARRIES_OTHER = frozenset({"hole_dim", "balloons", "gdt", "datum", "finish", "detail", "aux_view", "weld"})
+CARRIES_OTHER = frozenset(
+    {"hole_dim", "balloons", "gdt", "datum", "finish", "detail", "aux_view", "weld", "parting_line", "pull_direction", "mould_zone", "no_draft"}
+)
 SAME_PLANE = 1e-3
 rules_point = tuple[float, float]
 
@@ -40,6 +42,7 @@ def check(data: ReviewInput) -> list[Finding]:
         *_redundant(data),
         *_hatches(data),
         *_underused(data),
+        *_paper_for_notes(data),
         *_no_isometric(data),
         *_crowded(data),
     ]
@@ -70,6 +73,80 @@ def _view_boxes(ctx: Context) -> list[rules.Rect]:
     return [tuple(b) for b in boxes]  # type: ignore[misc]
 
 
+def _notes_room(ctx: Context) -> tuple[float, float] | None:
+    """``(width, height)`` of the numbered notes block (``items_notes``: ``NOTAS:`` and its lines, which stands in a free corner
+    of the drawing area), ``None`` when the sheet has none. A larger scale, a smaller paper or fewer views are offered only when
+    this block still fits with them: the notes are part of what the paper must hold."""
+    lines = int(ctx.extras.get("note_lines") or 0)
+    if lines <= 0:
+        return None
+    from items_notes import BLOCK_MARGIN_MM, LINE_STEP_MM  # noqa: PLC0415 - the notes block's own measures
+
+    width = float(ctx.extras.get("note_width") or 0.0) + 2 * BLOCK_MARGIN_MM
+    return width, (lines + 1) * LINE_STEP_MM + BLOCK_MARGIN_MM
+
+
+def _paper_for_notes(data: ReviewInput) -> list[Finding]:
+    """The numbered notes block lies on the views: the paper cannot hold both at this scale. The mirror of ``sheet_underused``: that
+    one never asks for what the paper cannot take, this one says which paper takes the views AND the notes at the scale the sheet
+    has (the smallest that does), so the loop of "the notes collide, take a bigger paper" ends at a paper that works."""
+    import sheet_layout  # noqa: PLC0415 - the paper sizes and the layout arithmetic
+
+    ctx = data.ctx
+    room = _notes_room(ctx)
+    scale = float(ctx.extras.get("main_scale") or 0.0)
+    if room is None or scale <= 0 or ctx.assembly is not None:
+        return []
+    kinds = {str(i["id"]): str(i.get("type")) for i in data.items}
+    hit = sorted(
+        {
+            (c.a if kinds.get(c.a) == "note" else c.b)
+            for c in ctx.extras.get("collisions", [])
+            if {c.a, c.b} & {"views"} and (kinds.get(c.a) == "note" or kinds.get(c.b) == "note")
+        }
+    )
+    if not hit:
+        return []
+    extent = ctx.extras.get("layout_mm") or ctx.extras.get("extent_mm")
+    names = [n for n in ctx.views if n in ("front", "top", "right")]
+    paper = ""
+    if extent is not None and "front" in names:
+        w, d, h = (float(v) for v in extent)
+        iso = "isometric" in ctx.extras.get("views_extra", {}) or len(ctx.extras.get("view_boxes", [])) > len(names)
+        here = ctx.sheet.width * ctx.sheet.height
+        for name in sheet_layout.AUTO_PAPERS:
+            pw, ph = sheet_layout.PAGES_MM[name]
+            if pw * ph <= here + 1e-6:
+                continue
+            layout = sheet_layout.plan(
+                w, d, h, pw, ph, scale, None, iso, "top" in names, "right" in names,
+                third=ctx.extras.get("angle") == "third", iso_dims=(w, d, h), notes=room,
+            )  # fmt: skip
+            if layout.fits:
+                paper = name
+                break
+    from sheet_model import fmt_scale  # noqa: PLC0415
+
+    sheet_name = f"{ctx.sheet.width:g} x {ctx.sheet.height:g} mm"
+    if paper:
+        fix_es, fix_en = (
+            f"en {paper} caben las vistas a esa escala y las notas (template={paper}); o acorta las notas",
+            f"on {paper} the views at that scale and the notes fit (template={paper}); or shorten the notes",
+        )
+    else:
+        fix_es, fix_en = (
+            "ninguna hoja hasta A0 las admite a esa escala: acorta las notas o baja la escala",
+            "no paper up to A0 holds them at that scale: shorten the notes or lower the scale",
+        )
+    text = ctx.say(
+        f"El bloque de notas ({ctx.num(room[0])} x {ctx.num(room[1])} mm) no cabe con las vistas en la hoja de {sheet_name} a "
+        f"{fmt_scale(scale)}: se solapa con ellas ({', '.join(hit)}); {fix_es}.",
+        f"The notes block ({ctx.num(room[0])} x {ctx.num(room[1])} mm) does not fit with the views on the {sheet_name} sheet at "
+        f"{fmt_scale(scale)}: it overlaps them ({', '.join(hit)}); {fix_en}.",
+    )
+    return [Finding("paper_too_small", "warning", text, tuple(hit[:3]), key="notes")]
+
+
 def _fewer_views(ctx: Context) -> list[tuple[str, float]]:
     """``(views=[...], scale)`` for each set of FEWER standard views the part could be drawn in on this paper, with the
     largest standard scale the layout arithmetic gives it (fewest views dropped first): what to take off to make the views
@@ -93,7 +170,7 @@ def _fewer_views(ctx: Context) -> list[tuple[str, float]]:
             chosen = ["front", *[k for k in ("top", "right") if k in keep], *(["iso"] if iso else [])]
             layout = sheet_layout.plan(
                 w, d, h, ctx.sheet.width, ctx.sheet.height, None, None, iso, "top" in keep, "right" in keep,
-                third=third, iso_dims=(w, d, h), own_iso_scale=False,
+                third=third, iso_dims=(w, d, h), own_iso_scale=False, notes=_notes_room(ctx),
             )  # fmt: skip
             found.append((len(chosen), "views=[" + ", ".join(chosen) + "]", layout.scale))
     found.sort(key=lambda row: -row[0])
@@ -114,7 +191,7 @@ def _iso_own(ctx: Context, scale: float) -> tuple[float, float] | None:
     w, d, h = (float(v) for v in extent)
     layout = sheet_layout.plan(
         w, d, h, ctx.sheet.width, ctx.sheet.height, None, None, True, "top" in names, "right" in names,
-        third=ctx.extras.get("angle") == "third", iso_dims=(w, d, h),
+        third=ctx.extras.get("angle") == "third", iso_dims=(w, d, h), notes=_notes_room(ctx),
     )  # fmt: skip
     if layout.iso_scale > 0 and layout.scale > scale * (1 + 1e-9):
         return layout.scale, layout.iso_scale
@@ -210,6 +287,7 @@ def _underused(data: ReviewInput) -> list[Finding]:
         views=_view_boxes(ctx),
         fewer=_fewer_views(ctx),
         iso_own=_iso_own(ctx, scale),
+        notes=_notes_room(ctx),
     )
     if found is None:
         return []

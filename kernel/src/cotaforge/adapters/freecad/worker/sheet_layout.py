@@ -236,6 +236,25 @@ def _start(left: float, area_w: float, needed_w: float, iso: tuple[float, float]
     return left + (max(0.0, area_w - needed_w) / 2 if iso[0] > 0 or centred else 0.0)
 
 
+NOTES_GAP_MM = 5.0  # between the views and the numbered notes block beside or under them
+
+
+def fits_round_notes(
+    width: float, height: float, area_w: float, area_h: float, notes: tuple[float, float] | None = None
+) -> bool:
+    """Whether a block of ``width`` x ``height`` fits the free area ``area_w`` x ``area_h`` together with the numbered notes
+    block (``notes``: its width and height; ``None``: there is none). The notes stand in a free corner and the block has no
+    say where, so the test is the careful one: the block fits above the notes (the whole width, the height that is left) or
+    beside them (the width that is left, the whole height). A scale or a paper offered on this arithmetic holds the notes too."""
+    fit_w, fit_h = width <= area_w + 1e-9, height <= area_h + 1e-9
+    if not notes:
+        return fit_w and fit_h
+    notes_w, notes_h = notes
+    above = fit_w and height + notes_h + NOTES_GAP_MM <= area_h + 1e-9
+    beside = fit_h and width + notes_w + NOTES_GAP_MM <= area_w + 1e-9
+    return above or beside
+
+
 def _clear_of(blocks: list[Box], reserved: Box) -> bool:
     return not any(
         b[0] < reserved[2] and reserved[0] < b[2] and b[1] < reserved[3] and reserved[1] < b[3] for b in blocks
@@ -262,6 +281,7 @@ def plan(
     spacing_mm: float = SPACING_MM,
     iso_dims: tuple[float, float, float] | None = None,
     own_iso_scale: bool = True,
+    notes: tuple[float, float] | None = None,
     _comfort_checked: bool = False,
 ) -> Layout:
     """The layout of a part ``w`` (x) by ``d`` (y) by ``h`` (z) mm on a page; ``scale`` is the ratio asked for
@@ -274,13 +294,14 @@ def plan(
     The isometric view is a pictorial one and may be drawn at a scale of its own (ISO 5455, written under it): when the
     sheet's scale is chosen, or asked for, and the isometric view does not fit beside the main views at that scale, it takes
     the largest standard scale that does (at most one step smaller; none for an assembly sheet or ``own_iso_scale=False``);
-    ``Layout.iso_scale`` is 0 when it has the sheet's."""
+    ``Layout.iso_scale`` is 0 when it has the sheet's. ``notes`` = (width, height) of the numbered notes block: it stands in a
+    free corner, so the views must leave the room for it (``fits_round_notes``); omitted, the views take the whole area."""
     if scale is None and not _comfort_checked and (right_mm or spacing_mm != SPACING_MM):
         # the room for the callouts is a comfort: a scale smaller than the sheet would have without it is not worth it
         args = (w, d, h, page_w, page_h, None, reserve, isometric, has_top, has_right)
         keep = {
             "third": third, "below_mm": below_mm, "above_mm": above_mm, "left_mm": left_mm, "iso_dims": iso_dims,
-            "own_iso_scale": own_iso_scale,
+            "own_iso_scale": own_iso_scale, "notes": notes,
         }  # fmt: skip
         roomy = plan(*args, **keep, right_mm=right_mm, spacing_mm=spacing_mm, _comfort_checked=True)
         tight = plan(*args, **keep, _comfort_checked=True)
@@ -303,7 +324,7 @@ def plan(
     free_h = (bottom if held is None else min(bottom, held[1])) - top
 
     def fits_at(s: float, sp: Spec = spec) -> bool:
-        if not _fits(_needed_spec(s, sp), area_w, area_h):
+        if not fits_round_notes(*_needed_spec(s, sp), area_w, area_h, notes):
             return False
         return held is None or _clear_of(_blocks_spec(s, sp, left, area_w, top, free_h), held)
 

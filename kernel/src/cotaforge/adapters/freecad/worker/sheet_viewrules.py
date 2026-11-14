@@ -741,6 +741,7 @@ def sheet_underused(
     views: Sequence[Rect] = (),
     fewer: Sequence[tuple[str, float]] = (),
     iso_own: tuple[float, float] | None = None,
+    notes: tuple[float, float] | None = None,
 ) -> Underused | None:
     """Whether the views of a sheet, with their dimensions (``rects``: the rectangles of the views and of the dimension
     strips, y up), waste the free drawing ``area``: ``None`` when the sheet is balanced.
@@ -757,7 +758,11 @@ def sheet_underused(
       main views then take, the scale of the isometric view)``, the caller's layout arithmetic) and the main views would be
       larger: the sheet is not stuck at the scale the isometric view needs.
     * ``corner`` (only when ``corner``: an assembly keeps room for its parts list and the exploded view): the free room on one
-      side of the hull is more than ``CORNER_RATIO`` times the opposite one and bigger than ``CORNER_MIN_MM``."""
+      side of the hull is more than ``CORNER_RATIO`` times the opposite one and bigger than ``CORNER_MIN_MM``.
+
+    ``notes`` is the width and height of the numbered notes block, which stands in a free corner of the same area: a larger
+    scale or a smaller paper is offered only when the views AND the notes still fit (a remedy the review names is one the
+    agent can apply; the caller's own alternatives, ``fewer`` and ``iso_own``, are worked out with the same notes)."""
     hull = _hull(rects)
     if hull is None or scale <= 0:
         return None
@@ -770,10 +775,11 @@ def sheet_underused(
         s
         for s in scales
         if s > scale * (1 + 1e-9)
-        and width * (s / scale) + 2 * FIT_MARGIN_MM <= area_w
-        and height * (s / scale) + 2 * FIT_MARGIN_MM <= area_h
+        and _fits_round_notes(
+            width * (s / scale) + 2 * FIT_MARGIN_MM, height * (s / scale) + 2 * FIT_MARGIN_MM, area_w, area_h, notes
+        )
     ]
-    smaller_paper = _smaller_paper(width, height, page, papers or {})
+    smaller_paper = _smaller_paper(width, height, page, papers or {}, notes)
     block, free = (round(width, 1), round(height, 1)), (round(area_w, 1), round(area_h, 1))
     ink = sum(max(0.0, v[2] - v[0]) * max(0.0, v[3] - v[1]) for v in views) / (area_w * area_h) if views else coverage
     gain = next(((what, s) for what, s in fewer if s > scale * (1 + 1e-9)), None)
@@ -819,16 +825,39 @@ def sheet_underused(
     return None
 
 
+NOTES_GAP_MM = 5.0  # between the views and the notes block (``sheet_layout.NOTES_GAP_MM``)
+
+
+def _fits_round_notes(
+    width: float, height: float, area_w: float, area_h: float, notes: tuple[float, float] | None
+) -> bool:
+    """Whether a block of ``width`` x ``height`` fits the area together with the notes block (``notes``: its width and height;
+    ``None``: none): above the notes (the whole width, the height that is left) or beside them (the width that is left, the
+    whole height) -- the same test as ``sheet_layout.fits_round_notes``."""
+    fit_w, fit_h = width <= area_w + 1e-9, height <= area_h + 1e-9
+    if not notes:
+        return fit_w and fit_h
+    above = fit_w and height + notes[1] + NOTES_GAP_MM <= area_h + 1e-9
+    beside = fit_h and width + notes[0] + NOTES_GAP_MM <= area_w + 1e-9
+    return above or beside
+
+
 def _smaller_paper(
-    width: float, height: float, page: tuple[float, float] | None, papers: Mapping[str, tuple[float, float]]
+    width: float,
+    height: float,
+    page: tuple[float, float] | None,
+    papers: Mapping[str, tuple[float, float]],
+    notes: tuple[float, float] | None = None,
 ) -> str | None:
-    """The smallest of ``papers`` (name: (width, height) of the free area) that holds a block of ``width`` x ``height`` and is
-    smaller than the sheet's own free area (``page``: the free area of the paper it is on)."""
+    """The smallest of ``papers`` (name: (width, height) of the free area) that holds a block of ``width`` x ``height`` (and
+    the notes block, when there is one) and is smaller than the sheet's own free area (``page``: the free area of the paper it
+    is on)."""
     if page is None:
         return None
     fitting = [
         (w * h, name)
         for name, (w, h) in papers.items()
-        if w * h < page[0] * page[1] - 1e-6 and width + 2 * FIT_MARGIN_MM <= w and height + 2 * FIT_MARGIN_MM <= h
+        if w * h < page[0] * page[1] - 1e-6
+        and _fits_round_notes(width + 2 * FIT_MARGIN_MM, height + 2 * FIT_MARGIN_MM, w, h, notes)
     ]
     return min(fitting)[1] if fitting else None
