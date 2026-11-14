@@ -48,10 +48,16 @@ Strategy
 2. The views are arranged from those gaps and centred in the area; free views take the free room (nearest the top right).
 3. Items are placed in priority order (dimensions by span, angles, section labels, datums, weld symbols, leaders, callouts
    and balloons, the surface symbol, the notes block), each by scoring candidate positions against the ink already on the sheet: text over text or over
-   a line, collinear lines, anything over a view or the title block is forbidden; leader crossings, leader length and
-   leaders through the part cost. The arrows of a weld symbol cross no leader and no other arrow (that costs more than anything
-   else: a weld with no such place is reported, never drawn across a leader).
-4. If the notes block or the surface symbol find no free room, the area is reduced by them and everything is redone.
+   a line, collinear lines, anything over a view or the title block is forbidden; leader length and the centre lines a leader
+   crosses cost. A leader (ISO 128-22) crosses no dimension line, no extension line, no datum stem, no arrow line and no other
+   leader, and the outline of a view once at most: a candidate that does is refused, not paid for. Its text keeps a text
+   height from every other item (``TEXT_CLEAR_MM``; ``TEXT_CLEAR_MIN_MM`` when no place has that much). A leader with no such
+   place outside its view may stand inside it (``Item.inside``: its text on an area with no line of the part, a dimension or a
+   centre line); with none at all it is reported as unplaced (never drawn across a dimension), and a callout that found no
+   place chooses first in the next run. The arrows of a weld symbol cross no leader and no other arrow (that costs more than
+   anything else: a weld with no such place is reported, never drawn across a leader).
+4. If the notes block or the surface symbol find no free room, the area is reduced by them and everything is redone. The notes
+   block keeps a text height off the lines and texts of the sheet, and moves to where it does when it does not.
 """
 
 import math
@@ -73,6 +79,14 @@ CLEAR_MM = 0.8  # clearance between two text boxes
 LINE_CLEAR_MM = 0.25  # a line grazing a text box
 STEM_MIN_MM = 5.0
 ELBOW_ROOM_MM = 1.5  # the text of a leader keeps this far from the lines on the side its elbow is
+TEXT_CLEAR_MM = 3.5  # a text keeps one text height (``sheet_model.TEXT_HEIGHT_MM``) from every other item (ISO 128-22: a leader and its text stand clear)
+TEXT_CLEAR_MIN_MM = 1.0  # ... and when no place has that much, the least that still reads as apart
+INSIDE_CLEAR_MM = 2.0  # a callout inside a view keeps this far from the lines of the part, a centre mark reaches 2 mm past its circle
+INSIDE_PENALTY = 8.0  # a callout inside the view is the last resort: any place outside, clean, is better
+INSIDE_STEP_MM = 2.0
+INSIDE_MAX_MM = 70.0
+CENTRE_CROSS = 1.5  # a leader across a centre line: allowed (a hole inside the part cannot be reached otherwise), the fewer the better
+MAX_LEADER_CUTS = 1  # a leader goes through the outline of the part once: from the feature to the outside
 LEADER_MIN_MM = 6.0
 GRID_MM = 20.0
 MAX_LEVELS = 8
@@ -119,6 +133,8 @@ class View:
     relation: tuple[str, str] | None = None
     at: Point | None = None
     outline: tuple[Segment, ...] = ()
+    centre: tuple[Segment, ...] = ()
+    """The centre lines and marks of the view's holes (local, as ``outline``), also those that run out past the part: a callout keeps its text off them and crosses as few as it can."""
 
 
 @dataclass(frozen=True)
@@ -139,6 +155,8 @@ class Item:
     fixed_segments: tuple[Segment, ...] = ()
     fixed_kinds: tuple[str, ...] = ()
     """The kind of each fixed segment (``ext`` when not given): a pinned leader costs a crossing like a placed one."""
+    inside: bool = False
+    """``leader``: the drawer accepts its text on an area of the view that holds no line (a hole callout does)."""
     extra: tuple[float, ...] = ()
     """Kind specific numbers. ``angle``: the two ray angles (degrees, counter-clockwise on the page, y UP). ``leader``: the centre of the circle the
     leader points at and its radius (local, y down): the tip moves round it. ``weld``: the
@@ -305,6 +323,8 @@ class _Ink:
     box: Rect = (0.0, 0.0, 0.0, 0.0)  # the bounding box (inflated) once on the sheet
     skip_solid: str | None = None  # the view whose body the lines of this ink may cross (its own)
     text_in_view: bool = False  # ... and whose body its texts may stand over, when no line of the part is under them (an angle)
+    strict: bool = False  # a leader: its lines cross no dimension line, extension line, leader or datum stem, and the outline of a view once at most
+    clear: float = 0.0  # the room its texts keep from the lines and texts of the others (and the lines of this ink from theirs)
 
     def bbox(self) -> Rect:
         xs: list[float] = []
@@ -355,6 +375,7 @@ _CROSS_COST = {
     frozenset(["stem", "dim"]): 10.0,
     frozenset(["leader", "outline"]): 8.0,
     frozenset(["leader", "ext"]): 3.0,
+    frozenset(["leader", "centre"]): CENTRE_CROSS,
     frozenset(["stem", "ext"]): 3.0,
     frozenset(["ext", "dim"]): 1.0,
     # the arrow line of a weld symbol: it crosses no leader (ISO 2553: the arrow line is read as the one that points at the joint)
@@ -365,6 +386,12 @@ _CROSS_COST = {
     frozenset(["arrow", "outline"]): 8.0,
     frozenset(["arrow", "ext"]): 3.0,
 }
+_LEADER_NEVER_CROSSES = frozenset(
+    frozenset(pair)
+    for pair in (("leader",), ("leader", "dim"), ("leader", "ext"), ("leader", "stem"), ("leader", "arrow"))
+)
+"""What a leader (ISO 128-22) never crosses: another leader, a dimension line, an extension line, a datum stem, an arrow line."""
+CENTRE_OWNER = "centre:"
 _NO_COLLINEAR = frozenset(["ext"])  # two extension lines on one another is a shared extension line
 
 
@@ -382,14 +409,14 @@ class _Ctx:
         self.index.add(ink)
 
 
-def _text_free(r: Rect, owner: str, ctx: _Ctx, own_view: str | None = None) -> str | None:
+def _text_free(r: Rect, owner: str, ctx: _Ctx, own_view: str | None = None, clear: float = 0.0, strict: bool = False) -> str | None:
     """Cheap first test of a text box alone: why it cannot be there."""
     if not _inside(r, ctx.frame):
         return "outside the frame"
-    pad = _inflate(r, CLEAR_MM / 2)
-    inner = _inflate(r, -LINE_CLEAR_MM)
+    pad = _inflate(r, max(CLEAR_MM / 2, clear))
+    inner = _inflate(r, clear - LINE_CLEAR_MM if clear else -LINE_CLEAR_MM)
     for other in ctx.index.near(pad):
-        if other.owner == owner:
+        if other.owner == owner or (other.owner.startswith(CENTRE_OWNER) and not strict):
             continue
         for r2 in other.texts:
             if (
@@ -417,23 +444,28 @@ def _judge(ink: _Ink, ctx: _Ctx) -> tuple[str | None, float]:
         if not (_inside((s[0], s[1], s[0], s[1]), ctx.frame) and _inside((s[2], s[3], s[2], s[3]), ctx.frame)):
             return "outside the frame", 0.0
     cost = 0.0
-    mine = _inflate(ink.bbox(), 1.0)
+    cuts = 0
+    reach = max(ink.clear, 1.0)
+    mine = _inflate(ink.bbox(), reach)
     for other in ctx.index.near(mine):
         if other.owner == ink.owner or not _overlap(mine, other.box):
             continue
+        if other.owner.startswith(CENTRE_OWNER) and not ink.strict:
+            continue  # the centre lines are only the callouts to keep clear of
+        spare = ink.clear - LINE_CLEAR_MM if ink.clear else -LINE_CLEAR_MM
         for r in ink.texts:
             for r2 in other.texts:
-                if _overlap(_inflate(r, CLEAR_MM / 2), _inflate(r2, CLEAR_MM / 2)):
+                if _overlap(_inflate(r, max(CLEAR_MM / 2, ink.clear)), _inflate(r2, CLEAR_MM / 2)):
                     return f"text over {other.owner}", 0.0
             for r2 in other.solids:
                 if _overlap(r, r2) and not (ink.text_in_view and other.owner == f"view:{ink.skip_solid}"):
                     return f"text over {other.owner}", 0.0
             for s2, _k in other.segs:
-                if _seg_rect(s2, _inflate(r, -LINE_CLEAR_MM)):
+                if _seg_rect(s2, _inflate(r, spare)):
                     return f"text over a line of {other.owner}", 0.0
         for r2 in other.texts:
             for s, _ in ink.segs:
-                if _seg_rect(s, _inflate(r2, -LINE_CLEAR_MM)):
+                if _seg_rect(s, _inflate(r2, spare)):
                     return f"line through the text of {other.owner}", 0.0
         if other.solids:
             for s, _ in ink.segs:
@@ -445,9 +477,15 @@ def _judge(ink: _Ink, ctx: _Ctx) -> tuple[str | None, float]:
                 if _far(s, s2):
                     continue
                 kinds = frozenset([k, k2])
-                if "outline" not in kinds and kinds != _NO_COLLINEAR and _collinear_overlap(s, s2) > 0.5:
+                if "outline" not in kinds and "centre" not in kinds and kinds != _NO_COLLINEAR and _collinear_overlap(s, s2) > 0.5:
                     return f"line on a line of {other.owner}", 0.0
                 if _cross(s, s2):
+                    if ink.strict and kinds in _LEADER_NEVER_CROSSES:
+                        return f"leader across a {'dimension line' if k2 == 'dim' else 'line'} ({k2}) of {other.owner}", 0.0
+                    if ink.strict and k == "leader" and k2 == "outline":
+                        cuts += 1
+                        if cuts > MAX_LEADER_CUTS:
+                            return f"leader through the outline of {other.owner} more than once", 0.0
                     cost += _CROSS_COST.get(kinds, 0.0)
     return None, cost
 
@@ -652,7 +690,11 @@ def _attach(side: str, box: Rect) -> Point:
 
 
 class _Run:
-    def __init__(self, sheet: Sheet, views: Sequence[View], items: Sequence[Item], min_gap: float, area: Rect) -> None:
+    def __init__(
+        self, sheet: Sheet, views: Sequence[View], items: Sequence[Item], min_gap: float, area: Rect, first: Sequence[str] = ()
+    ) -> None:
+        self.first = frozenset(first)
+        """The callouts a run before this one could not place: they choose their place before the other callouts."""
         self.sheet = sheet
         self.views = list(views)
         self.items = list(items)
@@ -705,6 +747,10 @@ class _Run:
             ink = _Ink(f"view:{v.id}", solids=[(vp.x, vp.y, vp.x + vp.w, vp.y + vp.h)])
             ink.segs = [((vp.x + s[0], vp.y + s[1], vp.x + s[2], vp.y + s[3]), "outline") for s in v.outline]
             self.ctx.commit(ink)
+            if v.centre:
+                self.ctx.commit(
+                    _Ink(f"{CENTRE_OWNER}{v.id}", segs=[((vp.x + s[0], vp.y + s[1], vp.x + s[2], vp.y + s[3]), "centre") for s in v.centre])
+                )
 
     def _place_free(self, v: View, rooms: dict[tuple[str, str], float]) -> None:
         ax0, ay0, ax1, ay1 = self.area
@@ -768,6 +814,7 @@ class _Run:
         for it in sorted(
             rest,
             key=lambda i: (
+                0 if i.id in self.first else 1,
                 i.priority if i.priority is not None else 3,
                 i.view or "",
                 i.anchors[0][1] if i.anchors else 0,
@@ -955,7 +1002,11 @@ class _Run:
             if best is not None and (base >= best[0] or budget <= 0 or tries > 8 * JUDGE_BUDGET):
                 break
             bad = next(
-                (b for r in ink.texts if (b := _text_free(r, ink.owner, self.ctx, ink.skip_solid if ink.text_in_view else None))),
+                (
+                    b
+                    for r in ink.texts
+                    if (b := _text_free(r, ink.owner, self.ctx, ink.skip_solid if ink.text_in_view else None, ink.clear, ink.strict))
+                ),
                 None,
             )
             if bad is None:
@@ -983,32 +1034,66 @@ class _Run:
             return
         ax, ay = _abs(vb, it.anchors[0])
         circle = (*_abs(vb, (it.extra[0], it.extra[1])), it.extra[2]) if len(it.extra) == 3 else None
-        cands: list[tuple[float, _Ink, Any]] = []
-        for angle in LEADER_ANGLES:
-            rad = math.radians(angle)
-            ux, uy = math.cos(rad), -math.sin(rad)
-            if circle is not None:  # the leader of a hole points at its centre: its tip is where that ray meets the circle
-                ax, ay = circle[0] + ux * circle[2], circle[1] + uy * circle[2]
-            reach = _ray_exit(vb, (ax, ay), (ux, uy))
-            sx = 1.0 if ux > 0 else -1.0
-            for step in range(14):
-                length = max(LEADER_MIN_MM, reach + 3.0) + step * 3.0
-                ex, ey = ax + ux * length, ay + uy * length
-                box = (ex, ey - it.h, ex + it.w, ey) if sx > 0 else (ex - it.w, ey - it.h, ex, ey)
-                seg = (ax, ay, ex, ey)
-                shelf = (ex, ey, ex + sx * it.w, ey)
-                base = length * 0.2 + abs((angle % 90) - 45) * 0.08 + _inside_len(seg, vb) * 0.15
-                # the elbow keeps a little room off the lines already there (a dimension line it would stand against)
-                judged = (ex - ELBOW_ROOM_MM, box[1], box[2], box[3]) if sx > 0 else (box[0], box[1], ex + ELBOW_ROOM_MM, box[3])
-                ink = _Ink(it.id, texts=[judged], segs=[(seg, "leader"), (shelf, "leader")], skip_solid=it.view)
-                cands.append((base, ink, (ex, ey, box, "right" if sx > 0 else "left", ax, ay)))
         why: dict[str, int] = {}
-        best = self._choose(cands, why)
+        best: tuple[float, _Ink, Any] | None = None
+        for clear in (TEXT_CLEAR_MM, TEXT_CLEAR_MIN_MM):  # the text stands a text height clear of everything, or at least apart
+            cands: list[tuple[float, _Ink, Any]] = []
+            for angle in LEADER_ANGLES:
+                rad = math.radians(angle)
+                ux, uy = math.cos(rad), -math.sin(rad)
+                if circle is not None:  # the leader of a hole points at its centre: its tip is where that ray meets the circle
+                    ax, ay = circle[0] + ux * circle[2], circle[1] + uy * circle[2]
+                reach = _ray_exit(vb, (ax, ay), (ux, uy))
+                sx = 1.0 if ux > 0 else -1.0
+                for step in range(14):
+                    length = max(LEADER_MIN_MM, reach + 3.0) + step * 3.0
+                    ex, ey = ax + ux * length, ay + uy * length
+                    box = (ex, ey - it.h, ex + it.w, ey) if sx > 0 else (ex - it.w, ey - it.h, ex, ey)
+                    seg = (ax, ay, ex, ey)
+                    shelf = (ex, ey, ex + sx * it.w, ey)
+                    base = length * 0.2 + abs((angle % 90) - 45) * 0.08 + _inside_len(seg, vb) * 0.15
+                    # the elbow keeps a little room off the lines already there (a dimension line it would stand against)
+                    judged = (ex - ELBOW_ROOM_MM, box[1], box[2], box[3]) if sx > 0 else (box[0], box[1], ex + ELBOW_ROOM_MM, box[3])
+                    ink = _Ink(it.id, texts=[judged], segs=[(seg, "leader"), (shelf, "leader")], skip_solid=it.view, strict=True, clear=clear)
+                    cands.append((base, ink, (ex, ey, box, "right" if sx > 0 else "left", ax, ay)))
+            best = self._choose(cands, why)
+            if best is not None:
+                break
+        if best is None and it.inside:  # no clean place outside: the text goes inside the view, on a clear area of it
+            best = self._choose(self._inside_leader(it, vb, circle, (ax, ay)), why)
         if best is None:
             self.fail(it, why)
             return
         ex, ey, box, side, tx, ty = best[2]
         self._commit(it, best[1], side, 0, box, best[0], (ex, ey, tx, ty))
+
+    def _inside_leader(self, it: Item, vb: Rect, circle: tuple[float, float, float] | None, tip: Point) -> list[tuple[float, _Ink, Any]]:
+        """Leaders whose elbow and text stand INSIDE their own view, on an area that holds no line of the part, of a dimension
+        or of another callout: the place when every side outside is closed by dimension lines (a plate dimensioned on all four
+        sides)."""
+        out: list[tuple[float, _Ink, Any]] = []
+        ax, ay = tip
+        margin = INSIDE_CLEAR_MM
+        for angle in LEADER_ANGLES:
+            rad = math.radians(angle)
+            ux, uy = math.cos(rad), -math.sin(rad)
+            if circle is not None:
+                ax, ay = circle[0] + ux * circle[2], circle[1] + uy * circle[2]
+            sx = 1.0 if ux > 0 else -1.0
+            length = LEADER_MIN_MM
+            while length <= INSIDE_MAX_MM:
+                ex, ey = ax + ux * length, ay + uy * length
+                box = (ex, ey - it.h, ex + it.w, ey) if sx > 0 else (ex - it.w, ey - it.h, ex, ey)
+                length += INSIDE_STEP_MM
+                if not _inside(box, _inflate(vb, -margin)) or not _inside((ex, ey, ex, ey), _inflate(vb, -margin)):
+                    continue
+                seg = (ax, ay, ex, ey)
+                shelf = (ex, ey, ex + sx * it.w, ey)
+                base = INSIDE_PENALTY + math.hypot(ex - ax, ey - ay) * 0.2 + abs((angle % 90) - 45) * 0.08
+                judged = (ex - ELBOW_ROOM_MM, box[1], box[2], box[3]) if sx > 0 else (box[0], box[1], ex + ELBOW_ROOM_MM, box[3])
+                ink = _Ink(it.id, texts=[judged], segs=[(seg, "leader"), (shelf, "leader")], skip_solid=it.view, text_in_view=True, strict=True, clear=INSIDE_CLEAR_MM)
+                out.append((base, ink, (ex, ey, box, "right" if sx > 0 else "left", ax, ay)))
+        return out
 
     def _angle(self, it: Item) -> None:
         """An angular dimension: an arc about the apex between its two rays (ISO 129-1), the text outside it; the arc takes
@@ -1100,7 +1185,7 @@ class _Run:
         self._commit(it, _Ink(it.id, texts=[box]), None, 0, box, 0.0)
 
     def _scan(
-        self, sizes: list[tuple[float, float]], pref: Point, owner: str
+        self, sizes: list[tuple[float, float]], pref: Point, owner: str, clear: float = 0.0
     ) -> tuple[float, float, dict[str, int]] | None:
         bw = max(s[0] for s in sizes)
         bh = sum(s[1] for s in sizes) + NOTE_GAP_MM * (len(sizes) - 1)
@@ -1116,7 +1201,7 @@ class _Run:
         cands.sort()
         why: dict[str, int] = {}
         for _c, y, x in cands:
-            ink = _Ink(owner, texts=[(x, y, x + bw, y + bh)])
+            ink = _Ink(owner, texts=[(x, y, x + bw, y + bh)], clear=clear)
             bad, _ = _judge(ink, self.ctx)
             if bad:
                 why[bad] = why.get(bad, 0) + 1
@@ -1130,7 +1215,11 @@ class _Run:
         ax0, ay0, ax1, ay1 = self.area
         sizes = [(n.w, n.h) for n in notes]
         bh = sum(s[1] for s in sizes) + NOTE_GAP_MM * (len(sizes) - 1)
-        found = self._scan(sizes, (ax0, ay1 - bh), "notes")
+        found = None
+        for clear in (TEXT_CLEAR_MM, TEXT_CLEAR_MIN_MM, 0.0):  # the block keeps a text height off the lines and texts, or less when the sheet has no room
+            found = self._scan(sizes, (ax0, ay1 - bh), "notes", clear)
+            if found is not None:
+                break
         if found is None:
             for n in notes:
                 self.fail(n, f"no free room for the notes block ({max(s[0] for s in sizes):.0f} x {bh:.0f} mm)")
@@ -1154,27 +1243,48 @@ def _default_area(sheet: Sheet) -> Rect:
 def plan_layout(sheet: Sheet, views: Sequence[View], items: Sequence[Item], *, min_view_gap: float = 12.0) -> Plan:
     """Place every view and item of a sheet at once. See the module docstring."""
     area = sheet.area or _default_area(sheet)
-    reserve_bottom = 0.0
-    reserve_top = 0.0
-    best: _Run | None = None
-    for _ in range(3):
-        run = _Run(
-            sheet, views, items, min_view_gap, (area[0], area[1] + reserve_top, area[2], area[3] - reserve_bottom)
-        )
-        run.place_views()
-        run.place_items()
-        if best is None or len(run.unplaced) < len(best.unplaced):
-            best = run
-        lost = {u.id for u in run.unplaced}
-        notes = [i for i in items if i.kind == "note" and i.id in lost]
-        symbols = [i for i in items if i.kind == "surface" and i.id in lost]
-        if not notes and not symbols:
+    callouts = {i.id for i in items if i.kind in ("callout", "balloon", "leader")}
+
+    def attempt(first: Sequence[str]) -> _Run:
+        reserve_bottom = 0.0
+        reserve_top = 0.0
+        best: _Run | None = None
+        for _ in range(3):
+            run = _Run(
+                sheet,
+                views,
+                items,
+                min_view_gap,
+                (area[0], area[1] + reserve_top, area[2], area[3] - reserve_bottom),
+                first,
+            )
+            run.place_views()
+            run.place_items()
+            if best is None or len(run.unplaced) < len(best.unplaced):
+                best = run
+            lost = {u.id for u in run.unplaced}
+            notes = [i for i in items if i.kind == "note" and i.id in lost]
+            symbols = [i for i in items if i.kind == "surface" and i.id in lost]
+            if not notes and not symbols:
+                break
+            if notes:
+                reserve_bottom += sum(n.h for n in [i for i in items if i.kind == "note"]) + 4.0
+            if symbols:
+                reserve_top += max(s.h for s in symbols) + 4.0
+        assert best is not None
+        return best
+
+    best = attempt(())
+    first: tuple[str, ...] = ()
+    for _ in range(3):  # a callout that found no clean place picks first: the ones placed before it may have taken its room
+        stuck = tuple(u.id for u in best.unplaced if u.id in callouts and u.id not in first)
+        if not stuck:
             break
-        if notes:
-            reserve_bottom += sum(n.h for n in [i for i in items if i.kind == "note"]) + 4.0
-        if symbols:
-            reserve_top += max(s.h for s in symbols) + 4.0
-    assert best is not None
+        first = (*first, *stuck)
+        again = attempt(first)
+        if len(again.unplaced) >= len(best.unplaced):
+            break
+        best = again
     return Plan(
         views=tuple(sorted(best.vpos.values(), key=lambda v: v.id)),
         items=tuple(best.placed),
