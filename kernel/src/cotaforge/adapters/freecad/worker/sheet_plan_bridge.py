@@ -414,6 +414,8 @@ def prepare(
         item_type = str(spec.get("type") or unit.item_type)
         free_place = item_type in MOVABLE_TYPES and not any(spec.get(k) is not None for k in PLACE_KEYS)
         kind = _wants_kind(item_type, spec) if free_place else ""
+        if kind == "leader" and item_type == "dim" and read_callout(ink) is None and ink.dimension_lines:
+            kind = ""  # a diameter dimensioned between the silhouette lines of its step stands on that step: an obstacle, not the planner's
         if kind:
             parts = _callout_parts(unit, ink, kind, item_type)
             reads = [_movable(unit, spec, part, kind, reader, tips, key) for key, part in parts]
@@ -530,7 +532,11 @@ def _movable(
         view = _nearest_view(boxes, spec, [apex])
         if view is None:
             return None
-        return pl.Item(unit.key, "angle", view, text[2] - text[0], text[3] - text[1], (reader.local(view, apex),), extra=(a0, a1))
+        extra = (a0, a1)
+        if spec.get("type") == "pattern_dim":  # the arc of a bolt circle's first hole drew itself outside the holes: never nearer than that
+            drawn = [e.r for e in unit.entities if isinstance(e, model.Arc) and e.layer == model.DIMENSIONS]
+            extra = (a0, a1, drawn[0]) if drawn else extra
+        return pl.Item(unit.key, "angle", view, text[2] - text[0], text[3] - text[1], (reader.local(view, apex),), extra=extra)
     if kind == "datum":
         datum = read_datum(ink, unit.entities)
         if datum is None:

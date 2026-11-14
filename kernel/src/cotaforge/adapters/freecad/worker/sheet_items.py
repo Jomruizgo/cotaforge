@@ -124,6 +124,18 @@ def normalise(spec: Any, taken: set[str], next_number: int) -> dict[str, Any]:
     return {"id": item_id, **checked}
 
 
+def refuse_repeated_note(done: dict[str, Any], others: list[dict[str, Any]]) -> None:
+    """A note that says what another note of the sheet already says never reaches it (the same words twice read as two
+    requirements): ``ItemError`` naming the note that has them."""
+    if done.get("type") != "note" or not isinstance(done.get("text"), str):
+        return
+    words = " ".join(done["text"].lower().split())
+    for other in others:
+        if other.get("type") == "note" and isinstance(other.get("text"), str) and " ".join(other["text"].lower().split()) == words:
+            msg = f"the sheet already has this note ({other.get('id')}): the same words are not written twice"
+            raise ItemError(msg)
+
+
 def prepare_all(ctx: Context, items: list[dict[str, Any]]) -> None:
     """Let each item type see all its items before any is drawn (the title block needs the revisions, the notes block
     needs to know how many lines it has)."""
@@ -184,7 +196,13 @@ def draw_items(ctx: Context, items: list[dict[str, Any]]) -> list[ItemResult]:
         """The overall size is drawn after the other dimensions of its phase: the lines stack outward in the order they are
         drawn and the overall one stands outside the smaller ones (ISO 129-1), so the extension lines of the dimensions
         inside it never cross its line."""
-        return 1 if items[position].get("type") == "overall" else 0
+        spec = items[position]
+        if spec.get("type") == "overall":
+            return 1
+        # a diameter of a turned part stands on its step where its text touches no line of the dimensions already drawn: it is
+        # drawn after them
+        placed = any(spec.get(k) is not None for k in ("side", "offset_mm", "elbow_mm"))
+        return 1 if spec.get("type") == "dim" and spec.get("kind") == "diameter" and not placed else 0
 
     order = sorted(range(len(items)), key=lambda i: (phase(i), outermost(i), i))
     for position in shortest_first(ctx, items, order, lambda i: (phase(i), outermost(i))):

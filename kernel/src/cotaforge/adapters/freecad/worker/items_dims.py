@@ -17,7 +17,7 @@ import sheet_tol
 import sheet_viewrules as rules
 from items_attach import attach_face
 from items_common import asked, outward_diagonal, place_leader
-from sheet_collide import segments_of
+from sheet_collide import segment_hits_rect, segments_of
 from sheet_context import (
     COMMON_FIELDS,
     Context,
@@ -45,7 +45,7 @@ from sheet_context import (
     v_view_or_section,
 )
 from sheet_draw import angle_dimension, exact_box, linear_dimension
-from sheet_model import CONTOUR, text_width
+from sheet_model import CONTOUR, Entity, text_width
 from sheet_units import NativeDim, Ref2
 
 AXES: dict[str, Vec3] = {"x": (1.0, 0.0, 0.0), "y": (0.0, 1.0, 0.0), "z": (0.0, 0.0, 1.0)}
@@ -119,6 +119,31 @@ def thread_states_diameter(ctx: Context, diameter: float) -> bool:
         axis = face.axis_dir if face.axis_dir is not None else threads[0].direction
         length = part_length_along(ctx, unit(axis))
         if length is None or sum(t.length for t in threads) >= length - THREAD_SPAN_TOL_MM:
+            return True
+    return False
+
+
+def diameter_dimensioned(ctx: Context, view: ViewInfo, diameter: float) -> bool:
+    """Whether a ``dim`` of kind diameter of the sheet gives ``diameter`` between the two silhouette lines of a step of a turned
+    part on ``view`` (``_turned_diameter``): the overall height of the part is that same diameter, and one feature has one
+    dimension, so ``overall`` leaves its own out."""
+    if ctx.geometry.round_extent() is None:
+        return False
+    for spec in ctx.extras.get("items", []):
+        if spec.get("type") != "dim" or spec.get("kind") != "diameter" or not spec.get("face"):
+            continue
+        if spec.get("view") not in (None, view.name) or any(spec.get(k) is not None for k in ("side", "offset_mm", "elbow_mm")):
+            continue
+        face_id = spec["face"][0]
+        try:
+            face = ctx.geometry.face(face_id)
+        except ItemError:
+            continue
+        if face.kind != "cylinder" or face.radius is None or face.axis_dir is None or abs(2 * face.radius - diameter) >= 0.05:
+            continue
+        if any(face_id in hole.faces for hole in ctx.holes) or sheet_thread.threads_on_face(ctx, face_id, face):
+            continue
+        if view.shows_axis_along(face.axis_dir) and max(abs(c) for c in view.axis(face.axis_dir)) >= 0.99:
             return True
     return False
 
@@ -231,8 +256,11 @@ def draw_overall(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         b = primary.box
         width, height = (b[2] - b[0]) / primary.scale, (b[3] - b[1]) / primary.scale
         w_round, h_round = _is_diameter(primary, axis)
-        by_thread_w = w_round and thread_states_diameter(ctx, width)  # the thread callout says it: Ø once, in M12
+        by_thread_w = w_round and (  # the thread callout (or the dimension of the step) says it: Ø once
+            thread_states_diameter(ctx, width) or (not h_round and diameter_dimensioned(ctx, primary, width))
+        )
         by_thread_h = h_round and thread_states_diameter(ctx, height)
+        by_step_h = h_round and not w_round and diameter_dimensioned(ctx, primary, height)  # the step's own Ø says it: once
         below = ctx.third_angle and not only  # third angle: the top view hangs above the front one, the width goes below
         asked_side = spec.get("side")
         if asked_side in ("above", "below"):
@@ -258,7 +286,9 @@ def draw_overall(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             out.append(f"width {shown}" + (" (below the view: above it its extension lines cross the part)" if below and not ctx.third_angle and asked_side is None else ""))
             sizes["width"] = width
         if not (h_round and w_round):  # a circle's height is its width: say it once
-            if by_thread_h:
+            if by_step_h:
+                skipped.append(f"height Ø{ctx.num(height)} (the diameter dimension of its step carries it)")
+            elif by_thread_h:
                 skipped.append(f"height Ø{ctx.num(height)} (the thread callout carries it)")
             else:
                 left = h_round and toward is not None and toward[0] > 0  # thread at the right end: the Ø goes at the plain left one
@@ -554,7 +584,9 @@ def _distance(ctx: Context, spec: dict[str, Any]) -> str:
                 refs=(Ref2("point", centres[0]), Ref2("point", centres[1])),
                 label=label,
                 expected=value,
-                text=None if res is None or rendered.stack is not None else rendered.text,
+                # a reference given as a point is placed on the page to a hundredth of a millimetre: TechDraw would measure 4,01
+                # between two places 4 apart, so the text is the model's value, not TechDraw's measure
+                text=None if (res is None and "at" not in (spec["from"] | spec["to"])) or rendered.stack is not None else rendered.text,
                 orient=orient,
                 tol=(res.upper, res.lower) if res is not None and rendered.stack is not None else None,
                 rect=taken,
@@ -636,8 +668,12 @@ def _diameter(ctx: Context, spec: dict[str, Any]) -> str:
         msg = f"{face_id} is the wall of a hole: dimension it with hole_dim (it takes fit and tol too)"
         raise ItemError(msg)
     att = attach_face(ctx, face_id, spec.get("view"), spec.get("side"))
-    diagonal = (1.0 if att.normal[0] >= 0 else -1.0, 1.0 if att.normal[1] >= 0 else -1.0)
     threads = sheet_thread.threads_on_face(ctx, face_id, face)
+    if threads and spec.get("side") is None and att.circle is None and att.normal[1] < -0.9:
+        # the callout of a thread on a horizontal shaft leaves upwards: the lengths of the part stack up below it, and a leader
+        # that crosses them to reach the free room under the stack is a leader nobody can follow
+        att = attach_face(ctx, face_id, spec.get("view"), "above")
+    diagonal = (1.0 if att.normal[0] >= 0 else -1.0, 1.0 if att.normal[1] >= 0 else -1.0)
     if threads:  # a shaft end an ``external_thread`` threaded: its callout is the thread, not the plain diameter
         if "fit" in spec or "tol" in spec:
             msg = f"{face_id} is threaded ({threads[0].size}): a threaded diameter takes no fit or tolerance, the thread class is part of its size"
@@ -655,6 +691,8 @@ def _diameter(ctx: Context, spec: dict[str, Any]) -> str:
         ctx.record_dimension(("dia", round(2 * face.radius, 2), OVERALL), att.view.name)
     if att.view.derived and att.circle is None and att.kind == "surface":
         return _section_diameter(ctx, spec, att, face.radius, rendered.text, extra)
+    if not threads and turned_across(ctx, att) and not any(spec.get(k) is not None for k in ("side", "offset_mm", "elbow_mm")):
+        return _turned_diameter(ctx, att, face.radius, rendered.text, extra)
     # a thread seen across a HORIZONTAL axis: the callout leaves straight up (or down) from the middle of the thread, so its
     # dimension line stands on the threaded length, clear of the end and of the chamfer's callout
     horizontal = abs(att.normal[1]) > 0.9
@@ -690,6 +728,81 @@ def _diameter(ctx: Context, spec: dict[str, Any]) -> str:
             )
         )
     return f"{rendered.text} in the {att.view.name} view{extra}"
+
+
+CUT_AFTER_MM = 19.0  # the cutting line of a section keeps this much of the strip beside it, on both sides, clear of a diameter text (its arrows and letters)
+
+
+def turned_across(ctx: Context, att: Any) -> bool:
+    """Whether a diameter is one of a turned part (a body of revolution) seen across its axis, the axis along the page's x or y:
+    its two silhouette lines are on the page and the diameter is dimensioned between them, on the view."""
+    return (
+        att.circle is None
+        and not att.view.derived
+        and att.kind == "surface"
+        and att.band is not None
+        and ctx.geometry.round_extent() is not None
+        and (abs(att.normal[0]) >= 0.99 or abs(att.normal[1]) >= 0.99)
+    )
+
+
+def _cut_bands(ctx: Context, view: ViewInfo, index: int) -> list[tuple[float, float]]:
+    """The strips of the page, along the axis of a turned part, where the cutting line of a section of the sheet (with its arrows
+    and letters) stands: a diameter text keeps out of them (``index``: the page coordinate that runs along the axis)."""
+    out: list[tuple[float, float]] = []
+    for item in ctx.extras.get("items", []):
+        if item.get("type") != "section" or item.get("at") is None or item.get("view") not in (None, view.name):
+            continue
+        at = view.project(tuple(item["at"]))[index]
+        out.append((at - CUT_AFTER_MM, at + CUT_AFTER_MM))  # its arrows and letters stand on the side the section is looked at from: either
+    return out
+
+
+def _turned_diameter(ctx: Context, att: Any, radius_mm: float, text: str, extra: str) -> str:
+    """The diameter of a step of a turned part seen across its axis: a LINEAR dimension with the Ø in front of the value, between
+    its two silhouette lines, on the step itself (ISO 129-1: a shaft is dimensioned on its long view, not by a leader to one
+    side of it). Its place along the axis is chosen on the step, where its text (which stands beyond the upper or right arrow when
+    it is longer than the diameter) touches nothing already on the sheet and clear of the cutting line of a section, and the
+    texts of the steps spread along the shaft so they never meet."""
+    view, n = att.view, att.normal
+    r = radius_mm * view.scale
+    tip = att.tip
+    far = (tip[0] - 2 * r * n[0], tip[1] - 2 * r * n[1])
+    (bx0, by0), (bx1, by1) = att.band
+    vertical = abs(n[1]) >= 0.99  # the silhouette lines are horizontal: the dimension line is vertical
+    index = 0 if vertical else 1
+    lo, hi = sorted(((bx0, bx1) if vertical else (by0, by1)))
+    margin_lo, margin_hi = (4.8, 1.5) if vertical else (1.0, 4.8)  # the rotated text takes 4.3 mm to the left of the line, the other 4.3 above it
+    first, last = lo + margin_lo, hi - margin_hi
+    mid = (lo + hi) / 2
+    cuts = _cut_bands(ctx, view, index)
+    steps = [first + k * 1.5 for k in range(int((last - first) / 1.5) + 1)] if last > first else [mid]
+
+    def made(at: float) -> tuple[list[Entity], Any, Point, Point]:
+        if vertical:
+            a, b = (at, far[1]), (at, tip[1])
+        else:
+            a, b = (far[0], at), (tip[0], at)
+        entities, taken = linear_dimension(a, b, "v" if vertical else "h", at, text)
+        return entities, taken, a, b
+
+    drawn = [tuple(s) for s in ctx.extras.get("dimension_lines", [])]  # the lines (and extension lines) of the dimensions already on the sheet
+
+    def worse(at: float) -> tuple[int, int, int, float]:
+        _, taken, _, _ = made(at)
+        low, high = (taken[0], taken[2]) if vertical else (taken[1], taken[3])
+        in_cut = any(low < c1 and c0 < high for c0, c1 in cuts)
+        crossed = sum(1 for s in drawn if segment_hits_rect(s, taken))
+        return (int(in_cut), int(not ctx.free(taken) or not ctx.inside(taken)), crossed, abs(at - mid))
+
+    chosen = min(steps, key=worse)
+    entities, taken, a, b = made(chosen)
+    ctx.add(entities)
+    ctx.reserve_dimension(entities, taken)
+    ctx.used_view(view.name)
+    # no native TechDraw dimension: TechDraw would set the (long) text centred on its line, over the silhouette; the sheet's own
+    # ink puts it beyond the arrow, clear of the outline
+    return f"{text} in the {view.name} view, between its two silhouette lines on the step{extra}"
 
 
 def _section_diameter(ctx: Context, spec: dict[str, Any], att: Any, radius_mm: float, text: str, extra: str) -> str:
