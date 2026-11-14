@@ -12,6 +12,7 @@ letters, and finds room for the new view. A derived view takes the first free pl
 import math
 from typing import Any
 
+import sheet_flats
 import sheet_hatch
 import sheet_section
 import sheet_seen
@@ -728,6 +729,25 @@ def check_lines(spec: dict[str, Any]) -> dict[str, Any]:
     return check_fields(spec, LINES_CHECKS)
 
 
+def _flat_diagonals(ctx: Context) -> list[str]:
+    """The two diagonals (thin continuous) of every flat of a turned part that a standard view sees face-on: with a centre line
+    in the view, a flat's rectangle would read as a cylinder (ISO 128-30). Says what it drew, view by view."""
+    done: set[tuple[str, str]] = ctx.extras.setdefault("flat_diagonals", set())
+    said: list[str] = []
+    for flat in sheet_flats.flats_of(ctx):
+        for view in sheet_flats.seen_in(ctx, flat):
+            if (view.name, flat.face_id) in done:
+                continue
+            got = sheet_flats.diagonals(ctx, view, flat)
+            if got is None:
+                continue
+            done.add((view.name, flat.face_id))
+            ctx.add(got[0])
+            ctx.used_view(view.name)
+            said.append(f"{flat.face_id} in {view.name} ({got[1]})")
+    return said
+
+
 def draw_lines(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     said: list[str] = []
     hidden_views = list(HIDDEN_DEFAULT) if "hidden" not in spec else list(spec["hidden"])
@@ -812,6 +832,9 @@ def draw_lines(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
                     axes += 1
         if marks or axes:
             said.append(f"centre marks on {marks} hole view(s), centre lines on {axes}")
+        crossed = _flat_diagonals(ctx)
+        if crossed:
+            said.append("diagonals on the flat faces seen face-on: " + "; ".join(crossed))
     if not said:
         return "warning", "nothing to draw: no hidden edges and no holes"
     return "ok", "; ".join(said)
