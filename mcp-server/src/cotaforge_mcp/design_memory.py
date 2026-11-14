@@ -43,8 +43,9 @@ review) | nobody."""
 DEFAULT_DRAWING_REVIEW = "engineer_or_fabricator"
 DRAWING_FLOWS = ("steps", "sheet")
 """How the drawing agent builds a sheet (``drawing_flow`` of the brief): ``steps`` (create, then a few items per add) |
-``sheet`` (plan, then ONE compose from the model and the engineer's decisions)."""
-DEFAULT_DRAWING_FLOW = "steps"
+``sheet`` (plan, then ONE compose from the model and the engineer's decisions, then local fixes one item at a time:
+the hybrid flow, the default)."""
+DEFAULT_DRAWING_FLOW = "sheet"
 OLD_DRAWING_REVIEWS = {
     "ingeniero_o_fabricante": "engineer_or_fabricator",
     "fabricante": "fabricator",

@@ -106,6 +106,7 @@ def collect(doc: reg.DocumentRec, bodies: list[reg.BodyRec]) -> sck.PartFacts:
         groups: dict[tuple[Any, ...], list[tuple[str, Any, float, float]]] = {}
         spans: dict[tuple[Any, ...], list[float]] = {}  # where along its axis each cylinder lies: lo, hi, and a point
         flats: list[keyway.Flat] = []
+        half_circles: list[keyway.Round] = []  # the partial cylinders: the rounded ends a keyway may have
         for face_id, index in body.live_faces():
             if index >= len(faces):
                 continue
@@ -119,6 +120,8 @@ def collect(doc: reg.DocumentRec, bodies: list[reg.BodyRec]) -> sck.PartFacts:
             axis = g.unit(g.vec(surf.Axis))
             u0, u1, v0, v1 = face.ParameterRange
             concave = holes._is_concave(face)  # noqa: SLF001 - the one definition of "the material lies outside"
+            if u1 - u0 < FULL_TURN:
+                half_circles.append(keyway.Round(face_id, g.vec(surf.Center), axis, float(surf.Radius)))
             key = _key(axis, g.vec(surf.Center), float(surf.Radius), concave)
             groups.setdefault(key, []).append((face_id, face, u1 - u0, v1 - v0))
             canon = key[0]
@@ -132,7 +135,8 @@ def collect(doc: reg.DocumentRec, bodies: list[reg.BodyRec]) -> sck.PartFacts:
             keyway.Cylinder(key[0], (span[2], span[3], span[4]), key[2], key[3], span[0], span[1])
             for key, span in spans.items()
         ]
-        slots = keyway.find_slots(cylinders, flats)
+        slots = [keyway.with_rounds(slot, half_circles) for slot in keyway.find_slots(cylinders, flats)]
+        keyway_ends = {r.face_id for slot in slots for r in slot.rounds}  # the half circles of a keyway: its width gives their radius
         facts.planes.extend(flats)
         facts.cylinders.extend(cylinders)
         facts.keyways += len(slots)
@@ -151,5 +155,5 @@ def collect(doc: reg.DocumentRec, bodies: list[reg.BodyRec]) -> sck.PartFacts:
                 foot = g.add(centre, g.scale(axis, g.dot(g.sub(middle, centre), axis)))  # on the axis, mid-height
                 facts.bosses.append(sck.Boss(face_id, radius, foot, axis, max(length for _, _, _, length in members)))
                 continue
-            facts.rounds.extend(sck.RoundFace(face_id, radius, concave) for face_id, _, _, _ in members)
+            facts.rounds.extend(sck.RoundFace(face_id, radius, concave) for face_id, _, _, _ in members if face_id not in keyway_ends)
     return facts
