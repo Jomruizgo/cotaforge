@@ -1,7 +1,7 @@
 """The coloured draft analysis in the window of the REAL visible worker: FreeCAD 1.1 draws a per-face colour from the
 ``ShapeAppearance`` of the view of the object the window shows (the Tip of a PartDesign body); a ``DiffuseColor`` set on
-the body's view paints nothing (seen on 1.1.3). Green is a face that meets the minimum, yellow a low one, red a face with
-no draft or an undercut; ``show_entities(clear)`` puts the appearance back.
+the body's view paints nothing (seen on 1.1.3). Green is a face that meets the minimum, yellow a low one, red a face
+with no draft or an undercut; ``show_entities(clear)`` puts the appearance back.
 
 Needs a display (Windows opens its own window); carries the ``visible`` marker."""
 

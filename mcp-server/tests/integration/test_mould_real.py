@@ -1,5 +1,5 @@
-"""The mould tools through the real stdio server and FreeCAD: ``inspect(action=draft)`` finds the walls without draft and
-the undercut of a hole across the pull, ``op draft`` tapers the walls, and ``op shrink_body`` derives the cavity."""
+"""The mould tools through the real stdio server and FreeCAD: ``inspect(action=draft)`` finds the walls without
+draft and the undercut of a hole across the pull, ``op draft`` tapers the walls, and ``op shrink_body`` derives the cavity."""
 
 import re
 from pathlib import Path

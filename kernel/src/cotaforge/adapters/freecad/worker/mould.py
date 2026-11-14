@@ -169,5 +169,5 @@ def draft_analysis(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, An
             graded.append(((body, face_id, index), status))
     painted = _paint(doc, graded) if params.get("paint") and graded else False
     if params.get("paint") and graded and not painted:
-        warnings.append("the faces were not painted: this CAD has no visible window")
+        warnings.append("the faces were not painted: no visible window, or a FreeCAD whose views take no per-face appearance")
     return {"faces": rows, "method": METHOD, "shadow_tested": True, "painted": painted, "warnings": warnings}

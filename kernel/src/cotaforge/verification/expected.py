@@ -2408,7 +2408,7 @@ class ExpectedComputer:
             ""
             if uniform
             else (
-                "unequal scale: the kernel integrates the B-spline faces numerically (measured 0.05 % off), so the volume "
+                "unequal scale: the kernel integrates B-spline faces numerically (measured 0.05 % off), so the volume "
                 "and the centroid are reported, the box is the check"
             )
         )

@@ -12,6 +12,7 @@ from cotaforge.contract import (
     AdapterError,
     BodyHandle,
     DraftAnalysisRequest,
+    DraftAnalysisResult,
     ErrorCode,
     classify_draft,
 )
@@ -21,7 +22,7 @@ BLOCK = {"id": "part", "op": "box", "intent": "plastic part", "size": [100, 60, 
 PLAN = {"id": "p", "kind": "part", "operations": [BLOCK]}
 
 
-def _analysis(pull: tuple[float, float, float], minimum: float = 1.0):
+def _analysis(pull: tuple[float, float, float], minimum: float = 1.0) -> DraftAnalysisResult:
     adapter = _fake()
     _run([PLAN], adapter)
     return adapter.draft_analysis(DraftAnalysisRequest(operation_id="d", pull=pull, min_draft_deg=minimum))
