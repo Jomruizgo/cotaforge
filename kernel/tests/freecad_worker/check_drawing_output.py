@@ -99,6 +99,31 @@ def check_a_capture_can_zoom_into_a_region_and_refuses_one_off_the_sheet() -> No
         assert "region" in exc.message, (bad, exc.message)
 
 
+def check_a_capture_with_crops_measures_the_sheet_and_writes_labelled_zoomed_images() -> None:
+    _sheet()
+    plain = call("capture_drawing", op("p", path=_tmp("p.png"), width=900))
+    assert plain["zoomed"] == [] and plain["findings"] == [] and plain["sheet"] == "Drawing" and plain["edits"] >= 0
+    note = {"type": "note", "text": "Sin rebabas 0,3 mm"}
+    items = [{**note, "id": "na", "at_mm": [150, 150]}, {**note, "id": "nb", "at_mm": [151, 151]}]
+    call("annotate_drawing", op("a", action="add", items=items))
+    got = call("capture_drawing", op("c", path=_tmp("c.png"), width=900, crops=True))
+    assert got["edits"] == plain["edits"] + 1
+    assert [f["kind"] for f in got["findings"]].count("overlap") >= 1, got["findings"]  # two notes on one another are measured
+    held = [c for c in got["zoomed"] if c["findings"]]
+    assert held and len(got["zoomed"]) <= 5, got["zoomed"]
+    for crop in got["zoomed"]:
+        with open(crop["path"], "rb") as handle:
+            assert handle.read(8) == PNG_SIGNATURE
+        assert crop["label"] and crop["size_px"][0] > 0 and max(crop["size_px"]) <= 1000, crop
+    box = got["findings"][held[0]["findings"][0]]["box"]
+    x0, y0, x1, y1 = held[0]["region"]
+    assert x0 <= box[0] + 1e-6 and y0 <= box[1] + 1e-6 and x1 >= box[2] - 1e-6 and y1 >= box[3] - 1e-6, (box, held[0]["region"])
+    again = call("capture_drawing", op("d", path=_tmp("d.png"), width=900, crops=True, crops_given_at=got["edits"]))
+    assert again["zoomed"] == [] and again["findings"] == got["findings"]  # told it already has them: nothing is painted
+    zoom = call("capture_drawing", op("z", path=_tmp("z.png"), width=900, region=[100, 100, 200, 200], crops=True))
+    assert zoom["zoomed"] == []  # a region is a zoom of its own
+
+
 def check_a_colour_qt_cannot_print_is_normalised_before_the_file_is_written() -> None:
     _sheet()
     _add_native_note_and_cosmetic_line(colour=(255.0, 0.0, 0.0, 0.0))

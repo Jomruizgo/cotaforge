@@ -39,10 +39,22 @@ class Reply:
 
 
 class Cad:
-    def __init__(self, session: ClientSession) -> None:
+    def __init__(self, session: ClientSession, looks: bool = True) -> None:
         self.session = session
+        self.looks = looks
+        """Look at the sheet before an export of it, like the agent does (export waits for a capture taken after the last
+        change of the sheet): the tests of the export are about something else; the ones about the look pass ``looks=False``."""
 
     async def __call__(self, tool: str, **arguments: Any) -> Reply:
+        if (
+            self.looks
+            and tool == "export"
+            and arguments.get("action") in ("pdf", "dxf")
+            and arguments.get("face") is None
+            and arguments.get("flat") is None
+        ):
+            sheet = {"sheet": arguments["sheet"]} if arguments.get("sheet") else {}
+            await self.session.call_tool("drawing", {"action": "capture", **sheet})
         return Reply(await self.session.call_tool(tool, arguments))
 
     async def ok(self, tool: str, **arguments: Any) -> str:
