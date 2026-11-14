@@ -592,7 +592,7 @@ Every sheet gets this floor without you asking for it. Paper, projection and tit
 
 - **Every hole located.** A sheet with holes gets a `loc` element. It never counts from the corner of the bounding box. In each direction it counts from your declared datums (baseline dimensions), otherwise from the part's plane of symmetry, otherwise it draws nothing and asks you from which face or edge positions are counted.
 - **Compact callouts.** Identical holes share one callout. Leaders go to the cleanest side and do not cross each other.
-- **Dowel holes.** `dowel=true` adds ◎ to the callout and a ring on each hole. The function of a hole is yours to say; `review` warns about a likely dowel hole that is unmarked.
+- **Dowel holes.** `dowel=true` ends the callout in "dowel" and puts a ring on each hole. The function of a hole is yours to say; `review` warns about a likely dowel hole that is unmarked.
 - **Numbered notes.** The `NOTAS` block numbers, in order: thickness (when the sheet has one standard view), and the agent's notes.
 - **Title block.** A TechDraw template stored in the document. `create` or `update` with `title_block={"document_type": "...", ...}` sets fields by name. There is no logo yet.
 - **A single view.** A plate whose holes go through the thickness can be drawn in one view with a thickness note (`views=["top"]`).
