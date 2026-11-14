@@ -50,6 +50,7 @@ from cotaforge.contract import (
     MateDistanceRequest,
     MirrorBodyRequest,
     MirrorRequest,
+    MouldSplitRequest,
     MoveBodyRequest,
     OperationSpec,
     PlaceComponentRequest,
@@ -653,6 +654,20 @@ def build_shrink_body(op: Any, ctx: ExecutionContext, resolver: Resolver) -> Shr
     return ShrinkBodyRequest(operation_id=op.id, source=resolver.body(op.source, op.id, "source"), scale=op.scale())
 
 
+def build_mould_split(op: Any, ctx: ExecutionContext, resolver: Resolver) -> MouldSplitRequest:
+    """The shrunk source, the pull as a vector, the block, the decision on the walls with no draft and the slides."""
+    return MouldSplitRequest(
+        operation_id=op.id,
+        source=resolver.body(op.source, op.id, "source"),
+        pull=f.normalise(axis_vector(op.pull)),
+        block_size=tuple(op.block_size_mm) if op.block_size_mm is not None else None,
+        margin_mm=op.margin_mm,
+        zero_draft_to=op.zero_draft_to,
+        slides=op.slides,
+        min_draft_deg=op.min_draft_deg,
+    )
+
+
 def build_split(op: Any, ctx: ExecutionContext, resolver: Resolver) -> SplitRequest:
     """The source piece as a body handle and the parting plane as a frame (a base plane, a datum plane or a planar
     face; only its origin and normal matter)."""
@@ -784,6 +799,7 @@ DISPATCH: dict[str, tuple[str, Builder]] = {
     "mirror": ("mirror", build_mirror),
     "mirror_body": ("mirror_body", build_mirror_body),
     "shrink_body": ("shrink_body", build_shrink_body),
+    "mould_split": ("mould_split", build_mould_split),
     "split": ("split", build_split),
     "box": ("box", build_box),
     "cylinder": ("cylinder", build_cylinder),
