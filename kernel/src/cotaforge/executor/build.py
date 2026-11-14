@@ -50,6 +50,7 @@ from cotaforge.contract import (
     MateDistanceRequest,
     MirrorBodyRequest,
     MirrorRequest,
+    MouldComponentRequest,
     MouldSplitRequest,
     MoveBodyRequest,
     OperationSpec,
@@ -58,6 +59,7 @@ from cotaforge.contract import (
     Request,
     RevolveRequest,
     SetJointRequest,
+    SlideMechanismRequest,
     ShellRequest,
     ShrinkBodyRequest,
     SketchFrame,
@@ -668,6 +670,54 @@ def build_mould_split(op: Any, ctx: ExecutionContext, resolver: Resolver) -> Mou
     )
 
 
+def build_mould_component(op: Any, ctx: ExecutionContext, resolver: Resolver) -> MouldComponentRequest:
+    """The catalogue parts of the step, resolved to millimetres (``cotaforge.mouldparts``): the CAD draws numbers only."""
+    from cotaforge import mouldparts  # noqa: PLC0415 - the tables are only read when a step names a component
+
+    places = [
+        mouldparts.Placement(
+            origin=tuple(p.origin),  # type: ignore[arg-type]
+            z=f.normalise(axis_vector(p.axis)),
+            x=tuple(p.x) if p.x is not None else None,  # type: ignore[arg-type]
+        )
+        for p in op.at
+    ]
+    try:
+        parts = mouldparts.expand(op.kind, op.ref, op.size, places)
+    except mouldparts.ComponentError as exc:
+        raise _missing(op, "ref", str(exc)) from exc
+    return MouldComponentRequest(operation_id=op.id, parts=parts)
+
+
+def build_slide_mechanism(op: Any, ctx: ExecutionContext, resolver: Resolver) -> SlideMechanismRequest:
+    """The split step and the slide number, the part, the pull and the angles; the catalogue rows the CAD may pick the
+    angle pin and the wear plate from travel in the request (the CAD side reads no catalogue)."""
+    from cotaforge import mouldparts  # noqa: PLC0415 - the tables are only read when a step names a component
+
+    try:
+        pins = mouldparts.angle_pin_rows(round(op.pin_diameter_mm))
+        if abs(op.pin_diameter_mm - round(op.pin_diameter_mm)) > 1e-9:
+            raise mouldparts.ComponentError(f"pin_diameter_mm {op.pin_diameter_mm:g} is not a catalogue diameter (whole millimetres)")
+    except mouldparts.ComponentError as exc:
+        raise _missing(op, "pin_diameter_mm", str(exc)) from exc
+    return SlideMechanismRequest(
+        operation_id=op.id,
+        split=_feature(op, ctx, op.split, "split"),
+        slide=op.slide,
+        part=resolver.body(op.part, op.id, "part"),
+        pull=f.normalise(axis_vector(op.pull)),
+        angle_deg=op.angle_deg,
+        stroke_mm=op.stroke_mm,
+        clearance_mm=op.clearance_mm,
+        wedge_extra_deg=op.wedge_extra_deg,
+        host=op.host,
+        pin_diameter_mm=op.pin_diameter_mm,
+        pin_options=pins,
+        wear_options=mouldparts.wear_rows(),
+        sources={"angle_pin": mouldparts.dme.ANGLE_PIN_SOURCE, "wear_plate": mouldparts.dme.WEAR_SOURCE},
+    )
+
+
 def build_split(op: Any, ctx: ExecutionContext, resolver: Resolver) -> SplitRequest:
     """The source piece as a body handle and the parting plane as a frame (a base plane, a datum plane or a planar
     face; only its origin and normal matter)."""
@@ -800,6 +850,8 @@ DISPATCH: dict[str, tuple[str, Builder]] = {
     "mirror_body": ("mirror_body", build_mirror_body),
     "shrink_body": ("shrink_body", build_shrink_body),
     "mould_split": ("mould_split", build_mould_split),
+    "mould_component": ("mould_component", build_mould_component),
+    "slide_mechanism": ("slide_mechanism", build_slide_mechanism),
     "split": ("split", build_split),
     "box": ("box", build_box),
     "cylinder": ("cylinder", build_cylinder),

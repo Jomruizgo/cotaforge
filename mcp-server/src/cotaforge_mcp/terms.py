@@ -160,6 +160,18 @@ TERMS: tuple[Term, ...] = (
         "mould_split",
     ),
     Term(
+        ("base de molde", "portamolde", "porta-molde", "mould base", "columna guía", "casquillo guía", "anillo centrador", "casquillo de bebedero", "expulsor", "eyector"),
+        "op mould_component",
+        "kind (mould_base|guide_pin|guide_bush|locating_ring|sprue_bush|ejector_pin|return_pin|angle_pin|wear_plate), ref (DME item) or size, at",
+        "mould_component",
+    ),
+    Term(
+        ("corredera", "cuña de bloqueo", "pasador angular", "mecanismo de corredera", "slide", "angle pin"),
+        "op slide_mechanism",
+        "split (the mould_split step), slide (region), part, pull, angle_deg, stroke_mm?, clearance_mm, wedge_extra_deg, host?",
+        "slide_mechanism",
+    ),
+    Term(
         ("línea de partición", "parting line", "parting analysis"),
         "inspect parting",
         "pull [x, y, z], id (core|cavity for walls with no draft): the parting loops, the walls to decide, the slides",

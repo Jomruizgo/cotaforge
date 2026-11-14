@@ -47,6 +47,7 @@ from cotaforge.contract import (
     MateDistanceRequest,
     MirrorBodyRequest,
     MirrorRequest,
+    MouldComponentRequest,
     MouldSplitRequest,
     MoveBodyRequest,
     NewDocumentRequest,
@@ -57,6 +58,7 @@ from cotaforge.contract import (
     SetJointRequest,
     ShellRequest,
     ShrinkBodyRequest,
+    SlideMechanismRequest,
     SketchHandle,
     SketchRequest,
     SplitRequest,
@@ -66,6 +68,8 @@ from cotaforge.contract import (
     frame_for_plane,
 )
 from cotaforge.ir.ops_features import (
+    MouldComponentOperation,
+    SlideMechanismOperation,
     OP_NAMES,
     AddJointOperation,
     BaseFlangeOperation,
@@ -154,6 +158,8 @@ ROW_NAMES: dict[str, set[str]] = {
     "mirror_body": {"volume_delta", "copy_centroid", "source_centroid", "copy_bbox"},
     "shrink_body": {"volume_delta", "copy_centroid", "source_centroid", "copy_bbox"},
     "mould_split": {"volume_delta"},
+    "mould_component": {"volume_delta"},
+    "slide_mechanism": set(),  # no prediction: the CAD checks the stroke, the wedge and the interference and refuses the step
     "split": {"volume_delta", "split_volume_sum", "split_centroid", "split_sides"},
     "insert_component": {"volume_delta", "component_bbox", "component_transform"},
     "fix_component": {"volume_delta", "component_transform"},
@@ -540,6 +546,26 @@ def _mould_split() -> Case:
     return computer, stub, op, request, block
 
 
+def _mould_component() -> Case:
+    from cotaforge.mouldparts import Placement, expand
+
+    computer, stub, _ = _concept_stub()
+    block = StateSnapshot(mass=mass(0.0), bbox=EMPTY_BBOX)
+    op = MouldComponentOperation(id="pins", intent="i", kind="ejector_pin", size="3x100")
+    request = MouldComponentRequest(operation_id="pins", parts=expand("ejector_pin", None, "3x100", [Placement()]))
+    return computer, stub, op, request, block
+
+
+def _slide_mechanism() -> Case:
+    computer, stub, _ = _concept_stub()
+    block = StateSnapshot(mass=mass(120000.0), bbox=BoundingBox(min=(0, 0, 0), max=(100, 60, 20)))
+    op = SlideMechanismOperation(id="slide", intent="i", split="inserts", slide=1, part=BodyRef(from_op="block"), angle_deg=15)
+    request = SlideMechanismRequest(
+        operation_id="slide", split=FeatureHandle(id="f:1"), slide=1, part=BodyHandle(id="body:1"), pull=(0, 0, 1), angle_deg=15.0
+    )
+    return computer, stub, op, request, block
+
+
 def _split() -> Case:
     computer, stub, _ = _concept_stub()
     block = StateSnapshot(mass=mass(120000.0), bbox=BoundingBox(min=(0, 0, 0), max=(100, 60, 20)))
@@ -722,6 +748,8 @@ CASES: dict[str, Callable[[], Case]] = {
     "mirror_body": _mirror_body,
     "shrink_body": _shrink_body,
     "mould_split": _mould_split,
+    "mould_component": _mould_component,
+    "slide_mechanism": _slide_mechanism,
     "split": _split,
     "insert_component": _insert_component,
     "fix_component": _fix_component,
@@ -746,6 +774,9 @@ def test_op_emits_an_asserted_expectation_from_its_row(op_name: str) -> None:
     assert op.op == op_name
     expectations = computer.compute(op, request, before, stub)
     asserted = {e.name for e in expectations if e.kind == CheckKind.asserted}
+    if not ROW_NAMES[op_name]:  # an op the CAD checks on its finished bodies: nothing predicted, nothing asserted
+        assert not asserted, f"{op_name}: asserted={asserted}"
+        return
     assert asserted & ROW_NAMES[op_name], f"{op_name}: asserted={asserted}"
 
 

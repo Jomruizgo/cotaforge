@@ -2,8 +2,9 @@
 
 Allowed "may import" arrows:
     contract       -> nothing internal (pydantic + stdlib only)
-    ir             -> contract
-    executor       -> ir, verification, contract
+    mouldparts     -> contract (catalogue tables of mould components: pure data and arithmetic)
+    ir             -> contract, mouldparts
+    executor       -> ir, verification, contract, mouldparts
     verification   -> ir, contract
     units          -> nothing from cotaforge (pydantic + stdlib only)
     memory         -> nothing from cotaforge (pydantic + pyyaml + stdlib only)
@@ -34,8 +35,9 @@ SRC = Path(__file__).resolve().parents[2] / "src" / "cotaforge"
 
 ALLOWED_IMPORTS: dict[str, frozenset[str]] = {
     "contract": frozenset(),
-    "ir": frozenset({"contract"}),
-    "executor": frozenset({"ir", "verification", "contract"}),
+    "mouldparts": frozenset({"contract"}),
+    "ir": frozenset({"contract", "mouldparts"}),
+    "executor": frozenset({"ir", "verification", "contract", "mouldparts"}),
     "verification": frozenset({"ir", "contract"}),
     "adapters": frozenset({"adapters.procstats"}),
     "adapters.fake": frozenset({"contract"}),
