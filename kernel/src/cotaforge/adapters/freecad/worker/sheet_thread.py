@@ -117,6 +117,7 @@ def external_threads(found: list[dict[str, Any]]) -> list[ThreadInfo]:
             cylinder=str(r.get("cylinder", "")),
             pitch=float(r.get("pitch_mm", 0.0)),
             name=str(r.get("name", "")),
+            tolerance_class=str(r.get("tolerance_class", "")),
         )
         for r in found
     ]
@@ -145,13 +146,14 @@ def threads_on_face(ctx: Context, face_id: str, face: Any) -> list[ThreadInfo]:
 
 def external_callout(ctx: Context, threads: list[ThreadInfo]) -> list[str]:
     """The callout lines of the threads on one cylinder: ``M12 long. útil 20`` (equal ones share a count: ``2× M12 ...``)."""
-    groups: dict[tuple[str, float], int] = {}
+    groups: dict[tuple[str, float, str], int] = {}
     for t in threads:
-        key = (t.size, round(t.length, 3))
+        key = (t.size, round(t.length, 3), t.tolerance_class)
         groups[key] = groups.get(key, 0) + 1
     lines = []
-    for (size, length), count in groups.items():
+    for (size, length, tol_class), count in groups.items():
         shown = size.replace(".", ",") if ctx.comma else size
+        shown += f" - {tol_class}" if tol_class else ""  # ISO 6410: the designation with its class, ``M20x1,5 - 6g``
         line = f"{shown} {ctx.say('long. útil', 'useful length')} {ctx.num(length)}"
         lines.append(f"{count}× {line}" if count > 1 else line)
     return lines

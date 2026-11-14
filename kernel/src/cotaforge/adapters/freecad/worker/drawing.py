@@ -1393,6 +1393,7 @@ def _expand_keyway_dims(
     import items_views  # noqa: PLC0415 - the letters of the views
 
     _KEYWAY_FALLBACK.clear()
+    along_side = "above" if turned_of(doc, spec, op) is not None else None  # a turned part's lengths stack below: the keyway's stand above
     slots =sheet_facts.collect(doc, _bodies(doc, spec.get("body"), op)).keyway_slots
     shown = tuple(views_of(spec))
     views_made = [i for i in [*spec.get("items", ()), *requested] if isinstance(i, dict) and i.get("type") in ("section", "detail", "aux_view")]
@@ -1423,18 +1424,18 @@ def _expand_keyway_dims(
                 free = [letter for letter in items_views.LETTERS if letter not in taken]
                 letter = str(item.get("letter") or free[min(auto, len(free) - 1)])
                 section = f"{letter}-{letter}"
-            dims = sheet_keyway.dimension_specs(slot, name, shown, section, item.get("fit"), depth_tol)
+            dims = sheet_keyway.dimension_specs(slot, name, shown, section, item.get("fit"), depth_tol, along_side)
             if section and any(d.get("view") == section for d in dims):  # no width or depth to carry: no section
                 taken.add(section[0])
                 _KEYWAY_FALLBACK[f"{name}_sec"] = [
-                    d for d in sheet_keyway.dimension_specs(slot, name, shown, None, item.get("fit"), depth_tol) if str(d["id"]).endswith(("_w", "_t"))
+                    d for d in sheet_keyway.dimension_specs(slot, name, shown, None, item.get("fit"), depth_tol, along_side) if str(d["id"]).endswith(("_w", "_t"))
                 ]
                 made.append(
                     {"type": "section", "id": f"{name}_sec", "at": [round(v, 4) for v in sheet_keyway.middle_of(slot)],
                      "normal": list(slot.cylinder.axis), "letter": section[0], "removed": True}
                 )  # fmt: skip
             elif section:
-                dims = sheet_keyway.dimension_specs(slot, name, shown, None, item.get("fit"), depth_tol)
+                dims = sheet_keyway.dimension_specs(slot, name, shown, None, item.get("fit"), depth_tol, along_side)
             made += dims
         if not made:
             raise invalid_request("the part has no keyway whose walls can be dimensioned (keyway_dims)", op)
@@ -1553,27 +1554,27 @@ def _has_thickness(
     return length <= FLAT_RATIO * diameter
 
 
-VIEW_DIRECTIONS = {"front": (0.0, 1.0, 0.0), "top": (0.0, 0.0, 1.0), "right": (1.0, 0.0, 0.0)}  # what each standard view looks along
+VIEW_DIRECTIONS = sheet_pattern.VIEW_DIRECTIONS  # what each standard view looks along
 
 
-def _pattern_items(found: list[sc.HoleInfo], standard: list[str]) -> list[dict[str, Any]]:
-    """The polar dimensions of every circular pattern of the holes that a standard view of the sheet shows as circles: ``pd<n>``
-    (the diameter of its pitch circle) and the angle of its first hole, ``pd<n>a`` (an uneven pattern: one angle per hole,
-    ``pd<n>a<k>``). Each names a hole of the pattern by a point of its axis; what it draws is ``items_pattern``'s."""
-    out: list[dict[str, Any]] = []
-    by_index = {h.index: h for h in found}
-    for number, pattern in enumerate(sheet_pattern.find(found, sheet_pattern.axes_of_holes(found)), start=1):
-        if not any(v in VIEW_DIRECTIONS and sc.parallel(VIEW_DIRECTIONS[v], pattern.direction) for v in standard):
-            continue
-        at = [round(c, 4) for c in by_index[min(pattern.reps)].centre]
-        out.append({"id": f"pd{number}", "type": "pattern_dim", "auto": True, "at": at})
-        if pattern.even:
-            out.append({"id": f"pd{number}a", "type": "pattern_dim", "auto": True, "kind": "angle", "at": at})
-            continue
-        for k, index in enumerate(sorted(pattern.reps), start=1):
-            where = [round(c, 4) for c in by_index[index].centre]
-            out.append({"id": f"pd{number}a{k}", "type": "pattern_dim", "auto": True, "kind": "angle", "at": where})
-    return out
+def _pattern_items(found: list[sc.HoleInfo], standard: list[str], round_axis: tuple[sc.Vec3, sc.Vec3] | None = None) -> list[dict[str, Any]]:
+    """The polar dimensions the sheet carries by itself for the holes (``sheet_pattern.auto_items``)."""
+    return sheet_pattern.auto_items(found, standard, round_axis)
+
+
+def _round_axis(doc: reg.DocumentRec, body: str | None, op: str | None) -> tuple[sc.Vec3, sc.Vec3] | None:
+    """The axis of a part that is a body of revolution (a disc, a flange): its direction and a point of it (the middle of the
+    box across it), else ``None``."""
+    shapes = _shapes(doc, body, op)
+    found = LiveGeometry(doc, shapes, op).round_extent()
+    if found is None or not shapes:
+        return None
+    boxes = [_exact_box(shape) for shape in shapes]
+    return found[0], (
+        (min(b.XMin for b in boxes) + max(b.XMax for b in boxes)) / 2,
+        (min(b.YMin for b in boxes) + max(b.YMax for b in boxes)) / 2,
+        (min(b.ZMin for b in boxes) + max(b.ZMax for b in boxes)) / 2,
+    )
 
 
 def _sync_auto_items(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None) -> None:
@@ -1590,7 +1591,7 @@ def _sync_auto_items(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None)
     found_holes = [] if assembly else hole_infos(doc, spec.get("body"), op)
     if found_holes:
         wanted[AUTO_LOCATE_ID] = {"id": AUTO_LOCATE_ID, "type": "datum_dims", "auto": True}
-        wanted.update({i["id"]: i for i in _pattern_items(found_holes, standard)})
+        wanted.update({i["id"]: i for i in _pattern_items(found_holes, standard, _round_axis(doc, spec.get("body"), op))})
     if not assembly and len(standard) == 1 and _has_thickness(
         doc, spec.get("body"), standard[0], op, turned_of(doc, spec, op) is not None
     ):
@@ -1954,6 +1955,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     for position, raw in enumerate(requested, start=1):
         try:
             done = sheet_items.normalise(raw, taken, spec["next"])
+            sheet_items.refuse_repeated_note(done, [*items, *added])
         except sc.ItemError as exc:
             raise invalid_request(f"item {position} of {len(requested)}: {exc}", op) from exc
         spec["next"] += 1

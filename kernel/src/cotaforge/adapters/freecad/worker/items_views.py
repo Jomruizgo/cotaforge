@@ -59,7 +59,7 @@ ROOM_TRIES = 30
 SCAN_STEP_MM = 10.0
 CUT_END_MM = 12.0  # the thick ends of a cutting-plane line
 CUT_OVERSHOOT_MM = 4.0
-CUT_ARROW_MM = 9.0
+CUT_ARROW_MM = 5.5  # the stem of the arrow of a cutting line: short, so its letter stands inside the extension lines of a keyway's length
 STANDARD_ENLARGEMENTS = (2.0, 5.0, 10.0, 20.0, 50.0)  # ISO 5455
 MAX_DETAIL_MM = 70.0
 LETTERS = "ABCDEFGHJKLMNPRSTUVWXYZ"  # no I, O or Q: they read as digits
@@ -271,7 +271,7 @@ def _arrow_with_letter(tip_base: Point, direction: Point, letter: str) -> list[E
     pointing the same way, and the letter beyond it."""
     tip = (tip_base[0] + direction[0] * CUT_ARROW_MM, tip_base[1] + direction[1] * CUT_ARROW_MM)
     out: list[Entity] = [Line(tip_base[0], tip_base[1], tip[0], tip[1], DIMENSIONS), arrow(tip, direction)]
-    at = (tip[0] + direction[0] * 4.0, tip[1] + direction[1] * 4.0)
+    at = (tip[0] + direction[0] * 3.5, tip[1] + direction[1] * 3.5)
     out.append(Text(at[0], at[1] - LABEL_HEIGHT_MM / 2, letter, LABEL_HEIGHT_MM, TEXT, "center"))
     return out
 
