@@ -83,9 +83,13 @@ WINDOW_LINE = (
 )
 
 SHEET_WINDOW_LINE = (
-    "THIS PROJECT BUILDS A SHEET IN ONE ORDER (drawing_flow: sheet): drawing(action=plan) -> ask -> drawing(action=compose, "
-    "decisions={...}) -> capture -> review -> fix the points one by one. The sheet is built whole, in the FreeCAD window, "
-    "in one call; the engineer sees the plan BEFORE it and the sheet after. Never rebuild with add what compose derives. "
+    "THIS PROJECT MAKES THE FIRST PROPOSAL OF A SHEET IN ONE ORDER (drawing_flow: sheet): drawing(action=plan) "
+    "-> ask -> drawing(action=compose, decisions={...}) ONCE -> capture -> review -> LOCAL fixes one item at a time "
+    "(drawing(action=update, items=[{id, fields}]) moves it or changes its value, tolerance or text and nothing else on the "
+    "sheet moves; add / remove put or take off one item) -> review. The sheet is built whole, in the FreeCAD window, in one "
+    "call; the engineer sees the plan BEFORE it and the sheet after. Compose again ONLY when a decision changes the whole "
+    "sheet (paper, scale, views, the dimension scheme: relations, datums) or the engineer orders it (recompose=true, by, "
+    "reason): a second compose for a local fix is refused. Never rebuild with add what compose derives. "
     "cad_guide(topic=drawing:compose) has the shape of the decisions."
 )
 
@@ -110,10 +114,16 @@ COMPOSE_LINES = (
     "compose REFUSES, before it changes anything, while a decision the plan listed is missing (it lists them: answer each "
     "with its key or with answers). It never guesses a datum, a fit or a tolerance. A paper the engineer did not fix is "
     "raised (A4, A3, A2) when the annotations do not fit, keeping the scale (a paper is never bigger only for a bigger "
-    "scale), and the reply says so; give sheet.template to fix it. A "
-    "second compose takes off what the first one put (ids dc_...) and puts the new decisions; what you added or placed "
-    "by hand (add, side, offset_mm) stays. After it: capture and look at it, review, and correct with add / remove / "
-    "update; never rebuild with add what compose derives (rq_... items: remove one only with reason=).",
+    "scale), and the reply says so; give sheet.template to fix it. The "
+    "first compose is the only one of a sheet: a second is refused (nothing changes) unless it states another paper, "
+    "scale, view set, angle or body, or another dimension scheme (relations, datums), or the engineer orders it "
+    "(recompose=true with by= and reason=); it then takes off what the first one put (ids dc_...) and puts the new "
+    "decisions; what you added or edited by hand stays. After it: capture and look at it, review, and correct LOCALLY: "
+    "drawing(action=update, items=[{id, fields}]) changes ONE item in place (a dimension: side, offset_mm, tol, fit, text; "
+    "null takes a field off; the type never changes). Nothing else on the sheet moves; if the new place lies on another "
+    "object, or would make another item give way, the call is refused with the reason and changes nothing. An edited item "
+    "is pinned: the layout and a later compose leave it. add / remove put or take off one item; never rebuild with add what "
+    "compose derives (rq_... items: remove one only with reason=).",
 )
 
 ITEM_INTRO = (
@@ -128,8 +138,8 @@ ITEM_INTRO = (
     "look for free room around the dimensions, away from each other and inside the frame, never over the title "
     "block; with side or offset_mm a callout goes exactly there and, if that place is taken or outside the frame, the "
     "item's warning says so (datum, gdt and finish too: on a flat face side only tells which way the mark would go "
-    "and the warning says when it cannot). The engineer sees each one in the window; fix a placement with offset_mm "
-    "/ side, or remove and add again, instead of rebuilding the sheet. A face id the part no longer has (an edit regenerated "
+    "and the warning says when it cannot). The engineer sees each one in the window; fix an item in place with "
+    "drawing(action=update, items=[{id, offset_mm, side...}]) (nothing else moves), instead of rebuilding the sheet. A face id the part no longer has (an edit regenerated "
     "it) makes its item an error, never an old number: add it again with the new id. "
     "Positions are world mm; at_mm is a SHEET position in mm from its bottom-left corner (y up). view is front, "
     'top or right (or the label of a section, "A-A", for dim, hole_dim, note and line).',

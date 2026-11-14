@@ -661,7 +661,13 @@ class AnnotateDrawingRequest(Request):
     ``layout`` places the annotations of the whole sheet at once (``drawing_flow: sheet``): the dimensions and leaders
     that asked for no place are given a side and an offset (or an elbow) by the global layout planner, which sees every
     view and item; what it cannot place is listed in the result (``layout_unplaced``), never dropped, and the paper is
-    not touched (the caller steps it up when ``layout_fits`` is false)."""
+    not touched (the caller steps it up when ``layout_fits`` is false).
+
+    ``edit`` changes ONE or more items in place: each entry of ``items`` is ``{"id": "d3", <fields to change>}`` (a
+    field set to ``null`` is taken off; the type never changes). Nothing else on the sheet moves: when the edited item
+    would lie on another one, or would make another item move, the whole call is refused and says why. An edited item
+    is pinned: the global layout and a later compose leave it where it is. ``record`` stores in the sheet (so it survives save and
+    reopen) what the order that composed it decided (``composed``); it changes nothing on the sheet."""
 
     iso_colour: bool | None = None
     """Filled by the adapter from the convention in force (see DrawingRequest.iso_colour); None leaves the sheet as
@@ -679,9 +685,14 @@ class AnnotateDrawingRequest(Request):
         "review_choice",
         "review_report",
         "layout",
+        "edit",
+        "record",
     ]
     sheet: str | None = Field(default=None, pattern=SHEET_NAME_PATTERN)
     items: tuple[dict[str, Any], ...] = ()
+    composed: dict[str, Any] | None = None
+    """``record`` only: what the order that composed the sheet decided (the signature of the decisions that affect the
+    whole sheet)."""
     remarks: tuple[dict[str, Any], ...] = ()
     at: float | None = None
     ids: tuple[str, ...] = ()
@@ -720,8 +731,18 @@ class AnnotateDrawingRequest(Request):
             found = drawing_items.problems(self.items)
             if found:
                 raise ValueError("; ".join(found))
+        elif self.action == "edit":
+            found = drawing_items.edit_problems(self.items)
+            if found:
+                raise ValueError("; ".join(found))
         elif self.items:
             msg = f"{self.action} takes no items (remove takes ids)"
+            raise ValueError(msg)
+        if self.action == "record" and self.composed is None:
+            msg = "record needs composed"
+            raise ValueError(msg)
+        if self.composed is not None and self.action != "record":
+            msg = f"{self.action} takes no composed"
             raise ValueError(msg)
         if self.ids and self.action != "remove":
             msg = f"{self.action} takes no ids"

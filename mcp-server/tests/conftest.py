@@ -86,6 +86,7 @@ class DrawingFake(FakeAdapter):
         self.layout_fails: str | None = None  # the next layout call fails with this message
         self.weldment: Any = None  # what a review of a welded part says of its bodies and joints (``DrawingWeldPlan``)
         self.sheet_views: tuple[str, ...] = ()  # the views the described sheet says it has
+        self.collides: set[str] = set()  # item ids whose edit the CAD refuses: the new place lies on another object
 
     def _need_sheet(self, sheet: str | None) -> str:
         from cotaforge.contract import AdapterError, ErrorCode, ErrorInfo
@@ -140,7 +141,9 @@ class DrawingFake(FakeAdapter):
             raise AdapterError(ErrorInfo(code=ErrorCode.timeout, message=self.fail_with, recoverable=True))
         self.created.append(request)
         name = request.sheet or next(iter(self.drawings), "Drawing")
+        composed = self.drawings.get(name, {}).get("composed")  # a rebuild keeps what the sheet recorded of its compose
         self.drawings[name] = {
+            **({"composed": composed} if composed else {}),
             "template": request.template,
             "language": request.language,
             "scale": request.scale or 0.5,
@@ -208,6 +211,34 @@ class DrawingFake(FakeAdapter):
                 info = ErrorInfo(code=ErrorCode.invalid_request, message=self.layout_fails, recoverable=True)
                 raise AdapterError(info)
             return self._drawing_result(name, rebuilt=self.layout_report or None)
+        if request.action == "record":  # what the order that composed the sheet decided; the pins of the hand stay
+            pinned = sheet.get("composed", {}).get("pinned")
+            sheet["composed"] = {**request.composed, **({"pinned": pinned} if pinned else {})}
+            return self._drawing_result(name)
+        if request.action == "edit":  # one item changed in place, and pinned; a collision (``collides``) refuses it
+            known = {i["id"]: i for i in sheet["items"]}
+            missing = [p["id"] for p in request.items if p["id"] not in known]
+            if missing:
+                message = f"no item {', '.join(missing)} on sheet {name}; it has: {', '.join(sorted(known))}"
+                raise AdapterError(ErrorInfo(code=ErrorCode.invalid_request, message=message, recoverable=True))
+            for patch in request.items:
+                if patch["id"] in self.collides:
+                    message = f"the edit would put {patch['id']} on d9 (text over text); nothing was changed"
+                    raise AdapterError(ErrorInfo(code=ErrorCode.invalid_request, message=message, recoverable=True))
+            for patch in request.items:
+                item = known[patch["id"]]
+                for key, value in patch.items():
+                    if key in ("id", "type"):
+                        continue
+                    if value is None:
+                        item.pop(key, None)
+                    else:
+                        item[key] = value
+            pinned = {*sheet.get("composed", {}).get("pinned", ()), *(p["id"] for p in request.items)}
+            sheet["composed"] = {**sheet.get("composed", {}), "pinned": sorted(pinned)}
+            sheet["approved_by"] = ""
+            sheet["edits"] += 1
+            return self._drawing_result(name, changed=tuple(p["id"] for p in request.items))
         sheet["approved_by"] = ""  # any change of the sheet empties "Aprobó" and makes the reports old
         sheet["edits"] += 1
         if request.action == "update":
@@ -304,6 +335,7 @@ class DrawingFake(FakeAdapter):
                     reports=reports(n),
                     review_request=asked(n),
                     review_choice=chosen(n),
+                    composed=dict(self.drawings[n].get("composed", {})),
                     printed=("Fabrication notes", "19 de espesor"),
                     items=tuple(
                         DrawingItemInfo(id=i["id"], type=i["type"], status="ok", detail="drawn", spec=i)

@@ -543,13 +543,22 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
             items = list(args.items or [])
             auto_rows: list[str] = []
             handed: list[str] = []
+            edit = action == "update" and bool(items)  # one item (or a few) changed IN PLACE; the sheet is not laid out again
+            if edit and (args.title_block or args.symmetry is not None):
+                raise ToolError(
+                    "update takes either items (edits of items: nothing else moves) or title_block / symmetry (the "
+                    "sheet is laid out again): two calls",
+                    code="invalid_input",
+                    field_name="items",
+                    usage='drawing(action="update", items=[{"id":"d3","offset_mm":12}])',
+                )
             if action == "add":
                 handed = drawing_gate.hand_over(session, args.sheet, items)
             elif action == "remove":
                 auto_rows = drawing_gate.guard_removal(session, args.sheet, [_item_id(i) for i in items], args.reason, args.by)
             usage = (
                 'drawing(action="add", items=[{"type":"hole_dim","all":true}]) | drawing(action="remove", items=["h2"]) '
-                '| drawing(action="remove_sheet", sheet="Drawing")'
+                '| drawing(action="update", items=[{"id":"d3","offset_mm":12}]) | drawing(action="remove_sheet", sheet="Drawing")'
             )
             if action == "remove" and not items:
                 raise ToolError(
@@ -563,9 +572,9 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
             try:
                 request = AnnotateDrawingRequest(
                     operation_id="drawing",
-                    action=action,
+                    action="edit" if edit else action,
                     sheet=args.sheet,
-                    items=tuple(items) if action == "add" else (),
+                    items=tuple(items) if action == "add" or edit else (),
                     ids=tuple(_item_id(i) for i in items) if action == "remove" else (),
                     view=args.views[0] if args.views else None,
                     title_block=args.title_block or {} if action == "update" else {},
@@ -589,11 +598,16 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
             if result.removed:
                 return ok(f"drawing {result.sheet}: sheet removed; sheets left: {', '.join(result.sheets) or 'none'}")
             lines = [
-                *_sheet_summary(result, brief=action != "update"),
+                *_sheet_summary(result, brief=action != "update" or edit),
                 *handed,
                 *[f"warning: {w}" for w in result.warnings],
-                "next: the engineer sees it in the sheet window; fix a placement with offset_mm / side, or remove + add; "
-                "add the next few items",
+                (
+                    f"edited in place: {', '.join(result.changed)} (pinned: nothing else moved, a later layout or compose "
+                    "leaves them where they are); drawing(action=\"capture\") to look at it"
+                    if edit
+                    else "next: the engineer sees it in the sheet window; fix an item with drawing(action=\"update\", "
+                    'items=[{"id":"d3","offset_mm":12}]) (nothing else moves), add the next few items'
+                ),
             ]
             return ok("\n".join(lines))
         if action == "requirements":

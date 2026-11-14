@@ -68,6 +68,69 @@ def test_bad_items_say_what_is_wrong(item: object, text: str) -> None:
     assert found and text in found[0]
 
 
+# --- edit: one item changed in place (``drawing(action="update", items=[...])``) -------------------------------------------
+
+
+def test_an_edit_is_the_id_of_an_item_and_what_to_change() -> None:
+    request = AnnotateDrawingRequest(operation_id="t", action="edit", items=({"id": "d3", "offset_mm": 12}, {"id": "n1", "text": None}))
+    assert [i["id"] for i in request.items] == ["d3", "n1"]
+
+
+@pytest.mark.parametrize(
+    ("items", "text"),
+    [
+        ((), "edit needs items"),
+        (({"offset_mm": 12},), "the id of the item to edit"),
+        (({"id": "d3"},), "nothing to change"),
+        (({"id": "d3", "type": "dim"},), "nothing to change"),
+        (({"id": "d3", "side": "above"}, {"id": "d3", "side": "below"}), "repeated"),
+    ],
+)
+def test_a_bad_edit_says_what_is_wrong(items: tuple[dict[str, object], ...], text: str) -> None:
+    with pytest.raises(ValidationError, match=text):
+        AnnotateDrawingRequest(operation_id="t", action="edit", items=items)
+
+
+def test_record_keeps_what_a_compose_decided_and_only_record_takes_it() -> None:
+    assert AnnotateDrawingRequest(operation_id="t", action="record", composed={"signature": {"template": "A3"}}).composed == {
+        "signature": {"template": "A3"}
+    }
+    with pytest.raises(ValidationError, match="record needs composed"):
+        AnnotateDrawingRequest(operation_id="t", action="record")
+    with pytest.raises(ValidationError, match="takes no composed"):
+        AnnotateDrawingRequest(operation_id="t", action="layout", composed={"signature": {}})
+
+
+def test_the_sheet_info_says_what_the_compose_recorded_and_what_the_hand_pinned() -> None:
+    info = DrawingSheetInfo(
+        sheet="Drawing", template="A3", language="es", page_mm=(420.0, 297.0), scale=1.0,
+        composed={"signature": {"template": "A3"}, "pinned": ["d3"]},
+    )  # fmt: skip
+    assert info.composed["pinned"] == ["d3"] and DrawingSheetInfo(
+        sheet="x", template="A4", language="es", page_mm=(297.0, 210.0), scale=1.0
+    ).composed == {}
+
+
+def test_the_worker_edits_an_item_by_the_fields_of_its_own_type() -> None:
+    worker = _worker_registry()
+    dim = {"id": "d3", "type": "dim", "kind": "distance", "from": {"face": "face:1"}, "to": {"face": "face:2"}, "offset_mm": 8}
+    moved = worker.edited(dim, {"id": "d3", "offset_mm": 15, "side": "below"})  # type: ignore[attr-defined]
+    assert moved["offset_mm"] == 15 and moved["side"] == "below" and moved["from"] == dim["from"] and moved["id"] == "d3"
+    assert "offset_mm" not in worker.edited(dim, {"id": "d3", "offset_mm": None})  # type: ignore[attr-defined]
+    assert dim["offset_mm"] == 8  # the stored item is not touched until the edit is accepted
+
+
+def test_the_worker_refuses_an_edit_that_is_not_valid_for_the_item() -> None:
+    worker = _worker_registry()
+    note = {"id": "n1", "type": "note", "text": "uno"}
+    with pytest.raises(worker.ItemError, match="unknown field"):  # type: ignore[attr-defined]
+        worker.edited(note, {"id": "n1", "colour": "red"})  # type: ignore[attr-defined]
+    with pytest.raises(worker.ItemError, match="never changes the type"):  # type: ignore[attr-defined]
+        worker.edited(note, {"id": "n1", "type": "dim", "kind": "distance"})  # type: ignore[attr-defined]
+    with pytest.raises(worker.ItemError, match="text"):  # type: ignore[attr-defined]
+        worker.edited(note, {"id": "n1", "text": None})  # type: ignore[attr-defined]
+
+
 def test_a_repeated_id_and_too_many_items_are_problems() -> None:
     same = [{"type": "overall", "id": "a"}, {"type": "overall", "id": "a"}]
     assert "repeated" in table.problems(same)[0]

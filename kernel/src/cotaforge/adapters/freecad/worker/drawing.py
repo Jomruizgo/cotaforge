@@ -930,7 +930,9 @@ def _name_for(fc_doc: Any, wanted: str | None, op: str | None) -> str:
     return wanted
 
 
-CARRIED_KEYS = ("declined", "answers", "review_choice", "review_request", "reports", "report_n", "symmetry", "iso_frame")
+CARRIED_KEYS = (
+    "declined", "answers", "review_choice", "review_request", "reports", "report_n", "symmetry", "iso_frame", "composed",
+)  # fmt: skip
 # what a sheet remembers beyond its items, and a rebuild keeps: the defaults the engineer took off, the answers to the
 # review, who he chose to review it, the reports of the reviewers
 FLAT_RATIO = 0.35  # a round part is a disc (its length is a thickness) when it is at most this fraction of its diameter
@@ -1659,6 +1661,95 @@ def approve(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
 # --- items ------------------------------------------------------------------------------------------------------------
 
 
+def record_action(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
+    """Store what the order that composed the sheet decided (``composed``): the signature of the decisions that affect the
+    whole sheet. The items pinned by hand (``composed["pinned"]``) stay. It changes nothing on the sheet."""
+    op = params.get("operation_id")
+    page = _need_page(doc.fc_doc, params.get("sheet"), op)
+    spec = spec_of(page)
+    spec.pop("legacy", None)
+    pinned = list((spec.get("composed") or {}).get("pinned") or ())
+    spec["composed"] = {**dict(params.get("composed") or {}), **({"pinned": pinned} if pinned else {})}
+    write_spec(page, spec)
+    return {"sheet": spec["sheet"], "changed": []}
+
+
+def _drawn_by_item(ctx: sc.Context) -> dict[str, tuple[Any, ...]]:
+    """What every item of the sheet drew, by item id (the views are not items)."""
+    return {u.key: tuple(u.entities) for u in ctx.extras.get("units", []) if u.kind != sheet_units.KIND_VIEW}
+
+
+def _edited(item: dict[str, Any], patch: dict[str, Any], op: str | None) -> dict[str, Any]:
+    try:
+        return sheet_items.edited(item, patch)
+    except sc.ItemError as exc:
+        raise invalid_request(f"{item['id']} ({item['type']}): {exc}; nothing was changed", op) from exc
+
+
+def edit_action(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
+    """``annotate(action="edit")``: change items IN PLACE and nothing else. The sheet is drawn as it stands and with the edit;
+    the edit is refused (nothing is stored) when an edited item cannot be drawn, lies on another object where it did not
+    before, or makes any other item draw differently (it would be moved silently). An edited item is pinned: the layout and a
+    later compose leave it where it is."""
+    op = params.get("operation_id")
+    fc_doc = doc.fc_doc
+    page = _need_page(fc_doc, params.get("sheet"), op)
+    activate(fc_doc)
+    spec = spec_of(page)
+    spec.pop("legacy", None)
+    items = [dict(i) for i in spec.get("items", [])]
+    position = {str(i["id"]): n for n, i in enumerate(items)}
+    patches = [dict(p) for p in params.get("items") or ()]
+    missing = [str(p["id"]) for p in patches if str(p["id"]) not in position]
+    if missing:
+        raise invalid_request(f"no item {', '.join(missing)} on sheet {spec['sheet']}; it has: {', '.join(sorted(position))}", op)
+    edited = {str(p["id"]): _edited(items[position[str(p["id"])]], p, op) for p in patches}
+    changing = {k: v for k, v in edited.items() if v != items[position[k]]}
+    if not changing:
+        raise invalid_request(f"{', '.join(edited)}: the item already is as asked; nothing to change", op)
+    trial_items = [changing.get(str(i["id"]), i) for i in items]
+    composed = dict(spec.get("composed") or {})
+    composed["pinned"] = sorted({*(composed.get("pinned") or ()), *changing})
+    layout = dict(spec.get("layout") or {})
+    placed = {k: v for k, v in (layout.get("placed") or {}).items() if k not in changing}  # his place now, not the planner's
+    final = {**spec, "items": trial_items, "composed": composed, **({"layout": {**layout, "placed": placed}} if layout else {})}
+    wait_views(fc_doc, page, op)
+    _, _, before = compose(doc, page, spec, 1, 1, op)
+    tried = compose(doc, page, final, 1, 1, op)
+    refused = {r.id: r.detail for r in tried[1] if r.status == "error" and r.id in changing}
+    if refused:
+        raise invalid_request(
+            "; ".join(f"{k}: {why}" for k, why in refused.items()) + "; nothing was changed", op
+        )
+    known = {(c.a, c.b, c.kind) for c in before.extras.get("collisions", [])}
+    hits = [c for c in tried[2].extras.get("collisions", []) if (c.a, c.b, c.kind) not in known]
+    if hits:
+        raise invalid_request(
+            "the edit would put "
+            + "; ".join(f"{c.a} on {c.b} ({c.what or c.kind})" for c in hits[:3])
+            + "; nothing was changed (another side, another offset_mm, or the other item is the one to move)",
+            op,
+        )
+    was, now = _drawn_by_item(before), _drawn_by_item(tried[2])
+    shifted = sorted(k for k in now if k not in changing and k in was and was[k] != now[k])
+    if shifted:
+        raise invalid_request(
+            f"the edit would make {', '.join(shifted[:5])} draw differently (it makes them give way); nothing was changed "
+            "(a place that does not crowd them, or edit them too)",
+            op,
+        )
+    spec["items"] = trial_items
+    spec["composed"] = composed
+    if layout:
+        spec["layout"] = {**layout, "placed": placed}
+    _clear_approval(spec)
+    write_spec(page, spec)
+    _sync_template_fields(fc_doc, op)
+    return _result(
+        doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), [], op, changed=tuple(sorted(changing)), tried=(final, tried)
+    )
+
+
 def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     """``add`` / ``remove`` items of a sheet, or ``update`` its layout. An item that cannot be drawn against the part is
     reported in the result and NOT stored (the others are)."""
@@ -1671,6 +1762,10 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         return answer(doc, params)
     if action == "layout":
         return layout_action(doc, params)
+    if action == "edit":
+        return edit_action(doc, params)
+    if action == "record":
+        return record_action(doc, params)
     if action == "approve":
         return approve(doc, params)
     if action == "review_report":
@@ -1684,7 +1779,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     if action not in ("add", "remove", "remove_sheet"):
         raise invalid_request(
             f"unknown drawing action {action!r}, expected add, remove, remove_sheet, update, add_view, remove_view, "
-            "answer, approve, request_review, review_choice, review_report or layout",
+            "answer, approve, request_review, review_choice, review_report, layout, edit or record",
             op,
         )
     page = _need_page(fc_doc, params.get("sheet"), op)
@@ -3243,6 +3338,7 @@ def describe(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         row["reports"] = _report_rows(spec)
         row["review_request"] = _request_row(spec)
         row["review_choice"] = _choice_row(spec)
+        row["composed"] = dict(spec.get("composed") or {})
         row["printed"] = _printed(composed)
         row["native"] = sheet_output.listed(sheet_output.native_rows(page))
         if params.get("review"):
