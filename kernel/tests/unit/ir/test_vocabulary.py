@@ -7,9 +7,9 @@ from cotaforge.ir.ops_features import OP_NAMES
 from cotaforge.ir.plan import parse_plan
 
 
-def test_the_vocabulary_has_thirty_eight_operations() -> None:
+def test_the_vocabulary_has_thirty_nine_operations() -> None:
     # includes place_component, add_joint, set_joint (joints) and base_flange, edge_flange, unfold (sheet metal)
-    assert len(OP_NAMES) == 38  # + shrink_body (the mould cavity)
+    assert len(OP_NAMES) == 39  # + shrink_body (the mould cavity) + mould_split (its core and cavity)
 
 
 @pytest.mark.parametrize("op_name", ["stage", "pocket", "loft", "BOX", ""])
