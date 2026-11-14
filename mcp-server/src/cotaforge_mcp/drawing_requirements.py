@@ -369,12 +369,16 @@ ROWS: tuple[Row, ...] = (
         ),
         standard="ISO 129-1",
         question=(
-            "¿Qué diámetros del eje son funcionales y cuáles son libres?",
-            "Which diameters of the shaft are functional and which are free?",
+            "¿Qué diámetros del eje son funcionales y cuáles son libres, y desde qué cara (resalte o extremo) se cuentan las longitudes?",
+            "Which diameters of the shaft are functional and which are free, and from which face (shoulder or end) are the lengths counted?",
         ),
         proposal=(
-            "todos los escalones con su diámetro en la vista lateral o en el corte, los funcionales con su ajuste",
-            "every step with its diameter on the side view or the section, the functional ones with their fit",
+            "todos los escalones con su diámetro en la vista lateral o en el corte, los funcionales con su ajuste; las longitudes desde UNA "
+            "cara de referencia, en paralelo (baseline_dims from=<la referencia axial del archivo de intención; sin ella, la que elija el "
+            "ingeniero>), y en cadena solo lo funcional",
+            "every step with its diameter on the side view or the section, the functional ones with their fit; the lengths from ONE datum "
+            "face, as parallel dimensions (baseline_dims from=<the axial reference of the intent file; with none, the one the engineer "
+            "picks>), and chained only what is functional",
         ),
         only="part",
         triggers=("turned",),
@@ -609,6 +613,9 @@ MEASURED_FINDINGS = frozenset(
         "duplicate_dimension",
         "over_dimensioned",
         "views_overlap",
+        "dimension_crossing",
+        "dimension_stack_order",
+        "dimension_gap",
         "view_over_title_block",
         "view_outside_frame",
         "text_outside_frame",

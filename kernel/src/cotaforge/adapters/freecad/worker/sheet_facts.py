@@ -133,6 +133,8 @@ def collect(doc: reg.DocumentRec, bodies: list[reg.BodyRec]) -> sck.PartFacts:
             for key, span in spans.items()
         ]
         slots = keyway.find_slots(cylinders, flats)
+        facts.planes.extend(flats)
+        facts.cylinders.extend(cylinders)
         facts.keyways += len(slots)
         facts.keyway_slots.extend(slots)
         facts.flats.extend(_flats_of(groups, spans, flats, slots))
