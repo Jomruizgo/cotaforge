@@ -41,6 +41,7 @@ from sheet_context import (
     ItemType,
     Point,
     check_fields,
+    parallel,
     v_bool,
     v_enum,
     v_point2,
@@ -175,7 +176,13 @@ def _angle(ctx: Context, spec: dict[str, Any], pattern: sheet_pattern.Pattern, v
     reach = pattern.radius * view.scale + r_hole + REF_OVER_MM
     if _once(ctx, _entity_key(view.name, pattern, f"ref{ref:g}")):  # the centre line the angle is counted from
         ctx.add([Line(c[0], c[1], c[0] + reach * math.cos(math.radians(ref)), c[1] + reach * math.sin(math.radians(ref)), AXES)])
-    arc = spec.get("offset_mm") or (pattern.radius * view.scale + r_hole + ARC_OVER_MM)
+    reach = pattern.radius * view.scale + r_hole + ARC_OVER_MM
+    if pattern.lone:  # the arc of a lone hole stands outside every ring of holes of the part, where the text of a hole of a ring never lies
+        for ring in sheet_pattern.patterns_of(ctx):
+            if parallel(ring.direction, pattern.direction):
+                widest = max(holes[i].diameter for i in ring.indexes) / 2 * view.scale
+                reach = max(reach, ring.radius * view.scale + widest + ARC_OVER_MM)
+    arc = spec.get("offset_mm") or reach
     a0, a1 = (ref, angle) if off > 0 else (angle, ref)
     text = f"{ctx.num(round(abs(off), 2))}°"
     entities, taken = angle_dimension(c, a0, a1, arc, text)
