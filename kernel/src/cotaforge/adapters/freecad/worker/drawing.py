@@ -1759,7 +1759,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         taken.add(done["id"])
         added.append(done)
     waited = wait_views(fc_doc, page, op)
-    refused = _refused(doc, page, spec, items, added, op)
+    refused, tried = _refused(doc, page, spec, items, added, op)
     keep = [a for a in added if a["id"] not in refused]
     spec["items"] = items + keep
     _sync_auto_items(doc, spec, op)
@@ -1769,7 +1769,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     _sync_template_fields(fc_doc, op)
     waited += wait_views(fc_doc, page, op)
     return _result(
-        doc, page, _scale_of(page) or 1.0, waited, [], op, refused=refused, changed=tuple(a["id"] for a in keep)
+        doc, page, _scale_of(page) or 1.0, waited, [], op, refused=refused, changed=tuple(a["id"] for a in keep), tried=tried
     )
 
 
@@ -1789,15 +1789,16 @@ def _plan_boxes(page: Any, ctx: sc.Context) -> dict[str, tuple[float, float, flo
     return boxes
 
 
-def global_layout(doc: reg.DocumentRec, page: Any, spec: dict[str, Any], op: str | None) -> dict[str, Any]:
-    """Place the linear dimensions of the whole sheet at once (``sheet_plan_bridge``): the sheet is drawn as it stands, the
-    planner reads what every item drew, and each dimension or leader that asked for no place is given the ``side`` and ``offset_mm`` (or the ``elbow_mm``) it
-    stands at. What the planner placed before is planned again (it is not the engineer's). When the planned sheet collides
-    more than the one it replaces, nothing is kept. Returns what the call reports (``layout_*``)."""
-    items = [dict(i) for i in spec.get("items", [])]
-    sheet_plan_bridge.forget_planned(items, spec.get("layout"))  # a place the planner gave is not a place the engineer asked for
-    spec["items"] = items
-    sheet, _results, ctx = compose(doc, page, spec, 1, 1, op)
+LIFT_STEP_MM = sc.STACK_STEP_MM
+"""How far a dimension line moves outward to open room for a callout (one step of the dimension stack)."""
+MAX_LIFTS = 2
+
+
+def _plan_sheet(
+    doc: reg.DocumentRec, page: Any, spec: dict[str, Any], items: list[dict[str, Any]], op: str | None
+) -> tuple[model.Sheet, sc.Context, sheet_plan_bridge.Prepared, sheet_plan_bridge.Outcome]:
+    """Compose the sheet with ``items`` as they are, read what every item drew and plan the layout of it."""
+    sheet, _results, ctx = compose(doc, page, {**spec, "items": items}, 1, 1, op)
     units = list(ctx.extras.get("units", []))
     lists = [u.rect for u in units if u.item_type == "parts_list" and u.entities]
     prepared = sheet_plan_bridge.prepare(
@@ -1810,9 +1811,48 @@ def global_layout(doc: reg.DocumentRec, page: Any, spec: dict[str, Any], op: str
         lists[0] if lists else None,
         sheet_plan_bridge.view_outline(ctx.extras.get("view_ink", [])),
     )
-    outcome = sheet_plan_bridge.run(prepared)
+    return sheet, ctx, prepared, sheet_plan_bridge.run(prepared)
+
+
+def _lifted(items: list[dict[str, Any]], step: int) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """The items with the overall dimensions ``step`` steps farther out than the first slot of the stack (they stand
+    outermost, so a callout whose way out is closed by them gets the room between them and the part), and what was written."""
+    written: dict[str, dict[str, Any]] = {}
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if item.get("type") == "overall" and item.get("offset_mm") is None and item.get("side") is None:
+            written[str(item["id"])] = {"offset_mm": sc.DEFAULT_OFFSET_MM + LIFT_STEP_MM * step}
+            item = {**item, **written[str(item["id"])]}
+        out.append(item)
+    return out, written
+
+
+def global_layout(doc: reg.DocumentRec, page: Any, spec: dict[str, Any], op: str | None) -> dict[str, Any]:
+    """Place the linear dimensions of the whole sheet at once (``sheet_plan_bridge``): the sheet is drawn as it stands, the
+    planner reads what every item drew, and each dimension or leader that asked for no place is given the ``side`` and ``offset_mm`` (or the ``elbow_mm``) it
+    stands at. What the planner placed before is planned again (it is not the engineer's). A callout that has no way out that
+    crosses no dimension line, no other leader and no text gets the overall dimensions moved outward one step (up to
+    ``MAX_LIFTS``) when that places it and the sheet still fits. When the planned sheet collides
+    more than the one it replaces, nothing is kept. Returns what the call reports (``layout_*``)."""
+    items = [dict(i) for i in spec.get("items", [])]
+    sheet_plan_bridge.forget_planned(items, spec.get("layout"))  # a place the planner gave is not a place the engineer asked for
+    spec["items"] = items
+    _sheet, ctx, _prepared, outcome = _plan_sheet(doc, page, spec, items, op)
+    original = items
+    lifted: dict[str, dict[str, Any]] = {}
+    for step in range(1, MAX_LIFTS + 1):  # one step may not be enough room: the next one is tried from the sheet as it was
+        if not outcome.blocked:
+            break
+        trial, written = _lifted(original, step)
+        if not written:
+            break
+        _t_sheet, t_ctx, _t_prepared, t_outcome = _plan_sheet(doc, page, spec, trial, op)
+        collisions = len(t_ctx.extras.get("collisions", [])) <= len(ctx.extras.get("collisions", []))
+        if len(t_outcome.blocked) < len(outcome.blocked) and t_outcome.fits and collisions:
+            items, ctx, outcome, lifted = trial, t_ctx, t_outcome, written
     unplaced = [f"{key}: {why}" for key, why in outcome.unplaced]
     kept: dict[str, dict[str, Any]] = {}
+    worse = False
     if outcome.placements:
         wanted = dict(outcome.placements)
         for attempt in range(4):  # a place that makes a new collision is dropped, the others stay
@@ -1838,6 +1878,9 @@ def global_layout(doc: reg.DocumentRec, page: Any, spec: dict[str, Any], op: str
                 f"{key}: the planned place made a collision: kept where it was" for key in outcome.placements if key not in wanted
             ]
             unplaced += [f"{key}: the CAD refused the planned place: kept where it was" for key in wanted if key in broke]
+    if worse:  # nothing planned is kept: the dimensions stay where they were too
+        items, lifted = original, {}
+    kept = {**lifted, **kept}
     spec["items"] = [{**i, **kept[str(i["id"])]} if str(i["id"]) in kept else i for i in items]
     spec["layout"] = {"placed": kept, "unplaced": unplaced}
     return {
@@ -1938,20 +1981,23 @@ def _refused(
     existing: list[dict[str, Any]],
     added: list[dict[str, Any]],
     op: str | None,
-) -> dict[str, tuple[str, str]]:
+) -> tuple[dict[str, tuple[str, str]], tuple[dict[str, Any], tuple[model.Sheet, list[sc.ItemResult], sc.Context]]]:
     """Draw the sheet with the new items and drop (by id, with its type and the reason) the ones that fail; the rest are
-    drawn again without them, since a refused item must not leave its dimension slot taken."""
+    drawn again without them, since a refused item must not leave its dimension slot taken. Also the spec of the last
+    drawing and what it drew: when the sheet ends up with exactly that spec, the result does not draw it a third time."""
     refused: dict[str, tuple[str, str]] = {}
     trial = added
-    for _ in range(len(added) + 1):
-        trial_spec = dict(spec, items=existing + trial)
-        _, results = compose_sheet(doc, page, trial_spec, 1, 1, op)
-        failed = {r.id: (r.type, r.detail) for r in results if r.status == "error" and r.id in {a["id"] for a in trial}}
+    trial_spec = dict(spec, items=existing + trial)
+    drawn = compose(doc, page, trial_spec, 1, 1, op)
+    for _ in range(len(added)):
+        failed = {r.id: (r.type, r.detail) for r in drawn[1] if r.status == "error" and r.id in {a["id"] for a in trial}}
         if not failed:
             break
         refused.update(failed)
         trial = [a for a in trial if a["id"] not in failed]
-    return refused
+        trial_spec = dict(spec, items=existing + trial)
+        drawn = compose(doc, page, trial_spec, 1, 1, op)
+    return refused, (trial_spec, drawn)
 
 
 # --- composing --------------------------------------------------------------------------------------------------------
@@ -2721,6 +2767,15 @@ def _all_sheets(doc: reg.DocumentRec, wanted: str | None, op: str | None) -> lis
 # --- results ----------------------------------------------------------------------------------------------------------
 
 
+def _same_spec(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Whether two specs draw the same sheet (a tuple and a list that hold the same numbers are the same; the count of
+    changes and the approval, which the sheet does not draw, are not compared)."""
+    mute = {"edits", "approval"}
+    left = {k: v for k, v in a.items() if k not in mute}
+    right = {k: v for k, v in b.items() if k not in mute}
+    return json.dumps(left, sort_keys=True, default=str) == json.dumps(right, sort_keys=True, default=str)
+
+
 def _item_rows(results: list[sc.ItemResult], refused: dict[str, tuple[str, str]] | None = None) -> list[dict[str, str]]:
     rows = [{"id": r.id, "type": r.type, "status": r.status, "detail": r.detail} for r in results]
     for item_id, (kind, why) in (refused or {}).items():
@@ -2737,11 +2792,15 @@ def _result(
     op: str | None,
     refused: dict[str, tuple[str, str]] | None = None,
     changed: tuple[str, ...] = (),
+    tried: tuple[dict[str, Any], tuple[model.Sheet, list[sc.ItemResult], sc.Context]] | None = None,
 ) -> dict[str, Any]:
     spec = spec_of(page)
     size, language = split_key(spec["template"])
     found = pages(doc.fc_doc)
-    sheet, results, ctx = compose(doc, page, spec, found.index(page) + 1, len(found), op)
+    if tried is not None and len(found) == 1 and _same_spec(tried[0], spec):
+        sheet, results, ctx = tried[1]  # drawn a moment ago from this very spec (one page: the same numbering, the views untouched)
+    else:
+        sheet, results, ctx = compose(doc, page, spec, found.index(page) + 1, len(found), op)
     window, failed = mirror(doc, page, ctx, sheet)
     warnings = [*warnings, *ctx.extras.get("iso_notes", []), *failed]
     width, depth, height = _extents(doc, spec.get("body"), op)
@@ -2862,6 +2921,7 @@ def quality_metrics(doc: reg.DocumentRec, sheet: str | None, op: str | None) -> 
     composed, results, ctx = compose(doc, page, spec_of(page), found.index(page) + 1, len(found), op)
     spec = spec_of(page)
     items = [sheet_items.normalise(i, set(), 1) for i in spec.get("items", [])]
+    ctx.extras["layout_planned"] = spec.get("layout") is not None
     data = sheet_review.ReviewInput(items, {r.id: r for r in results}, ctx, composed, feature_infos(doc))
     quality = sheet_quality.check(data)
     positions = ctx.extras.get("positions", {})
@@ -2962,10 +3022,12 @@ def review_bundle(
     total: int,
     op: str | None,
     with_facts: bool = True,
+    drawn: tuple[model.Sheet, list[sc.ItemResult], sc.Context] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
     """``review_report`` and, with ``with_facts``, the facts the table of requirements of a drawing reads
-    (``sheet_reqfacts``), counted on the same composed sheet."""
-    findings, ctx = review_findings(doc, page, spec, number, total, op)
+    (``sheet_reqfacts``), counted on the same composed sheet (``drawn``: the one the caller has just composed from this
+    very ``spec``, so that it is not composed a second time)."""
+    findings, ctx = review_findings(doc, page, spec, number, total, op, drawn)
     answers = spec.get("answers", {})
     for row in findings:
         row["answer"] = answers.get(row["id"])
@@ -2983,10 +3045,16 @@ def _last_input(ctx: sc.Context) -> sheet_review.ReviewInput:
 
 
 def review_findings(
-    doc: reg.DocumentRec, page: Any, spec: dict[str, Any], number: int, total: int, op: str | None
+    doc: reg.DocumentRec,
+    page: Any,
+    spec: dict[str, Any],
+    number: int,
+    total: int,
+    op: str | None,
+    drawn: tuple[model.Sheet, list[sc.ItemResult], sc.Context] | None = None,
 ) -> tuple[list[dict[str, Any]], sc.Context]:
     """The findings of one sheet as rows (``sheet_review``), with their ids, and the context they were found in."""
-    sheet, results, ctx = compose(doc, page, spec, number, total, op)
+    sheet, results, ctx = drawn if drawn is not None else compose(doc, page, spec, number, total, op)
     items: list[dict[str, Any]] = []
     taken: set[str] = set()
     for position, raw in enumerate(spec.get("items", []), start=1):
@@ -2996,6 +3064,7 @@ def review_findings(
             continue
         taken.add(done["id"])
         items.append(done)
+    ctx.extras["layout_planned"] = spec.get("layout") is not None  # the sheet was placed by the global layout (the sheet flow)
     data = sheet_review.ReviewInput(items, {r.id: r for r in results}, ctx, sheet, feature_infos(doc))
     ctx.extras["review_input"] = data
     ctx.extras["hand_marks"] = hand_marks(page)  # what the engineer put on the TechDraw page by hand
@@ -3094,7 +3163,8 @@ def describe(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     op = params.get("operation_id")
     sheets = []
     for page, spec, number, total in _all_sheets(doc, params.get("sheet"), op):
-        composed, results = compose_sheet(doc, page, spec, number, total, op)
+        drawn = compose(doc, page, spec, number, total, op)
+        composed, results, _ = drawn
         by_id = {r.id: r for r in results}
         size, language = split_key(spec["template"])
         row: dict[str, Any] = {
@@ -3128,7 +3198,9 @@ def describe(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         row["printed"] = _printed(composed)
         row["native"] = sheet_output.listed(sheet_output.native_rows(page))
         if params.get("review"):
-            row["findings"], row["questions"], row["facts"], given = review_bundle(doc, page, spec, number, total, op)
+            row["findings"], row["questions"], row["facts"], given = review_bundle(
+                doc, page, spec, number, total, op, drawn=drawn
+            )
             row.update(given)
         sheets.append(row)
     return {"sheets": sheets}

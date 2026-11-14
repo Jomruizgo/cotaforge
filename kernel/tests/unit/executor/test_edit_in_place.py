@@ -433,3 +433,25 @@ def test_the_edges_a_fillet_rounded_are_not_probed_after_an_edit() -> None:
     )
     assert _refs_to_probe_after_an_edit(plan.operations[1]) == []
     assert _named_refs(plan.operations[1])  # and the refs are there: it is the filter that drops them
+
+
+def test_the_step_after_an_in_place_edit_takes_the_edited_part_as_its_before_state() -> None:
+    """The measure the last step left is not the part's any more once an edit changed it in place."""
+    executor = Executor(parse_plan(plan_dict()), FakeAdapter(), Verifier(), ExecutorConfig())
+    executor.start()
+    for _ in range(3):  # block, tool, bore: the last one leaves its measure to be reused by the next step
+        executor.next_operation()
+    executor.pause_now()
+    assert executor.state is ExecutorState.paused
+    assert executor.last_measure() is not None
+    stale = volume(executor)
+
+    record = executor.edit_in_place(edited(tool={"diameter_mm": 40}), ["tool"])
+
+    assert record.status == "applied" and volume(executor) != pytest.approx(stale)
+    assert executor.last_measure() is None  # nothing is known about the part until something measures it
+    step = executor.next_operation()  # the move of the bore
+    assert step.mass_before is not None
+    assert step.mass_before.volume_mm3 == pytest.approx(BLOCK - math.pi * 20**2 * 20)
+    assert step.mass_before.volume_mm3 != pytest.approx(stale)
+    assert step.mass_after is not None and step.mass_after.volume_mm3 == pytest.approx(step.mass_before.volume_mm3)

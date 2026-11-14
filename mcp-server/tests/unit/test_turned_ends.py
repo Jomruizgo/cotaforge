@@ -24,7 +24,9 @@ from cotaforge_mcp import turned_ends
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.server import make_session
 from cotaforge_mcp.turned_ends import ENTRY_ID, free_ends, main_axis
-from tests.conftest import Caller
+from tests.conftest import TOP, Caller, plate
+
+HOLE = {"face": TOP, "position": [30, 0], "standard": "simple", "diameter_mm": 6, "end_condition": "through_all"}
 
 LINE = "memory: " + ENTRY_ID + " — recognize: "
 PROVENANCE = Provenance(created_by={"id": "shaft"}, modified_by=())  # type: ignore[arg-type]
@@ -280,3 +282,49 @@ def test_a_failing_read_never_fails_the_op(base_call: Caller, monkeypatch: pytes
     monkeypatch.setattr(base_call.session.adapter, "faces_of", broken)
     text = base_call.ok("op", name="cylinder", id="shaft", params={"diameter_mm": 25, "height_mm": 120})
     assert "ok: shaft" in text and LINE not in text
+
+
+# ---- a hole that only moves does not make the part be read again ---------------------------------------------------
+
+
+def _readings(call: Caller, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """The face readings this alert asks of the CAD from now on."""
+    asked: list[Any] = []
+    real = call.session.adapter.faces_of
+
+    def spy(request: Any) -> Any:
+        if request.operation_id == "turned_ends":
+            asked.append(request)
+        return real(request)
+
+    monkeypatch.setattr(call.session.adapter, "faces_of", spy)
+    return asked
+
+
+def _drilled_plate(call: Caller) -> None:
+    plate(call)
+    call.ok("op", name="hole", params=HOLE)
+
+
+def test_a_hole_that_only_moves_does_not_read_every_face_again(
+    base_call: Caller, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _drilled_plate(base_call)
+    asked = _readings(base_call, monkeypatch)
+    text = base_call.ok("op", edit="s3", params={"position": [-30, 10]})
+    assert text.startswith("ok: s3 edited (hole)")
+    assert asked == []
+
+
+def test_a_hole_that_changes_size_is_read_again(base_call: Caller, monkeypatch: pytest.MonkeyPatch) -> None:
+    _drilled_plate(base_call)
+    asked = _readings(base_call, monkeypatch)
+    base_call.ok("op", edit="s3", params={"diameter_mm": 8})
+    assert asked  # a bigger hole can reach an edge: only a move is left out
+
+
+def test_an_edit_that_is_not_a_hole_is_read_again(base_call: Caller, monkeypatch: pytest.MonkeyPatch) -> None:
+    _drilled_plate(base_call)
+    asked = _readings(base_call, monkeypatch)
+    base_call.ok("op", edit="s2", params={"depth_mm": 10})
+    assert asked

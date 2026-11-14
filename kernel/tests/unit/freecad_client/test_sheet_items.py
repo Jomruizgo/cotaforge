@@ -573,6 +573,20 @@ def test_notes_are_numbered_and_the_block_has_a_header() -> None:
     assert ys["NOTAS:"] > ys["1. Romper aristas vivas 0,3 mm"] > ys["2. Sin rebabas"]
 
 
+def test_the_notes_block_keeps_a_text_height_off_a_dimension_and_moves_as_a_whole_when_it_does_not() -> None:
+    ctx = make_context()
+    draw(ctx, {"type": "note", "text": "Sin rebabas"})
+    block_x = next(t.x for t in ctx.sheet.entities if isinstance(t, model.Text) and t.text == "NOTAS:")
+    block_width = model.text_width("1. Sin rebabas")
+    ctx = make_context()
+    start = block_x + block_width + 1.5  # a dimension strip 1.5 mm from where the block ends: near, not overlapping
+    strip = (start, ctx.area[1], start + 25.0, ctx.area[1] + 30.0)
+    ctx.reserve(strip)
+    draw(ctx, {"type": "note", "text": "Sin rebabas"})
+    moved = next(t.x for t in ctx.sheet.entities if isinstance(t, model.Text) and t.text == "NOTAS:")
+    assert moved + block_width <= strip[0] - 3.5 or moved >= strip[2] + 3.5, (block_x, moved, strip)
+
+
 def test_a_long_note_wraps_and_a_note_can_sit_at_a_page_position() -> None:
     ctx = make_context()
     draw(ctx, {"type": "note", "text": "palabra " * 30})

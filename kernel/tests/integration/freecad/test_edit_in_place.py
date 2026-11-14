@@ -17,7 +17,13 @@ from typing import Any
 import pytest
 
 from cotaforge.adapters.freecad import FreeCADAdapter
-from cotaforge.contract import DocumentHandle, DocumentKind, NewDocumentRequest, SetActiveDocumentRequest
+from cotaforge.contract import (
+    DocumentHandle,
+    DocumentKind,
+    MassRequest,
+    NewDocumentRequest,
+    SetActiveDocumentRequest,
+)
 from cotaforge.executor.build import DISPATCH, build_request
 from cotaforge.executor.config import ExecutorConfig
 from cotaforge.executor.context import ExecutionContext
@@ -196,3 +202,44 @@ def test_a_pad_length_is_edited_in_place_and_what_cannot_be_said_by_a_dimension_
         again = executor.edit_in_place(parse_plan(plate_plan_dict()), ["hole_1"])
         assert again.status == "applied", again
         assert_same(signature(adapter, document), baseline, "hole position: round trip")
+
+
+def test_the_step_after_an_in_place_edit_takes_the_edited_part_as_its_before_state(
+    freecad_root: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """The mass the last step measured is not the part's any more once a hole was resized and moved in place: the next
+    step compares the part it finds, not the one it left."""
+    plan = plate_plan_dict()
+    plan["operations"] = plan["operations"][:3]
+    second = {**plan["operations"][2], "id": "hole_2", "position": [30, 15]}
+    plan["operations"].append(second)
+    with FreeCADAdapter(
+        freecad_root=freecad_root,
+        timeout_s=120.0,
+        log_dir=tmp_path_factory.mktemp("stale-logs"),
+        enable_test_hooks=True,
+    ) as adapter:
+        executor = Executor(parse_plan(plan), adapter, Verifier(), ExecutorConfig())
+        executor.start()
+        for _ in range(3):  # sketch, pad, first hole: the last one leaves its measure for the next step
+            assert executor.next_operation().status.value == "success"
+        executor.pause_now()
+        stale = adapter.mass_properties(MassRequest(operation_id="stale"))
+        document = executor.document()
+        assert document is not None
+
+        changed = copy.deepcopy(plan)
+        changed["operations"][2].update({"position": [-30, -5], "diameter_mm": 10.0})
+        record = executor.edit_in_place(parse_plan(changed), ["hole_1"])
+        assert record.status == "applied", (record.failure, record.result.flags if record.result else None)
+        assert executor.trace().reverts == ()
+        edited = adapter.mass_properties(MassRequest(operation_id="edited"))
+        assert edited.volume_mm3 != pytest.approx(stale.volume_mm3, abs=1.0)
+        assert edited.centroid != pytest.approx(stale.centroid, abs=1e-3)
+
+        step = executor.next_operation()
+        assert step.status.value == "success", step
+        assert step.mass_before is not None
+        assert step.mass_before.volume_mm3 == pytest.approx(edited.volume_mm3, abs=1e-6)
+        assert step.mass_before.centroid == pytest.approx(edited.centroid, abs=1e-6)
+        assert step.mass_after is not None and step.mass_after.volume_mm3 < edited.volume_mm3

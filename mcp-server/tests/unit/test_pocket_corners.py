@@ -329,3 +329,56 @@ def test_editing_the_depth_gives_a_new_reading(base_call: Caller) -> None:
     assert "12 mm deep" in _pocket(call, "pocket", _rect(50, 30, 20, 20), 12)
     text = call.ok("op", edit="pocket", params={"depth_mm": 20})
     assert MEMORY_LINE in text and "20 mm deep" in text
+
+
+# ---- a hole that only moves does not make the pocket faces be read again -------------------------------------------
+
+DRILL = {"face": TOP, "position": [30, 10], "standard": "simple", "diameter_mm": 6, "end_condition": "through_all"}
+
+
+def _pocket_and_hole(call: Caller) -> None:
+    _block(call)
+    _pocket(call, "pocket", _rect(50, 30, 20, 20), 12)
+    call.ok("op", name="hole", id="drill", params=DRILL)
+
+
+def _readings(call: Caller, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """The face readings this alert asks of the CAD from now on."""
+    asked: list[Any] = []
+    real = call.session.adapter.faces_of
+
+    def spy(request: Any) -> Any:
+        if request.operation_id == "pocket_corners":
+            asked.append(request)
+        return real(request)
+
+    monkeypatch.setattr(call.session.adapter, "faces_of", spy)
+    return asked
+
+
+def test_a_hole_that_only_moves_does_not_read_the_pocket_faces_again(
+    base_call: Caller, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pocket_and_hole(base_call)
+    asked = _readings(base_call, monkeypatch)
+    text = base_call.ok("op", edit="drill", params={"position": [-30, 10]})
+    assert text.startswith("ok: drill edited (hole)")
+    assert asked == []
+
+
+def test_a_hole_that_changes_size_reads_the_pocket_faces_again(
+    base_call: Caller, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pocket_and_hole(base_call)
+    asked = _readings(base_call, monkeypatch)
+    base_call.ok("op", edit="drill", params={"diameter_mm": 8})
+    assert asked
+
+
+def test_an_edit_that_is_not_a_hole_reads_the_pocket_faces_again(
+    base_call: Caller, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pocket_and_hole(base_call)
+    asked = _readings(base_call, monkeypatch)
+    base_call.ok("op", edit="pocket", params={"depth_mm": 20})
+    assert asked

@@ -59,7 +59,7 @@ import registry as reg
 import sketch_defined
 from FreeCAD import Placement, Rotation, Vector
 from protocol import WorkerError, error, geometry_failed, invalid_request
-from queries import face_descriptor
+from queries import face_descriptor, face_is_planar
 
 PRIMITIVE_TYPES = {"box": "Part::Box", "cylinder": "Part::Cylinder"}
 EDITABLE_KINDS = frozenset({"box", "cylinder", "move_body"})
@@ -560,7 +560,7 @@ def _hole_moves(doc: reg.DocumentRec, edit: Edit) -> list[tuple[int, str, float]
         raise dim_edit.NotInPlaceError("the face of the hole is not recorded")
     try:
         rec, comp = reg.resolve_face(doc, face["id"], None)
-        planar = face_descriptor(doc, rec, comp)["normal"] is not None
+        planar = face_is_planar(doc, rec, comp)
     except WorkerError as exc:
         raise dim_edit.NotInPlaceError(f"the face {face['id']} the hole sits on no longer exists") from exc
     if not planar:
@@ -623,19 +623,63 @@ def _same_measure(a: dict[str, Any], b: dict[str, Any]) -> bool:
 
 
 def _body_shape(doc: reg.DocumentRec, body: reg.BodyRec) -> Any:
-    body.invalidate()
-    return reg.world_shape(doc, body)
+    return reg.reread_shape(doc, body)
 
 
-def _object_volume(fc_doc: Any, name: str | None) -> tuple[float, int]:
+def _measure_body(doc: reg.DocumentRec, body: reg.BodyRec, shape: Any, full: bool) -> dict[str, Any]:
+    """``measure`` of a body's world shape, taken through the measures the registry keeps with the body: a shape
+    that did not change since it was last measured (the state before an edit is the state the last edit, or the last
+    reading of the part, left) costs nothing, and what is measured here is what ``mass_properties``,
+    ``bounding_box`` and ``is_valid`` find kept afterwards."""
+    if shape.isNull():
+        return measure(shape, full)
+    volumes = reg.body_volumes(doc, body)
+    volume = sum(volumes)
+    out: dict[str, Any] = {
+        "volume_mm3": volume,
+        "bbox": dict(g.ZERO_BBOX),
+        "centroid": None,
+        "solids": len(volumes),
+        "faces": shape.countElement("Face"),
+        "edges": shape.countElement("Edge"),
+        "valid": True,
+    }
+    if not full:
+        return out
+    out["bbox"] = reg.body_bbox(doc, body)
+    if body._valid is None:
+        body._valid = bool(shape.isValid())
+    out["valid"] = body._valid
+    if volumes and abs(volume) > 1e-12:
+        weighted = g.ORIGIN
+        for v, centre in reg.body_parts(doc, body):
+            weighted = g.add(weighted, g.scale(centre, v))
+        out["centroid"] = g.clean(g.scale(weighted, 1.0 / volume))
+    return out
+
+
+def _object_volume(
+    fc_doc: Any, name: str | None, kept: dict[str, tuple[Any, float, int]] | None = None
+) -> tuple[float, int]:
+    """``(volume, solids)`` of one object. ``kept`` holds the shape each object had when it was measured: the same shape
+    (same ``TShape`` and location) has the same volume and is not measured again."""
     obj = fc_doc.getObject(name) if name else None
     if obj is None:
         return 0.0, 0
+    # the shape the object holds is the key (``Part.getShape`` places a copy of it: never the same one twice)
+    held = getattr(obj, "Shape", None)
+    if held is not None and held.isNull():
+        held = None
+    if kept is not None and held is not None and name in kept and kept[name][0].isSame(held):
+        return kept[name][1], kept[name][2]
     shape = Part.getShape(obj)
     if shape.isNull():
         return 0.0, 0
     solids = _solid_list(shape)
-    return sum(float(s.Volume) for s in solids), len(solids)
+    volume = sum(float(s.Volume) for s in solids)
+    if kept is not None and held is not None and name is not None:
+        kept[name] = (held, volume, len(solids))
+    return volume, len(solids)
 
 
 def _interference(doc: reg.DocumentRec, bodies: set[str]) -> dict[tuple[str, str], float]:
@@ -703,23 +747,38 @@ def capture(doc: reg.DocumentRec, analysis: Analysis, *, interference: bool) -> 
     state = State()
     fc_doc = doc.fc_doc
     for body in doc.live_bodies():
-        state.bodies[body.id] = measure(_body_shape(doc, body), full=body.id in analysis.bodies)
+        # (measured through the registry's own caches: the validity, volumes and box land with the body and the
+        # readings that follow the edit find them there)
+        state.bodies[body.id] = _measure_body(doc, body, _body_shape(doc, body), body.id in analysis.bodies)
+    # The document does not change while it is captured, and the volume a feature leaves is the base of the next one
+    # (a chain of holes asks for each object twice or more): every object is measured once, and an object whose shape
+    # did not change since the last capture (the state before an edit is the one the last edit left) is not measured
+    # again.
+    volumes: dict[str | None, tuple[float, int]] = {}
+
+    def volume_of(name: str | None) -> tuple[float, int]:
+        if name not in volumes:
+            volumes[name] = _object_volume(fc_doc, name, doc.object_volumes)
+        return volumes[name]
+
     dependent = {rec.id: rec for rec in analysis.recomputed}
     for rec in dependent.values():
         if rec.kind in ("boolean", "box", "cylinder") or rec.kind in dim_edit.FEATURE_KINDS:
-            state.results[rec.id] = _object_volume(fc_doc, rec.fc_main)
+            state.results[rec.id] = volume_of(rec.fc_main)
         obj = fc_doc.getObject(rec.fc_main) if rec.fc_main else None
         if rec.kind == "boolean" and rec.params.get("kind") == "subtract":
             base = getattr(obj, "Base", None) if obj is not None else None
-            base_volume, _ = _object_volume(fc_doc, base.Name if base is not None else None)
-            result_volume, _ = _object_volume(fc_doc, rec.fc_main)
+            base_volume, _ = volume_of(base.Name if base is not None else None)
+            result_volume, _ = volume_of(rec.fc_main)
             state.cuts[rec.id] = base_volume - result_volume
         elif rec.kind in ("cut", "hole") and obj is not None:  # a pocket or a hole removes what its base feature had
             base = getattr(obj, "BaseFeature", None)
             if base is not None:
-                base_volume, _ = _object_volume(fc_doc, base.Name)
-                result_volume, _ = _object_volume(fc_doc, rec.fc_main)
+                base_volume, _ = volume_of(base.Name)
+                result_volume, _ = volume_of(rec.fc_main)
                 state.cuts[rec.id] = base_volume - result_volume
+    for gone in [name for name in doc.object_volumes if name not in volumes]:
+        del doc.object_volumes[gone]  # an object no capture reads any more keeps no shape alive
     # (a feature inside a body has a Placement the recompute derives; the bodies and the loose objects are what moves)
     state.poses = {
         o.Name: _pose_key(o.Placement)
@@ -1046,8 +1105,10 @@ def _rebind(
     out: dict[str, list[str]] = {"created": [], "removed": [], "modified": []}
     fallback = edits[0].rec
     for body in doc.live_bodies():
+        kept = body.measures()  # the shape the checks just measured: its measures survive when the shape is still it
         body.invalidate()
         if body.id not in analysis.bodies:
+            reg.restore_measures(doc, body, kept)
             continue
         shape = reg.topo_shape(doc, body)
         if shape.isNull():
@@ -1058,6 +1119,7 @@ def _rebind(
             if _is_rigid_move(body, shape, edits)
             else reg.refresh(doc, body, shape, owner.id, mark=False, follow=follow)
         )
+        reg.restore_measures(doc, body, kept)
         saved_created.setdefault(owner.id, (list(owner.created_faces), list(owner.created_edges)))
         # a face the edit made again (a bore resized, a feature a hair off) stays with the feature of the face it
         # replaces: its colour and its record are that feature's, not the edited one's
@@ -1757,7 +1819,7 @@ def _hole_off_face(doc: reg.DocumentRec, rec: reg.FeatureRec) -> str | None:
         return None
     try:
         frec, comp = reg.resolve_face(doc, face["id"], None)
-        if face_descriptor(doc, frec, comp)["normal"] is None:
+        if not face_is_planar(doc, frec, comp):
             return None  # across a curved face: its sketch is placed by its entry point
     except WorkerError:
         return None

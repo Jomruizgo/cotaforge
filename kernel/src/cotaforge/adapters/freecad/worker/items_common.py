@@ -319,15 +319,22 @@ def planned_elbow(ctx: Context) -> Point | None:
     return None
 
 
-def leader_at(ctx: Context, tip: Point, elbow: Point, lines: list[str]) -> list[Entity]:
+def _clear_of_part_lines(ctx: Context, rect: tuple[float, float, float, float]) -> bool:
+    """Whether a rectangle over a view holds no visible line of the part (an area of the view that is clear)."""
+    ink = [e for e in ctx.extras.get("view_ink", []) if getattr(e, "layer", None) == CONTOUR]
+    return not any(segment_hits_rect(s, rect) for s in segments_of(ink))
+
+
+def leader_at(ctx: Context, tip: Point, elbow: Point, lines: list[str], inside_ok: bool = False) -> list[Entity]:
     """A leader from ``tip`` to exactly ``elbow``, its shelf running the way the leader goes; when the place is not clean
-    the item's result says why (it is the layout's decision, not a search)."""
+    the item's result says why (it is the layout's decision, not a search). ``inside_ok``: its text may stand on an area of
+    a view that holds no line of the part (the layout puts a hole callout there when every side outside is closed)."""
     sx = 1.0 if elbow[0] - tip[0] >= 0 else -1.0
     entities, rect = leader(tip, elbow, lines, "right" if sx > 0 else "left")
     fits = ctx.inside(rect)
     free = (
         ctx.free(rect)
-        and _clear_of_views(ctx, rect)
+        and (_clear_of_views(ctx, rect) or (inside_ok and _clear_of_part_lines(ctx, rect)))
         and _leader_clear(ctx, tip, elbow)
         and not _crosses_leaders(ctx, tip, elbow, rect, sx)
     )

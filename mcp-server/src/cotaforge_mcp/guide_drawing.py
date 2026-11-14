@@ -387,8 +387,8 @@ QUALITY_LINES = (
     "PATTERN: it is the material's. The harness alternates the angle of touching bodies (review: hatch_same_as_neighbour, "
     "hatch_pattern_differs).",
     "CALLOUTS: equal holes share one callout (4× ...). Its leader is short, goes to the hole and the side that is "
-    "clean, never crosses another leader, cuts the outline once, and its text lies outside the part, off the "
-    "dimension lines; review says leader_crossing / leader_crosses_part when it cannot. Dowel or registration holes: "
+    "clean, crosses no leader or dimension, cuts the outline once, and its text lies off the lines; review says "
+    "leader_crossing / leader_crosses_part / leader_crosses_dimension when it cannot. Dowel or registration holes: "
     "hole_dim fit=H7 dowel=true -> 4× Ø6 H7 (+0.012/0) through, dowel, and a ring round each hole; review asks "
     "(dowel_unmarked: no hold) for a through hole of 25 mm or less with a hole fit of grade 8 or finer.",
     "NOTES: numbered in the NOTAS block, the thickness first ('Espesor 19': the sheet writes it when it has ONE "

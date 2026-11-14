@@ -109,6 +109,7 @@ def _floor(name: str, metrics: dict[str, Any]) -> list[str]:
         "hole_partly_located",
         "leader_crossing",
         "leader_crosses_part",
+        "leader_crosses_dimension",
         "dimension_inside_outline",
         "window_differs",
         "native_fallback",
