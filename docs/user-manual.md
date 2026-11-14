@@ -308,7 +308,7 @@ The agent talks to the CAD software only through these tools of the `cad` server
 | `doc` | Document lifecycle (several can be open) | `new`, `open`, `import` (STEP or IGES), `save`, `status`, `close`, `switch`, `set_material`, `set_route`, `set_purpose`, `convention`, `reload` |
 | `op` | One modeling operation, with measured facts | chosen with `name`; `edit` changes a step or feature; `delete` removes a feature |
 | `undo` | Undo | `undo()`, `undo(to="<step>")`, `undo(to="start")` |
-| `inspect` | Read measured facts, change nothing | `tree`, `faces`, `edges`, `face`, `edge`, `properties`, `measure`, `bom`, `validity`, `interference`, `sketch_status`, `sweep`, `holes` |
+| `inspect` | Read measured facts, change nothing | `tree`, `faces`, `edges`, `face`, `edge`, `properties`, `measure`, `bom`, `validity`, `interference`, `sketch_status`, `sweep`, `holes`, `draft` |
 | `view` | Show you things and read your selection | `focus`, `show`; with a window: `selection`, `capture`, `set_view`, `style`, `section` |
 | `drawing` | Production drawings | `create`, `add`, `remove`, `remove_sheet`, `update`, `list`, `review`, `capture`, and the review actions (see "Drawings") |
 | `channel` | Question channel between the drafter session and the design session | `ask`, `reply`, `dispute`, `decide`, `wait`, `done`, `list`, `open_drawing`, `reopen`, `close` |
@@ -325,7 +325,7 @@ One `op` call runs **one** operation and returns volume, bounding box and validi
 
 - **Sketches and references:** `sketch`, `ref_plane`, `ref_axis`.
 - **Features:** `extrude`, `cut`, `revolve`, `sweep`, `hole`, `linear_pattern`, `circular_pattern`, `chamfer`, `fillet`, `shell`, `draft`, `mirror`.
-- **Bodies:** `box`, `cylinder`, `boolean_union`, `boolean_subtract`, `boolean_intersect`, `translate`, `rotate`, `copy_body`, `mirror_body`, `split`.
+- **Bodies:** `box`, `cylinder`, `boolean_union`, `boolean_subtract`, `boolean_intersect`, `translate`, `rotate`, `copy_body`, `mirror_body`, `shrink_body`, `split`.
 - **Assembly:** `insert_component`, `place_component`, `fix_component`, `add_joint`, `set_joint`, `mate_concentric`, `mate_coincident`, `mate_distance`, `check_interference`.
 - **Sheet metal** (needs an add-on, see [Sheet metal](#sheet-metal-optional)): `base_flange`, `edge_flange`, `unfold`.
 
@@ -365,6 +365,8 @@ agujeros:
 ```
 
 `inspect` with `holes` lists cylindrical holes grouped by diameter, with axis, depth and through or blind. A counterbore appears as two holes on one axis.
+
+**Moulded parts.** `inspect` with `draft` and `pull=[x, y, z]` (the direction a mould half moves away) measures the draft of every face and lists the faces under the minimum (`min_draft_deg`; without it 1 degree, a rule of thumb, not a standard: ask the moulder or the resin's datasheet), the faces with no draft and the undercuts, which are faces that cannot be reached along the pull (a hole across it, a ledge over a wall). A plane is exact; a curved face is sampled and the answer says how. With `paint=true` the faces are coloured on screen: green meets the minimum, yellow is low, red has no draft or is an undercut. `shrink_body` derives the cavity: a new body, linked to the part (it follows when the part changes), scaled by the plastic's shrinkage (`shrinkage_percent`, one number or `[x, y, z]`) about the part's origin. `factor_source` (datasheet, moulder, engineer) is mandatory and the step's intent keeps it with the number. The box of the cavity is checked against the part's to 0.01 %. A shrinkage that differs by axis turns curved faces into B-spline surfaces and the CAD's volume of such a body is only numerical (about 0.05 % off).
 
 ### Concept sketch or detail
 

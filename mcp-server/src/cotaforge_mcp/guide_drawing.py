@@ -127,8 +127,8 @@ ITEM_INTRO = (
     "outward in the order of the items; offset_mm (distance from the edge of the view) and side move one. Callouts "
     "look for free room around the dimensions, away from each other and inside the frame, never over the title "
     "block; with side or offset_mm a callout goes exactly there and, if that place is taken or outside the frame, the "
-    "item's warning says so (datum, gdt and finish too: on a flat face side only tells which way the mark would go "
-    "and the warning says when it cannot). The engineer sees each one in the window; fix a placement with offset_mm "
+    "item's warning says so (datum, gdt and finish too). "
+    "The engineer sees each one in the window; fix a placement with offset_mm "
     "/ side, or remove and add again, instead of rebuilding the sheet. A face id the part no longer has (an edit regenerated "
     "it) makes its item an error, never an old number: add it again with the new id. "
     "Positions are world mm; at_mm is a SHEET position in mm from its bottom-left corner (y up). view is front, "
@@ -248,10 +248,10 @@ ITEM_LINES = (
     "that are not on one line cannot be cut by one plane (refused, says so): name the ones to cut with holes=[...].",
     "line: an axis or a line in an ISO 128 line type, drawn by the sheet (TechDraw's own cosmetic lines cannot be a chain "
     "line: see cad_guide(topic=traps)). axis=<cylindrical face> (a shaft, boss or bore: its centre line along its whole "
-    "length plus 3 mm, in every standard view that sees it from the side and a centre cross where it is seen end-on) "
+    "length plus 2.5 mm at each end, never into a dimension or its text, in every standard view that sees it from the side and a centre cross where it is seen end-on) "
     "or from={ref} + to={ref} (two places of the part, as in dim: the line between them); style? chain (long-dash "
     "dotted, default for an axis) | dashed | continuous (thin, default between two places); view? (front, top, right "
-    "or a section label), extend_mm?.",
+    "or a section label), extend_mm? (a longer reach than 2.5 mm needs reason?: why).",
     "detail: an enlarged circle of a view. at=[x,y,z] (centre, a model point), radius_mm, view? (default front), "
     "scale? (the enlargement: 5 = 5:1; default the ISO 5455 one that fills about 50 mm), letter?, at_mm?. The circle "
     'and its letter go in the parent, the view is clipped exactly at the circle and labelled "B (5:1)". Hidden lines '
@@ -444,6 +444,14 @@ KEYWAY_LINE = (
     "(a view with no dimension: only the engineer's order lets it stay)."
 )
 
+PATTERN_LINE = (
+    "pattern_dim (at, kind?, about?, view?, side?, offset_mm?): a bolt circle (equal holes on one circle about a bore, a boss or the "
+    "part's axis; not a rectangle's four corners) is located by its pitch circle Ø and the angle of its first hole, never by X / Y: "
+    "pd1 (Ø) and pd1a (angle, off a centre line) come by themselves, with radial centre lines; hole_dim gives the count. at = a "
+    "point on a hole's axis. A lone hole on a radius is yours to ask for (kind=angle at it, about=[x,y,z] its axis). Coordinates, "
+    "or the pitch circle only in a note: pattern_not_polar."
+)
+
 SPANISH_LINE = (
     "The engineer reads Spanish: notes, revision rows and the title block fields go in Spanish (the title block "
     "labels and the callouts are Spanish when language=es), numbers use the decimal comma on the sheet."
@@ -563,9 +571,9 @@ def drawing_text(tools: Collection[str], part: str = "", flow: str = "steps") ->
             TOPIC_ITEMS: [ITEM_INTRO[0], *ITEM_LINES[0:4]],
             TOPIC_DIMS: [BASELINE_LINE, KEYWAY_LINE],
             TOPIC_MARKS: [*ITEM_LINES[4:9], WELD_LINE],
-            TOPIC_VIEWS: [*ITEM_LINES[9:12], ITEM_LINES[13], LAYOUT_LINE],
+            TOPIC_VIEWS: [*ITEM_LINES[9:12], ITEM_LINES[13], PATTERN_LINE],
             TOPIC_ASSEMBLY: [ITEM_LINES[12]],
-            TOPIC_OUTPUT: [SHEET_RULES[2], PROJECTION_LINE, VIEW_LINE],
+            TOPIC_OUTPUT: [SHEET_RULES[2], PROJECTION_LINE, VIEW_LINE, LAYOUT_LINE],
             TOPIC_QUALITY: QUALITY_LINES,
             TOPIC_DONE: list(DONE_LINES),
         }

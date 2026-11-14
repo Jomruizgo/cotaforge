@@ -9,13 +9,14 @@ and diameters, the cylinders of the part -- and placed with ``ViewInfo.project``
 
 import math
 
+import sheet_centre
 from sheet_context import Context, HoleInfo, ItemError, Point, Vec3, ViewInfo, dot, hole_stacks, sub, unit
 from sheet_draw import linear_dimension
-from sheet_model import AXES, THREAD, Entity, Line
+from sheet_model import AXES, CENTRE_OVERSHOOT_MM, THREAD, Entity, Line
 from sheet_thread import major_diameter
 
 PLANE_TOL_MM = 0.05  # an axis lies in the cutting plane within this
-AXIS_REACH_MM = 2.0  # a centre line goes this far beyond the ends of a bore or a boss (clear of the view label)
+AXIS_REACH_MM = CENTRE_OVERSHOOT_MM  # a centre line goes this far beyond the ends of a bore or a boss
 PARALLEL_TOL = 1e-3
 AXIS_ON_PAGE = 0.99  # |component| of the axis on a page axis to call it horizontal or vertical
 
@@ -51,7 +52,8 @@ def _stack_reach(stack: list[HoleInfo]) -> tuple[Vec3, Vec3, float]:
     ends = [
         0.0,
         *(dot(sub(h.centre, first.centre), d) for h in stack),
-        *(dot(sub(h.centre, first.centre), d) + h.depth for h in stack),
+        # the far end of each hole along ITS direction (a blind hole runs from its open end into the material) and its drill point
+        *(dot(sub(h.centre, first.centre), d) + dot(unit(h.direction), d) * h.length for h in stack),
     ]
     low, high = min(ends), max(ends)
     start = tuple(c + u * low for c, u in zip(first.centre, d, strict=True))
@@ -67,17 +69,11 @@ def centre_lines(ctx: Context, view: ViewInfo, at: Vec3, normal: Vec3) -> tuple[
         start, d, length = _stack_reach(stack)
         got = _page_axis(view, start, d, length)
         if got is not None:
-            a, b, u = got
-            out.append(
-                Line(
-                    a[0] - u[0] * AXIS_REACH_MM,
-                    a[1] - u[1] * AXIS_REACH_MM,
-                    b[0] + u[0] * AXIS_REACH_MM,
-                    b[1] + u[1] * AXIS_REACH_MM,
-                    AXES,
-                )
-            )
-            count += 1
+            a, b, _ = got
+            line = sheet_centre.side_line(ctx, view.name, a, b)  # the same overshoot at both ends
+            if line is not None:
+                out.append(line)
+                count += 1
     facts = ctx.extras.get("facts")
     for boss in facts.bosses if facts is not None else ():
         if boss.length <= 0 or not in_plane(at, normal, boss.axis_point, boss.axis_dir):
@@ -98,6 +94,7 @@ def centre_lines(ctx: Context, view: ViewInfo, at: Vec3, normal: Vec3) -> tuple[
         if not any(
             _same_line(line, other) for other in out if isinstance(other, Line)
         ):  # a bore and a boss may share an axis
+            line = sheet_centre.side_line(ctx, view.name, a, b) or line
             out.append(line)
             count += 1
     return out, count

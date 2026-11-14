@@ -36,7 +36,7 @@ from cotaforge.executor.errors import ResolutionError
 from cotaforge.ir import EdgeSet
 from pydantic import ValidationError
 
-from cotaforge_mcp import feature_tools, foreign, rules
+from cotaforge_mcp import feature_tools, foreign, mould_tools, rules
 from cotaforge_mcp.overflow import Overflow
 from cotaforge_mcp.reply import ToolError, area_text, num, vec
 from cotaforge_mcp.schemas import InspectArgs
@@ -746,7 +746,8 @@ def run(session: Session, args: InspectArgs) -> tuple[list[str], int]:
         "sweep": lambda: sweep(session, args),
         "holes": lambda: holes(session, args),
         "validity": lambda: validity(session),
+        "draft": lambda: mould_tools.draft(session, args),
     }
-    limit = LIST_LIMIT if args.action in ("tree", "faces", "edges", "bom", "sweep", "holes") else 1500
+    limit = LIST_LIMIT if args.action in ("tree", "faces", "edges", "bom", "sweep", "holes", "draft") else 1500
     with session.lock:
         return handlers[args.action](), limit
