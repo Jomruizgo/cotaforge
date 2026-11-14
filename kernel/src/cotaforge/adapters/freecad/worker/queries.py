@@ -64,6 +64,12 @@ def _axis_dir_world(doc: reg.DocumentRec, rec: reg.FaceRec, comp: reg.ComponentR
     return g.rotate_direction(reg.body_placement(doc, body), rec.axis_dir)
 
 
+def face_is_planar(doc: reg.DocumentRec, rec: reg.FaceRec, comp: reg.ComponentRec | None) -> bool:
+    """Is the face a plane: what ``face_descriptor`` says by giving it a normal, without measuring the face (its
+    centre, area, box and normal) for a caller that only needs to know which kind of surface it is."""
+    return g.surface_kind(_face_shape(doc, rec, comp)) == "plane"
+
+
 def face_descriptor(doc: reg.DocumentRec, rec: reg.FaceRec, comp: reg.ComponentRec | None) -> dict[str, Any]:
     face = _face_shape(doc, rec, comp)
     geo = prov.face_geometry(face, _axis_dir_world(doc, rec, comp))

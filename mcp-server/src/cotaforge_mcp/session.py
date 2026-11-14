@@ -96,6 +96,7 @@ from cotaforge.executor import (
 )
 from cotaforge.executor.config import DEFAULT_CONFIG
 from cotaforge.executor.errors import ResolutionError, UndoFloorError, UndoInterruptedError
+from cotaforge.executor.executor import HOLE_MOVE_FIELDS
 from cotaforge.ir import ExtensionOperation, Plan, PlanError, parse_plan
 from cotaforge.ir.refs import FaceRef, PlaneRef
 from cotaforge.verification.verifier import Verifier
@@ -2399,6 +2400,15 @@ class Session:
         return f"joint {step_id} ({joint.handle.id}): " + ", ".join(parts)
 
     # --- editing a step --------------------------------------------------------------------------------------------
+
+    def only_moves_holes(self, step_id: str, changes: dict[str, Any]) -> bool:
+        """Does editing ``step_id`` with ``changes`` only move the holes of a hole step (its centres, nothing else)?
+        Such an edit changes where the holes are and nothing a reading of the part's outer shape depends on (an end
+        that has no chamfer), so those readings are not asked again after it."""
+        executor = self.executor
+        if executor is None or not set(changes) <= HOLE_MOVE_FIELDS:
+            return False
+        return any(op.id == step_id and op.op == "hole" for op in executor.plan.operations)
 
     def edit_step(self, step_id: str, changes: dict[str, Any], intent: str | None) -> list[str]:
         """Change parameters of an earlier step and regenerate what depends on it, as one call.

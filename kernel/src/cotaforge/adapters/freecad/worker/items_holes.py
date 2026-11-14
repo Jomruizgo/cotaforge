@@ -392,7 +392,7 @@ def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         planned = _planned_leader(spec, group, radius)
         if planned is not None:  # the global layout ended the leader here: from the hole whose circle holds its tip
             tip, elbow, centre = planned
-            ctx.add(leader_at(ctx, tip, elbow, lines))
+            ctx.add(leader_at(ctx, tip, elbow, lines, inside_ok=True))
         elif asked(spec):  # the engineer says where: the leader goes exactly there, from the hole that sticks out most
             diagonal = outward_diagonal(view, group[0][1], spec.get("side"))
             _, centre, _ = max(

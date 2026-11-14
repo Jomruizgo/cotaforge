@@ -465,7 +465,7 @@ def test_the_review_of_a_clean_plate_has_nothing_against_the_leaders_or_the_posi
     ctx.extras["units"] = []
     data = review.ReviewInput(ctx.extras["items"], {r.id: r for r in results}, ctx, ctx.sheet, [])
     found = {f.code for f in quality.check(data)}
-    assert not found & {"leader_crossing", "leader_crosses_part", "hole_partly_located", "dimension_inside_outline"}, (
+    assert not found & {"leader_crossing", "leader_crosses_part", "leader_crosses_dimension", "hole_partly_located", "dimension_inside_outline"}, (
         found
     )
 
@@ -486,6 +486,47 @@ def test_two_leaders_that_cross_are_a_finding() -> None:
     )
     data = review.ReviewInput(ctx.extras["items"], {r.id: r for r in results}, ctx, ctx.sheet, [])
     assert "leader_crossing" in {f.code for f in quality.check(data)}
+
+
+def _dimension_unit(key: str, segment: tuple[float, float, float, float]) -> Any:
+    import sheet_units as units  # noqa: PLC0415
+
+    line = model.Line(*segment, model.DIMENSIONS)
+    return units.Unit(key, key, units.KIND_ITEM, (line,), "dim")
+
+
+def test_a_leader_that_crosses_a_dimension_line_is_a_finding_that_names_the_callout_and_the_dimension() -> None:
+    ctx, results = sheet_of()
+    leader = ctx.extras["leaders"][0]
+    mx, my = (leader["tip"][0] + leader["elbow"][0]) / 2, (leader["tip"][1] + leader["elbow"][1]) / 2
+    across = _dimension_unit("d1", (mx - 10.0, my + 10.0, mx + 10.0, my - 10.0))  # a line through the middle of the leader
+    ctx.extras["units"] = [across]
+    ctx.extras["layout_planned"] = True
+    specs = [*ctx.extras["items"], {"id": "d1", "type": "dim", "kind": "distance"}]
+    data = review.ReviewInput(specs, {r.id: r for r in results}, ctx, ctx.sheet, [])
+    found = [f for f in quality.check(data) if f.code == "leader_crosses_dimension"]
+    assert len(found) == 1 and found[0].items[0] == leader["item"] and "d1" in found[0].items, found
+
+
+def test_a_sheet_built_item_by_item_does_not_get_that_finding() -> None:
+    ctx, results = sheet_of()
+    leader = ctx.extras["leaders"][0]
+    mx, my = (leader["tip"][0] + leader["elbow"][0]) / 2, (leader["tip"][1] + leader["elbow"][1]) / 2
+    ctx.extras["units"] = [_dimension_unit("d1", (mx - 10.0, my + 10.0, mx + 10.0, my - 10.0))]
+    specs = [*ctx.extras["items"], {"id": "d1", "type": "dim", "kind": "distance"}]
+    data = review.ReviewInput(specs, {r.id: r for r in results}, ctx, ctx.sheet, [])
+    assert "leader_crosses_dimension" not in {f.code for f in quality.check(data)}
+
+
+def test_a_leader_that_crosses_no_dimension_has_no_such_finding() -> None:
+    ctx, results = sheet_of()
+    leader = ctx.extras["leaders"][0]
+    far = _dimension_unit("d1", (leader["tip"][0] - 50.0, leader["tip"][1] - 50.0, leader["tip"][0] - 50.0, leader["tip"][1] - 30.0))
+    ctx.extras["units"] = [far]
+    ctx.extras["layout_planned"] = True
+    specs = [*ctx.extras["items"], {"id": "d1", "type": "dim", "kind": "distance"}]
+    data = review.ReviewInput(specs, {r.id: r for r in results}, ctx, ctx.sheet, [])
+    assert "leader_crosses_dimension" not in {f.code for f in quality.check(data)}
 
 
 def test_the_dowel_callout_has_its_marker_its_fit_with_deviations_and_a_ring_on_each_hole() -> None:

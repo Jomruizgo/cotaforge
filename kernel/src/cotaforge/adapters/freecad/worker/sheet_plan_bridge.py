@@ -41,6 +41,7 @@ import sheet_collide
 import sheet_model as model
 import sheet_plan_layout as pl
 import sheet_units
+from sheet_draw import LINE_STEP_MM
 
 Rect = tuple[float, float, float, float]
 Segment = tuple[float, float, float, float]
@@ -56,6 +57,7 @@ LEADER_TYPES = frozenset({"dim", "hole_dim", "balloons", "gdt", "finish"})
 REF_MIN_MM = 14.0  # the reference line of a weld symbol (``items_weld.MIN_REF_MM``)
 ARROW_MIN_MM = 6.0  # an arrow line is longer than this; a flag pole or an arrowhead is not
 LEADER_LINE_MM = 6.0
+CENTRE_REACH_MM = 30.0  # the centre lines of a view that run farther out than this are not the callouts' to keep off
 CENTRE_MARK_OVER_MM = 2.0  # a centre mark reaches this far past its circle (``sheet_draw.centre_mark``)
 TIP_ON_CIRCLE_MM = 0.6
 TEXT_SLACK_MM = 2.0  # the CAD sets a dimension text a little off where the sheet measured it (up to ~3 mm for a rotated one): a fixed text keeps this much room
@@ -99,6 +101,9 @@ class Outcome:
     unplaced: tuple[tuple[str, str], ...]
     fits: bool
     needed: tuple[float, float]
+    blocked: tuple[str, ...] = ()
+    """The leaders (``<item id>@<n>`` when an item drew several) that found no place clean of dimension lines, other leaders and text:
+    a dimension line moved outward may give them room."""
 
 
 def view_outline(entities: Sequence[model.Entity]) -> list[Segment]:
@@ -190,13 +195,16 @@ def read_callout(ink: sheet_collide.Ink) -> tuple[tuple[float, float], tuple[flo
         return None
     shelf = max(shelves, key=lambda s: abs(s[2] - s[0]))
     leader = max(others, key=lambda s: math.hypot(s[2] - s[0], s[3] - s[1]))
+    rows = len(ink.texts)
     ends = [(leader[0], leader[1]), (leader[2], leader[3])]
     near = [(math.dist(e, (shelf[0], shelf[1])), math.dist(e, (shelf[2], shelf[3])), e) for e in ends]
     elbow = min(ends, key=lambda e: min(math.dist(e, (shelf[0], shelf[1])), math.dist(e, (shelf[2], shelf[3]))))
     tip = ends[1] if elbow == ends[0] else ends[0]
     if min(near[0][0], near[0][1], near[1][0], near[1][1]) > 1.0:
         return None
-    box = (min(shelf[0], shelf[2]), shelf[1], max(shelf[0], shelf[2]), max(text[3], shelf[1] + 1.0))
+    # the drawer keeps the rectangle of its text free of every other label: the shelf and ``0.8 + rows * LINE_STEP_MM`` over it
+    top = max(text[3], shelf[1] + 0.8 + rows * LINE_STEP_MM, shelf[1] + 1.0)
+    box = (min(shelf[0], shelf[2]), shelf[1], max(shelf[0], shelf[2]), top)
     return tip, elbow, box
 
 
@@ -379,16 +387,20 @@ def prepare(
         parts_list=flip(parts_list, height) if parts_list else None,
     )
     flat = {name: flip(b, height) for name, b in boxes.items()}
+    marks = [e for u in units for e in u.entities if isinstance(e, model.Line) and e.layer == model.AXES]
+    centre = [(e.x1, e.y1, e.x2, e.y2) for e in marks]
     views = [
-        pl.View(name, b[2] - b[0], b[3] - b[1], at=(b[0], b[1]), outline=_outline_in(boxes[name], flat[name], outline, height))
+        pl.View(
+            name,
+            b[2] - b[0],
+            b[3] - b[1],
+            at=(b[0], b[1]),
+            outline=_outline_in(boxes[name], flat[name], outline, height),
+            centre=_near(boxes[name], flat[name], centre, height),
+        )
         for name, b in sorted(flat.items())
     ]
-    reader = _Reader(
-        boxes,
-        flat,
-        height,
-        [e for u in units for e in u.entities if isinstance(e, model.Line) and e.layer == model.AXES],
-    )
+    reader = _Reader(boxes, flat, height, marks)
     by_id = {str(s.get("id")): s for s in specs}
     movable: dict[str, dict[str, Any]] = {}
     items: list[pl.Item] = []
@@ -486,7 +498,16 @@ def _movable(
         if circle is not None:
             centre = reader.local(view, circle[0])
             extra = (centre[0], centre[1], circle[1])
-        return pl.Item(key, "leader", view, box[2] - box[0], box[3] - box[1], (reader.local(view, tip),), extra=extra)
+        return pl.Item(
+            key,
+            "leader",
+            view,
+            box[2] - box[0],
+            box[3] - box[1],
+            (reader.local(view, tip),),
+            extra=extra,
+            inside=item_type_of(spec, unit) == "hole_dim",
+        )
     if kind == "distance":
         read = read_dimension(ink)
         if read is None:
@@ -552,6 +573,18 @@ def _outline_in(box: Rect, flat: Rect, segments: Sequence[Segment], height: floa
     return tuple((s[0] - flat[0], (height - s[1]) - flat[1], s[2] - flat[0], (height - s[3]) - flat[1]) for s in inside)
 
 
+def _near(box: Rect, flat: Rect, segments: Sequence[Segment], height: float) -> tuple[Segment, ...]:
+    """The lines (page, y up) that touch the view ``box`` or run within ``CENTRE_REACH_MM`` of it, local to the view, y down: the
+    centre lines run out past the part, and a callout outside it keeps off them too."""
+    near = (box[0] - CENTRE_REACH_MM, box[1] - CENTRE_REACH_MM, box[2] + CENTRE_REACH_MM, box[3] + CENTRE_REACH_MM)
+    found = [
+        s
+        for s in segments
+        if max(s[0], s[2]) >= near[0] and min(s[0], s[2]) <= near[2] and max(s[1], s[3]) >= near[1] and min(s[1], s[3]) <= near[3]
+    ]
+    return tuple((s[0] - flat[0], (height - s[1]) - flat[1], s[2] - flat[0], (height - s[3]) - flat[1]) for s in found)
+
+
 def _related(views: Sequence[pl.View]) -> list[pl.View]:
     """The views as the sheet arranges them: each one centred on the one it lines up with (above, below, left, right of it);
     the others free. Used only to ask whether everything fits the paper."""
@@ -595,7 +628,8 @@ def run(prepared: Prepared, *, min_view_gap: float = 12.0) -> Outcome:
         (u.id, u.reason) for u in room.unplaced if u.id not in {x for x, _ in lost} and kinds.get(u.id) == "dim"
     ]
     lost += prepared.unread
-    return Outcome(_merged(placements), tuple((u.split(PART_SEP)[0], why) for u, why in lost), room.fits, room.needed)
+    blocked = tuple(u.id for u in pinned.unplaced if kinds.get(u.id) == "leader" and u.id in prepared.movable)
+    return Outcome(_merged(placements), tuple((u.split(PART_SEP)[0], why) for u, why in lost), room.fits, room.needed, blocked)
 
 
 def _merged(placements: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:

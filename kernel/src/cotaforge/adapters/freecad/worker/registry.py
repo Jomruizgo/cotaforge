@@ -299,6 +299,10 @@ class BodyRec:
         self._valid = None
         self._deep = None
 
+    def measures(self) -> tuple[Any, ...]:
+        """The shape the caches were taken from and what was measured of it (``restore_measures`` gives them back)."""
+        return (self._world, self._vols, self._centres, self._area, self._bbox, self._fbox, self._valid, self._deep)
+
 
 class SketchRec:
     def __init__(self, id_: str, spec: dict[str, Any], frame: dict[str, Any], profiles: list[dict[str, Any]]) -> None:
@@ -676,6 +680,9 @@ class DocumentRec:
         self.windowless = False
         """The harness loaded the document without a window, or closed its window once an assembly used it
         (``windows.py``): ``set_active_document`` gives it a window again."""
+        self.object_volumes: dict[str, tuple[Any, float, int]] = {}
+        """Cache of ``edit.capture`` (not part of snapshots): per object, the shape it had when its volume was measured,
+        the volume and its solids. The same shape is the same volume."""
 
     def next_id(self, kind: str) -> str:
         self.counters[kind] = self.counters.get(kind, 0) + 1
@@ -881,6 +888,33 @@ def world_shape(doc: DocumentRec, body: BodyRec) -> Any:
         placed.Placement = placement.multiply(placed.Placement)
         body._world = placed
     return body._world
+
+
+def reread_shape(doc: DocumentRec, body: BodyRec) -> Any:
+    """The body's world shape read again from the document. What was measured of it is dropped only when the shape is
+    another one: the same shape (same ``TShape`` and location, so the same geometry) keeps its volumes, centres, box
+    and validity, which cost a pass over every face each. A body whose placement is not the identity gets a copy of its
+    shape every time: never the same one, so it is measured again."""
+    old = body._world
+    if old is None or old.isNull():
+        body.invalidate()
+        return world_shape(doc, body)
+    kept = body.measures()
+    body.invalidate()
+    fresh = world_shape(doc, body)
+    restore_measures(doc, body, kept)
+    return fresh
+
+
+def restore_measures(doc: DocumentRec, body: BodyRec, kept: tuple[Any, ...]) -> None:
+    """Give back to ``body`` what ``body.measures()`` held when it still has that very shape (``refresh`` re-resolves
+    the records and drops the measures of a shape that is the same one)."""
+    world = kept[0]
+    if world is None or world.isNull():
+        return
+    now = world_shape(doc, body)
+    if not now.isNull() and now.isSame(world):
+        body._vols, body._centres, body._area, body._bbox, body._fbox, body._valid, body._deep = kept[1:]
 
 
 def adopt_result(doc: DocumentRec, obj: Any, feature: FeatureRec) -> str | None:
