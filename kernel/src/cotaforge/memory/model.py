@@ -74,7 +74,7 @@ OPS_VOCABULARY: frozenset[str] = frozenset(
         *("check_interference", "circular_pattern", "copy_body", "cut", "cylinder", "draft", "edge_flange"),
         *("extrude", "fillet", "fix_component", "hole", "insert_component", "linear_pattern", "mate_coincident"),
         *("mate_concentric", "mate_distance", "mirror", "mirror_body", "place_component", "ref_axis", "ref_plane"),
-        *("revolve", "rotate", "set_joint", "shell", "sketch", "split", "sweep", "translate", "unfold"),
+        *("revolve", "rotate", "set_joint", "shell", "shrink_body", "sketch", "split", "sweep", "translate", "unfold"),
         # not operations of the plan
         *("delete_feature", "edit_feature", "native", "drawing_create", "drawing_dimension", "drawing_export"),
         *("mates", "joints"),

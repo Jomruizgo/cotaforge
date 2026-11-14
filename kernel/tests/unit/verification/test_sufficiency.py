@@ -55,6 +55,7 @@ from cotaforge.contract import (
     RevolveRequest,
     SetJointRequest,
     ShellRequest,
+    ShrinkBodyRequest,
     SketchHandle,
     SketchRequest,
     SplitRequest,
@@ -90,6 +91,7 @@ from cotaforge.ir.ops_features import (
     RevolveOperation,
     SetJointOperation,
     ShellOperation,
+    ShrinkBodyOperation,
     SketchOperation,
     SplitOperation,
     SweepOperation,
@@ -148,6 +150,7 @@ ROW_NAMES: dict[str, set[str]] = {
     "rotate": {"volume_delta", "bbox_after"},
     "copy_body": {"volume_delta", "copy_centroid", "source_centroid", "copy_bbox"},
     "mirror_body": {"volume_delta", "copy_centroid", "source_centroid", "copy_bbox"},
+    "shrink_body": {"volume_delta", "copy_centroid", "source_centroid", "copy_bbox"},
     "split": {"volume_delta", "split_volume_sum", "split_centroid", "split_sides"},
     "insert_component": {"volume_delta", "component_bbox", "component_transform"},
     "fix_component": {"volume_delta", "component_transform"},
@@ -514,6 +517,16 @@ def _mirror_body() -> Case:
     return computer, stub, op, request, block
 
 
+def _shrink_body() -> Case:
+    computer, stub, _ = _concept_stub()
+    block = StateSnapshot(mass=mass(120000.0), bbox=BoundingBox(min=(0, 0, 0), max=(100, 60, 20)))
+    op = ShrinkBodyOperation(
+        id="cavity", intent="i", source=BodyRef(from_op="block"), shrinkage_percent=0.6, factor_source="datasheet"
+    )
+    request = ShrinkBodyRequest(operation_id="cavity", source=BodyHandle(id="body:1"), scale=(1.006, 1.006, 1.006))
+    return computer, stub, op, request, block
+
+
 def _split() -> Case:
     computer, stub, _ = _concept_stub()
     block = StateSnapshot(mass=mass(120000.0), bbox=BoundingBox(min=(0, 0, 0), max=(100, 60, 20)))
@@ -694,6 +707,7 @@ CASES: dict[str, Callable[[], Case]] = {
     "rotate": _rotate,
     "copy_body": _copy_body,
     "mirror_body": _mirror_body,
+    "shrink_body": _shrink_body,
     "split": _split,
     "insert_component": _insert_component,
     "fix_component": _fix_component,

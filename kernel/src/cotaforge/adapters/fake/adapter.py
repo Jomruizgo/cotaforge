@@ -17,7 +17,7 @@ from typing import Any
 
 from cotaforge import __version__
 from cotaforge.adapters.fake import assembly as asm
-from cotaforge.adapters.fake import editing, foreign, saving, sheetmetal
+from cotaforge.adapters.fake import editing, foreign, mould, saving, sheetmetal
 from cotaforge.adapters.fake.booleans import as_box, intersection_primitive
 from cotaforge.adapters.fake.builders import (
     Build,
@@ -120,6 +120,8 @@ from cotaforge.contract import (
     DocumentHandle,
     DocumentInfo,
     DocumentKind,
+    DraftAnalysisRequest,
+    DraftAnalysisResult,
     EdgeFlangeRequest,
     EdgeHandle,
     EdgeInfo,
@@ -207,6 +209,7 @@ from cotaforge.contract import (
     ShellRequest,
     ShowEntitiesRequest,
     ShowEntitiesResult,
+    ShrinkBodyRequest,
     Side,
     SketchFrame,
     SketchHandle,
@@ -1062,6 +1065,25 @@ class FakeAdapter(Adapter):
         return self._construct(doc, "copy_body", request, build)
 
     @_recorded
+    def shrink_body(self, request: ShrinkBodyRequest) -> OperationResult:
+        doc = self._doc(request)
+        source = request.source.id
+        if source not in doc.bodies:
+            raise self._error(ErrorCode.invalid_reference, f"unknown body {source}", request)
+        factor = request.scale[0]
+        if max(request.scale) - min(request.scale) > 1e-12:
+            raise not_supported(
+                "the fake scales a body by one factor on all three axes only: a shrinkage per axis needs a real CAD",
+                request.operation_id,
+            )
+
+        def build(feature: FakeFeature) -> None:
+            body = self._new_body(doc, feature)
+            clone_body(Build(doc, feature, body), source, Transform(), scale=factor)
+
+        return self._construct(doc, "shrink_body", request, build)
+
+    @_recorded
     def split(self, request: SplitRequest) -> OperationResult:
         doc = self._doc(request)
         source = request.source.id
@@ -1640,6 +1662,9 @@ class FakeAdapter(Adapter):
     def import_geometry(self, request: ImportGeometryRequest) -> ImportGeometryResult:
         """A JSON stand-in for a STEP/IGES file read into a new document (``adapters.fake.foreign``)."""
         return foreign.import_geometry(self, request)
+
+    def draft_analysis(self, request: DraftAnalysisRequest) -> DraftAnalysisResult:
+        return mould.draft_analysis(self, request)
 
     def list_holes(self, request: ListHolesRequest) -> ListHolesResult:
         return foreign.list_holes(self, request)
