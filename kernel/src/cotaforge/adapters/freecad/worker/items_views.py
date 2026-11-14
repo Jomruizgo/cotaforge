@@ -12,6 +12,7 @@ letters, and finds room for the new view. A derived view takes the first free pl
 import math
 from typing import Any
 
+import sheet_centre
 import sheet_flats
 import sheet_hatch
 import sheet_section
@@ -57,7 +58,6 @@ SCAN_STEP_MM = 10.0
 CUT_END_MM = 12.0  # the thick ends of a cutting-plane line
 CUT_OVERSHOOT_MM = 4.0
 CUT_ARROW_MM = 9.0
-HOLE_AXIS_REACH_MM = 3.0  # a centre line goes this far beyond the ends of a hole
 STANDARD_ENLARGEMENTS = (2.0, 5.0, 10.0, 20.0, 50.0)  # ISO 5455
 MAX_DETAIL_MM = 70.0
 LETTERS = "ABCDEFGHJKLMNPRSTUVWXYZ"  # no I, O or Q: they read as digits
@@ -852,21 +852,20 @@ def draw_lines(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
                 reach = [
                     dot(sub(p, origin), unit(d))
                     for h in stack
-                    for p in (
+                    for p in (  # the wall of each hole and, in a blind one, its drill point: the line is centred on all of it
                         h.centre,
-                        tuple(c + u * h.depth for c, u in zip(h.centre, unit(h.direction), strict=True)),
+                        tuple(c + u * h.length for c, u in zip(h.centre, unit(h.direction), strict=True)),
                     )
                 ]
                 pa = view.project(tuple(o + u * min(reach) for o, u in zip(origin, unit(d), strict=True)))  # type: ignore[arg-type]
                 pb = view.project(tuple(o + u * max(reach) for o, u in zip(origin, unit(d), strict=True)))  # type: ignore[arg-type]
-                length = math.dist(pa, pb)
-                if length < 0.5:
+                if math.dist(pa, pb) < 0.5:
                     continue
-                ux, uy = (pb[0] - pa[0]) / length, (pb[1] - pa[1]) / length
-                over = HOLE_AXIS_REACH_MM
-                ctx.add([Line(pa[0] - ux * over, pa[1] - uy * over, pb[0] + ux * over, pb[1] + uy * over, AXES)])
-                ctx.used_view(view.name)
-                axes += 1
+                line = sheet_centre.side_line(ctx, view.name, pa, pb)  # the same overshoot at both ends
+                if line is not None:
+                    ctx.add([line])
+                    ctx.used_view(view.name)
+                    axes += 1
         facts = ctx.extras.get("facts")  # the whole cylinders of the part (pins, shafts, bosses) get theirs too
         for boss in facts.bosses if facts is not None else ():
             d = unit(boss.axis_dir)
@@ -885,20 +884,18 @@ def draw_lines(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
                     half = boss.length / 2
                     pa = view.project(tuple(p - u * half for p, u in zip(boss.axis_point, d, strict=True)))  # type: ignore[arg-type]
                     pb = view.project(tuple(p + u * half for p, u in zip(boss.axis_point, d, strict=True)))  # type: ignore[arg-type]
-                    length = math.dist(pa, pb)
-                    if length < 0.5:
+                    if math.dist(pa, pb) < 0.5:
                         continue
-                    ux, uy = (pb[0] - pa[0]) / length, (pb[1] - pa[1]) / length
-                    over = HOLE_AXIS_REACH_MM
-                    line = Line(pa[0] - ux * over, pa[1] - uy * over, pb[0] + ux * over, pb[1] + uy * over, AXES)
                     drawn = ctx.extras.setdefault("axis_lines", set())
-                    key = (view.name, *sorted(((round(line.x1, 1), round(line.y1, 1)), (round(line.x2, 1), round(line.y2, 1)))))
+                    key = (view.name, *sorted(((round(pa[0], 1), round(pa[1], 1)), (round(pb[0], 1), round(pb[1], 1)))))
                     if key in drawn:
                         continue
                     drawn.add(key)
-                    ctx.add([line])
-                    ctx.used_view(view.name)
-                    axes += 1
+                    line = sheet_centre.side_line(ctx, view.name, pa, pb)
+                    if line is not None:
+                        ctx.add([line])
+                        ctx.used_view(view.name)
+                        axes += 1
         if marks or axes:
             said.append(f"centre marks on {marks} hole view(s), centre lines on {axes}")
         crossed = _flat_diagonals(ctx)

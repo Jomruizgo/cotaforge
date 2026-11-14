@@ -61,7 +61,7 @@ ITEM_FIELDS: dict[str, frozenset[str]] = {
     "hole_positions": frozenset({"auto"}),
     "pattern_dim": frozenset({"kind", "at", "about", "auto", "elbow_mm", "view", "offset_mm", "side"}),
     "view_lines": frozenset({"hidden", "centres"}),
-    "line": frozenset({"style", "axis", "from", "to", "view", "extend_mm"}),
+    "line": frozenset({"style", "axis", "from", "to", "view", "extend_mm", "reason"}),
     "section": frozenset({"view", "at", "normal", "holes", "letter", "flip", "at_mm", "hatch", "in_place"}),
     "detail": frozenset({"view", "at", "radius_mm", "scale", "letter", "at_mm"}),
     "aux_view": frozenset({"face", "view", "letter", "at_mm"}),
