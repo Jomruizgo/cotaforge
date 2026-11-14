@@ -6,6 +6,8 @@ FreeCAD review and the external adapter's review both build these facts and call
   least of the part. A spigot at the bottom is dimensioned below; the extension lines do not run across the whole part when
   the other side is free.
 * ``dimension_crossings``: no extension line of a dimension crosses the dimension line of another one (ISO 129).
+* ``dimension_stacks``: parallel dimensions that run along each other stand shortest nearest the part and longest outermost,
+  at least ``MIN_PARALLEL_GAP_MM`` apart (ISO 129-1).
 * ``datum_on_line``: the triangle and the frame of a datum do not lie on a line of another item.
 * ``datum_unused``: a datum item whose letter no tolerance frame (``gdt`` item) cites.
 * ``chamfer_leader_problems``: the leader of a chamfer callout ends on the chamfer's own line, comes from outside the part
@@ -399,6 +401,86 @@ def dimension_crossings(dims: Sequence[DimShape]) -> list[CrossingFinding]:
             seen.add((f.owner, f.other))
             unique.append(f)
     return unique
+
+
+# --- the stack of parallel dimensions (ISO 129-1) ----------------------------------------------------------------------------
+
+MIN_PARALLEL_GAP_MM = 6.5
+"""Two parallel dimension lines that run along each other stand at least this far apart: a text height (3.5 mm) plus the room
+of the arrows and the text of the line outside. The layout stacks them 7 mm apart (``sheet_plan_layout.MIN_PARALLEL_GAP_MM``
+is this value)."""
+STACK_SLACK_MM = 0.5  # the CAD sets a line a fraction of a millimetre off where the sheet measured it
+STACK_TOL_MM = 1.0  # two dimensions run along each other when they share more than this; their lengths differ when they differ by more
+
+
+@dataclass(frozen=True)
+class StackFinding:
+    """Two dimensions of one side of a view that run along each other and stand wrong: ``kind`` is ``order`` (``owner``, the
+    LONGER one, stands nearer the part than ``other``) or ``gap`` (the lines are ``gap_mm`` apart, less than the minimum)."""
+
+    owner: str
+    other: str
+    view: str
+    side: str
+    kind: str
+    gap_mm: float
+    owner_mm: float
+    other_mm: float
+
+
+def _run(dim: DimShape) -> tuple[float, float] | None:
+    """Where a dimension runs along its line: from the first to the last of its extension lines."""
+    axis = _axis(dim)
+    if axis is None or len(dim.extension) < 2:
+        return None
+    across = sorted((s[0] + s[2]) / 2 if axis == "h" else (s[1] + s[3]) / 2 for s in dim.extension)
+    return (across[0], across[-1]) if across[-1] - across[0] > 1e-6 else None
+
+
+def stack_position(dim: DimShape, box: Rect) -> tuple[str, float] | None:
+    """The side of its view a dimension stands on and how far its line is from the edge of the view (``None``: inside the view,
+    not axis-aligned or no line position). ``box`` is the view's rectangle, y up."""
+    axis = _axis(dim)
+    if axis is None or dim.line_at is None:
+        return None
+    lo, hi = (box[1], box[3]) if axis == "h" else (box[0], box[2])
+    if dim.line_at >= hi + EDGE_STACK_MM:
+        return ("above" if axis == "h" else "right"), dim.line_at - hi
+    if dim.line_at <= lo - EDGE_STACK_MM:
+        return ("below" if axis == "h" else "left"), lo - dim.line_at
+    return None
+
+
+EDGE_STACK_MM = 0.2
+
+
+def dimension_stacks(dims: Sequence[DimShape], boxes: Mapping[str, Rect]) -> list[StackFinding]:
+    """The pairs of parallel dimensions of one side of a view that stand wrong (ISO 129-1): the LONGER one nearer the part than
+    the shorter one it runs along (the shorter stands inside, the longer outside: a baseline stack goes from the shortest at the
+    part to the longest outermost), or two lines closer than ``MIN_PARALLEL_GAP_MM``. Dimensions that share no run (a chain)
+    are never compared. One finding per pair, the order first."""
+    placed: list[tuple[DimShape, str, str, float, tuple[float, float]]] = []
+    for d in dims:
+        box, run = boxes.get(d.view), _run(d)
+        where = stack_position(d, box) if box is not None else None
+        axis = _axis(d)
+        if where is not None and run is not None and axis is not None:
+            placed.append((d, where[0], axis, where[1], run))
+    out: list[StackFinding] = []
+    for i, (a, side_a, axis_a, dist_a, run_a) in enumerate(placed):
+        for b, side_b, axis_b, dist_b, run_b in placed[i + 1 :]:
+            if a.view != b.view or side_a != side_b or axis_a != axis_b:
+                continue
+            if min(run_a[1], run_b[1]) - max(run_a[0], run_b[0]) <= STACK_TOL_MM:
+                continue
+            near, far = ((a, run_a, dist_a), (b, run_b, dist_b)) if dist_a <= dist_b else ((b, run_b, dist_b), (a, run_a, dist_a))
+            span_near, span_far = near[1][1] - near[1][0], far[1][1] - far[1][0]
+            gap = far[2] - near[2]
+            if span_near > span_far + STACK_TOL_MM:
+                out.append(StackFinding(near[0].owner, far[0].owner, a.view, side_a, "order", gap, span_near, span_far))
+            elif gap < MIN_PARALLEL_GAP_MM - STACK_SLACK_MM:
+                out.append(StackFinding(far[0].owner, near[0].owner, a.view, side_a, "gap", gap, span_far, span_near))
+    return out
 
 
 # --- the datum symbol on a line of another item -----------------------------------------------------------------------

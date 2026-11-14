@@ -142,6 +142,17 @@ TERMS: tuple[Term, ...] = (
         "source body, plane: a new mirrored body",
         "mirror_body",
     ),
+    Term(
+        ("contracción", "merma", "shrinkage", "cavidad", "cavity"),
+        "op shrink_body",
+        "source body, shrinkage_percent (a number or [x, y, z]), factor_source (datasheet, moulder, engineer)",
+        "shrink_body",
+    ),
+    Term(
+        ("análisis de desmoldeo", "contrasalida", "draft analysis", "undercut"),
+        "inspect draft",
+        "pull [x, y, z], min_draft_deg, paint: the draft of every face and the faces that cannot be released",
+    ),
     Term(("dividir", "split", "partir"), "op split", "source body, plane, keep both|positive|negative", "split"),
     Term(
         ("copiar cuerpo", "move/copy bodies", "mover/copiar cuerpos"),

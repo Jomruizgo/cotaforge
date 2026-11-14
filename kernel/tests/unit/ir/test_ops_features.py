@@ -431,6 +431,7 @@ def test_op_names_lists_the_whole_vocabulary() -> None:
         "draft",
         "mirror",
         "mirror_body",
+        "shrink_body",
         "split",
         "base_flange",
         "edge_flange",
@@ -505,6 +506,7 @@ def test_op_category_multibody_ops() -> None:
         "rotate",
         "copy_body",
         "mirror_body",
+        "shrink_body",
         "split",
     }
     assert {op for op, tier in OP_CATEGORY.items() if tier == "multibody"} == multibody

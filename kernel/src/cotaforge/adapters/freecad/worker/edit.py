@@ -63,8 +63,10 @@ from queries import face_descriptor, face_is_planar
 
 PRIMITIVE_TYPES = {"box": "Part::Box", "cylinder": "Part::Cylinder"}
 EDITABLE_KINDS = frozenset({"box", "cylinder", "move_body"})
-LIVE_KINDS = frozenset({"box", "cylinder", "move_body", "boolean"})
-EXPLICIT_INPUT_KINDS = frozenset({"box", "cylinder", "boolean", "move_body", "copy_body", "mirror_body", "split"})
+LIVE_KINDS = frozenset({"box", "cylinder", "move_body", "boolean", "shrink_body"})
+EXPLICIT_INPUT_KINDS = frozenset(
+    {"box", "cylinder", "boolean", "move_body", "copy_body", "mirror_body", "shrink_body", "split"}
+)
 EDITED_PROPERTIES = {
     "box": ("Length", "Width", "Height", "Placement"),
     "cylinder": ("Radius", "Height", "Placement"),
