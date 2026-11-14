@@ -53,7 +53,7 @@ pytestmark = [
     ),
 ]
 
-ORANGE = (1.0, 0.55, 0.0, 0.0)  # must match worker/gui.py's HIGHLIGHT_COLOR
+ORANGE = (1.0, 0.55, 0.0, 1.0)  # must match worker/gui.py's HIGHLIGHT_COLOR (the 4th value is the opacity)
 
 
 def _is_orange(color: list[float]) -> bool:

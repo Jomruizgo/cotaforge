@@ -6,10 +6,14 @@ engineer's decisions (datums, relations, fits, tolerances, GD&T, finish, section
 ``plan`` lists them as questions and ``compose`` refuses, before it changes anything, while one is missing.
 
 A decision is an item of the types that already exist (no placement: where it goes is the layout's job), so the
-corrections afterwards are the actions of today. What ``compose`` puts on the sheet has ids that start with ``dc_``: a
-second ``compose`` takes those off and puts the new ones; an item added by hand or placed by hand stays and is never
-touched. The only place that decides WHERE things go is ``lay_out`` (the seam of the global layout planner)."""
+corrections afterwards are the actions of today: ``update`` (one item, in place), ``add``, ``remove``. What ``compose``
+puts on the sheet has ids that start with ``dc_``: a second ``compose`` takes those off and puts the new ones; an item
+added by hand or edited by hand (pinned) stays and is never touched. The first ``compose`` is the only one of a sheet:
+a second one is refused unless its decisions change something that affects the whole sheet (paper, scale, views, the
+dimension scheme) or the engineer orders it. The only place that decides WHERE things go is ``lay_out`` (the seam of
+the global layout planner)."""
 
+import json
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -30,7 +34,7 @@ COMPOSED_PREFIX = "dc_"
 MAX_ITEMS_PER_CALL = 50
 PAPER_STEPS = ("A4", "A3", "A2")
 """The papers the composer may raise a sheet to when nobody fixed the paper (A2 is the limit: beyond it is the engineer's)."""
-LAYOUT_CODES = frozenset({"views_overlap", "view_outside_frame", "item_outside_frame", "text_outside_frame"})
+LAYOUT_CODES = frozenset({"views_overlap", "view_outside_frame", "item_outside_frame", "text_outside_frame", "paper_too_small"})
 """The findings that say the views and annotations do not fit the paper (a local ``collision`` between two annotations is
 the placement's to solve, not a reason for a bigger paper)."""
 LEGIBLE_SCALE = 0.2
@@ -47,6 +51,7 @@ KEYS: dict[str, tuple[str, ...]] = {
     "finish": ("finish",),
     "sections": ("section", "detail", "aux_view"),
     "welds": ("weld",),
+    "mould": ("parting_line", "pull_direction", "mould_zone", "no_draft"),
     "positions": ("dim",),
     "notes": ("note",),
 }
@@ -72,11 +77,17 @@ ROW_KEYS: dict[str, tuple[str, ...]] = {
     "req.surface_texture": ("finish",),
     "req.geometric_tolerance": ("gdt",),
     "req.welds": ("welds",),
+    "req.moulded_part": ("mould",),
     "req.general_tolerance": ("sheet",),
     "req.title_block": ("sheet",),
 }
 """The decision that answers each row of the table of requirements; any other row is closed by a note or by ``answers``."""
 LOCATION_KEYS = ("datums", "relations", "sheet")
+WHOLE_SHEET_STATED = ("template", "angle", "scale", "views", "isometric", "body", "projection", "symmetry")
+"""What a ``compose`` states (in its call or in ``decisions.sheet``) that changes the whole sheet: the paper, the angle, the
+scale, the views, the body, the symmetry of the part. The title block and the rest of ``sheet`` are local (``update``)."""
+WHOLE_SHEET_DECISIONS = ("relations", "datums")
+"""The decisions that are the dimension scheme of the sheet: another one is another sheet."""
 
 
 @dataclass(frozen=True)
@@ -492,6 +503,43 @@ def _check_answers(session: Session, survey: Survey, answers: dict[str, str], by
         raise _bad(problems)
 
 
+def _scope(args: DrawingArgs, sheet_over: dict[str, Any]) -> dict[str, Any]:
+    """What this order states of the whole sheet (the paper, the scale, the views... and the dimension scheme), as plain
+    JSON: what a sheet records of its compose and what the next one is compared with."""
+    stated = {name: getattr(args, name) for name in WHOLE_SHEET_STATED if name in args.model_fields_set}
+    stated.update({k: v for k, v in sheet_over.items() if k in WHOLE_SHEET_STATED})
+    for key in WHOLE_SHEET_DECISIONS:
+        if (args.decisions or {}).get(key):
+            stated[key] = args.decisions[key]  # type: ignore[index]
+    return json.loads(json.dumps(stated, sort_keys=True, default=str))
+
+
+def _refuse_repeat(info: Any, scope: dict[str, Any], args: DrawingArgs) -> dict[str, Any]:
+    """A sheet already composed is not composed again for a local fix: the signature it recorded is compared with what this
+    order states of the whole sheet, and an order that changes none of it is refused (the engineer can order it). Returns
+    the signature recorded (empty: the sheet was not composed in one order, or before it was recorded)."""
+    recorded = dict((info.composed or {}).get("signature") or {})
+    if args.recompose and not (args.by and args.by.strip() and args.reason and args.reason.strip()):
+        raise ToolError(
+            "recompose is the engineer's order: by=<him> and reason=<his words>; a local fix is update / add / remove",
+            code="invalid_input",
+            field_name="recompose",
+        )
+    if "signature" not in (info.composed or {}) or args.recompose or any(recorded.get(k) != v for k, v in scope.items()):
+        return recorded
+    raise ToolError(
+        "this sheet is already composed and these decisions change nothing that affects the whole sheet (paper, scale, "
+        "views, the dimension scheme: relations, datums), nothing was changed. A local fix is one item: "
+        'drawing(action="update", items=[{"id": "<id>", ...fields}]) moves it or changes its value, tolerance or text '
+        "without touching the rest; add / remove put or take off one item. Compose again only for a decision that "
+        "changes the whole sheet, or when the engineer orders it (recompose=true, by, reason)",
+        code="already_composed",
+        field_name="decisions",
+        usage='drawing(action="update", items=[{"id":"dc_relations1","offset_mm":14}]) | drawing(action="add", items=[...]) | '
+        'drawing(action="remove", items=["<id>"]); cad_guide(topic="drawing:compose")',
+    )
+
+
 def compose(session: Session, args: DrawingArgs, make_request: Any) -> Reply:
     require_sheet_flow(session, "compose")
     items, sheet_over, answers = normalise(args.decisions, design_memory.load_brief(session.settings).lang)
@@ -499,6 +547,9 @@ def compose(session: Session, args: DrawingArgs, make_request: Any) -> Reply:
     paper_fixed = "template" in sheet_over or "template" in args.model_fields_set
     fixed_scale = sheet_over.get("scale") or (args.scale if "scale" in args.model_fields_set else None)
     info, made = _bare_sheet(session, args, make_request)
+    scope = _scope(args, sheet_over)
+    recorded = _refuse_repeat(info, scope, args)
+    pinned = set((info.composed or {}).get("pinned") or ())
     survey = _survey(session, info.sheet, items)
     _check_answers(session, survey, answers, args.by, args.reason)
     open_questions = [q for q in survey.questions if not _covered(q, args.decisions or {}, items, answers)]
@@ -515,19 +566,36 @@ def compose(session: Session, args: DrawingArgs, make_request: Any) -> Reply:
     if sheet_over or (args.model_fields_set & {"title", "template", "scale", "angle", "views", "body", "fresh"}):
         request = make_request(session, _create_args(args, sheet_over))
     old = [i.id for i in survey.info.items if i.id.startswith(COMPOSED_PREFIX)]
-    remove = list(old)
+    kept = [i for i in old if i in pinned]  # edited in place by hand: they stay, and so does what they say
+    remove = [i for i in old if i not in pinned]
+    put = [i for i in items if i["id"] not in kept]
     if any(i["type"] == "datum_dims" for i in items) and "loc" in {i.id for i in survey.info.items}:
         remove.append("loc")  # the engineer chose the relation: the default location would dimension the holes twice
     derived = [a.item for a in survey.adds]
-    layout = lay_out(session, request, remove=remove, items=[*items, *derived])
+    layout = lay_out(session, request, remove=remove, items=[*put, *derived])
     reviewed = drawing_gate.sheet_info(session, survey.info.sheet, review=True) if answers else None  # once, not per answer
     for row_id, text in answers.items():
         drawing_gate.answer(session, survey.info.sheet, row_id, text, args.by, args.reason, reviewed)
     notes: list[str] = []
+    if kept:
+        notes.append(f"kept as edited by hand (pinned, not composed again): {', '.join(kept)}")
     if not paper_fixed:
         paper, layout = _raise_paper(session, survey.info.sheet, make_request, fixed_scale, layout)
         notes += paper
-    return ok("\n".join(_report(session, survey.info.sheet, items, derived, remove, notes, layout)), limit=REPLY_CHARS)
+    _record(session, survey.info.sheet, {**recorded, **scope})
+    return ok("\n".join(_report(session, survey.info.sheet, put, derived, remove, notes, layout)), limit=REPLY_CHARS)
+
+
+def _record(session: Session, sheet: str, signature: dict[str, Any]) -> None:
+    """The sheet keeps what this order decided of the whole sheet (a CAD that cannot keep it has no guard)."""
+    try:
+        session.adapter.annotate_drawing(
+            AnnotateDrawingRequest(
+                operation_id="drawing_compose", action="record", sheet=sheet, composed={"signature": signature}
+            )
+        )
+    except AdapterError:
+        return
 
 
 def _problems(info: Any) -> set[str]:
@@ -613,6 +681,9 @@ def _report(session: Session, sheet: str, items: list[dict[str, Any]], derived: 
     lines += [f"  open [{'|'.join(q.keys)}] {q.text}" for q in still]
     lines.append(
         'next: drawing(action="capture") and look at it (region= to read a dimension); drawing(action="review"); fix what '
-        "a shop reader would reject with add / remove / update (a placed item stays where you put it); never rebuild with add what compose derives"
+        'a shop reader would reject LOCALLY, one item at a time: drawing(action="update", items=[{"id": "<id>", ...fields}]) '
+        "moves it or changes its value, tolerance or text (nothing else moves, and it is pinned), add / remove put or take "
+        "off one; a second compose is refused unless the whole sheet changes (paper, scale, views, the dimension scheme); "
+        "never rebuild with add what compose derives"
     )
     return lines

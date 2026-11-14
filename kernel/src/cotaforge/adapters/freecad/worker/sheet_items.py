@@ -21,6 +21,7 @@ import items_finish
 import items_gdt
 import items_holes
 import items_lines
+import items_mould
 import items_notes
 import items_pattern
 import items_views
@@ -45,6 +46,7 @@ MODULES = (
     items_explode,
     items_lines,
     items_weld,
+    items_mould,
     items_pattern,
 )
 
@@ -134,6 +136,24 @@ def refuse_repeated_note(done: dict[str, Any], others: list[dict[str, Any]]) -> 
         if other.get("type") == "note" and isinstance(other.get("text"), str) and " ".join(other["text"].lower().split()) == words:
             msg = f"the sheet already has this note ({other.get('id')}): the same words are not written twice"
             raise ItemError(msg)
+
+
+def edited(item: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    """The stored ``item`` with ``patch`` applied (a field set to ``None`` is taken off), checked by its own type. The id
+    and the type never change. Raises ``ItemError`` with what to change."""
+    kind = str(item["type"])
+    if patch.get("type", kind) != kind:
+        msg = f"an edit never changes the type ({kind}); remove the item and add the other one"
+        raise ItemError(msg)
+    merged = {k: v for k, v in item.items() if k != "id"}
+    for key, value in patch.items():
+        if key in ("id", "type"):
+            continue
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+    return {"id": item["id"], **REGISTRY[kind].check(merged)}
 
 
 def prepare_all(ctx: Context, items: list[dict[str, Any]]) -> None:

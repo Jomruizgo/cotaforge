@@ -931,7 +931,9 @@ def _name_for(fc_doc: Any, wanted: str | None, op: str | None) -> str:
     return wanted
 
 
-CARRIED_KEYS = ("declined", "answers", "review_choice", "review_request", "reports", "report_n", "symmetry", "iso_frame")
+CARRIED_KEYS = (
+    "declined", "answers", "review_choice", "review_request", "reports", "report_n", "symmetry", "iso_frame", "composed",
+)  # fmt: skip
 # what a sheet remembers beyond its items, and a rebuild keeps: the defaults the engineer took off, the answers to the
 # review, who he chose to review it, the reports of the reviewers
 FLAT_RATIO = 0.35  # a round part is a disc (its length is a thickness) when it is at most this fraction of its diameter
@@ -1783,6 +1785,95 @@ def approve(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
 # --- items ------------------------------------------------------------------------------------------------------------
 
 
+def record_action(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
+    """Store what the order that composed the sheet decided (``composed``): the signature of the decisions that affect the
+    whole sheet. The items pinned by hand (``composed["pinned"]``) stay. It changes nothing on the sheet."""
+    op = params.get("operation_id")
+    page = _need_page(doc.fc_doc, params.get("sheet"), op)
+    spec = spec_of(page)
+    spec.pop("legacy", None)
+    pinned = list((spec.get("composed") or {}).get("pinned") or ())
+    spec["composed"] = {**dict(params.get("composed") or {}), **({"pinned": pinned} if pinned else {})}
+    write_spec(page, spec)
+    return {"sheet": spec["sheet"], "changed": []}
+
+
+def _drawn_by_item(ctx: sc.Context) -> dict[str, tuple[Any, ...]]:
+    """What every item of the sheet drew, by item id (the views are not items)."""
+    return {u.key: tuple(u.entities) for u in ctx.extras.get("units", []) if u.kind != sheet_units.KIND_VIEW}
+
+
+def _edited(item: dict[str, Any], patch: dict[str, Any], op: str | None) -> dict[str, Any]:
+    try:
+        return sheet_items.edited(item, patch)
+    except sc.ItemError as exc:
+        raise invalid_request(f"{item['id']} ({item['type']}): {exc}; nothing was changed", op) from exc
+
+
+def edit_action(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
+    """``annotate(action="edit")``: change items IN PLACE and nothing else. The sheet is drawn as it stands and with the edit;
+    the edit is refused (nothing is stored) when an edited item cannot be drawn, lies on another object where it did not
+    before, or makes any other item draw differently (it would be moved silently). An edited item is pinned: the layout and a
+    later compose leave it where it is."""
+    op = params.get("operation_id")
+    fc_doc = doc.fc_doc
+    page = _need_page(fc_doc, params.get("sheet"), op)
+    activate(fc_doc)
+    spec = spec_of(page)
+    spec.pop("legacy", None)
+    items = [dict(i) for i in spec.get("items", [])]
+    position = {str(i["id"]): n for n, i in enumerate(items)}
+    patches = [dict(p) for p in params.get("items") or ()]
+    missing = [str(p["id"]) for p in patches if str(p["id"]) not in position]
+    if missing:
+        raise invalid_request(f"no item {', '.join(missing)} on sheet {spec['sheet']}; it has: {', '.join(sorted(position))}", op)
+    edited = {str(p["id"]): _edited(items[position[str(p["id"])]], p, op) for p in patches}
+    changing = {k: v for k, v in edited.items() if v != items[position[k]]}
+    if not changing:
+        raise invalid_request(f"{', '.join(edited)}: the item already is as asked; nothing to change", op)
+    trial_items = [changing.get(str(i["id"]), i) for i in items]
+    composed = dict(spec.get("composed") or {})
+    composed["pinned"] = sorted({*(composed.get("pinned") or ()), *changing})
+    layout = dict(spec.get("layout") or {})
+    placed = {k: v for k, v in (layout.get("placed") or {}).items() if k not in changing}  # his place now, not the planner's
+    final = {**spec, "items": trial_items, "composed": composed, **({"layout": {**layout, "placed": placed}} if layout else {})}
+    wait_views(fc_doc, page, op)
+    _, _, before = compose(doc, page, spec, 1, 1, op)
+    tried = compose(doc, page, final, 1, 1, op)
+    refused = {r.id: r.detail for r in tried[1] if r.status == "error" and r.id in changing}
+    if refused:
+        raise invalid_request(
+            "; ".join(f"{k}: {why}" for k, why in refused.items()) + "; nothing was changed", op
+        )
+    known = {(c.a, c.b, c.kind) for c in before.extras.get("collisions", [])}
+    hits = [c for c in tried[2].extras.get("collisions", []) if (c.a, c.b, c.kind) not in known]
+    if hits:
+        raise invalid_request(
+            "the edit would put "
+            + "; ".join(f"{c.a} on {c.b} ({c.what or c.kind})" for c in hits[:3])
+            + "; nothing was changed (another side, another offset_mm, or the other item is the one to move)",
+            op,
+        )
+    was, now = _drawn_by_item(before), _drawn_by_item(tried[2])
+    shifted = sorted(k for k in now if k not in changing and k in was and was[k] != now[k])
+    if shifted:
+        raise invalid_request(
+            f"the edit would make {', '.join(shifted[:5])} draw differently (it makes them give way); nothing was changed "
+            "(a place that does not crowd them, or edit them too)",
+            op,
+        )
+    spec["items"] = trial_items
+    spec["composed"] = composed
+    if layout:
+        spec["layout"] = {**layout, "placed": placed}
+    _clear_approval(spec)
+    write_spec(page, spec)
+    _sync_template_fields(fc_doc, op)
+    return _result(
+        doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), [], op, changed=tuple(sorted(changing)), tried=(final, tried)
+    )
+
+
 def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     """``add`` / ``remove`` items of a sheet, or ``update`` its layout. An item that cannot be drawn against the part is
     reported in the result and NOT stored (the others are)."""
@@ -1795,6 +1886,10 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         return answer(doc, params)
     if action == "layout":
         return layout_action(doc, params)
+    if action == "edit":
+        return edit_action(doc, params)
+    if action == "record":
+        return record_action(doc, params)
     if action == "approve":
         return approve(doc, params)
     if action == "review_report":
@@ -1808,7 +1903,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     if action not in ("add", "remove", "remove_sheet"):
         raise invalid_request(
             f"unknown drawing action {action!r}, expected add, remove, remove_sheet, update, add_view, remove_view, "
-            "answer, approve, request_review, review_choice, review_report or layout",
+            "answer, approve, request_review, review_choice, review_report, layout, edit or record",
             op,
         )
     page = _need_page(fc_doc, params.get("sheet"), op)
@@ -2325,6 +2420,10 @@ def _exact_box(shape: Any) -> Any:
         return shape.BoundBox
 
 
+MOULD_CACHE = 400
+_MOULD: dict[tuple[Any, ...], Any] = {}  # what was measured for a moulded part (its box, its sections), by document and shapes
+
+
 class LiveGeometry(drawing_assembly.AssemblyRays, drawing_assembly.WeldJoints, sc.Geometry):
     """The lookups items make into the model, on the live document."""
 
@@ -2403,6 +2502,151 @@ class LiveGeometry(drawing_assembly.AssemblyRays, drawing_assembly.WeldJoints, s
         if distance > sc.POSITION_TOL_MM:
             return None
         return g.vec(solutions[0][0])
+
+    # --- a moulded part (ISO 10135): the pull direction and the parting plane are proposed from these ---
+    def _key(self, *parts: Any) -> tuple[Any, ...]:
+        """The key of something measured on THESE shapes of this document: the sheet is drawn again for every item added (and
+        for each nudge of a collision), and a section of a part with hundreds of faces takes seconds."""
+        return (self.doc.id, tuple(shape.hashCode() for shape in self._shapes), *parts)
+
+    def mould_box(self) -> tuple[sc.Vec3, sc.Vec3, sc.Vec3] | None:
+        key = self._key("mould_box")
+        if key not in _MOULD:
+            _MOULD[key] = self._mould_box()
+            if len(_MOULD) > MOULD_CACHE:
+                _MOULD.pop(next(iter(_MOULD)))
+        return _MOULD[key]  # type: ignore[no-any-return]
+
+    def _mould_box(self) -> tuple[sc.Vec3, sc.Vec3, sc.Vec3] | None:
+        boxes = [_exact_box(shape) for shape in self._shapes]
+        if not boxes:
+            return None
+        low = (min(b.XMin for b in boxes), min(b.YMin for b in boxes), min(b.ZMin for b in boxes))
+        high = (max(b.XMax for b in boxes), max(b.YMax for b in boxes), max(b.ZMax for b in boxes))
+        solids = [solid for shape in self._shapes for solid in (shape.Solids or [shape])]  # a compound has no centre of mass of its own
+        volume = sum(float(solid.Volume) for solid in solids)
+        if volume <= 0:
+            return None
+        centre = tuple(sum(float(solid.Volume) * g.vec(solid.CenterOfMass)[i] for solid in solids) / volume for i in range(3))
+        return low, high, centre  # type: ignore[return-value]
+
+    def _section(self, axis: sc.Vec3, distance: float) -> tuple[float, Any] | None:
+        """``(area, wire)`` of the largest closed wire the plane square to ``axis`` at ``distance`` cuts from the part."""
+        key = self._key("section", axis, round(distance, 3))
+        if key in _MOULD:
+            return _MOULD[key]  # type: ignore[no-any-return]
+        found = self._slice(axis, distance)
+        _MOULD[key] = found
+        if len(_MOULD) > MOULD_CACHE:
+            _MOULD.pop(next(iter(_MOULD)))
+        return found
+
+    def _slice(self, axis: sc.Vec3, distance: float) -> tuple[float, Any] | None:
+        best: tuple[float, Any] | None = None
+        direction = App.Vector(*axis)
+        for shape in self._shapes:
+            try:
+                wires = shape.slice(direction, distance)
+            except Exception:  # noqa: BLE001 - a plane that grazes a face: that section is not there
+                continue
+            for wire in wires:
+                try:
+                    area = float(Part.Face(wire).Area) if wire.isClosed() else 0.0
+                except Exception:  # noqa: BLE001, S112
+                    continue
+                if best is None or area > best[0]:
+                    best = (area, wire)
+        return best
+
+    def outline_areas(self, axis: sc.Vec3, around: tuple[float, float] | None = None) -> list[tuple[float, float]]:
+        key = self._key("areas", tuple(axis), around)
+        if key not in _MOULD:
+            _MOULD[key] = self._outline_areas(axis, around)
+        return list(_MOULD[key])
+
+    def _outline_areas(self, axis: sc.Vec3, around: tuple[float, float] | None = None) -> list[tuple[float, float]]:
+        box = self.mould_box()
+        if box is None:
+            return []
+        unit = tuple(abs(c) for c in axis)
+        index = max(range(3), key=lambda i: unit[i])
+        lo, hi = around if around is not None else (box[0][index], box[1][index])
+        count = 32 if around is None else 24
+        step = (hi - lo) / count
+        out: list[tuple[float, float]] = []
+        with _stage("sampling the sections of the part for the parting plane", self.op):
+            for i in range(count):
+                d = lo + (i + 0.5) * step
+                found = self._section(unit, d)  # type: ignore[arg-type]
+                if found is not None:
+                    out.append((d, found[0]))
+            if around is None and out:  # then finer round the widest one, where a shoulder lies between two samples
+                best = max(out, key=lambda s: s[1])[0]
+                out += self.outline_areas(axis, (best - step, best + step))
+        return sorted(out)
+
+    def axial_planes(self, axis: sc.Vec3) -> list[float]:
+        unit = tuple(abs(c) for c in axis)
+        index = max(range(3), key=lambda i: unit[i])
+        found: set[float] = set()
+        for shape in self._shapes:
+            for face in shape.Faces:
+                if g.surface_kind(face) != "plane" or abs(abs(face.normalAt(0, 0).dot(App.Vector(*unit))) - 1.0) > 1e-6:
+                    continue
+                found.add(round(float(g.vec(face.CenterOfMass)[index]), 2))
+        return sorted(found)
+
+    def section_outline(self, axis: sc.Vec3, level: float, centre: sc.Vec3, xdir: sc.Vec3, direction: sc.Vec3) -> list[sc.Point]:
+        unit = tuple(abs(c) for c in axis)
+        best: tuple[float, Any] | None = None
+        for nudge in (-0.02, 0.02):  # a plane on a face of the part has no section: a hair either side of it has
+            found = self._section(unit, level + nudge)  # type: ignore[arg-type]
+            if found is not None and (best is None or found[0] > best[0]):
+                best = found
+        if best is None:
+            return []
+        ydir = sc.cross(direction, xdir)
+        points = best[1].discretize(Deflection=0.05)
+        loop = [(sc.dot(sc.sub((p.x, p.y, p.z), centre), xdir), sc.dot(sc.sub((p.x, p.y, p.z), centre), ydir)) for p in points]
+        if len(loop) > 2 and math.dist(loop[0], loop[-1]) < 1e-6:
+            loop.pop()
+        return loop
+
+    def circle_span(self, a: sc.Vec3, b: sc.Vec3) -> float | None:
+        chord = g.length(g.sub(b, a))
+        if chord < 1e-6:
+            return None
+        along = g.unit(g.sub(b, a))
+        middle = tuple((x + y) / 2 for x, y in zip(a, b, strict=True))
+        tol = sc.POSITION_TOL_MM
+
+        def on_axis(origin: sc.Vec3, axis: sc.Vec3) -> bool:
+            if abs(g.dot(along, axis)) > 1e-3:  # the chord is across the axis
+                return False
+            off = g.sub(middle, origin)
+            return g.length(g.sub(off, g.scale(axis, g.dot(off, axis)))) <= tol  # ... and its middle is on it
+
+        for shape in self._shapes:
+            walls = []  # a bore, a boss or a cone with draft: the axis crosses the chord at its middle (a wall comes in halves)
+            for face in shape.Faces:
+                kind = g.surface_kind(face)
+                if kind not in ("cylinder", "cone"):
+                    continue
+                surf = face.Surface
+                origin = g.vec(surf.Center if kind == "cylinder" else surf.Apex)
+                if on_axis(origin, g.unit(g.vec(surf.Axis))):
+                    walls.append(face)
+            if all(any(w.distToShape(Part.Vertex(g.fcvec(p)))[0] <= tol for w in walls) for p in (a, b)):
+                return chord
+            for edge in shape.Edges:  # a circular edge (the mouth of a bore): both points on it
+                if g.curve_kind(edge) != "circle":
+                    continue
+                curve = edge.Curve
+                if not on_axis(g.vec(curve.Center), g.unit(g.vec(curve.Axis))):
+                    continue
+                if all(edge.distToShape(Part.Vertex(g.fcvec(p)))[0] <= tol for p in (a, b)):
+                    return chord
+        return None
 
     def projection(
         self, centre: sc.Vec3, xdir: sc.Vec3, direction: sc.Vec3, cut: tuple[sc.Vec3, sc.Vec3] | None = None
@@ -3385,6 +3629,7 @@ def describe(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         row["reports"] = _report_rows(spec)
         row["review_request"] = _request_row(spec)
         row["review_choice"] = _choice_row(spec)
+        row["composed"] = dict(spec.get("composed") or {})
         row["printed"] = _printed(composed)
         row["native"] = sheet_output.listed(sheet_output.native_rows(page))
         if params.get("review"):

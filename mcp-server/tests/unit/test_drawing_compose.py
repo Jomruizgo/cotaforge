@@ -29,33 +29,59 @@ def na_all(call: Caller, keep: tuple[str, ...] = ()) -> dict[str, str]:
     return {r: "no aplica: no es de esta pieza" for r in re.findall(r"\((req\.[a-z_]+)\)", plan) if r not in keep}
 
 
-def composed(call: Caller, decisions: dict[str, Any]) -> str:
+def composed(call: Caller, decisions: dict[str, Any], **more: Any) -> str:
     """A compose by the engineer's order: the rows it answers "no aplica" are measured ones."""
-    return call.ok("drawing", action="compose", decisions=decisions, by="Ana", reason="Ana: no aplica a esta pieza")
+    return call.ok("drawing", action="compose", decisions=decisions, by="Ana", reason="Ana: no aplica a esta pieza", **more)
 
 
 GDT = {"char": "perpendicularity", "value": 0.02, "datums": ["A"], "face": "face:3"}
 
 
-# --- the option: with steps nothing changes ----------------------------------------------------------------------------------------
+# --- the default is the hybrid flow; steps stays selectable ----------------------------------------------------------------------
 
 
-def test_steps_is_the_default_and_the_tools_do_not_know_plan_or_compose(settings: Settings) -> None:
-    call, fake = shaft_session(settings)
+def choose_steps(settings: Settings) -> None:
+    design_memory.save_brief(settings, None, None, None, None, None, None, "steps")
+
+
+def test_the_hybrid_flow_is_the_default_and_the_tools_know_plan_and_compose(settings: Settings) -> None:
+    call, fake = shaft_session(settings)  # nothing chosen in the brief
     session = call.session
-    assert design_memory.load_brief(settings).drawing_flow == "steps"
+    assert design_memory.DEFAULT_DRAWING_FLOW == "sheet" and design_memory.load_brief(settings).drawing_flow == "sheet"
     drawing = TOOLS_BY_NAME["drawing"]
     schema = input_schema(drawing, session)
+    assert {"plan", "compose"} <= set(schema["properties"]["action"]["enum"])
+    assert "decisions" in schema["properties"] and "recompose" in schema["properties"]
+    described = tool_description(drawing, session)
+    assert "compose(decisions)" in described and "update / add / remove" in described
+    assert "drawing_flow" not in input_schema(TOOLS_BY_NAME["memory"], session)["properties"]  # the engineer's rare choice
+    assert "drawing flow" not in call.ok("memory", action="brief")  # the default says nothing
+    text = call.ok("drawing", action="create")
+    assert 'drawing(action="plan")' in text.split("next:")[-1]
+    guide = call.ok("cad_guide", topic="drawing")
+    assert "ONCE" in guide and "LOCAL fixes" in guide and "the default" in guide and WINDOW_LINE not in guide
+    assert "COMPOSE" in call.ok("cad_guide", topic="drawing:compose")
+
+
+def test_the_engineer_can_choose_steps_in_the_brief_and_the_tools_follow(settings: Settings) -> None:
+    call, fake = shaft_session(settings)
+    call.ok("memory", action="brief", drawing_flow="steps")  # hidden from the schema, accepted all the same
+    assert design_memory.load_brief(settings).drawing_flow == "steps"
+    assert "drawing flow steps" in call.ok("memory", action="brief")
+    assert "drawing_flow: steps" in (settings.workspace / "brief.yaml").read_text(encoding="utf-8")
+    drawing = TOOLS_BY_NAME["drawing"]
+    schema = input_schema(drawing, call.session)
     assert "plan" not in schema["properties"]["action"]["enum"] and "compose" not in schema["properties"]["action"]["enum"]
-    assert "decisions" not in schema["properties"]
-    assert "drawing_flow" not in input_schema(TOOLS_BY_NAME["memory"], session)["properties"]
-    assert tool_description(drawing, session) == drawing.description  # the text of always
+    assert "decisions" not in schema["properties"] and "recompose" not in schema["properties"]
+    assert tool_description(drawing, call.session) == drawing.description  # the text of always
     refused = call.err("drawing", action="plan")
     assert "action" in refused and "plan" in refused
-    assert "drawing_flow" not in call.ok("memory", action="brief")
+    call.ok("memory", action="brief", drawing_flow="sheet")
+    assert "drawing_flow" not in (settings.workspace / "brief.yaml").read_text(encoding="utf-8")  # the default is not written
 
 
 def test_steps_keeps_the_guide_and_the_next_line_of_create_as_they_were(settings: Settings) -> None:
+    choose_steps(settings)
     call, fake = shaft_session(settings)
     text = call.ok("drawing", action="create")
     assert 'drawing(action="add", items=[...]) a few at a time' in text and "plan" not in text.split("next:")[-1]
@@ -65,30 +91,9 @@ def test_steps_keeps_the_guide_and_the_next_line_of_create_as_they_were(settings
     assert "only in a project that builds sheets in one order" in call.ok("cad_guide", topic="drawing:compose")
 
 
-def test_the_engineer_chooses_the_flow_in_the_brief_and_the_tools_follow(settings: Settings) -> None:
-    call, fake = shaft_session(settings)
-    assert "drawing_flow" not in call.ok("memory", action="brief")
-    call.ok("memory", action="brief", drawing_flow="sheet")  # hidden from the schema of a steps project, accepted all the same
-    assert design_memory.load_brief(settings).drawing_flow == "sheet"
-    assert "drawing flow sheet" in call.ok("memory", action="brief")
-    drawing = TOOLS_BY_NAME["drawing"]
-    schema = input_schema(drawing, call.session)
-    assert {"plan", "compose"} <= set(schema["properties"]["action"]["enum"]) and "decisions" in schema["properties"]
-    assert "compose(decisions)" in tool_description(drawing, call.session)
-    assert "drawing_flow" in input_schema(TOOLS_BY_NAME["memory"], call.session)["properties"]
-    assert "drawing_flow: sheet" in (settings.workspace / "brief.yaml").read_text(encoding="utf-8")
-    text = call.ok("drawing", action="create")
-    assert 'drawing(action="plan")' in text.split("next:")[-1]
-    guide = call.ok("cad_guide", topic="drawing")
-    assert "ONE ORDER" in guide and "drawing:compose" in guide and WINDOW_LINE not in guide
-    assert "COMPOSE" in call.ok("cad_guide", topic="drawing:compose")
-    call.ok("memory", action="brief", drawing_flow="steps")
-    assert "drawing_flow" not in (settings.workspace / "brief.yaml").read_text(encoding="utf-8")
-
-
-def test_an_unknown_flow_in_the_brief_reads_as_steps(settings: Settings) -> None:
+def test_an_unknown_flow_in_the_brief_reads_as_the_default(settings: Settings) -> None:
     (settings.workspace / "brief.yaml").write_text("drawing_flow: both\n", encoding="utf-8")
-    assert design_memory.load_brief(settings).drawing_flow == "steps"
+    assert design_memory.load_brief(settings).drawing_flow == "sheet"
 
 
 # --- plan --------------------------------------------------------------------------------------------------------------------------
@@ -168,11 +173,157 @@ def test_a_second_compose_replaces_what_the_first_put_and_keeps_what_the_hand_ad
     everything = {"answers": na_all(call)}
     composed(call, {**everything, "notes": ["uno"]})
     call.ok("drawing", action="add", items=[{"type": "note", "id": "mine", "text": "a mano"}])
-    composed(call, {**everything, "notes": ["dos", "tres"]})
+    composed(call, {**everything, "notes": ["dos", "tres"]}, recompose=True)  # the engineer's order
     items = items_of(fake)
     assert items["dc_notes1"]["text"] == "dos" and items["dc_notes2"]["text"] == "tres"
     assert items["mine"]["text"] == "a mano" and sum(i.startswith("dc_notes") for i in items) == 2
     assert sum(i == "rq_callouts" for i in items) == 1
+
+
+# --- the hybrid: one order for the first proposal, then local fixes --------------------------------------------------------------
+
+
+def keeping_items_on_rebuild(fake: DrawingFake) -> None:
+    """The CAD keeps the items of a sheet it builds again (the fake starts a sheet from its overall dimension)."""
+    make = fake.create_drawing
+
+    def create(request: Any) -> Any:
+        kept = list(fake.drawings.get("Drawing", {}).get("items", ()))
+        result = make(request)
+        if kept:
+            fake.drawings["Drawing"]["items"] = kept
+        return result
+
+    fake.create_drawing = create  # type: ignore[method-assign]
+
+
+def composed_once(settings: Settings) -> tuple[Caller, DrawingFake, dict[str, Any]]:
+    call, fake = sheet_shaft(settings)
+    keeping_items_on_rebuild(fake)
+    everything = {"answers": na_all(call)}
+    composed(call, {**everything, "notes": ["uno"]})
+    return call, fake, everything
+
+
+def test_the_compose_records_what_it_decided_of_the_whole_sheet(settings: Settings) -> None:
+    call, fake = sheet_shaft(settings)
+    composed(call, {"answers": na_all(call), "sheet": {"template": "A3", "title": "Eje"}, "datums": [{"letter": "A", "face": "face:3"}]})
+    recorded = fake.drawings["Drawing"]["composed"]["signature"]
+    assert recorded == {"template": "A3", "datums": [{"letter": "A", "face": "face:3"}]}  # the title is local, not recorded
+
+
+def test_a_second_compose_that_changes_nothing_of_the_whole_sheet_is_refused_and_points_to_the_local_actions(settings: Settings) -> None:
+    call, fake, everything = composed_once(settings)
+    before = len(fake.annotated)
+    refused = call.err("drawing", action="compose", decisions={**everything, "notes": ["dos"]}, by="Ana", reason="Ana: no aplica")
+    assert "already composed" in refused and "nothing was changed" in refused and 'action="update"' in refused
+    assert len(fake.annotated) == before and len(fake.created) == 1  # not a call to the CAD
+    assert items_of(fake)["dc_notes1"]["text"] == "uno"
+
+
+def test_a_second_compose_for_a_change_that_affects_the_whole_sheet_is_allowed(settings: Settings) -> None:
+    call, fake, everything = composed_once(settings)
+    text = composed(call, {**everything, "notes": ["dos"], "sheet": {"template": "A3"}})
+    assert "composed sheet" in text and items_of(fake)["dc_notes1"]["text"] == "dos"
+    assert fake.drawings["Drawing"]["composed"]["signature"]["template"] == "A3"
+    call.err("drawing", action="compose", decisions={**everything, "notes": ["tres"], "sheet": {"template": "A3"}}, by="Ana", reason="Ana: no aplica")
+
+
+def test_a_second_compose_with_another_dimension_scheme_is_allowed(settings: Settings) -> None:
+    call, fake, everything = composed_once(settings)
+    composed(call, {**everything, "relations": [{"type": "datum_dims", "x_from": "face:3", "y_from": "face:5", "holes": "all"}]})
+    assert "dc_relations1" in items_of(fake)
+
+
+def test_the_engineer_can_order_a_second_compose_and_it_needs_his_words(settings: Settings) -> None:
+    call, fake, everything = composed_once(settings)
+    lonely = call.err("drawing", action="compose", decisions={**everything, "notes": ["dos"]}, recompose=True)
+    assert "engineer's order" in lonely and items_of(fake)["dc_notes1"]["text"] == "uno"
+    composed(call, {**everything, "notes": ["dos"]}, recompose=True)
+    assert items_of(fake)["dc_notes1"]["text"] == "dos"
+
+
+def test_a_refused_first_compose_leaves_the_sheet_open_to_compose(settings: Settings) -> None:
+    call, fake = sheet_shaft(settings)
+    call.err("drawing", action="compose", decisions={"notes": ["x"]})  # decisions missing: nothing recorded
+    assert "composed" not in fake.drawings["Drawing"]
+    composed(call, {"answers": na_all(call), "notes": ["x"]})
+    assert "composed" in fake.drawings["Drawing"]
+
+
+def test_a_sheet_that_was_not_composed_in_one_order_has_no_guard(settings: Settings) -> None:
+    call, fake = sheet_shaft(settings)
+    call.ok("drawing", action="create")
+    call.ok("drawing", action="add", items=[{"type": "note", "id": "dc_notes1", "text": "a mano"}])
+    composed(call, {"answers": na_all(call), "notes": ["x"]})  # nothing recorded: it is the first compose
+    assert items_of(fake)["dc_notes1"]["text"] == "x"
+
+
+# --- update: one item in place ------------------------------------------------------------------------------------------------------
+
+
+def test_update_with_items_edits_one_item_in_place_and_pins_it(settings: Settings) -> None:
+    call, fake, everything = composed_once(settings)
+    call.ok("drawing", action="add", items=[{"type": "note", "id": "mine", "text": "a mano"}])
+    before = {k: dict(v) for k, v in items_of(fake).items()}
+    sent = len(fake.annotated)
+    text = call.ok("drawing", action="update", items=[{"id": "dc_notes1", "text": "uno, corregido"}])
+    asked = fake.annotated[sent:]
+    assert [r.action for r in asked] == ["edit"] and len(fake.created) == 1  # no layout, no create, no add/remove
+    items = items_of(fake)
+    assert items["dc_notes1"]["text"] == "uno, corregido"
+    assert {k: v for k, v in items.items() if k != "dc_notes1"} == {k: v for k, v in before.items() if k != "dc_notes1"}
+    assert "edited in place: dc_notes1" in text and "nothing else moved" in text
+    assert fake.drawings["Drawing"]["composed"]["pinned"] == ["dc_notes1"]
+
+
+def test_update_can_move_an_item_and_take_a_field_off(settings: Settings) -> None:
+    call, fake, _ = composed_once(settings)
+    call.ok("drawing", action="add", items=[{"type": "dim", "id": "d1", "kind": "distance", "side": "above", "offset_mm": 8}])
+    call.ok("drawing", action="update", items=[{"id": "d1", "side": "below", "offset_mm": 15}])
+    assert items_of(fake)["d1"]["side"] == "below" and items_of(fake)["d1"]["offset_mm"] == 15
+    call.ok("drawing", action="update", items=[{"id": "d1", "offset_mm": None}])
+    assert "offset_mm" not in items_of(fake)["d1"]
+
+
+def test_an_edit_the_cad_refuses_for_a_collision_reports_it_and_changes_nothing(settings: Settings) -> None:
+    call, fake, _ = composed_once(settings)
+    call.ok("drawing", action="add", items=[{"type": "dim", "id": "d1", "kind": "distance", "offset_mm": 8}])
+    fake.collides = {"d1"}
+    refused = call.err("drawing", action="update", items=[{"id": "d1", "offset_mm": 1}])
+    assert "would put d1 on d9" in refused and "nothing was changed" in refused
+    assert items_of(fake)["d1"]["offset_mm"] == 8 and "pinned" not in fake.drawings["Drawing"].get("composed", {})
+
+
+def test_update_names_the_items_it_does_not_find_and_asks_for_something_to_change(settings: Settings) -> None:
+    call, fake, _ = composed_once(settings)
+    assert "no item nope" in call.err("drawing", action="update", items=[{"id": "nope", "text": "x"}])
+    assert "nothing to change" in call.err("drawing", action="update", items=[{"id": "dc_notes1"}])
+    assert "valid dictionary" in call.err("drawing", action="update", items=["dc_notes1"])
+
+
+def test_an_update_of_items_does_not_mix_with_the_title_block_or_the_layout_of_the_sheet(settings: Settings) -> None:
+    call, fake, _ = composed_once(settings)
+    refused = call.err("drawing", action="update", items=[{"id": "dc_notes1", "text": "x"}], title_block={"author": "Ana"})
+    assert "two calls" in refused
+
+
+def test_update_without_items_still_lays_the_views_out_again(settings: Settings) -> None:
+    call, fake, _ = composed_once(settings)
+    sent = len(fake.annotated)
+    call.ok("drawing", action="update", title_block={"author": "Ana"})
+    assert [r.action for r in fake.annotated[sent:]] == ["update"]
+
+
+def test_a_recompose_keeps_what_was_edited_in_place_and_says_so(settings: Settings) -> None:
+    call, fake, everything = composed_once(settings)
+    call.ok("drawing", action="update", items=[{"id": "dc_notes1", "text": "uno, a mano"}])
+    text = composed(call, {**everything, "notes": ["dos", "tres"], "sheet": {"template": "A3"}})
+    items = items_of(fake)
+    assert items["dc_notes1"]["text"] == "uno, a mano"  # pinned: not taken off, not put again
+    assert items["dc_notes2"]["text"] == "tres" and sum(i.startswith("dc_notes") for i in items) == 2
+    assert "kept as edited by hand" in text and "dc_notes1" in text
+    assert fake.drawings["Drawing"]["composed"]["pinned"] == ["dc_notes1"]  # the pin survives the record
 
 
 def test_a_chosen_relation_takes_the_default_location_off_so_nothing_is_dimensioned_twice(settings: Settings) -> None:

@@ -22,6 +22,7 @@ from typing import Any
 
 import FreeCAD as App
 import gui
+import sheet_notefit
 import sheet_units as su
 from sheet_draw import lifted_label
 
@@ -33,7 +34,8 @@ NOTE_BLOCK_MM = 175.0  # the width of the text block of every note line (more wh
 NOTE_BLOCK_FACTOR = 1.15
 NOTE_BLOCK_PAD_MM = 4.0
 NOTE_FIT_PASSES = 4  # a note line is moved at most this many times to put its painted left edge on the block's
-NOTE_FIT_TOL_MM = 0.15
+NOTE_FIT_TOL_MM = 0.5  # a line is judged misplaced from this far off its place
+NOTE_MOVE_MM = 0.3  # and moved only when it is this far off: every move risks the window pulling it onto the line next to it
 SYMBOL = "TechDraw::DrawViewSymbol"
 GROUP = "Cotaforge"
 VIEW_LABELS = {"front": "View_front", "top": "View_top", "right": "View_right", "isometric": "View_iso"}
@@ -344,22 +346,38 @@ def _make_note(fc_doc: Any, page: Any, note: su.NativeNote, key: str, sheet: str
     return objects
 
 
+def _line_of(obj: Any) -> str:
+    """The text of the one line an annotation of a note holds."""
+    text = list(obj.Text)
+    return str(text[0]) if text else ""
+
+
 def _fit_note(fc_doc: Any, page: Any, objects: list[Any], note: su.NativeNote) -> None:
     """Put each painted line where the sheet wants it: its left edge at ``note.at``. TechDraw centres a text on X, Y, so
     the width it was painted at (not a font estimate) moves the centre. Nothing is painted headless: the estimate stands."""
-    for obj in objects:
-        extent = gui.block_extent(page, float(obj.X), float(obj.Y))
-        if extent is not None:
+    gui.settle()  # the scene has the lines made a moment ago only after a few events: measuring before finds other texts
+    for obj in objects:  # a line is found by what it SAYS: the text of a dimension at that height is not the line
+        extent = gui.block_extent(page, float(obj.X), float(obj.Y), _line_of(obj))
+        if extent is not None and abs(note.at[0] + extent[0] / 2 - float(obj.X)) > NOTE_MOVE_MM:
+            # a line is moved only when it is off: the window pulls an object that is moved onto another one within a few mm
+            # (a note line onto the next, 5 mm away: two lines on one place), so a line that is where it should be is not touched
             obj.X = note.at[0] + extent[0] / 2
     fc_doc.recompute()
     for obj in objects:  # then look where each line was PAINTED and move it the rest of the way (a few passes at most)
+        box = None
         for _ in range(NOTE_FIT_PASSES):
             gui.settle()  # the scene repaints a moved item a few events later: measuring before gives the old place
-            box = gui.block_box(page, float(obj.X), float(obj.Y))
-            if box is None or abs(note.at[0] - box[0]) <= NOTE_FIT_TOL_MM:
+            box = gui.block_box(page, float(obj.X), float(obj.Y), _line_of(obj))
+            if box is None or abs(note.at[0] - box[0]) <= NOTE_MOVE_MM:
                 break
             obj.X = float(obj.X) + (note.at[0] - box[0])
             fc_doc.recompute()
+        off = sheet_notefit.misplaced(note.at[0], box, NOTE_FIT_TOL_MM)
+        if off is not None:
+            # the line did not come where the sheet wants it: never leave it where TechDraw put it (a line outside the frame
+            # is a silent overflow); the unit goes back to the sheet's own text, which is inside the frame, and says why
+            msg = f"the note line '{_line_of(obj).strip()[:40]}' was painted {off:+.1f} mm from where the sheet puts it"
+            raise RuntimeError(msg)
 
 
 def build(fc_doc: Any, page: Any, unit: su.Unit, sheet: str) -> Built:

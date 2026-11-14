@@ -90,6 +90,10 @@ ITEM_FIELDS: dict[str, frozenset[str]] = {
             "anchor_at",
         }
     ),
+    "parting_line": frozenset({"pull", "level_mm", "view"}),
+    "pull_direction": frozenset({"pull", "draft_deg", "view", "side", "offset_mm"}),
+    "mould_zone": frozenset({"kind", "at", "radius_mm", "normal", "view"}),
+    "no_draft": frozenset({"kind", "at", "view", "side", "offset_mm"}),
 }
 
 # item types the sheet will have, and the phase that builds them: refused until then
@@ -105,6 +109,8 @@ REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "aux_view": ("face",),
     "datum": ("letter",),
     "gdt": ("char", "value"),
+    "mould_zone": ("kind", "at"),
+    "no_draft": ("at",),
 }
 
 ITEM_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,23}$")
@@ -154,6 +160,28 @@ def remark_problems(remarks: Sequence[Any]) -> list[str]:
                 found.append(f"{label}: {name} must be text")
             elif len(value) > MAX_REMARK_TEXT:
                 found.append(f"{label}: {name} has {len(value)} characters, at most {MAX_REMARK_TEXT}")
+    return found
+
+
+def edit_problems(items: Sequence[Any]) -> list[str]:
+    """What is wrong with the changes of an ``edit`` without asking the CAD (``{"id": "d3", "offset_mm": 12}``: the id
+    of the item and at least one field to change; the fields are checked against the type of the stored item)."""
+    if not items:
+        return ["edit needs items: a list like [{\"id\": \"d3\", \"offset_mm\": 12}]"]
+    found: list[str] = []
+    if len(items) > MAX_ITEMS_PER_CALL:
+        found.append(f"at most {MAX_ITEMS_PER_CALL} items per call, got {len(items)}")
+    seen: set[str] = set()
+    for position, item in enumerate(items, start=1):
+        label = f"item {position}"
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            found.append(f'{label} is not an object like {{"id": "d3", "offset_mm": 12}} (the id of the item to edit)')
+        elif not set(item) - {"id", "type"}:
+            found.append(f"{label} ({item['id']}): nothing to change (give the fields to set; null takes one off)")
+        elif item["id"] in seen:
+            found.append(f"{label}: id {item['id']!r} is repeated in this call")
+        else:
+            seen.add(item["id"])
     return found
 
 

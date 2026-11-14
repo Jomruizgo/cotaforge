@@ -296,6 +296,32 @@ class Geometry:
         not on the part."""
         return None
 
+    # --- a moulded part (ISO 10135): what the pull direction and the parting line are proposed from ---
+    def mould_box(self) -> "tuple[Vec3, Vec3, Vec3] | None":
+        """``(low, high, centre of mass)`` of the part in document axes, measured on the shape; ``None`` when it cannot be told."""
+        return None
+
+    def outline_areas(self, axis: Vec3, around: "tuple[float, float] | None" = None) -> "list[tuple[float, float]]":
+        """``(coordinate along axis, area inside the outer outline of the section there)`` at sample planes across the part
+        (``around`` = (low, high): only that stretch, finer); the section a parting plane would cut. Empty when it cannot be told."""
+        return []
+
+    def axial_planes(self, axis: Vec3) -> list[float]:
+        """The coordinates along ``axis`` of the planar faces square to it (a shoulder, a floor: where a parting plane lies)."""
+        return []
+
+    def section_outline(self, axis: Vec3, level: float, centre: Vec3, xdir: Vec3, direction: Vec3) -> "list[Point]":
+        """The outer outline of the part cut by the plane square to ``axis`` at ``level`` (coordinate along it), in a view's own
+        coordinates (the frame of ``projection``), scale 1; empty when it cannot be told."""
+        return []
+
+    def circle_span(self, a: Vec3, b: Vec3) -> float | None:
+        """The diameter of the circle of the part that ``a`` and ``b`` are the two ends of (diametrically opposite points of one
+        round wall -- a bore, a boss, a cone with draft -- or of one circular edge: the middle of the two is on the axis and both
+        are the same distance from it), ``None`` when they are not. A distance dimension between them measures a DIAMETER and is
+        written with ``Ø`` (ISO 129-1: a diameter is always marked)."""
+        return None
+
     def chamfer(self, face_id: str) -> ChamferInfo:
         msg = "chamfer legs are not available"
         raise ItemError(msg)

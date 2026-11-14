@@ -515,6 +515,9 @@ class DrawingSheetInfo(BaseModel, frozen=True):
     native: tuple[str, ...] = ()
     """The objects on the page that no item made (a view, a dimension, a note, a hatch added by a native script): they
     show in the capture and the PDF, but the review does not read them."""
+    composed: dict[str, Any] = {}
+    """What the order that composed the sheet recorded (``signature``: the decisions that affect the whole sheet) and
+    the items edited in place since (``pinned``). Empty: the sheet was not composed in one order."""
 
 
 class DescribeDrawingResult(BaseModel, frozen=True):

@@ -153,6 +153,10 @@ def test_the_registry_has_the_built_types_and_names_the_planned_ones() -> None:
         "exploded",
         "finish",
         "weld",
+        "parting_line",
+        "pull_direction",
+        "mould_zone",
+        "no_draft",
     }
     assert not set(items.PLANNED) & set(items.REGISTRY)
     assert not set(items.UNSUPPORTED) & set(items.REGISTRY)

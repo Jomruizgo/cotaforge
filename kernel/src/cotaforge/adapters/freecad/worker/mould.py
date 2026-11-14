@@ -30,11 +30,11 @@ MAX_SHADOW_SAMPLES = 36
 DEFLECTION = 0.02  # mm: the tessellation the shadow test casts against
 SHADOW_OFFSET = 0.05  # mm: more than twice the deflection, so a ray never starts inside the chord of its own face
 
-PAINT = {  # RGBA (FreeCAD: alpha is transparency, 0 opaque)
-    "ok": (0.2, 0.7, 0.25, 0.0),
-    "low": (0.95, 0.8, 0.1, 0.0),
-    "zero": (0.85, 0.15, 0.15, 0.0),
-    "undercut": (0.85, 0.15, 0.15, 0.0),
+PAINT = {  # (r, g, b, opacity): FreeCAD 1.1 reads the alpha as opacity (appearance.recolored)
+    "ok": (0.2, 0.7, 0.25, 1.0),
+    "low": (0.95, 0.8, 0.1, 1.0),
+    "zero": (0.85, 0.15, 0.15, 1.0),
+    "undercut": (0.85, 0.15, 0.15, 1.0),
 }
 
 METHOD = (

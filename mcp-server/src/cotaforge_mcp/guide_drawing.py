@@ -83,9 +83,13 @@ WINDOW_LINE = (
 )
 
 SHEET_WINDOW_LINE = (
-    "THIS PROJECT BUILDS A SHEET IN ONE ORDER (drawing_flow: sheet): drawing(action=plan) -> ask -> drawing(action=compose, "
-    "decisions={...}) -> capture -> review -> fix the points one by one. The sheet is built whole, in the FreeCAD window, "
-    "in one call; the engineer sees the plan BEFORE it and the sheet after. Never rebuild with add what compose derives. "
+    "THIS PROJECT MAKES THE FIRST PROPOSAL OF A SHEET IN ONE ORDER (drawing_flow: sheet, the default; steps = drawing_flow=steps in the brief): drawing(action=plan) "
+    "-> ask -> drawing(action=compose, decisions={...}) ONCE -> capture -> review -> LOCAL fixes one item at a time "
+    "(drawing(action=update, items=[{id, fields}]) moves it or changes its value, tolerance or text and nothing else on the "
+    "sheet moves; add / remove put or take off one item) -> review. The sheet is built whole, in the FreeCAD window, in one "
+    "call; the engineer sees the plan BEFORE it and the sheet after. Compose again ONLY when a decision changes the whole "
+    "sheet (paper, scale, views, the dimension scheme: relations, datums) or the engineer orders it (recompose=true, by, "
+    "reason): a second compose for a local fix is refused. Never rebuild with add what compose derives. "
     "cad_guide(topic=drawing:compose) has the shape of the decisions."
 )
 
@@ -101,7 +105,7 @@ COMPOSE_LINES = (
     "of the types that exist, WITHOUT placement and without ids: datums [{letter, face}] | relations [dim | datum_dims "
     "items: from where the positions and sizes are counted; a datum_dims takes the place of the default location, so the "
     "holes are never dimensioned twice] | fits [hole_dim | dim with fit=] | tol [dim | hole_dim with tol=] | gdt [gdt "
-    "items] | finish [finish items] | sections [section | detail | aux_view] | welds [weld items] | notes [text | note] | "
+    "items] | finish [finish items] | sections [section | detail | aux_view] | welds [weld items] | mould [parting_line | pull_direction | mould_zone | no_draft: a moulded part, drawing:mould] | notes [text | note] | "
     "a WELDED PART also: bodies [{component, name}: the designation of each body of the cut list] | positions [dim items: "
     "where the bodies stand on the plate, the plan measures them and proposes the dimensions; [] when a jig fixes them] | welding {process, "
     "quality: B|C|D (ISO 5817), tolerance: A|B|C|D (ISO 13920): the weld note and the title block come from it} | "
@@ -110,10 +114,16 @@ COMPOSE_LINES = (
     "compose REFUSES, before it changes anything, while a decision the plan listed is missing (it lists them: answer each "
     "with its key or with answers). It never guesses a datum, a fit or a tolerance. A paper the engineer did not fix is "
     "raised (A4, A3, A2) when the annotations do not fit, keeping the scale (a paper is never bigger only for a bigger "
-    "scale), and the reply says so; give sheet.template to fix it. A "
-    "second compose takes off what the first one put (ids dc_...) and puts the new decisions; what you added or placed "
-    "by hand (add, side, offset_mm) stays. After it: capture and look at it, review, and correct with add / remove / "
-    "update; never rebuild with add what compose derives (rq_... items: remove one only with reason=).",
+    "scale), and the reply says so; give sheet.template to fix it. The "
+    "first compose is the only one of a sheet: a second is refused (nothing changes) unless it states another paper, "
+    "scale, view set, angle or body, or another dimension scheme (relations, datums), or the engineer orders it "
+    "(recompose=true with by= and reason=); it then takes off what the first one put (ids dc_...) and puts the new "
+    "decisions; what you added or edited by hand stays. After it: capture and look at it, review, and correct LOCALLY: "
+    "drawing(action=update, items=[{id, fields}]) changes ONE item in place (a dimension: side, offset_mm, tol, fit, text; "
+    "null takes a field off; the type never changes). Nothing else on the sheet moves; if the new place lies on another "
+    "object, or would make another item give way, the call is refused with the reason and changes nothing. An edited item "
+    "is pinned: the layout and a later compose leave it. add / remove put or take off one item; never rebuild with add what "
+    "compose derives (rq_... items: remove one only with reason=).",
 )
 
 ITEM_INTRO = (
@@ -128,8 +138,9 @@ ITEM_INTRO = (
     "look for free room around the dimensions, away from each other and inside the frame, never over the title "
     "block; with side or offset_mm a callout goes exactly there and, if that place is taken or outside the frame, the "
     "item's warning says so (datum, gdt and finish too). "
-    "The engineer sees each one in the window; fix a placement with offset_mm "
-    "/ side, or remove and add again, instead of rebuilding the sheet. A face id the part no longer has (an edit regenerated "
+    "The engineer sees each one in the window; fix an item in place with "
+    "drawing(action=update, items=[{id, offset_mm, side...}]) (nothing else moves), instead of rebuilding the sheet. "
+    "A face id the part no longer has (an edit regenerated "
     "it) makes its item an error, never an old number: add it again with the new id. "
     "Positions are world mm; at_mm is a SHEET position in mm from its bottom-left corner (y up). view is front, "
     'top or right (or the label of a section, "A-A", for dim, hole_dim, note and line).',
@@ -418,6 +429,20 @@ WELD_LINE = (
     "welded sheet needs a parts list and a balloon per body (weld_list_missing, item_without_balloon, balloon_not_in_list)."
 )
 
+MOULD_LINE = (
+    "A MOULDED PART (the intent file says injection: req.moulded_part, ISO 10135) carries its indications as SYMBOLS, not as notes of "
+    "text. The text of the standard is not in the library: no clause is quoted and the symbol shapes are the harness's reading of it. "
+    "parting_line: the line where the mould halves meet, in its own line type (thick, long dash and two short ones); pull?, level_mm? "
+    "-- omitted, the model gives them (the part is shallowest along the pull, towards its open side; the plane is where the outline "
+    "of the section is widest, on the planar face there), and the harness adds this item itself. pull_direction: the opening "
+    "direction as an arrow and the general draft with its symbol (a wedge) and value: pull?, draft_deg (a decision: ask the designer; "
+    "the harness never guesses it), view?, side?, offset_mm?. mould_zone: a permitted zone, hatched, with its symbol (circle G for "
+    "kind=gate, square E for kind=ejector): at (a model point or a list of them), radius_mm?, normal? (x|y|z, default the pull), "
+    "view?: the gate and the ejector zones are the designer's decision. no_draft: an exception to the general draft, a leader with "
+    "0 deg (kind=no_draft) or R0 (kind=sharp_edge): at, view?, side?, offset_mm?. The row req.moulded_part is closed when the sheet "
+    "carries the parting line, the pull direction with its draft value, a gate zone and ejector zones."
+)
+
 BASELINE_LINE = (
     "baseline_dims: from=\"face:N\" (required), view?, side?. The length of every step of a turned part counted from ONE datum "
     "face, as parallel dimensions (ISO 129-1), made into dim items <id>1, <id>2... The datum is never chosen for the engineer: it is "
@@ -523,6 +548,7 @@ VIEWS_LINE = (
 TOPIC_ITEMS = "drawing:items"
 TOPIC_DIMS = "drawing:dims"
 TOPIC_MARKS = "drawing:marks"
+TOPIC_MOULD = "drawing:mould"
 TOPIC_VIEWS = "drawing:views"
 TOPIC_ASSEMBLY = "drawing:assembly"
 TOPIC_OUTPUT = "drawing:output"
@@ -542,6 +568,7 @@ SUBTOPICS = (
     TOPIC_ITEMS,
     TOPIC_DIMS,
     TOPIC_MARKS,
+    TOPIC_MOULD,
     TOPIC_VIEWS,
     TOPIC_ASSEMBLY,
     TOPIC_OUTPUT,
@@ -551,7 +578,7 @@ SUBTOPICS = (
 INDEX_LINE = (
     "MORE (split; each reply is read whole): cad_guide(topic=drawing:items) holes, "
     "dimensions, position dimensions, tolerances | drawing:dims baseline lengths, keyway section | drawing:marks datums, GD&T frames, finish, notes, hidden / centre "
-    "lines | drawing:views section, detail, auxiliary view, review | drawing:assembly parts list, balloons, exploded | "
+    "lines | drawing:mould moulded parts | drawing:views section, detail, auxiliary view, review | drawing:assembly parts list, balloons, exploded | "
     "drawing:output export(action=pdf|dxf), layers, line weights, projection=hlr | "
     "drawing:quality quality floor: hole location, callouts, dowels, notes, title block, one view | "
     "drawing:done WHEN A DRAWING MAY BE EXPORTED: requirements, who reviews it, answer, approve. Look at the "
@@ -573,6 +600,7 @@ def drawing_text(tools: Collection[str], part: str = "", flow: str = "steps") ->
             TOPIC_ITEMS: [ITEM_INTRO[0], *ITEM_LINES[0:4]],
             TOPIC_DIMS: [BASELINE_LINE, KEYWAY_LINE],
             TOPIC_MARKS: [*ITEM_LINES[4:9], WELD_LINE],
+            TOPIC_MOULD: [MOULD_LINE],
             TOPIC_VIEWS: [*ITEM_LINES[9:12], ITEM_LINES[13], PATTERN_LINE],
             TOPIC_ASSEMBLY: [ITEM_LINES[12]],
             TOPIC_OUTPUT: [SHEET_RULES[2], PROJECTION_LINE, VIEW_LINE, LAYOUT_LINE],
