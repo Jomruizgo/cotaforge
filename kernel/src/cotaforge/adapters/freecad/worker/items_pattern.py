@@ -34,6 +34,7 @@ from items_common import (  # noqa: PLC2701 - the leader helpers of the same pac
     view_looking_along,
     view_segments,
 )
+from items_holes import native_callout
 from sheet_context import (
     COMMON_FIELDS,
     Context,
@@ -49,6 +50,7 @@ from sheet_context import (
 )
 from sheet_draw import angle_dimension
 from sheet_model import AXES, Circle, Line
+from sheet_units import NativeCosmetic, NativeDim, Ref2
 
 CHECKS = {
     "kind": v_enum("diameter", "angle"),
@@ -145,6 +147,7 @@ def _diameter(ctx: Context, spec: dict[str, Any], pattern: sheet_pattern.Pattern
     text = f"Ø{ctx.num(round(pattern.diameter, 2))}"
     diagonal = outward_diagonal(view, tip, spec.get("side"))
     ctx.add(place_leader(ctx, view, tip, diagonal, [text], None, asked(spec), along=u))
+    native_callout(ctx, view.name, view.scale, c, pattern.diameter, [text])  # FreeCAD measures the pitch circle (a cosmetic circle)
     polar = ctx.extras.setdefault("polar", {}).setdefault(min(pattern.reps), {"diameter": False, "need": 0, "given": 0})
     polar["diameter"] = True
     if pattern.even:
@@ -155,6 +158,31 @@ def _diameter(ctx: Context, spec: dict[str, Any], pattern: sheet_pattern.Pattern
     ctx.extras.setdefault("polar_located", set()).update(pattern.indexes)
     count = "" if pattern.count == 1 else f", {pattern.count} holes {'equally spaced' if pattern.even else 'unevenly spaced'}"
     return f"{text} pitch circle in the {view.name} view{count}"
+
+
+def _native_angle(ctx: Context, view: Any, c: Point, ref: float, angle: float, off: float, arc: float, text: str, reach: float) -> None:
+    """The angle just drawn as TechDraw's own angle dimension between two centre lines of the view: the one the angle is counted
+    from and the radial one through the hole (a cosmetic line made for it). FreeCAD measures it."""
+    item = str(ctx.extras["current"])
+    ctx.native(NativeCosmetic(item, view.name, "line", (c[0], c[1], c[0] + reach * math.cos(math.radians(angle)), c[1] + reach * math.sin(math.radians(angle))), "centre"))
+    mid = math.radians((ref + ((angle - ref) % 360.0) / 2) % 360.0) if off > 0 else math.radians((angle + ((ref - angle) % 360.0) / 2) % 360.0)
+    label = (c[0] + (arc + 4.0) * math.cos(mid), c[1] + (arc + 4.0) * math.sin(mid))
+
+    def ray(a: float) -> Ref2:
+        return Ref2("line", (c[0], c[1], c[0] + 10.0 * math.cos(math.radians(a)), c[1] + 10.0 * math.sin(math.radians(a))))
+
+    ctx.native(
+        NativeDim(
+            item=item,
+            name=f"a{len(ctx.extras.get('natives', {}).get(item, [])) + 1}",
+            kind="angle",
+            view=view.name,
+            refs=(ray(ref), ray(angle)),
+            label=label,
+            expected=abs(off),
+            text=text,
+        )
+    )
 
 
 def _angle(ctx: Context, spec: dict[str, Any], pattern: sheet_pattern.Pattern, view: Any, holes: dict[int, Any]) -> str:
@@ -189,6 +217,7 @@ def _angle(ctx: Context, spec: dict[str, Any], pattern: sheet_pattern.Pattern, v
     entities, taken = angle_dimension(c, a0, a1, arc, text)
     ctx.add(entities)
     ctx.reserve(taken)
+    _native_angle(ctx, view, c, ref, angle, off, arc, text, pattern.radius * view.scale + r_hole + REF_OVER_MM)
     polar = ctx.extras.setdefault("polar", {}).setdefault(min(pattern.reps), {"diameter": False, "need": 0, "given": 0})
     polar["given"] += 1
     return f"{text} from the centre line to the hole, in the {view.name} view"

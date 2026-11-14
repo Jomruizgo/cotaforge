@@ -295,6 +295,32 @@ def symbol_unit(unit: su.Unit, native_ok: bool) -> su.Unit | None:
     return replace(unit, entities=unit.residue, natives=())
 
 
+WAIT_VIEWS_S = 60.0
+POLL_S = 0.05
+SETTLE_S = 0.3
+
+
+def _wait_computed(fc_doc: Any, page: Any) -> None:
+    """Return once every view of ``page`` is computed (nothing touched), running the Qt event loop between polls, as
+    ``drawing.wait_views`` does (this module cannot import it)."""
+    import time  # noqa: PLC0415
+
+    start = time.monotonic()
+    while True:
+        gui.pump()
+        views = [v for v in _view_objects(page) if hasattr(v, "getVisibleEdges")]
+        touched = [v for v in views if "Touched" in [str(x) for x in v.State]]
+        if not touched or time.monotonic() - start > WAIT_VIEWS_S:
+            break
+        fc_doc.recompute()
+        time.sleep(POLL_S)
+    if gui.available():
+        until = time.monotonic() + SETTLE_S
+        while time.monotonic() < until:
+            gui.pump()
+            time.sleep(POLL_S)
+
+
 def sync(fc_doc: Any, page: Any, units: list[su.Unit], page_h: float, sheet: str = "") -> Report:
     """Make the page agree with ``units``: new units are made, changed ones replaced, those that are gone deleted, the
     rest untouched. A unit whose item asked for TechDraw's own objects (native dimensions, annotations) gets them
@@ -311,8 +337,18 @@ def sync(fc_doc: Any, page: Any, units: list[su.Unit], page_h: float, sheet: str
         if key not in wanted:
             _remove(fc_doc, have.pop(key))
             report.removed.append(key)
-    report.fallbacks = sheet_native.sync(fc_doc, page, [u for u in units if u.natives], sheet, have, report)
+    # the cosmetic edges first: a dimension may measure one (the pitch circle of a bolt pattern), so its view must have it
+    drawn: list[str] = []
+    report.fallbacks = sheet_native.sync_cosmetics(page, [u for u in units if u.natives], drawn)
+    if drawn:
+        fc_doc.recompute()
+        _wait_computed(fc_doc, page)  # the dimensions measure the edges of the views AS they are now: in the CAD window TechDraw
+        # finishes a view in the background, and a dimension made against the list it had before points at other edges
+    report.fallbacks.update(
+        sheet_native.sync(fc_doc, page, [u for u in units if u.natives and u.key not in report.fallbacks], sheet, have, report)
+    )
     sheet_native.sync_flags(page, [u for u in units if u.natives and u.key not in report.fallbacks])
+    report.updated += [k for k in drawn if k not in report.touched()]  # the edges of a view are made or taken off
     have = owned(page)  # the native objects were made again: what is on the page now
     for unit in units:
         shown = symbol_unit(unit, unit.key not in report.fallbacks)
@@ -459,7 +495,32 @@ def page_crosses(page: Any, page_h: float) -> list[tuple[float, float]]:
                 for a, b, c, d in _PATH.findall(group.group(0))
             ]
             found += crosses(lines)
-    return found
+    return found + _cosmetic_crosses(page)
+
+
+def _cosmetic_crosses(page: Any) -> list[tuple[float, float]]:
+    """The centre marks that live on the views as cosmetic edges (``sheet_native.sync_cosmetics``), in page mm."""
+    lines: list[tuple[float, float, float, float]] = []
+    for name in sheet_native.VIEW_LABELS:
+        view = sheet_native.view_object(page, name)
+        if view is None:
+            continue
+        frame = sheet_native.Frame(page, view)
+        for edge in view.CosmeticEdges:
+            if edge.Format.get("style") != sheet_native.ISO_STYLE["centre"]:
+                continue
+            kind, values = sheet_native._cosmetic_geometry(edge)  # noqa: SLF001 - the one reader of a cosmetic edge
+            if kind != "line":
+                continue
+            lines.append(
+                (
+                    frame.x + values[0] * frame.scale,
+                    frame.y + values[1] * frame.scale,
+                    frame.x + values[2] * frame.scale,
+                    frame.y + values[3] * frame.scale,
+                )
+            )
+    return crosses(lines)
 
 
 def compare(page: Any, units: list[su.Unit], page_h: float) -> list[str]:
@@ -474,6 +535,9 @@ def compare(page: Any, units: list[su.Unit], page_h: float) -> list[str]:
         problems.append(f"{key}: on the page but not on the sheet")
     for whole in units:
         objects = have.get(whole.key)
+        if not objects and sheet_native.only_view_bound(whole):
+            problems += sheet_native.cosmetic_problems(page, whole) + sheet_native.flag_problems(page, whole)
+            continue
         if not objects:
             problems.append(f"{whole.key}: on the sheet but not on the page")
             continue
