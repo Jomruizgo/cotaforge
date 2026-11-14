@@ -42,17 +42,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Unit tests (no FreeCAD)
-        run: |
-          python -m pip install --disable-pip-version-check -e "kernel[dev]" -e "mcp-server[dev]"
-          Push-Location kernel
-          python -m pytest tests/unit
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Pop-Location
-          Push-Location mcp-server
-          python -m pytest tests/unit
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Pop-Location
+      - name: Install the packages
+        # The unit suites run on Windows in the `unit` workflow (a required check); this job only builds and installs.
+        run: python -m pip install --disable-pip-version-check -e "kernel[dev]" -e "mcp-server[dev]"
 
       - name: Plugin and marketplace validate (Claude Code)
         run: |

@@ -515,8 +515,9 @@ def compose(session: Session, args: DrawingArgs, make_request: Any) -> Reply:
         remove.append("loc")  # the engineer chose the relation: the default location would dimension the holes twice
     derived = [a.item for a in survey.adds]
     layout = lay_out(session, request, remove=remove, items=[*items, *derived])
+    reviewed = drawing_gate.sheet_info(session, survey.info.sheet, review=True) if answers else None  # once, not per answer
     for row_id, text in answers.items():
-        drawing_gate.answer(session, survey.info.sheet, row_id, text, args.by, args.reason)
+        drawing_gate.answer(session, survey.info.sheet, row_id, text, args.by, args.reason, reviewed)
     notes: list[str] = []
     if not paper_fixed:
         paper, layout = _raise_paper(session, survey.info.sheet, make_request, fixed_scale, layout)
