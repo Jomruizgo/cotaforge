@@ -302,6 +302,13 @@ class Geometry:
         it is the diameter of one of its outer cylinders (a flange, a shaft); ``None`` otherwise."""
         return None
 
+    def axial_features(self) -> tuple[bool, bool] | None:
+        """``(coaxial, hollow)`` for a body of revolution (see ``round_extent``): ``coaxial`` when every face of it is a plane
+        square to the axis or a surface of revolution about that same axis (nothing off the axis: no hole on a pitch circle,
+        flat, keyway or square flange), ``hollow`` when something inside looks at the axis (a bore, a recess). ``None`` for a
+        part that is not a body of revolution, or when it cannot be told."""
+        return None
+
     def symmetry(self) -> dict[str, float]:
         """The model axes (``x``, ``y``, ``z``) the part is mirror-symmetric across, each with the position of its plane
         of symmetry along that axis (the middle of the part's box): measured on the shape, never assumed. A part whose
@@ -506,6 +513,7 @@ class Context:
         for one, else the first free slot (lines stack outward in the order the items are drawn; a nudged item skips
         slots)."""
         self.extras["stack_view"] = view  # the dimension the item draws next stands on this view
+        view = self.extras.get("in_place_views", {}).get(view, view)  # a section in place of a view shares its dimension lines
         slot = self.stacks.get((view, side), 0)
         self.stacks[(view, side)] = slot + 1
         if offset_mm is not None:

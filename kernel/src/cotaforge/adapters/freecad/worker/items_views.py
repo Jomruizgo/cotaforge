@@ -278,6 +278,7 @@ SECTION_CHECKS = {
     "flip": v_bool,
     "at_mm": v_point2,
     "hatch": lambda value: v_hatch(value),
+    "in_place": v_bool,
 }
 
 
@@ -312,6 +313,9 @@ def check_section(spec: dict[str, Any]) -> dict[str, Any]:
         raise ItemError(msg)
     if "normal" in out:
         unit(out["normal"])
+    if out.get("in_place") and out.get("holes") != "axis":
+        msg = 'in_place takes holes="axis": the section through the axis of the part stands in its main view'
+        raise ItemError(msg)
     return out
 
 
@@ -398,7 +402,72 @@ def _through_axis(ctx: Context, spec: dict[str, Any]) -> tuple[ViewInfo, Vec3, V
     return parent, at, normal
 
 
+def _in_place_axis(ctx: Context, spec: dict[str, Any]) -> tuple[ViewInfo, Vec3, Vec3]:
+    """The section through the axis that stands IN the main view (``in_place``): the plane contains the axis and is square
+    to the line of sight of the view, so the section is seen face-on in that very frame, at that very place and scale."""
+    found = ctx.geometry.round_extent()
+    if found is None:
+        msg = "the part has no axis of revolution about x, y or z for the plane to go through"
+        raise ItemError(msg)
+    axis = found[0]
+    parent = _parent(
+        ctx, spec.get("view"), lambda v: not v.derived and v.shows_axis_along(axis), "the axis must lie in the view"
+    )
+    box = ctx.extras.get("model_box")
+    at: Vec3 = (
+        tuple((lo + hi) / 2 for lo, hi in zip(box[0], box[1], strict=True)) if box is not None else parent.centre  # type: ignore[assignment]
+    )
+    return parent, at, scale(parent.direction, -1.0)  # the viewer looks along -direction; his side is the one cut away
+
+
+def _draw_in_place(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
+    """A section drawn exactly over the main view it stands for (``in_place``): same frame, same origin, same scale, so every
+    item that measures in the main view still lands on the right line. No cutting-plane line and no letters are drawn: the
+    cutting plane is the plane of symmetry of the part (its axis) and the section is the main view, in direct projection
+    with the isometric one, which ISO 128-44 leaves unmarked. The view the section stands for is not drawn (``hidden_views``)."""
+    item_id = spec.get("id", "section")
+    parent, at, normal = _in_place_axis(ctx, spec)
+    letter = take_letter(ctx, spec.get("letter"))
+    label = f"{letter}-{letter}"
+    projection = ctx.geometry.projection(parent.centre, parent.xdir, parent.direction, (at, normal))
+    k = parent.scale
+    local = _local_box(projection.visible)
+    ox, oy = parent.x, parent.y
+    page_loops = [[(ox + k * x, oy + k * y) for x, y in loop] for loop in projection.cut_loops]
+    cut_x = [x for loop in page_loops for x, _ in loop]
+    cut_y = [y for loop in page_loops for _, y in loop]
+    spacing = hatch_spacing(max(cut_x) - min(cut_x), max(cut_y) - min(cut_y))
+    ink = place(projection.visible, ox, oy, k)
+    ctx.add(ink)
+    if "view_ink_shown" in ctx.extras:  # the outline items see is now the section's, not the outside view that is not drawn
+        ctx.extras["view_ink"] = [*ctx.extras["view_ink_shown"], *ink]
+        ctx.extras["view_ink_shown"] = ctx.extras["view_ink"]
+    groups = _bodies_of_cut(page_loops, projection.cut_owner)
+    touching = sheet_hatch.touching_bodies(groups)
+    styles = sheet_hatch.plan(list(groups), touching, spec.get("hatch"))
+    ctx.add(hatch_bodies(groups, styles, spacing))
+    ctx.extras.setdefault("hatches", {})[label] = (
+        [sheet_hatch.HatchFact(b, "", "", styles[b][0], styles[b][1]) for b in groups],
+        touching,
+    )
+    box = (ox + k * local[0], oy + k * local[1], ox + k * local[2], oy + k * local[3])
+    info = ViewInfo(label, ox, oy, k, parent.direction, parent.xdir, parent.centre, box, derived=True)
+    ctx.extras.setdefault("sections", {})[label] = info
+    ctx.extras.setdefault("section_items", {})[label] = item_id
+    ctx.extras.setdefault("section_planes", {})[label] = (at, normal)
+    ctx.extras.setdefault("in_place_views", {})[label] = parent.name
+    axes, axis_count = sheet_section.centre_lines(ctx, info, at, normal)
+    threads, thread_count = sheet_section.threads_cut(ctx, info, at, normal)
+    ctx.add(axes + threads)
+    extra = f", {axis_count} centre line(s)" if axis_count else ""
+    if thread_count:
+        extra += f", thread lines of {thread_count} threaded bore(s)"
+    return "ok", f"{label} in place of the {parent.name} view, through the axis of the part, no cutting line or letters (the plane is the part's axis); cut faces hatched{extra}"
+
+
 def draw_section(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
+    if spec.get("in_place"):
+        return _draw_in_place(ctx, spec)
     item_id = spec.get("id", "section")
     note = ""
     if spec.get("holes") == "axis":

@@ -11,6 +11,8 @@ The end of the part with a thread goes to the right (the working end, away from 
 thread keeps the positive end of its axis on the right.
 """
 
+from dataclasses import dataclass
+
 Vec3 = tuple[float, float, float]
 
 # axis index -> (direction towards the viewer, x direction) of the turned front view, for the positive end on the right.
@@ -71,3 +73,74 @@ def views_for(keyway: bool) -> list[str]:
     lengths, the thread and the chamfers; the end view only when it shows something the main view does not (a keyway seen
     end-on). A part with a bore is the section's: see ``drawing._views_for_part``."""
     return ["front", "right"] if keyway else ["front"]
+
+
+# --- the part whose every feature is coaxial: ONE axial section says it all ---------------------------------------------
+
+AXIS_TOL_MM = 0.05  # a surface of revolution whose axis is this far from the part's own is not coaxial with it
+ALIGNED = 1.0 - 1e-6  # |component| of a unit vector along the axis to call it parallel to it
+
+
+@dataclass(frozen=True)
+class FaceFact:
+    """What the coaxial test needs of one face of the part (read from the shape by the CAD side, plain data here).
+
+    ``kind``: ``plane``, ``cylinder``, ``cone``, ``torus``, ``sphere`` or ``other``. ``axis`` and ``point``: the axis of a
+    surface of revolution and one point of it (the centre of a sphere); ``normal``: the normal of a plane. ``concave``: the
+    face looks at the axis of the part (a bore, a recess), measured with the outward normal of the solid."""
+
+    kind: str
+    axis: Vec3 | None = None
+    point: Vec3 | None = None
+    normal: Vec3 | None = None
+    concave: bool = False
+
+
+def _off_axis(point: Vec3, axis: Vec3, through: Vec3) -> float:
+    """The distance (mm) of ``point`` from the line through ``through`` along the unit vector ``axis``."""
+    d = (point[0] - through[0], point[1] - through[1], point[2] - through[2])
+    along = d[0] * axis[0] + d[1] * axis[1] + d[2] * axis[2]
+    r = (d[0] - along * axis[0], d[1] - along * axis[1], d[2] - along * axis[2])
+    return (r[0] ** 2 + r[1] ** 2 + r[2] ** 2) ** 0.5
+
+
+def coaxial_facts(faces: list[FaceFact], axis: Vec3, through: Vec3) -> tuple[bool, bool]:
+    """``(coaxial, hollow)`` of a part of revolution about the unit ``axis`` through the point ``through``: ``coaxial`` when
+    EVERY face is a plane square to the axis or a surface of revolution about that same line (a hole on a pitch circle, a
+    flat, a keyway, a cross hole, a square or hex flange all make it False; a face the test cannot read does too);
+    ``hollow`` when some face looks at the axis (a bore or a recess: there is something inside to cut)."""
+    for face in faces:
+        if face.kind == "plane":
+            if face.normal is None or abs(sum(n * a for n, a in zip(face.normal, axis, strict=True))) < ALIGNED:
+                return False, False
+        elif face.kind in ("cylinder", "cone", "torus"):
+            if face.axis is None or face.point is None:
+                return False, False
+            if abs(sum(n * a for n, a in zip(face.axis, axis, strict=True))) < ALIGNED:
+                return False, False
+            if _off_axis(face.point, axis, through) > AXIS_TOL_MM:
+                return False, False
+        elif face.kind == "sphere":
+            if face.point is None or _off_axis(face.point, axis, through) > AXIS_TOL_MM:
+                return False, False
+        else:
+            return False, False
+    return True, any(f.concave for f in faces if f.kind != "plane")
+
+
+def section_only(coaxial: bool, hollow: bool) -> bool:
+    """A part of revolution with only coaxial features and something inside (a washer, a bush, a stepped ring, a hollow
+    spacer) is fully defined by ONE axial section plus the isometric: the section carries every Ø and every height, the end
+    view only repeats circles. A solid one has no section to cut (its plain outside view says everything), and a part with
+    an off-axis feature keeps the end view that shows it."""
+    return coaxial and hollow
+
+
+def hidden_views(items: list[dict[str, object]]) -> set[str]:
+    """The standard views a sheet does not show because a section stands in their place (``in_place``): the part is drawn
+    cut in the main view and the outside view under it would only draw lines across the bore."""
+    return {
+        str(i.get("view") or "front")
+        for i in items
+        if i.get("type") == "section" and i.get("in_place")
+    }
