@@ -190,7 +190,7 @@ ROWS: tuple[Row, ...] = (
             _n("title_scale", "la escala", "the scale"),
             _n("title_projection", "el símbolo de proyección", "the projection symbol"),
         ),
-        codes=("notes_material", "material_title_block_empty", "material_inconsistent"),
+        codes=("notes_material", "material_title_block_empty", "material_inconsistent", "material_only_in_note"),
         always_measured=True,
     ),
     Row(
@@ -618,6 +618,7 @@ MEASURED_FINDINGS = frozenset(
         "dimension_inside_outline",
         "material_title_block_empty",
         "material_inconsistent",
+        "material_only_in_note",
         "parts_without_balloons",
         "balloons_without_row",
         "position_without_balloon",
