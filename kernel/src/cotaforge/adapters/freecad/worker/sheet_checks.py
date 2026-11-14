@@ -192,6 +192,7 @@ def _hole_references(data: Any) -> list[Any]:
             for h in ctx.holes
             if view.looks_along(h.direction) and (wanted == "all" or any(h.on_axis(p) for p in wanted))
         }
+    anchored |= set(ctx.extras.get("polar_located", ()))  # a bolt circle is counted from the axis of its pattern (items_pattern)
     changed = True
     while changed:  # a hole measured from an anchored one is anchored only through a chain: say it is a chain
         changed = False

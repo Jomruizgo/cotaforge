@@ -67,6 +67,7 @@ import sheet_mirror
 import sheet_model as model
 import sheet_native
 import sheet_output
+import sheet_pattern
 import sheet_plan_bridge
 import sheet_project
 import sheet_render
@@ -1201,7 +1202,7 @@ def _rebuild_report(
     """What a rebuild kept, what no longer resolves, and -- when ``fresh`` -- what it threw away, as lines for the reply."""
 
     def own(items: list[dict[str, Any]]) -> list[str]:
-        return [str(i["id"]) for i in items if not (i.get("auto") and str(i["id"]) in AUTO_IDS)]
+        return [str(i["id"]) for i in items if not (i.get("auto") and is_auto_id(str(i["id"])))]
 
     def memory(source: dict[str, Any]) -> list[str]:
         lines = []
@@ -1416,7 +1417,14 @@ AUTO_THICKNESS_ID = "tn"  # the thickness note of a sheet of one view
 LEGACY_ISO286_ID = "n286"  # the "tables transcribed" note older sheets carry: the sheet no longer writes it
 AUTO_HOLES_ID = "hp"  # the diameter, centre distance and edge distance of the through holes of an assembly
 AUTO_IDS = (AUTO_LOCATE_ID, AUTO_THICKNESS_ID, AUTO_HOLES_ID)
+AUTO_PATTERN_ID = re.compile(r"pd[0-9]+(a[0-9]*)?\Z")  # the polar dimensions of a circular pattern: pd1 (its diameter), pd1a (its angle)
 ANGLES = ("first", "third")
+
+
+def is_auto_id(item_id: str) -> bool:
+    """Whether ``item_id`` is the id of an item every sheet carries by itself (the default location, the thickness note, the
+    polar dimensions of a circular pattern)."""
+    return item_id in AUTO_IDS or bool(AUTO_PATTERN_ID.match(item_id))
 
 
 def _has_thickness(
@@ -1438,6 +1446,29 @@ def _has_thickness(
     return length <= FLAT_RATIO * diameter
 
 
+VIEW_DIRECTIONS = {"front": (0.0, 1.0, 0.0), "top": (0.0, 0.0, 1.0), "right": (1.0, 0.0, 0.0)}  # what each standard view looks along
+
+
+def _pattern_items(found: list[sc.HoleInfo], standard: list[str]) -> list[dict[str, Any]]:
+    """The polar dimensions of every circular pattern of the holes that a standard view of the sheet shows as circles: ``pd<n>``
+    (the diameter of its pitch circle) and the angle of its first hole, ``pd<n>a`` (an uneven pattern: one angle per hole,
+    ``pd<n>a<k>``). Each names a hole of the pattern by a point of its axis; what it draws is ``items_pattern``'s."""
+    out: list[dict[str, Any]] = []
+    by_index = {h.index: h for h in found}
+    for number, pattern in enumerate(sheet_pattern.find(found, sheet_pattern.axes_of_holes(found)), start=1):
+        if not any(v in VIEW_DIRECTIONS and sc.parallel(VIEW_DIRECTIONS[v], pattern.direction) for v in standard):
+            continue
+        at = [round(c, 4) for c in by_index[min(pattern.reps)].centre]
+        out.append({"id": f"pd{number}", "type": "pattern_dim", "auto": True, "at": at})
+        if pattern.even:
+            out.append({"id": f"pd{number}a", "type": "pattern_dim", "auto": True, "kind": "angle", "at": at})
+            continue
+        for k, index in enumerate(sorted(pattern.reps), start=1):
+            where = [round(c, 4) for c in by_index[index].centre]
+            out.append({"id": f"pd{number}a{k}", "type": "pattern_dim", "auto": True, "kind": "angle", "at": where})
+    return out
+
+
 def _sync_auto_items(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None) -> None:
     """Keep the items every sheet carries by itself in step with the part and the views: the baseline location of the holes
     (``loc``) when the part has holes, the thickness note (``tn``) when the sheet has ONE standard view. The engineer may
@@ -1449,8 +1480,10 @@ def _sync_auto_items(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None)
     wanted: dict[str, dict[str, Any]] = {}
     if assembly and LiveGeometry(doc, _shapes(doc, spec.get("body"), op), op).assembly_holes():
         wanted[AUTO_HOLES_ID] = {"id": AUTO_HOLES_ID, "type": "hole_positions", "auto": True}
-    if not assembly and hole_infos(doc, spec.get("body"), op):
+    found_holes = [] if assembly else hole_infos(doc, spec.get("body"), op)
+    if found_holes:
         wanted[AUTO_LOCATE_ID] = {"id": AUTO_LOCATE_ID, "type": "datum_dims", "auto": True}
+        wanted.update({i["id"]: i for i in _pattern_items(found_holes, standard)})
     if not assembly and len(standard) == 1 and _has_thickness(
         doc, spec.get("body"), standard[0], op, turned_of(doc, spec, op) is not None
     ):
@@ -1464,8 +1497,12 @@ def _sync_auto_items(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None)
     for key, item in wanted.items():
         if key not in declined and key not in have:
             items.append(item)
+    for position, i in enumerate(items):  # a pattern that moved: its items follow it (what the layout placed goes with the old one)
+        want = wanted.get(str(i["id"]))
+        if i.get("auto") and i.get("type") == "pattern_dim" and want is not None and any(i.get(k) != want.get(k) for k in ("at", "kind")):
+            items[position] = want
     spec["items"] = [
-        i for i in items if not (i.get("auto") and str(i["id"]) in AUTO_IDS and str(i["id"]) not in wanted)
+        i for i in items if not (i.get("auto") and is_auto_id(str(i["id"])) and str(i["id"]) not in wanted)
     ]
 
 
@@ -1693,7 +1730,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
             )
         items = [i for i in items if i["id"] not in set(wanted)]
         spec["items"] = items
-        taken_off = [r for r in wanted if r in AUTO_IDS]
+        taken_off = [r for r in wanted if is_auto_id(r)]
         if taken_off:  # the engineer does not want it: it does not come back
             spec["declined"] = sorted({*spec.get("declined", ()), *taken_off})
         _sync_auto_items(doc, spec, op)
