@@ -28,6 +28,14 @@ from tests.integration.test_drawing_finished_real import (
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="the visible FreeCAD window is exercised on Windows")
 
+ROWS_LEFT = {
+    "req.surface_texture": "no aplica: la placa va sin indicación de rugosidad más allá de la general del taller",
+    "req.quantity_process": "no aplica: una unidad, corte y rectificado en el taller",
+    "req.functional_dimensions": "no aplica: todas las medidas son libres, la placa no acopla con nada",
+}
+"""The requirement rows a clean plate still asks after its points are answered, with the answer of the engineer the test plays
+(the title block row is closed by the material the document declares, the edge row by the note; the points answered before
+close the heat treatment, coating and marking ones)."""
 FRICTION_CEILING = 17  # 6 notes and views findings, 2 questions, 9 memory entries (was 22 with 7 questions): what a clean one-view plate closes before its export when the agent reviews it itself
 
 
@@ -39,6 +47,7 @@ async def test_a_clean_plate_sheet_has_its_positions_and_closes_with_few_points(
     lines: list[str] = []
     async with running_server(workspace, visible=True) as (cad, _):
         await make_plate(cad, dowel_fit="H7")  # the callout asks for H7: the holes declare it
+        await cad.ok("doc", action="set_material", material="AISI 1045")  # the material is in the title block, never in a note
         await cad.ok(
             "memory", action="brief", drawing_review="propio", text="Ana: el agente revisa el plano por su cuenta"
         )
@@ -60,8 +69,8 @@ async def test_a_clean_plate_sheet_has_its_positions_and_closes_with_few_points(
                     "fit": "H7",
                     "dowel": True,
                 },
-                {"type": "note", "text": "Material: AISI 1045, lámina rectificada de 19 mm."},
-                {"type": "note", "text": "Espesor 19 mm. Romper aristas vivas 0,3 mm; sin rebabas."},
+                {"type": "note", "text": "Formato de partida: lámina rectificada."},
+                {"type": "note", "text": "Romper aristas vivas 0,3 mm; sin rebabas."},
             ],
         )
         review = await cad.ok("drawing", action="review")
@@ -76,6 +85,7 @@ async def test_a_clean_plate_sheet_has_its_positions_and_closes_with_few_points(
             "",
         ]
         assert friction <= FRICTION_CEILING, (findings, questions, memory)
+        assert not any(f.startswith(("notes_material", "material_only_in_note")) for f in findings), findings
 
         refused = await cad.err("export", action="pdf", path="placa19.pdf")
         assert "drawing_unfinished" in refused and not (workspace / "placa19.pdf").exists()
@@ -87,8 +97,10 @@ async def test_a_clean_plate_sheet_has_its_positions_and_closes_with_few_points(
                 "drawing", action="answer", id=point, text="no aplica: la placa es plana y se lee en una vista"
             )
         asked = await cad.ok("drawing", action="review")
-        for row in ROW_LINE.findall(asked):  # the requirement rows the sheet still asks: a measured one closes only on the engineer's order
-            await cad.ok("drawing", action="answer", id=row, text="no aplica: la placa es plana y se lee en una vista", **ORDER)
+        rows = ROW_LINE.findall(asked)  # the requirement rows the sheet still asks: only the ones the engineer's plate leaves open
+        assert sorted(rows) == sorted(ROWS_LEFT), rows
+        for row in rows:  # a measured one closes only on the engineer's order
+            await cad.ok("drawing", action="answer", id=row, text=ROWS_LEFT[row], **ORDER)
         done = await cad.ok("drawing", action="review")
         assert "export of this sheet is open" in done, done
         await cad.ok("drawing", action="approve", sheet="Drawing", by="Engineer", reason="the engineer: approve it")
