@@ -12,6 +12,7 @@ requirement of the drawing.
 This module is plain data and a pure function (no FreeCAD): the worker (``worker/ops_threads.py``) checks the geometry.
 """
 
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
@@ -53,6 +54,21 @@ class ExternalThread(BaseModel):
     end: FaceRef
     """The planar end face of the shaft the thread starts from (normal to the cylinder axis, at one end of it)."""
 
+    tolerance_class: str | None = None
+    """ISO 965 tolerance class of the thread (``6g`` is the usual one of a shaft), printed with its designation on the drawing:
+    ``M20x1,5 - 6g``. The intent file or the engineer says it; it is never guessed."""
+
+    @field_validator("tolerance_class")
+    @classmethod
+    def _known_class(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        text = value.strip().lower()
+        if not re.fullmatch(r"[3-9][a-h]([3-9][a-h])?", text):
+            msg = f"tolerance_class {value!r} is not an ISO 965 class of an external thread: a degree and a letter, like 6g, 6h or 8g"
+            raise ValueError(msg)
+        return text
+
     @field_validator("size")
     @classmethod
     def _known_size(cls, value: str) -> str:
@@ -79,8 +95,10 @@ def spec() -> OperationSpec:
             "its end face, `size` and `length_mm`. It adds no geometry and the part keeps its volume: the thread is "
             "stored in the document and the drawing draws the ISO 6410 representation by itself (thin line at the minor "
             "diameter, 3/4 arc end on). Its callout is the diameter dimension of that cylinder: `drawing` item "
-            "`dim` kind `diameter` on the cylinder face writes `M12 long. util 20` instead of the plain Ø (it takes no "
-            "fit or tolerance: the thread class is part of its size). It refuses a cylinder whose diameter is not "
+            "`dim` kind `diameter` on the cylinder face writes `M12 - 6g long. util 20` instead of the plain Ø (it takes no "
+            "fit or tolerance: give the thread class as `tolerance_class`, `6g` for a shaft, when the intent file or the "
+            "engineer says it). A thread the intent file declares goes into the model with this operation: a note alone "
+            "draws no thread lines. It refuses a cylinder whose diameter is not "
             "the thread's major diameter, a bore, an end face that is not at an end of the cylinder (a chamfer's "
             "width past it is fine), and a length longer than the shaft from the end face. A thread undercut and the "
             "chamfer at the end are separate features."

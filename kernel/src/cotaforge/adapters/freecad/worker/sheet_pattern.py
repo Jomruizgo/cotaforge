@@ -329,3 +329,63 @@ def holes_of_item(ctx: Context, spec: dict[str, Any]) -> frozenset[int]:
     hole = _hole_at(ctx, spec["at"])
     found = pattern_of(ctx, hole) if hole is not None else None
     return found.indexes if found is not None else frozenset()
+
+
+# --- the items every sheet carries for the holes ------------------------------------------------------------------------------
+
+VIEW_DIRECTIONS = {"front": (0.0, 1.0, 0.0), "top": (0.0, 0.0, 1.0), "right": (1.0, 0.0, 0.0)}  # what each standard view looks along
+
+
+def auto_items(found: list[HoleInfo], standard: list[str], round_axis: tuple[Vec3, Vec3] | None = None) -> list[dict[str, Any]]:
+    """The polar dimensions of every circular pattern of the holes that a standard view of the sheet shows as circles: ``pd<n>``
+    (the diameter of its pitch circle) and the angle of its first hole, ``pd<n>a`` (an uneven pattern: one angle per hole,
+    ``pd<n>a<k>``). Each names a hole of the pattern by a point of its axis; what it draws is ``items_pattern``'s. On a round part
+    (a disc or a flange: ``round_axis``, its direction and a point of it) a lone hole off its axis is located the same way, by its radius and its angle (a pattern
+    of one): a hole nothing locates is a hole the shop cannot drill."""
+    out: list[dict[str, Any]] = []
+    by_index = {h.index: h for h in found}
+    patterns = find(found, axes_of_holes(found))
+    for number, pattern in enumerate(patterns, start=1):
+        if not any(v in VIEW_DIRECTIONS and parallel(VIEW_DIRECTIONS[v], pattern.direction) for v in standard):
+            continue
+        at = [round(c, 4) for c in by_index[min(pattern.reps)].centre]
+        out.append({"id": f"pd{number}", "type": "pattern_dim", "auto": True, "at": at})
+        if pattern.even:
+            out.append({"id": f"pd{number}a", "type": "pattern_dim", "auto": True, "kind": "angle", "at": at})
+            continue
+        for k, index in enumerate(sorted(pattern.reps), start=1):
+            where = [round(c, 4) for c in by_index[index].centre]
+            out.append({"id": f"pd{number}a{k}", "type": "pattern_dim", "auto": True, "kind": "angle", "at": where})
+    return out + _lone_items(found, standard, patterns, len(patterns) + 1, round_axis)
+
+
+def _lone_items(
+    found: list[HoleInfo], standard: list[str], patterns: list[Any], number: int, round_axis: tuple[Vec3, Vec3] | None
+) -> list[dict[str, Any]]:
+    """``pd<n>`` and ``pd<n>a`` of each hole of a round part that no pattern holds and that is off the axis of the part: its pitch
+    circle and its angle from a centre line, ``items_pattern``'s lone hole counted ``about`` that axis. A part that is not round
+    keeps the default location (X / Y from its edges): the holes of a rectangle are not on a radius."""
+    if round_axis is None:
+        return []
+    axis, through = round_axis
+    taken = {i for p in patterns for i in p.indexes}
+    out: list[dict[str, Any]] = []
+    for stack in hole_stacks(found):
+        hole = stack[0]
+        direction = unit(hole.direction)
+        if (
+            any(h.index in taken for h in stack)
+            or not parallel(direction, axis)
+            or not any(v in VIEW_DIRECTIONS and parallel(VIEW_DIRECTIONS[v], direction) for v in standard)
+        ):
+            continue
+        radial = sub(hole.centre, through)
+        radial = sub(radial, scale(direction, dot(radial, direction)))
+        if norm(radial) < MIN_RADIUS_MM:
+            continue  # on the axis of the part: a bore, not a hole on a radius
+        at = [round(c, 4) for c in hole.centre]
+        about = [round(c, 4) for c in through]
+        out.append({"id": f"pd{number}", "type": "pattern_dim", "auto": True, "at": at, "about": about})
+        out.append({"id": f"pd{number}a", "type": "pattern_dim", "auto": True, "kind": "angle", "at": at, "about": about})
+        number += 1
+    return out

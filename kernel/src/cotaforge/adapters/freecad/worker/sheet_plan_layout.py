@@ -103,6 +103,7 @@ LEADER_ANGLES = (45, 135, 225, 315, 30, 60, 120, 150, 210, 240, 300, 330)
 """The angles (degrees, counter-clockwise on the page) a leader may leave its tip at, the 45 degree ones first: ISO 128-22
 keeps a leader off the horizontal and the vertical (it would read as a centre line or a dimension line)."""
 ANGLE_RADII_MM = (12.0, 16.0, 20.0, 25.0, 31.0, 38.0)  # the arc of an angular dimension (ISO 129-1: outside the part)
+ANGLE_STEP_MM = 5.0  # between the radii an arc is tried at when it has a least radius to clear
 WELD_DISTANCES_MM = (8.0, 12.0, 18.0, 26.0, 36.0, 46.0, 58.0)
 WELD_DIRECTIONS = 24
 MAX_CANDIDATES = 400
@@ -1158,15 +1159,18 @@ class _Run:
         """An angular dimension: an arc about the apex between its two rays (ISO 129-1), the text outside it; the arc takes
         the smallest of a few radii at which nothing else is crossed or covered."""
         vb = self.vbox(it.view)
-        if vb is None or not it.anchors or len(it.extra) != 2:
+        if vb is None or not it.anchors or len(it.extra) not in (2, 3):
             self.fail(it, "its view is not placed" if vb is None else "an angle needs its apex and the angles of its rays")
             return
         ax, ay = _abs(vb, it.anchors[0])
-        a0, a1 = it.extra
+        a0, a1 = it.extra[:2]
+        # a third number is the radius the arc must clear (the pitch circle and its holes: the arc stands outside them, never
+        # over the bore): the radii are that one and the steps beyond it
+        radii = ANGLE_RADII_MM if len(it.extra) == 2 else tuple(it.extra[2] + k * ANGLE_STEP_MM for k in range(len(ANGLE_RADII_MM)))
         span = (a1 - a0) % 360.0
         mid = math.radians((a0 + span / 2) % 360.0)
         cands: list[tuple[float, _Ink, Any]] = []
-        for k, radius in enumerate(ANGLE_RADII_MM):
+        for k, radius in enumerate(radii):
             n = max(4, int(span // 8))
             pts = [
                 (ax + radius * math.cos(math.radians(a0 + span * i / n)), ay - radius * math.sin(math.radians(a0 + span * i / n)))

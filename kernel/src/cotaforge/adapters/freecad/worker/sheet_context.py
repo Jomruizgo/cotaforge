@@ -195,6 +195,7 @@ class ThreadInfo:
     cylinder: str = ""
     pitch: float = 0.0
     name: str = ""
+    tolerance_class: str = ""  # ISO 965 class of an external thread (``6g``): part of what its callout says; empty: none was given
 
 
 def hole_stacks(holes: list[HoleInfo]) -> list[list[HoleInfo]]:

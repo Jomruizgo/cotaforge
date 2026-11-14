@@ -8,7 +8,7 @@ import pytest
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.guide import guide
 from cotaforge_mcp.schemas import TOOLS_BY_NAME, input_schema, visible_tools
-from tests.conftest import PNG, BareFake, Caller, DrawingFake, MakeSession, VisibleFake, plate, set_review
+from tests.conftest import PNG, BareFake, Caller, DrawingFake, MakeSession, VisibleFake, plate, set_flow, set_review
 
 
 @pytest.fixture
@@ -22,6 +22,7 @@ def window(make: MakeSession) -> tuple[Caller, VisibleFake]:
 @pytest.fixture
 def sheet(make: MakeSession, settings: Settings) -> tuple[Caller, DrawingFake]:
     set_review(settings, "ninguno")  # these tests are about the tools, not about who reviews the drawing
+    set_flow(settings, "steps")  # the small-steps flow; the default has its own tests
     adapter = DrawingFake()
     call = Caller(make(adapter))
     plate(call)
@@ -153,6 +154,8 @@ def test_the_drawing_tool_only_exists_when_the_cad_can_make_sheets(make: MakeSes
         "review",
         "requirements",
         "capture",
+        "plan",  # the default flow: the first proposal in one order
+        "compose",
     ]
     export = input_schema(TOOLS_BY_NAME["export"], with_sheets)["properties"]["action"]["enum"]
     assert export[-2:] == ["pdf", "dxf"]

@@ -83,9 +83,13 @@ WINDOW_LINE = (
 )
 
 SHEET_WINDOW_LINE = (
-    "THIS PROJECT BUILDS A SHEET IN ONE ORDER (drawing_flow: sheet): drawing(action=plan) -> ask -> drawing(action=compose, "
-    "decisions={...}) -> capture -> review -> fix the points one by one. The sheet is built whole, in the FreeCAD window, "
-    "in one call; the engineer sees the plan BEFORE it and the sheet after. Never rebuild with add what compose derives. "
+    "THIS PROJECT MAKES THE FIRST PROPOSAL OF A SHEET IN ONE ORDER (drawing_flow: sheet, the default; steps = drawing_flow=steps in the brief): drawing(action=plan) "
+    "-> ask -> drawing(action=compose, decisions={...}) ONCE -> capture -> review -> LOCAL fixes one item at a time "
+    "(drawing(action=update, items=[{id, fields}]) moves it or changes its value, tolerance or text and nothing else on the "
+    "sheet moves; add / remove put or take off one item) -> review. The sheet is built whole, in the FreeCAD window, in one "
+    "call; the engineer sees the plan BEFORE it and the sheet after. Compose again ONLY when a decision changes the whole "
+    "sheet (paper, scale, views, the dimension scheme: relations, datums) or the engineer orders it (recompose=true, by, "
+    "reason): a second compose for a local fix is refused. Never rebuild with add what compose derives. "
     "cad_guide(topic=drawing:compose) has the shape of the decisions."
 )
 
@@ -110,10 +114,16 @@ COMPOSE_LINES = (
     "compose REFUSES, before it changes anything, while a decision the plan listed is missing (it lists them: answer each "
     "with its key or with answers). It never guesses a datum, a fit or a tolerance. A paper the engineer did not fix is "
     "raised (A4, A3, A2) when the annotations do not fit, keeping the scale (a paper is never bigger only for a bigger "
-    "scale), and the reply says so; give sheet.template to fix it. A "
-    "second compose takes off what the first one put (ids dc_...) and puts the new decisions; what you added or placed "
-    "by hand (add, side, offset_mm) stays. After it: capture and look at it, review, and correct with add / remove / "
-    "update; never rebuild with add what compose derives (rq_... items: remove one only with reason=).",
+    "scale), and the reply says so; give sheet.template to fix it. The "
+    "first compose is the only one of a sheet: a second is refused (nothing changes) unless it states another paper, "
+    "scale, view set, angle or body, or another dimension scheme (relations, datums), or the engineer orders it "
+    "(recompose=true with by= and reason=); it then takes off what the first one put (ids dc_...) and puts the new "
+    "decisions; what you added or edited by hand stays. After it: capture and look at it, review, and correct LOCALLY: "
+    "drawing(action=update, items=[{id, fields}]) changes ONE item in place (a dimension: side, offset_mm, tol, fit, text; "
+    "null takes a field off; the type never changes). Nothing else on the sheet moves; if the new place lies on another "
+    "object, or would make another item give way, the call is refused with the reason and changes nothing. An edited item "
+    "is pinned: the layout and a later compose leave it. add / remove put or take off one item; never rebuild with add what "
+    "compose derives (rq_... items: remove one only with reason=).",
 )
 
 ITEM_INTRO = (
@@ -128,8 +138,9 @@ ITEM_INTRO = (
     "look for free room around the dimensions, away from each other and inside the frame, never over the title "
     "block; with side or offset_mm a callout goes exactly there and, if that place is taken or outside the frame, the "
     "item's warning says so (datum, gdt and finish too). "
-    "The engineer sees each one in the window; fix a placement with offset_mm "
-    "/ side, or remove and add again, instead of rebuilding the sheet. A face id the part no longer has (an edit regenerated "
+    "The engineer sees each one in the window; fix an item in place with "
+    "drawing(action=update, items=[{id, offset_mm, side...}]) (nothing else moves), instead of rebuilding the sheet. "
+    "A face id the part no longer has (an edit regenerated "
     "it) makes its item an error, never an old number: add it again with the new id. "
     "Positions are world mm; at_mm is a SHEET position in mm from its bottom-left corner (y up). view is front, "
     'top or right (or the label of a section, "A-A", for dim, hole_dim, note and line).',
@@ -438,7 +449,9 @@ BASELINE_LINE = (
     "the axial reference the intent file names (the shoulder or the end the functional lengths are counted from) or the face "
     "he picks when asked. The lines stack shortest nearest the part, longest outermost, 7 mm apart; a chain stays only where it is "
     "functional (a groove width, a keyway set from its shoulder). Put the stack on one side of the long view (side=below) and "
-    "the diameters on the other: a diameter callout cannot cross a dimension line. The review HOLDS the export for parallel "
+    "the diameters on the other: a diameter callout cannot cross a dimension line. On a turned part dim kind=diameter is a dimension "
+    "line between the two silhouette lines of its step, on the long view (its text beyond the upper arrow, the steps spread so the "
+    "texts never meet; overall leaves out the same Ø): never a leader to one side. The review HOLDS the export for parallel "
     "dimensions in the wrong order (dimension_stack_order: the longer nearer the part), lines closer than 6,5 mm "
     "(dimension_gap) and an extension line across another dimension's line (dimension_crossing)."
 )
@@ -448,7 +461,7 @@ KEYWAY_LINE = (
     "as the standards give it (d - t1 on a shaft, d + t2 in a hub), length, position -- as dim items <id>_w, _t, _l, _p. The "
     "width and the depth go on a REMOVED section across the keyway (a section item with removed=true, <id>_sec, placed on the "
     "extension of its cutting line: no end view is made for a keyway); the length and the position, on the long view. fit is the "
-    "ISO 286 class of the width (P9, N9: asked, never assumed), depth_tol [upper, lower] the deviations of the depth, section=false "
+    "ISO 286 class of the width (P9, N9: the harness takes it from the intent file's keyway line, else it is asked, never assumed; the length runs end to end of the keyway, a half circle included, and the position from the shoulder), depth_tol [upper, lower] the deviations of the depth, section=false "
     "keeps the old end view dimensions, letter the letter of the section. The harness adds them "
     "itself (rq_keyway); only the width's fit class is asked. chamfer_dims (no fields): a callout (size x angle) of every "
     "chamfer no dimension gives yet, flat or on a round edge (a shaft end), as dim items kind=chamfer; the harness adds it "

@@ -162,7 +162,7 @@ def test_a_second_compose_asks_everything_of_a_weldment_again_because_it_replace
     fake.facts = {**fake.facts, "weld_class_on_sheet": 1}
     plan = asked(call)
     assert "[bodies]" in plan and "[welds]" in plan and "[welding]" in plan
-    text = composed(call, {**FRAME, "welding": {**WELDING, "quality": "B"}, "answers": na_all(call)})
+    text = composed(call, {**FRAME, "welding": {**WELDING, "quality": "B"}, "answers": na_all(call)}, recompose=True)
     assert items_of(fake)["dc_welding1"]["text"].count("ISO 5817-B") == 1
     assert not any(f"open [{k}]" in text for k in ("bodies", "welds", "welding"))  # what is on the sheet answers them
 
