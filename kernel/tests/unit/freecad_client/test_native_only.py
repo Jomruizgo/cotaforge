@@ -9,6 +9,7 @@ worker module that makes a ``DrawViewSymbol`` or sets the ``Symbol`` of one fail
 and the items it makes them for. The list only shrinks; a new entry is refused by review.
 """
 
+import ast
 import re
 import sys
 from pathlib import Path
@@ -30,15 +31,30 @@ STILL_DRAWN_BY_HARNESS: dict[str, str] = {
 MAKES_A_SYMBOL = re.compile(r"addObject\(\s*(?:SYMBOL|[\"']TechDraw::DrawViewSymbol[\"'])|\.Symbol\s*=[^=]")
 
 
+def _docstring_lines(text: str) -> set[int]:
+    """The lines of every docstring: an example written in prose makes no object."""
+    lines: set[int] = set()
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+                lines.update(range(first.lineno, (first.end_lineno or first.lineno) + 1))
+    return lines
+
+
+def _hits(text: str) -> list[int]:
+    prose = _docstring_lines(text)
+    return [
+        n
+        for n, line in enumerate(text.splitlines(), start=1)
+        if MAKES_A_SYMBOL.search(line) and not line.lstrip().startswith("#") and n not in prose
+    ]
+
+
 def _makers() -> dict[str, list[int]]:
     found: dict[str, list[int]] = {}
     for path in sorted(WORKER_DIR.glob("*.py")):
-        lines = path.read_text(encoding="utf-8").splitlines()
-        hits = [
-            n
-            for n, line in enumerate(lines, start=1)
-            if MAKES_A_SYMBOL.search(line) and not line.lstrip().startswith("#")
-        ]
+        hits = _hits(path.read_text(encoding="utf-8"))
         if hits:
             found[path.name] = hits
     return found
@@ -58,6 +74,11 @@ def test_the_debt_lists_only_modules_that_still_make_symbols() -> None:
     assert set(STILL_DRAWN_BY_HARNESS) <= set(makers), (
         f"already clean, remove from STILL_DRAWN_BY_HARNESS: {sorted(set(STILL_DRAWN_BY_HARNESS) - set(makers))}"
     )
+
+
+def test_a_docstring_example_is_not_a_maker() -> None:
+    lines = ["def f():", '    """Use it so::', "", "        symbol.Symbol = svg", '    """', "    obj.Symbol = svg"]
+    assert _hits(chr(10).join(lines) + chr(10)) == [6]
 
 
 def test_the_library_module_is_the_only_one_allowed() -> None:
