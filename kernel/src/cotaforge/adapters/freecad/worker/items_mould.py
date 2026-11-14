@@ -288,6 +288,26 @@ def _label(ctx: Context) -> str:
     return ctx.say("LP", "PL")  # línea de partición / parting line
 
 
+def _label_at(ctx: Context, text: str, spots: list[tuple[float, float, str]]) -> Text:
+    """The label of the parting line at the first of ``spots`` ((x, baseline y, anchor)) where its box is inside the frame, on free
+    paper and across no dimension line; the first one when none is clean. Its box is reserved: the symbols placed later keep off it."""
+    from sheet_collide import segment_hits_rect  # noqa: PLC0415
+
+    lines = ctx.extras.get("dimension_lines", [])
+    chosen: Text | None = None
+    for x, y, anchor in spots:
+        label = Text(x, y, text, 3.5, TEXT, anchor)
+        box = _bounds([label])
+        if chosen is None:
+            chosen = label
+        if ctx.inside(box) and ctx.free(box) and not any(segment_hits_rect(line, box) for line in lines):
+            chosen = label
+            break
+    assert chosen is not None
+    ctx.reserve(_bounds([chosen]))
+    return chosen
+
+
 def _offset_loop(points: list[Point], distance: float) -> list[Point]:
     """``points`` (a closed loop) moved ``distance`` outward along the average normal of each corner."""
     area = sum(points[i][0] * points[(i + 1) % len(points)][1] - points[(i + 1) % len(points)][0] * points[i][1] for i in range(len(points))) / 2
@@ -328,8 +348,15 @@ def draw_parting(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             lo, hi = min(along) - END_MM, max(along) + END_MM
             start, end = (px + t[0] * lo, py + t[1] * lo), (px + t[0] * hi, py + t[1] * hi)
             entities = [Line(start[0], start[1], end[0], end[1], PARTING)]
-            text = Text(end[0] + 1.5 * t[0], end[1] + 1.5 * t[1] - 1.2, _label(ctx), 3.5, TEXT, "left" if t[0] >= 0 else "right")
-            entities.append(text)
+            word = _label(ctx)
+            far, near = (1.5, "left" if t[0] >= 0 else "right"), (-1.5, "right" if t[0] >= 0 else "left")
+            spots = [
+                (end[0] + far[0] * t[0], end[1] + far[0] * t[1] - 1.2, far[1]),  # at the far end of the line
+                (start[0] + near[0] * t[0], start[1] + near[0] * t[1] - 1.2, near[1]),  # else at the other end
+                (end[0] + far[0] * t[0], end[1] + far[0] * t[1] + 2.5, far[1]),  # else just above the far end
+                (start[0] + near[0] * t[0], start[1] + near[0] * t[1] - 5.0, near[1]),  # else just below the other
+            ]
+            entities.append(_label_at(ctx, word, spots))
             drawn.append(f"{view.name} view: line at {'xyz'[axis]}={found.level:g}")
         else:
             loop = ctx.geometry.section_outline(pull, found.level, view.centre, view.xdir, view.direction)
@@ -339,7 +366,14 @@ def draw_parting(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             ring = _offset_loop(page, OFFSET_MM)
             entities = [Polyline(tuple(ring), PARTING, closed=True)]
             top = max(ring, key=lambda p: p[1])
-            entities.append(Text(top[0] + 2.0, top[1] + 1.0, _label(ctx), 3.5, TEXT, "left"))
+            low = min(ring, key=lambda p: p[1])
+            spots = [
+                (top[0] + 2.0, top[1] + 1.0, "left"),
+                (top[0] - 2.0, top[1] + 1.0, "right"),
+                (low[0] + 2.0, low[1] - 4.5, "left"),
+                (low[0] - 2.0, low[1] - 4.5, "right"),
+            ]
+            entities.append(_label_at(ctx, _label(ctx), spots))
             drawn.append(f"{view.name} view: outline of the part at {'xyz'[axis]}={found.level:g}")
         ctx.add(entities)
         ctx.used_view(view.name)
@@ -556,7 +590,7 @@ def draw_exception(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
 
 
 ITEMS = (
-    ItemType("parting_line", "pl", check_parting, draw_parting, frozenset(CHECKS_PARTING), phase=0),
+    ItemType("parting_line", "pl", check_parting, draw_parting, frozenset(CHECKS_PARTING), phase=1),
     ItemType("pull_direction", "pd", check_pull, draw_pull, frozenset(CHECKS_PULL), phase=2),
     ItemType("mould_zone", "mz", check_zone, draw_zone, frozenset(CHECKS_ZONE), phase=2),
     ItemType("no_draft", "nd", check_exception, draw_exception, frozenset(CHECKS_EXCEPTION), phase=1),

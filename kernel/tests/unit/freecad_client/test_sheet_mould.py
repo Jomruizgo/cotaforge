@@ -231,3 +231,20 @@ def test_the_guides_are_the_view_origins_the_notes_and_the_symbols_already_place
     ctx.extras.update({"note_lines": 5, "note_x": 27.0, "mould_centres": [210.0]})
     guides = mould._x_guides(ctx)  # noqa: SLF001
     assert {150.0, 50.0, 114.5, 210.0} <= set(guides)
+
+
+def test_the_label_of_the_parting_line_keeps_off_the_dimension_lines() -> None:
+    """On the junction box the label stood where the extension line of the overall height crosses (a collision)."""
+    clean = context()
+    draw(clean, {"type": "parting_line"})
+    first = [e for e in clean.sheet.entities if isinstance(e, model.Text) and e.text == "LP"]
+    crossed = context()
+    x = first[0].x + 2.0  # a vertical dimension line through the first label of the front view
+    crossed.extras["dimension_lines"] = [(x, 100.0, x, 250.0)]
+    draw(crossed, {"type": "parting_line"})
+    moved = [e for e in crossed.sheet.entities if isinstance(e, model.Text) and e.text == "LP"]
+    assert (moved[0].x, moved[0].y) != (first[0].x, first[0].y)
+    width = model.text_width("LP", 3.5)
+    x0 = moved[0].x - (width if moved[0].anchor == "right" else 0.0)
+    near_dimension = x0 - 0.5 < x < x0 + width + 0.5 and moved[0].y - 1.0 < 175.0 < moved[0].y + 4.5
+    assert not near_dimension or not (100.0 < moved[0].y < 250.0)  # the label does not sit across the dimension line

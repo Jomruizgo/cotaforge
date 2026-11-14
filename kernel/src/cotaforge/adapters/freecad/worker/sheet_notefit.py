@@ -54,21 +54,3 @@ def misplaced(wanted_left: float, box: tuple[float, float, float] | None, tolera
     offset = box[0] - wanted_left
     return offset if abs(offset) > tolerance else None
 
-
-def painted(boxes: Sequence[TextBox], x_mm: float, y_mm: float, text: str) -> TextBox | None:
-    """The text item that says ``text`` and stands nearest to ``(x_mm, y_mm)``, wherever it is on the page (``None``: none is
-    painted). ``pick_block`` looks only 1 mm either side of the height the line should be at, so a line that was painted at
-    another height (the lines of a note stacked on one of them: the window drew them at one place) is not found there; this is
-    how the sheet learns where it stands."""
-    wanted = plain(text)
-    same = [b for b in boxes if plain(b.text) == wanted]
-    return min(same, key=lambda b: (b.cx - x_mm) ** 2 + (b.cy - y_mm) ** 2, default=None)
-
-
-def off_place(wanted_left: float, wanted_cy: float, box: TextBox | None, tol_x: float, tol_y: float) -> tuple[float, float] | None:
-    """How far (dx, dy in mm) a painted line must move to stand where the sheet wants it (left edge at ``wanted_left``, middle at
-    ``wanted_cy``), ``None`` when it is there within the tolerances or was not painted."""
-    if box is None:
-        return None
-    dx, dy = wanted_left - box.left, wanted_cy - box.cy
-    return (dx, dy) if abs(dx) > tol_x or abs(dy) > tol_y else None

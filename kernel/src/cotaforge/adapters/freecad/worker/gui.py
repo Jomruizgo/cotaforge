@@ -533,32 +533,6 @@ def block_box(page: Any, x_mm: float, y_mm: float, text: str | None = None) -> t
     return sheet_notefit.pick_block(boxes, x_mm, y_mm, text)
 
 
-def scene_texts(page: Any) -> "list[Any]":
-    """Every text item of the page scene as a ``sheet_notefit.TextBox`` (empty headless)."""
-    if not ACTIVE:
-        return []
-    import sheet_notefit  # noqa: PLC0415
-    import TechDrawGui  # noqa: PLC0415
-
-    Gui.updateGui()
-    out = []
-    for item in TechDrawGui.getSceneForPage(page).items():
-        if type(item).__name__ != "QGraphicsTextItem":
-            continue
-        rect = item.sceneBoundingRect()
-        out.append(
-            sheet_notefit.TextBox(
-                str(item.toPlainText()),
-                rect.x() / SCENE_PER_MM,
-                rect.width() / SCENE_PER_MM,
-                rect.height() / SCENE_PER_MM,
-                (rect.x() + rect.width() / 2) / SCENE_PER_MM,
-                -(rect.y() + rect.height() / 2) / SCENE_PER_MM,
-            )
-        )
-    return out
-
-
 def block_extent(page: Any, x_mm: float, y_mm: float, text: str | None = None) -> tuple[float, float] | None:
     """The size (mm) of the text block ``block_box`` finds, or ``None``."""
     found = block_box(page, x_mm, y_mm, text)

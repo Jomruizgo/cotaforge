@@ -44,26 +44,3 @@ def test_a_line_that_is_not_where_the_sheet_wants_it_is_reported_with_how_far() 
     off = fit.misplaced(27.0, (-60.5, 175.0, 8.7), 0.5)
     assert off is not None and round(off, 1) == -87.5
 
-
-# --- a line painted at another height --------------------------------------------------------------------------------------------------
-
-
-def test_the_lines_of_a_note_stacked_on_one_place_are_found_wherever_they_were_painted() -> None:
-    """The window drew some lines of a note on top of another line (one height for all); ``pick_block`` looks only at the height
-    the line should have, so it never found them: ``painted`` finds the item that says the line, nearest to where it should be."""
-    stacked = fit.TextBox(LINE, left=27.0, width=175.0, height=8.7, cx=114.5, cy=191.4)
-    other = fit.TextBox("7. Correderas en ±X", left=27.0, width=175.0, height=8.7, cx=114.5, cy=191.4)
-    assert fit.pick_block([stacked, other], 114.5, 176.4, LINE) is None  # the line should stand at 176.4: nothing there
-    assert fit.painted([stacked, other], 114.5, 176.4, LINE) is stacked
-    assert fit.painted([other], 114.5, 176.4, LINE) is None  # none says it: not painted (headless): nothing to judge
-
-
-def test_how_far_a_line_must_move_to_stand_where_the_sheet_wants_it() -> None:
-    box = fit.TextBox(LINE, left=27.0, width=175.0, height=8.7, cx=114.5, cy=191.4)
-    assert fit.off_place(27.0, 191.4, box, 0.15, 2.0) is None
-    assert fit.off_place(27.0, 190.3, box, 0.15, 2.0) is None  # within the glyph lift: the same place
-    dx, dy = fit.off_place(27.0, 176.4, box, 0.15, 2.0) or (0.0, 0.0)
-    assert round(dx, 1) == 0.0 and round(dy, 1) == -15.0  # 15 mm down: the line was stacked three lines up
-    dx, dy = fit.off_place(27.0, 191.4, fit.TextBox(LINE, -60.5, 175.0, 8.7, 27.0, 191.4), 0.15, 2.0) or (0.0, 0.0)
-    assert round(dx, 1) == 87.5 and round(dy, 1) == 0.0
-    assert fit.off_place(27.0, 191.4, None, 0.15, 2.0) is None
