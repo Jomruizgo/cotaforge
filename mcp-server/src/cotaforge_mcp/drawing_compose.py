@@ -30,7 +30,7 @@ COMPOSED_PREFIX = "dc_"
 MAX_ITEMS_PER_CALL = 50
 PAPER_STEPS = ("A4", "A3", "A2")
 """The papers the composer may raise a sheet to when nobody fixed the paper (A2 is the limit: beyond it is the engineer's)."""
-LAYOUT_CODES = frozenset({"views_overlap", "view_outside_frame", "item_outside_frame", "text_outside_frame"})
+LAYOUT_CODES = frozenset({"views_overlap", "view_outside_frame", "item_outside_frame", "text_outside_frame", "paper_too_small"})
 """The findings that say the views and annotations do not fit the paper (a local ``collision`` between two annotations is
 the placement's to solve, not a reason for a bigger paper)."""
 LEGIBLE_SCALE = 0.2
@@ -47,6 +47,7 @@ KEYS: dict[str, tuple[str, ...]] = {
     "finish": ("finish",),
     "sections": ("section", "detail", "aux_view"),
     "welds": ("weld",),
+    "mould": ("parting_line", "pull_direction", "mould_zone", "no_draft"),
     "positions": ("dim",),
     "notes": ("note",),
 }
@@ -72,6 +73,7 @@ ROW_KEYS: dict[str, tuple[str, ...]] = {
     "req.surface_texture": ("finish",),
     "req.geometric_tolerance": ("gdt",),
     "req.welds": ("welds",),
+    "req.moulded_part": ("mould",),
     "req.general_tolerance": ("sheet",),
     "req.title_block": ("sheet",),
 }

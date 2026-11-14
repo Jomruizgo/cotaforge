@@ -503,30 +503,41 @@ def text_width_mm(text: str, size_mm: float, family: str = "osifont") -> float:
 SCENE_PER_MM = 10.0  # the TechDraw scene is in tenths of a millimetre (``Rez``), y down
 
 
-def block_box(page: Any, x_mm: float, y_mm: float) -> tuple[float, float, float] | None:
+def block_box(page: Any, x_mm: float, y_mm: float, text: str | None = None) -> tuple[float, float, float] | None:
     """``(left, width, height)`` in mm of the text block TechDraw painted centred near the page point ``(x_mm, y_mm)`` (y
     up) -- an annotation: its own text item sits centred on its X, Y --, or ``None`` headless or when none is there. The
     line is where its Y says (the notes are 5 mm apart); its X is only an estimate from the font metrics, off by a few mm
-    for some strings, so the block is the widest text item of that line within 8 mm of the estimate."""
+    for some strings, so the block is the widest text item of that line within 8 mm of the estimate. With ``text`` the item
+    must SAY that text: a line whose own item is not painted yet is never taken for another text that happens to stand at
+    that height (the dimension text of a view: it moved a note line out of the frame), and ``None`` is the answer."""
     if not ACTIVE:
         return None
     import TechDrawGui  # noqa: PLC0415
 
+    import sheet_notefit  # noqa: PLC0415 - the pure choice of the item (unit-tested without a window)
+
     Gui.updateGui()
-    best: tuple[float, float, float] | None = None
+    boxes: list[sheet_notefit.TextBox] = []
     for item in TechDrawGui.getSceneForPage(page).items():
         if type(item).__name__ != "QGraphicsTextItem":
             continue
         rect = item.sceneBoundingRect()
-        cx, cy = (rect.x() + rect.width() / 2) / SCENE_PER_MM, -(rect.y() + rect.height() / 2) / SCENE_PER_MM
-        if abs(cx - x_mm) <= 8.0 and abs(cy - y_mm) <= 1.0 and (best is None or rect.width() > best[1] * SCENE_PER_MM):
-            best = (rect.x() / SCENE_PER_MM, rect.width() / SCENE_PER_MM, rect.height() / SCENE_PER_MM)
-    return best
+        boxes.append(
+            sheet_notefit.TextBox(
+                str(item.toPlainText()),
+                rect.x() / SCENE_PER_MM,
+                rect.width() / SCENE_PER_MM,
+                rect.height() / SCENE_PER_MM,
+                (rect.x() + rect.width() / 2) / SCENE_PER_MM,
+                -(rect.y() + rect.height() / 2) / SCENE_PER_MM,
+            )
+        )
+    return sheet_notefit.pick_block(boxes, x_mm, y_mm, text)
 
 
-def block_extent(page: Any, x_mm: float, y_mm: float) -> tuple[float, float] | None:
+def block_extent(page: Any, x_mm: float, y_mm: float, text: str | None = None) -> tuple[float, float] | None:
     """The size (mm) of the text block ``block_box`` finds, or ``None``."""
-    found = block_box(page, x_mm, y_mm)
+    found = block_box(page, x_mm, y_mm, text)
     return None if found is None else (found[1], found[2])
 
 

@@ -481,6 +481,17 @@ def _toleranced(
     return rendered, f"; toleranced{stacked}"
 
 
+def _is_diameter_span(ctx: Context, a: Vec3, b: Vec3, value: float) -> bool:
+    """Whether a distance between the points ``a`` and ``b`` measures a DIAMETER: they are the two ends of one circle of the part
+    (a bore seen from the side, drawn with its two ends as references) and the dimension runs along that chord. A diameter is
+    written with ``Ø`` whatever references gave it (ISO 129-1), so the reader never takes a bore for a width."""
+    try:
+        diameter = ctx.geometry.circle_span(a, b)
+    except ItemError:
+        return False
+    return diameter is not None and abs(diameter - value) <= POSITION_EPS_MM and abs(math.dist(a, b) - value) <= POSITION_EPS_MM
+
+
 def distance_span(ctx: Context, spec: dict[str, Any]) -> float | None:
     """How long a ``dim`` of kind ``distance`` is (mm), or ``None`` when it cannot be measured (``_distance`` then says why).
     The drawing order stacks the lines outward, so the shorter ones are drawn first (``sheet_items.draw_items``)."""
@@ -523,7 +534,8 @@ def _distance(ctx: Context, spec: dict[str, Any]) -> str:
     ):  # in a section a face is a line of the cut: the extension line starts at its end, not at its middle
         centres = (_trace_end(ctx, view, a, centres[0], side), _trace_end(ctx, view, b, centres[1], side))
     pa, pb = _edge_start(a, view, centres[0], line, orient), _edge_start(b, view, centres[1], line, orient)
-    rendered, extra = _toleranced(ctx, spec, value, "linear")
+    round_span = a.kind == "point" and b.kind == "point" and _is_diameter_span(ctx, a.point, b.point, value)
+    rendered, extra = _toleranced(ctx, spec, value, "linear", prefix="Ø" if round_span else "")
     entities, taken = linear_dimension(pa, pb, orient, line, rendered.text, arrows=spec.get("arrows", "auto"))
     if spec.get("exact"):
         exact_box(entities)
@@ -554,7 +566,7 @@ def _distance(ctx: Context, spec: dict[str, Any]) -> str:
                 refs=(Ref2("point", centres[0]), Ref2("point", centres[1])),
                 label=label,
                 expected=value,
-                text=None if res is None or rendered.stack is not None else rendered.text,
+                text=None if (res is None and not round_span) or rendered.stack is not None else rendered.text,
                 orient=orient,
                 tol=(res.upper, res.lower) if res is not None and rendered.stack is not None else None,
                 rect=taken,
