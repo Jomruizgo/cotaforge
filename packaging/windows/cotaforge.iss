@@ -135,6 +135,7 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdi
 Type: filesandordirs; Name: "{app}\python"
 Type: filesandordirs; Name: "{app}\marketplace"
 Type: filesandordirs; Name: "{app}\docs"
+Type: filesandordirs; Name: "{app}\symbols"
 ; The shortcuts of 0.8.x had other names: an update must not leave them next to the new ones.
 Type: files; Name: "{autoprograms}\cotaforge\Nuevo proyecto cotaforge.lnk"
 Type: files; Name: "{autoprograms}\cotaforge\Abrir proyecto cotaforge.lnk"
