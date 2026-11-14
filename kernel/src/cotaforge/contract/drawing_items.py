@@ -90,6 +90,10 @@ ITEM_FIELDS: dict[str, frozenset[str]] = {
             "anchor_at",
         }
     ),
+    "parting_line": frozenset({"pull", "level_mm", "view"}),
+    "pull_direction": frozenset({"pull", "draft_deg", "view", "side", "offset_mm"}),
+    "mould_zone": frozenset({"kind", "at", "radius_mm", "normal", "view"}),
+    "no_draft": frozenset({"kind", "at", "view", "side", "offset_mm"}),
 }
 
 # item types the sheet will have, and the phase that builds them: refused until then
@@ -105,6 +109,8 @@ REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "aux_view": ("face",),
     "datum": ("letter",),
     "gdt": ("char", "value"),
+    "mould_zone": ("kind", "at"),
+    "no_draft": ("at",),
 }
 
 ITEM_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,23}$")

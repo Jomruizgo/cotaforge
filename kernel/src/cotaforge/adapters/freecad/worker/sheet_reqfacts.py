@@ -50,6 +50,12 @@ FACT_NAMES = (
     "weld_items",
     "weld_marked_on_sheet",
     "weld_class_on_sheet",
+    "mould_items",
+    "mould_parting_on_sheet",
+    "mould_pull_on_sheet",
+    "mould_draft_on_sheet",
+    "mould_gate_on_sheet",
+    "mould_ejector_on_sheet",
     "keyways",
     "keyways_measured",
     "keyway_fit_on_sheet",
@@ -209,6 +215,22 @@ def _weldment(data: Any) -> dict[str, Any] | None:
     )
 
 
+def _mould(data: Any) -> dict[str, int]:
+    """What the sheet carries of the indications of a moulded part (``items_mould``): the parting line, the opening direction, a
+    draft value, a gate zone, ejector zones. They count the items, not the words of a note: ISO 10135 asks for the symbols."""
+    pulls = sheet_review._of(data, "pull_direction")
+    zones = sheet_review._of(data, "mould_zone")
+    parting = sheet_review._of(data, "parting_line")
+    return {
+        "mould_items": len(parting) + len(pulls) + len(zones) + len(sheet_review._of(data, "no_draft")),
+        "mould_parting_on_sheet": len(parting),
+        "mould_pull_on_sheet": len(pulls),
+        "mould_draft_on_sheet": sum(1 for p in pulls if p.get("draft_deg") is not None),
+        "mould_gate_on_sheet": sum(1 for z in zones if z.get("kind") == "gate"),
+        "mould_ejector_on_sheet": sum(1 for z in zones if z.get("kind") == "ejector"),
+    }
+
+
 def facts(data: Any) -> dict[str, int]:
     """The counts of ``FACT_NAMES`` for the sheet ``data`` (a ``sheet_review.ReviewInput``)."""
     ctx = data.ctx
@@ -252,6 +274,7 @@ def facts(data: Any) -> dict[str, int]:
         "weld_marked_on_sheet": len(sheet_review._of(data, "weld"))
         + (1 if WELD_NOTE.search("\n".join(notes)) and not (ctx.weldment is not None and sheet_weldreview.joints_of(ctx)) else 0),
         "weld_class_on_sheet": 1 if WELD_CLASS.search(printed) else 0,
+        **_mould(data),
         "keyways": (part.keyways if part is not None else 0)
         or sum(1 for f in data.features if KEYWAY.search(f"{f.id} {f.label}")),  # by geometry, else by name
         "keyways_measured": part.keyways if part is not None else 0,

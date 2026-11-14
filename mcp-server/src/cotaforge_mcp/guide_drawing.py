@@ -105,7 +105,7 @@ COMPOSE_LINES = (
     "of the types that exist, WITHOUT placement and without ids: datums [{letter, face}] | relations [dim | datum_dims "
     "items: from where the positions and sizes are counted; a datum_dims takes the place of the default location, so the "
     "holes are never dimensioned twice] | fits [hole_dim | dim with fit=] | tol [dim | hole_dim with tol=] | gdt [gdt "
-    "items] | finish [finish items] | sections [section | detail | aux_view] | welds [weld items] | notes [text | note] | "
+    "items] | finish [finish items] | sections [section | detail | aux_view] | welds [weld items] | mould [parting_line | pull_direction | mould_zone | no_draft: a moulded part, drawing:mould] | notes [text | note] | "
     "a WELDED PART also: bodies [{component, name}: the designation of each body of the cut list] | positions [dim items: "
     "where the bodies stand on the plate, the plan measures them and proposes the dimensions; [] when a jig fixes them] | welding {process, "
     "quality: B|C|D (ISO 5817), tolerance: A|B|C|D (ISO 13920): the weld note and the title block come from it} | "
@@ -429,6 +429,20 @@ WELD_LINE = (
     "welded sheet needs a parts list and a balloon per body (weld_list_missing, item_without_balloon, balloon_not_in_list)."
 )
 
+MOULD_LINE = (
+    "A MOULDED PART (the intent file says injection: req.moulded_part, ISO 10135) carries its indications as SYMBOLS, not as notes of "
+    "text. The text of the standard is not in the library: no clause is quoted and the symbol shapes are the harness's reading of it. "
+    "parting_line: the line where the mould halves meet, in its own line type (thick, long dash and two short ones); pull?, level_mm? "
+    "-- omitted, the model gives them (the part is shallowest along the pull, towards its open side; the plane is where the outline "
+    "of the section is widest, on the planar face there), and the harness adds this item itself. pull_direction: the opening "
+    "direction as an arrow and the general draft with its symbol (a wedge) and value: pull?, draft_deg (a decision: ask the designer; "
+    "the harness never guesses it), view?, side?, offset_mm?. mould_zone: a permitted zone, hatched, with its symbol (circle G for "
+    "kind=gate, square E for kind=ejector): at (a model point or a list of them), radius_mm?, normal? (x|y|z, default the pull), "
+    "view?: the gate and the ejector zones are the designer's decision. no_draft: an exception to the general draft, a leader with "
+    "0 deg (kind=no_draft) or R0 (kind=sharp_edge): at, view?, side?, offset_mm?. The row req.moulded_part is closed when the sheet "
+    "carries the parting line, the pull direction with its draft value, a gate zone and ejector zones."
+)
+
 BASELINE_LINE = (
     "baseline_dims: from=\"face:N\" (required), view?, side?. The length of every step of a turned part counted from ONE datum "
     "face, as parallel dimensions (ISO 129-1), made into dim items <id>1, <id>2... The datum is never chosen for the engineer: it is "
@@ -532,6 +546,7 @@ VIEWS_LINE = (
 TOPIC_ITEMS = "drawing:items"
 TOPIC_DIMS = "drawing:dims"
 TOPIC_MARKS = "drawing:marks"
+TOPIC_MOULD = "drawing:mould"
 TOPIC_VIEWS = "drawing:views"
 TOPIC_ASSEMBLY = "drawing:assembly"
 TOPIC_OUTPUT = "drawing:output"
@@ -551,6 +566,7 @@ SUBTOPICS = (
     TOPIC_ITEMS,
     TOPIC_DIMS,
     TOPIC_MARKS,
+    TOPIC_MOULD,
     TOPIC_VIEWS,
     TOPIC_ASSEMBLY,
     TOPIC_OUTPUT,
@@ -560,7 +576,7 @@ SUBTOPICS = (
 INDEX_LINE = (
     "MORE (split; each reply is read whole): cad_guide(topic=drawing:items) holes, "
     "dimensions, position dimensions, tolerances | drawing:dims baseline lengths, keyway section | drawing:marks datums, GD&T frames, finish, notes, hidden / centre "
-    "lines | drawing:views section, detail, auxiliary view, review | drawing:assembly parts list, balloons, exploded | "
+    "lines | drawing:mould moulded parts | drawing:views section, detail, auxiliary view, review | drawing:assembly parts list, balloons, exploded | "
     "drawing:output export(action=pdf|dxf), layers, line weights, projection=hlr | "
     "drawing:quality quality floor: hole location, callouts, dowels, notes, title block, one view | "
     "drawing:done WHEN A DRAWING MAY BE EXPORTED: requirements, who reviews it, answer, approve. Look at the "
@@ -582,6 +598,7 @@ def drawing_text(tools: Collection[str], part: str = "", flow: str = "steps") ->
             TOPIC_ITEMS: [ITEM_INTRO[0], *ITEM_LINES[0:4]],
             TOPIC_DIMS: [BASELINE_LINE, KEYWAY_LINE],
             TOPIC_MARKS: [*ITEM_LINES[4:9], WELD_LINE],
+            TOPIC_MOULD: [MOULD_LINE],
             TOPIC_VIEWS: [*ITEM_LINES[9:12], ITEM_LINES[13], PATTERN_LINE],
             TOPIC_ASSEMBLY: [ITEM_LINES[12]],
             TOPIC_OUTPUT: [SHEET_RULES[2], PROJECTION_LINE, VIEW_LINE, LAYOUT_LINE],

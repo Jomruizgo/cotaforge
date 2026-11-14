@@ -11,7 +11,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 from cotaforge.contract.geometry import Vec3
-from cotaforge.contract.handles import BodyHandle, FaceHandle
+from cotaforge.contract.handles import BodyHandle, EdgeHandle, FaceHandle
 from cotaforge.contract.requests import Request
 
 __all__ = [
@@ -20,6 +20,14 @@ __all__ = [
     "DRAFT_ZERO_DEG",
     "DraftAnalysisRequest",
     "DraftAnalysisResult",
+    "MouldSplitRequest",
+    "PartingAnalysisRequest",
+    "PartingAnalysisResult",
+    "PartingLoop",
+    "SlideProposal",
+    "WallsToDecide",
+    "ZeroDraftSide",
+    "proposed_block_margin",
     "DraftStatus",
     "FaceDraft",
     "classify_draft",
@@ -97,3 +105,126 @@ class DraftAnalysisResult(BaseModel, frozen=True):
     shadow_tested: bool = True
     painted: bool = False
     warnings: tuple[str, ...] = ()
+
+
+ZeroDraftSide = Literal["core", "cavity"]
+"""The mould half that forms a wall with no draft that touches both halves. The CORE is the moving half: it opens along
+``pull``, and forms the faces that look along it; the CAVITY is the fixed half on the other side."""
+
+BLOCK_MARGIN_RULE = (
+    "no block given: the part's box grown by the larger of 25 mm and a fifth of its longest side on every side. A "
+    "first-pass rule of thumb for a steel insert, not a standard: the mould base and the press size it for real"
+)
+
+
+class PartingAnalysisRequest(Request):
+    """READ-ONLY: the parting line of ``body`` (``None`` = the only live body) against the pull ``pull`` (the direction
+    the core opens along: the faces that look along it are the core's, the ones that look against it the cavity's).
+    ``zero_draft_to`` decides the walls with no draft that touch both halves (the outer wall of a shell: the rim on one
+    end, the bottom on the other); without it they are reported and the loops are computed under the proposal."""
+
+    body: BodyHandle | None = None
+    pull: Vec3
+    min_draft_deg: float = Field(default=DEFAULT_MIN_DRAFT_DEG, ge=0.0, le=45.0)
+    zero_draft_to: ZeroDraftSide | None = None
+
+    @field_validator("pull")
+    @classmethod
+    def _pull_not_zero(cls, value: Vec3) -> Vec3:
+        if sum(c * c for c in value) < 1e-12:
+            msg = "pull must be a non-zero vector"
+            raise ValueError(msg)
+        return value
+
+
+class PartingLoop(BaseModel, frozen=True):
+    """One loop of the parting line: the edges between a core face and a cavity face, chained. ``role`` is ``outer`` for
+    the loop that encloses the most area across the pull (the parting surface runs from it out to the insert block) and
+    ``inner`` for any other (an opening through the part: a shut-off closes it). ``planar`` is whether the loop lies in
+    one plane; ``levels_mm`` the distinct heights along the pull it runs at (more than one = the line steps)."""
+
+    number: int = Field(ge=1)
+    role: Literal["outer", "inner"]
+    closed: bool
+    length_mm: float
+    planar: bool
+    levels_mm: tuple[float, ...] = ()
+    edges: tuple[EdgeHandle, ...] = ()
+
+
+class WallsToDecide(BaseModel, frozen=True):
+    """A connected group of walls with no draft that touch BOTH halves: the engineer says which half forms them.
+    ``touches`` are the sides of the leaning faces next to the group."""
+
+    faces: tuple[FaceHandle, ...]
+    touches: tuple[str, ...] = ()
+
+
+class SlideProposal(BaseModel, frozen=True):
+    """One undercut region (a connected group of faces the pull cannot release) and the slide that would form it:
+    ``direction`` is a direction along which a ray from every sample point of the region meets nothing of the part (the
+    sense pointing away from the part when both are free), ``None`` when no candidate direction frees it, and ``why``
+    where the direction came from. ``accepted`` is whether the split made it."""
+
+    region: int = Field(ge=1)
+    faces: tuple[FaceHandle, ...]
+    area_mm2: float
+    direction: Vec3 | None = None
+    why: str = ""
+    accepted: bool = False
+
+
+class PartingAnalysisResult(BaseModel, frozen=True):
+    """The parting line and what the split needs decided. ``provisional`` is true when ``loops`` were computed under the
+    proposal ``zero_draft_proposal`` because walls were left undecided. ``complete`` is false when the silhouette runs
+    across faces (``straddle``): the line is then missing the part that crosses them, and no split is possible."""
+
+    loops: tuple[PartingLoop, ...] = ()
+    ambiguous: tuple[WallsToDecide, ...] = ()
+    zero_draft_proposal: ZeroDraftSide | None = None
+    provisional: bool = False
+    straddle: tuple[FaceHandle, ...] = ()
+    slides: tuple[SlideProposal, ...] = ()
+    complete: bool = True
+    method: str = ""
+    warnings: tuple[str, ...] = ()
+
+
+class MouldSplitRequest(Request):
+    """Cut the negative of ``source`` (the shrunk part) out of an insert block and split it
+    along the parting surface into
+    two NEW bodies, the ``cavity`` (fixed half) and the ``core`` (moving half, opens along ``pull``), plus one body per
+    accepted slide. ``source`` is untouched. The block is ``block_size`` (x, y, z in the document's axes, centred on the
+    part) or, without it, the part's box grown by ``margin_mm`` (default ``BLOCK_MARGIN_RULE``). ``slides`` are the
+    undercut regions to form with a slide (``"all"`` or their numbers, as ``PartingAnalysisResult`` lists them); a part
+    with an undercut that no slide forms is refused (it would be trapped). ``zero_draft_to`` is required when walls with
+    no draft touch both halves."""
+
+    source: BodyHandle
+    pull: Vec3
+    block_size: Vec3 | None = None
+    margin_mm: float | None = Field(default=None, gt=0.0)
+    zero_draft_to: ZeroDraftSide | None = None
+    slides: Literal["none", "all"] | tuple[int, ...] = "none"
+    min_draft_deg: float = Field(default=DEFAULT_MIN_DRAFT_DEG, ge=0.0, le=45.0)
+
+    @field_validator("pull")
+    @classmethod
+    def _pull_not_zero(cls, value: Vec3) -> Vec3:
+        if sum(c * c for c in value) < 1e-12:
+            msg = "pull must be a non-zero vector"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("block_size")
+    @classmethod
+    def _block_positive(cls, value: Vec3 | None) -> Vec3 | None:
+        if value is not None and not all(c > 0.0 for c in value):
+            msg = "block_size must be above 0 on every axis"
+            raise ValueError(msg)
+        return value
+
+
+def proposed_block_margin(extent_mm: float) -> float:
+    """The margin ``BLOCK_MARGIN_RULE`` proposes on every side of a part whose longest side is ``extent_mm``."""
+    return max(25.0, 0.2 * extent_mm)

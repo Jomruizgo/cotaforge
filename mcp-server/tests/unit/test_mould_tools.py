@@ -4,7 +4,17 @@ from typing import Any
 
 import pytest
 from cotaforge.adapters.fake import FakeAdapter
-from cotaforge.contract import BodyHandle, DraftAnalysisResult, FaceDraft, FaceHandle
+from cotaforge.contract import (
+    BodyHandle,
+    DraftAnalysisResult,
+    EdgeHandle,
+    FaceDraft,
+    FaceHandle,
+    PartingAnalysisResult,
+    PartingLoop,
+    SlideProposal,
+    WallsToDecide,
+)
 
 from cotaforge_mcp.schemas import TOOLS_BY_NAME
 from tests.conftest import Caller, MakeSession, fake_without
@@ -200,3 +210,137 @@ def test_editing_the_part_moves_the_cavity_with_it(call: Caller) -> None:
 @pytest.mark.parametrize("name", ["shrink_body"])
 def test_the_op_name_is_in_the_catalog(call: Caller, name: str) -> None:
     assert name in call.ok("cad_guide", topic="ops")
+
+
+# --- parting ---------------------------------------------------------------------------------------------------------
+
+
+class CannedParting(FakeAdapter):
+    """The fake whose parting analysis answers a fixed result (a real CAD finds the loops, walls and undercuts)."""
+
+    def __init__(self, result: PartingAnalysisResult) -> None:
+        super().__init__()
+        self.result = result
+        self.asked: list[Any] = []
+
+    def parting_analysis(self, request: Any) -> PartingAnalysisResult:
+        self.asked.append(request)
+        return self.result
+
+
+def _loop(number: int, role: str, closed: bool = True, planar: bool = True, levels: tuple[float, ...] = (45.0,)) -> Any:
+    return PartingLoop(
+        number=number,
+        role=role,
+        closed=closed,
+        length_mm=386.3,
+        planar=planar,
+        levels_mm=levels,
+        edges=tuple(EdgeHandle(id=f"edge:{i}") for i in range(8)),
+    )
+
+
+def _parting(make: MakeSession, result: PartingAnalysisResult) -> tuple[CannedParting, Caller]:
+    adapter = CannedParting(result)
+    call = Caller(make(adapter))
+    call.ok("doc", action="new", name="p")
+    call.ok("op", name="box", id="b", params={"size": [40, 30, 10]})
+    return adapter, call
+
+
+def test_the_parting_action_exists_only_with_a_cad_that_finds_it(make: MakeSession) -> None:
+    assert "parting" in TOOLS_BY_NAME["inspect"].actions(make(FakeAdapter()))
+    assert "parting" not in TOOLS_BY_NAME["inspect"].actions(make(fake_without("parting_analysis")))
+
+
+def test_parting_needs_the_pull_and_says_which_half_it_opens(make: MakeSession) -> None:
+    _, call = _parting(make, PartingAnalysisResult())
+    reply = call("inspect", action="parting")
+    assert reply.is_error and "pull" in reply.text and "core" in reply.text
+
+
+def test_a_clean_part_lists_its_loops_and_the_block_rule(make: MakeSession) -> None:
+    adapter, call = _parting(
+        make, PartingAnalysisResult(loops=(_loop(1, "outer"), _loop(2, "inner", levels=(0.0,))), method="m")
+    )
+    text = call.ok("inspect", action="parting", pull=[0, 0, 1], id="cavity")
+    lines = text.splitlines()
+    assert (
+        lines[0] == "parting against the pull (0, 0, 1): 2 loop(s), 0 group(s) of walls to decide, 0 undercut region(s)"
+    )
+    assert "loop 1 (outer): 8 edges, 386.3 mm, planar, at 45 mm along the pull" in text
+    assert "loop 2 (inner): 8 edges, 386.3 mm, planar, at 0 mm along the pull" in text
+    assert "not a standard" in text and "25 mm" in text
+    assert adapter.asked[0].zero_draft_to == "cavity" and adapter.asked[0].pull == (0, 0, 1)
+
+
+def test_a_line_that_steps_says_across_how_many_heights(make: MakeSession) -> None:
+    _, call = _parting(make, PartingAnalysisResult(loops=(_loop(1, "outer", planar=False, levels=(24.0, 30.0)),)))
+    assert "not planar, steps across heights 24, 30 mm" in call.ok("inspect", action="parting", pull=[0, 0, 1])
+
+
+def test_walls_to_decide_are_asked_and_the_loops_are_marked_provisional(make: MakeSession) -> None:
+    walls = WallsToDecide(faces=tuple(FaceHandle(id=f"face:{n}") for n in range(1, 5)), touches=("cavity", "core"))
+    result = PartingAnalysisResult(
+        loops=(_loop(1, "outer"),), ambiguous=(walls,), zero_draft_proposal="cavity", provisional=True
+    )
+    _, call = _parting(make, result)
+    text = call.ok("inspect", action="parting", pull=[0, 0, 1])
+    assert "DECIDE: 4 wall(s) with no draft touch both halves (cavity, core): face:1, face:2, face:3, face:4" in text
+    assert "zero_draft_to=core or cavity" in text
+    assert "computed under the proposal zero_draft_to=cavity" in text and "the engineer decides" in text
+
+
+def test_an_undercut_region_names_the_slide_it_needs_and_how_to_accept_it(make: MakeSession) -> None:
+    slide = SlideProposal(
+        region=1,
+        faces=(FaceHandle(id="face:7"),),
+        area_mm2=531.4,
+        direction=(1.0, 0.0, 0.0),
+        why="axis of its cylinder face:7",
+    )
+    _, call = _parting(make, PartingAnalysisResult(loops=(_loop(1, "outer"),), slides=(slide,)))
+    text = call.ok("inspect", action="parting", pull=[0, 0, 1])
+    assert "undercut region 1: 1 face(s)" in text and "needs a SLIDE along (1, 0, 0)" in text
+    assert "slides=[1] or all" in text
+
+
+def test_an_undercut_nothing_frees_gets_no_slide_and_the_reason(make: MakeSession) -> None:
+    slide = SlideProposal(region=1, faces=(FaceHandle(id="face:9"),), area_mm2=12.0, direction=None)
+    _, call = _parting(make, PartingAnalysisResult(loops=(_loop(1, "outer"),), slides=(slide,)))
+    assert "no direction frees it, so no slide can be proposed" in call.ok("inspect", action="parting", pull=[0, 0, 1])
+
+
+def test_faces_the_silhouette_crosses_are_a_declared_limit_not_a_silent_gap(make: MakeSession) -> None:
+    result = PartingAnalysisResult(loops=(_loop(1, "outer"),), straddle=(FaceHandle(id="face:3"),), complete=False)
+    _, call = _parting(make, result)
+    text = call.ok("inspect", action="parting", pull=[0, 0, 1])
+    assert "INCOMPLETE" in text.splitlines()[0]
+    assert "LIMIT: the silhouette runs across face:3" in text and "cannot split a face along its silhouette" in text
+
+
+def test_a_loop_that_does_not_close_is_said(make: MakeSession) -> None:
+    _, call = _parting(make, PartingAnalysisResult(loops=(_loop(1, "outer", closed=False),)))
+    assert "(NOT closed)" in call.ok("inspect", action="parting", pull=[0, 0, 1])
+
+
+def test_a_zero_pull_is_refused_for_the_parting_too(call: Caller) -> None:
+    call.ok("doc", action="new", name="p")
+    call.ok("op", name="box", id="b", params={"size": [40, 30, 10]})
+    assert call("inspect", action="parting", pull=[0, 0, 0]).is_error
+
+
+def test_the_real_fake_asks_about_the_walls_of_a_box(call: Caller) -> None:
+    call.ok("doc", action="new", name="p")
+    call.ok("op", name="box", id="b", params={"size": [40, 30, 10]})
+    text = call.ok("inspect", action="parting", pull=[0, 0, 1])
+    assert (
+        text.splitlines()[0]
+        == "parting against the pull (0, 0, 1): 1 loop(s), 1 group(s) of walls to decide, 0 undercut region(s)"
+    )
+    assert "DECIDE: 4 wall(s) with no draft touch both halves" in text
+
+
+def test_the_split_op_has_its_reference_in_the_guide(call: Caller) -> None:
+    text = call.ok("cad_guide", topic="op:mould_split")
+    assert "zero_draft_to" in text and "slides" in text

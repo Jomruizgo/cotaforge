@@ -87,9 +87,10 @@ class InspectArgs(Strict):
         "holes",
         "validity",
         "draft",
+        "parting",
     ]
     id: str | None = Field(
-        default=None, description="face/edge id (face, edge); joint step (sweep); CAD feature (tree)"
+        default=None, description="face/edge id (face, edge); joint step (sweep); CAD feature (tree); core|cavity (parting)"
     )
     range: list[float] | None = Field(default=None, min_length=3, max_length=3, description="sweep: [from, to, step]")
     op: str | None = Field(default=None, description="faces: only faces made/changed by this step")
@@ -380,6 +381,8 @@ def _inspect_actions(session: "Session") -> list[str]:
         actions.append("holes")
     if "draft_analysis" in t:
         actions.append("draft")
+    if "parting_analysis" in t:
+        actions.append("parting")
     return actions
 
 

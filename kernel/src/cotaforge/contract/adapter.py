@@ -60,7 +60,13 @@ from cotaforge.contract.importing import (
     ListHolesRequest,
     ListHolesResult,
 )
-from cotaforge.contract.mould import DraftAnalysisRequest, DraftAnalysisResult
+from cotaforge.contract.mould import (
+    DraftAnalysisRequest,
+    DraftAnalysisResult,
+    MouldSplitRequest,
+    PartingAnalysisRequest,
+    PartingAnalysisResult,
+)
 from cotaforge.contract.native import RunNativeRequest, RunNativeResult
 from cotaforge.contract.probe import ToolOverlapRequest, ToolOverlapResult
 from cotaforge.contract.requests import (
@@ -526,6 +532,21 @@ class Adapter(ABC):
             )
         )
 
+    @tool("mould_split", Group.CONSTRUCTION, optional=True)
+    def mould_split(self, request: MouldSplitRequest) -> OperationResult:
+        """Cut the negative of a (shrunk) part out of an insert block and split it along the parting surface into two NEW
+        solids, the cavity and the core, plus one new body per accepted slide. The source is untouched. The result
+        carries the new bodies in ``created_bodies`` (cavity, core, then the slides in the order of their regions) and
+        the parting line, the method and the checks in ``text``. Adapters that cannot build a parting surface cannot
+        say so."""
+        raise AdapterError(
+            ErrorInfo(
+                code=ErrorCode.not_supported,
+                message="mould_split: this adapter cannot split a block along a parting surface into core and cavity",
+                recoverable=False,
+            )
+        )
+
     @tool("sweep", Group.CONSTRUCTION, optional=True)
     def sweep(self, request: SweepRequest) -> OperationResult:
         """Move the single closed profile of a sketch along a polyline path (the IR ``sweep``): the volume added is
@@ -916,6 +937,19 @@ class Adapter(ABC):
             ErrorInfo(
                 code=ErrorCode.not_supported,
                 message="draft_analysis: this adapter cannot measure the draft of the faces of a body",
+                recoverable=False,
+            )
+        )
+
+    @tool("parting_analysis", Group.QUERY, optional=True)
+    def parting_analysis(self, request: PartingAnalysisRequest) -> PartingAnalysisResult:
+        """READ-ONLY: the parting line of a moulded part against a pull direction (the edge loops between the faces the
+        core forms and the ones the cavity forms), the walls with no draft that need the engineer's decision, the faces
+        the silhouette runs across, and one slide proposal per undercut region. Adapters that cannot say so."""
+        raise AdapterError(
+            ErrorInfo(
+                code=ErrorCode.not_supported,
+                message="parting_analysis: this adapter cannot find the parting line of a body",
                 recoverable=False,
             )
         )

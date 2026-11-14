@@ -21,6 +21,7 @@ import items_finish
 import items_gdt
 import items_holes
 import items_lines
+import items_mould
 import items_notes
 import items_pattern
 import items_views
@@ -45,6 +46,7 @@ MODULES = (
     items_explode,
     items_lines,
     items_weld,
+    items_mould,
     items_pattern,
 )
 

@@ -49,6 +49,7 @@ def test_capabilities_are_the_required_tools_plus_the_optional_ones_it_implement
         "copy_body",
         "shrink_body",
         "draft_analysis",
+        "parting_analysis",
         "base_flange",
         "edge_flange",
         "unfold",

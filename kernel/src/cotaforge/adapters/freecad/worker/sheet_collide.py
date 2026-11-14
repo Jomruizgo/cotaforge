@@ -30,7 +30,9 @@ from sheet_model import (
     DIMENSIONS,
     HATCH,
     HIDDEN,
+    PARTING,
     TITLE_BLOCK,
+    ZONE,
     Arc,
     Circle,
     Entity,
@@ -56,8 +58,8 @@ LINE_END_TOL_MM = (
 MIN_RUN_MM = 1.5
 VIEW_LAYERS = frozenset({CONTOUR, HIDDEN})
 IGNORED_LAYERS = frozenset(
-    {AXES, HATCH, TITLE_BLOCK}
-)  # centre lines go under everything; the title block is the frame's
+    {AXES, HATCH, TITLE_BLOCK, PARTING, ZONE}
+)  # centre lines go under everything; the title block is the frame's; the parting line and the zones lie on the part
 
 
 @dataclass(frozen=True)

@@ -747,7 +747,8 @@ def run(session: Session, args: InspectArgs) -> tuple[list[str], int]:
         "holes": lambda: holes(session, args),
         "validity": lambda: validity(session),
         "draft": lambda: mould_tools.draft(session, args),
+        "parting": lambda: mould_tools.parting(session, args),
     }
-    limit = LIST_LIMIT if args.action in ("tree", "faces", "edges", "bom", "sweep", "holes", "draft") else 1500
+    limit = LIST_LIMIT if args.action in ("tree", "faces", "edges", "bom", "sweep", "holes", "draft", "parting") else 1500
     with session.lock:
         return handlers[args.action](), limit

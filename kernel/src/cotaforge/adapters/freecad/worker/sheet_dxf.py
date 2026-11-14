@@ -121,7 +121,7 @@ def _tables(w: _Writer, layers: dict[str, LayerStyle]) -> None:
     w.put(0, "TABLE")
     w.put(2, "LTYPE")
     w.put(70, len(LINETYPES))
-    descriptions = {"CONTINUOUS": "Solid line", "HIDDEN": "Hidden __ __ __", "CENTER": "Center ____ _ ____ _"}
+    descriptions = {"CONTINUOUS": "Solid line", "HIDDEN": "Hidden __ __ __", "CENTER": "Center ____ _ ____ _", "PHANTOM": "Phantom ____ _ _ ____ _ _"}
     for name, pattern in LINETYPES.items():
         _ltype(w, name, descriptions[name], pattern)
     w.put(0, "ENDTAB")

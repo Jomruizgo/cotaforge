@@ -153,6 +153,17 @@ TERMS: tuple[Term, ...] = (
         "inspect draft",
         "pull [x, y, z], min_draft_deg, paint: the draft of every face and the faces that cannot be released",
     ),
+    Term(
+        ("superficie de partición", "postizo", "macho y cavidad", "core and cavity"),
+        "op mould_split",
+        "source (shrunk part), pull, block_size_mm or margin_mm, zero_draft_to, slides; see inspect parting",
+        "mould_split",
+    ),
+    Term(
+        ("línea de partición", "parting line", "parting analysis"),
+        "inspect parting",
+        "pull [x, y, z], id (core|cavity for walls with no draft): the parting loops, the walls to decide, the slides",
+    ),
     Term(("dividir", "split", "partir"), "op split", "source body, plane, keep both|positive|negative", "split"),
     Term(
         ("copiar cuerpo", "move/copy bodies", "mover/copiar cuerpos"),
