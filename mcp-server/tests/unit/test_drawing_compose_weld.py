@@ -3,10 +3,12 @@
 weld of each group of joints (with the measured proposal), ``compose`` draws the cut list, the balloons, the weld symbols and a
 weld note that comes from the decisions; a bigger paper keeps the scale instead of growing it."""
 
+import json
+import re
 from typing import Any
 
 import pytest
-from cotaforge.contract import DrawingWeldBody, DrawingWeldJoint, DrawingWeldPlan
+from cotaforge.contract import DrawingWeldBody, DrawingWeldJoint, DrawingWeldMember, DrawingWeldPlacement, DrawingWeldPlan
 from cotaforge_mcp import drawing_compose, drawing_weld_questions
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.reply import ToolError
@@ -241,3 +243,71 @@ def test_a_crowded_weldment_raises_the_paper_at_the_same_scale(settings: Setting
     fake.create_drawing = create  # type: ignore[method-assign]
     text = composed(call, {**FRAME, "answers": na_all(call)})
     assert "paper raised from A4 to A3" in text and fake.created[-1].scale == 0.5
+
+
+# --- where the members stand on the plate -------------------------------------------------------------------------------------------
+
+
+def box(y: float, z: float, size: float = 40.0) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    return ((0.0, y, z), (400.0, y + size, z + size))
+
+
+PLACEMENT = DrawingWeldPlacement(
+    base="body:5",
+    base_box=((-6.0, 0.0, 0.0), (0.0, 340.0, 340.0)),
+    members=tuple(DrawingWeldMember(id=f"body:{n}", box=box(y, z)) for n, (y, z) in enumerate(((0, 0), (300, 0), (0, 300), (300, 300)), start=1)),
+)
+
+
+def located(settings: Settings, placement: DrawingWeldPlacement = PLACEMENT) -> tuple[Caller, DrawingFake]:
+    call, fake = frame_session(settings, DrawingWeldPlan(bodies=BODIES, joints=JOINTS, placement=placement))
+    fake.sheet_views = ("front", "right", "isometric")
+    return call, fake
+
+
+def test_plan_asks_where_the_members_stand_on_the_plate_with_the_measured_dimensions(settings: Settings) -> None:
+    call, _ = located(settings)
+    (line,) = [ln for ln in asked(call).splitlines() if "[positions]" in ln]
+    assert "Medido (mm): y: a ras de los dos bordes; entre ellos 260 | z: a ras de los dos bordes; entre ellos 260" in line
+    proposal = json.loads(re.search(r"positions: (\[\{.*\}\])", line).group(1))  # type: ignore[union-attr]
+    assert [(d["along"], d["view"]) for d in proposal] == [("y", "right"), ("z", "right")]  # the view that looks along the thin axis
+    assert proposal[0]["from"] == {"at": [0.0, 40.0, 0.0]} and proposal[0]["to"] == {"at": [0.0, 300.0, 0.0]}  # on the face the tubes stand on
+    assert "positions: []" in line  # the way out: a jig fixes them
+
+
+def test_a_member_set_in_from_the_edge_is_dimensioned_to_the_edge_as_well() -> None:
+    placement = DrawingWeldPlacement(
+        base="body:5",
+        base_box=((-6.0, 0.0, 0.0), (0.0, 340.0, 340.0)),
+        members=(DrawingWeldMember(id="body:1", box=box(50.0, 20.0)), DrawingWeldMember(id="body:2", box=box(250.0, 20.0))),
+    )
+    found = drawing_weld_questions.position_dims(placement, ("right",))
+    assert found is not None
+    dims, facts = found
+    along_y = [(d["from"]["at"][1], d["to"]["at"][1]) for d in dims if d["along"] == "y"]
+    assert along_y == [(0.0, 50.0), (90.0, 250.0), (290.0, 340.0)]  # edge, between, edge
+    assert [(d["from"]["at"][2], d["to"]["at"][2]) for d in dims if d["along"] == "z"] == [(0.0, 20.0), (60.0, 340.0)]
+    assert facts[0][0] == "y" and facts[0][1] == [False, False]
+
+
+def test_nothing_is_asked_when_the_view_that_shows_the_plate_is_not_on_the_sheet(settings: Settings) -> None:
+    assert drawing_weld_questions.position_dims(PLACEMENT, ("front", "isometric")) is None
+    asks = drawing_weld_questions.ask(DrawingWeldPlan(bodies=BODIES, joints=JOINTS, placement=PLACEMENT), "es", views=("front",))
+    assert not [a for a in asks if a.keys == ("positions",)]
+
+
+def test_compose_refuses_a_weldment_whose_members_are_not_located_and_draws_the_dimensions_it_is_given(settings: Settings) -> None:
+    call, fake = located(settings)
+    refused = call.err("drawing", action="compose", decisions={**FRAME, "answers": na_all(call)})
+    assert "[positions]" in refused and not fake.annotated
+    line = next(ln for ln in asked(call).splitlines() if "[positions]" in ln)
+    positions = json.loads(re.search(r"positions: (\[\{.*\}\])", line).group(1))  # type: ignore[union-attr]
+    composed(call, {**FRAME, "positions": positions, "answers": na_all(call)})
+    items = items_of(fake)
+    assert items["dc_positions1"]["type"] == "dim" and items["dc_positions2"]["along"] == "z"
+
+
+def test_an_engineer_who_says_no_dimension_is_needed_closes_the_question_with_an_empty_list(settings: Settings) -> None:
+    call, fake = located(settings)
+    composed(call, {**FRAME, "positions": [], "answers": na_all(call)})
+    assert not [k for k in items_of(fake) if k.startswith("dc_positions")]

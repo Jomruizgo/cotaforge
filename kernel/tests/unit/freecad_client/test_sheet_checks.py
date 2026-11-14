@@ -352,3 +352,12 @@ def test_the_questions_of_judgement_keep_only_what_no_memory_principle_asks_and_
 def test_the_review_still_finds_what_it_found_before() -> None:
     findings = run_review(views_context(), {"type": "overall"})
     assert len(found("hole_no_callout", findings)) == 4 and len(found("hole_not_located", findings)) == 4
+
+
+def test_a_note_that_states_the_material_while_the_title_block_has_none_says_to_fill_the_title_block() -> None:
+    note = {"type": "note", "text": "Material: AISI 1045, lámina rectificada."}
+    (finding,) = found("material_only_in_note", run_review(views_context([]), {"type": "overall"}, note))
+    assert finding.severity == "warning" and finding.items == ("n2",) and "AISI 1045" in finding.message and "rótulo" in finding.message
+    ctx = views_context([])
+    ctx.extras["fields"] = {"part_material": "AISI 1045"}
+    assert found("material_only_in_note", run_review(ctx, {"type": "overall"}, note)) == []  # the title block has it: no finding

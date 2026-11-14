@@ -451,11 +451,27 @@ class DrawingWeldJoint(BaseModel, frozen=True):
     welded: bool = False
 
 
+class DrawingWeldMember(BaseModel, frozen=True):
+    """One body that stands on the plate of a welded part, with its box (low corner, high corner; mm, document axes)."""
+
+    id: str
+    box: tuple[tuple[float, float, float], tuple[float, float, float]]
+
+
+class DrawingWeldPlacement(BaseModel, frozen=True):
+    """Where the members stand on the one plate (``base``) of a welded part, measured: what the welder needs located."""
+
+    base: str
+    base_box: tuple[tuple[float, float, float], tuple[float, float, float]]
+    members: tuple[DrawingWeldMember, ...] = ()
+
+
 class DrawingWeldPlan(BaseModel, frozen=True):
     """What a welded part still asks of its designer: the bodies of the cut list and the groups of its joints."""
 
     bodies: tuple[DrawingWeldBody, ...] = ()
     joints: tuple[DrawingWeldJoint, ...] = ()
+    placement: DrawingWeldPlacement | None = None
 
 
 class DrawingSheetInfo(BaseModel, frozen=True):

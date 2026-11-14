@@ -183,7 +183,7 @@ def test_a_label_may_touch_a_plane_at_its_own_tip_first_and_then_slide_along_its
     plane = attach.Attach(view, (60.0, 30.0), (1.0, 0.0), "plane", trace=((60.0, 2.0), (60.0, 58.0)))
     tips = plane.tips()
     assert tips[0] == (60.0, 30.0) and len(tips) == len(attach.SLIDES)
-    assert {round(t[0], 6) for t in tips} == {60.0} and {round(t[1], 1) for t in tips[1:]} == {16.0, 44.0, 8.7, 51.3}
+    assert {round(t[0], 6) for t in tips} == {60.0} and {round(t[1], 1) for t in tips[1:]} == {16.0, 44.0, 8.7, 51.3, 5.4, 54.6, 23.3, 36.7}
     assert attach.Attach(view, (60.0, 30.0), (1.0, 0.0), "plane").tips() == [(60.0, 30.0)]  # no trace: one place
 
 

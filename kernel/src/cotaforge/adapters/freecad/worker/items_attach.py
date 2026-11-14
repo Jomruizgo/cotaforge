@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from items_common import VIEW_ORDER, why_not
+from sheet_collide import segments_of
 from sheet_context import Context, ItemError, Point, Vec3, ViewInfo, cross, dot, scale, sub, unit
 from sheet_model import Entity
 
@@ -27,7 +28,7 @@ CARDINAL: dict[str, tuple[float, float]] = {
 FIRST_DISTANCE_MM = 9.0  # the label's anchor is this far from the feature, then farther while the place is taken
 NUDGE_MM = 6.0
 TRIES = 12
-SLIDES = (0.5, 0.25, 0.75, 0.12, 0.88)  # fractions of the trace of a plane a label may touch
+SLIDES = (0.5, 0.25, 0.75, 0.12, 0.88, 0.06, 0.94, 0.38, 0.62)  # fractions of the trace of a plane a label may touch (the last ones clear the extension lines of a dimension along the whole edge)
 SLIDE_TRIES = 5  # distances tried at each place along the trace before the next one
 TRACE_MARGIN_MM = 2.0  # a label touches a plane at least this far from the end of its trace
 
@@ -249,7 +250,7 @@ def place_label(
     home = att.tip
     # a leader that crosses nothing first; then one that may cross the LINE of a dimension (never its text); a label
     # that slides along the plane it points at (``Attach.tips``) before it goes farther out
-    for crossing in (False, True) if not explicit else (False,):
+    for crossing, strict in ((False, True), (True, True), (False, False), (True, False)) if not explicit else ((False, False),):
         for direction, tip, step in _candidates(att, explicit):
             att.tip = tip
             distance = start + step * NUDGE_MM
@@ -260,7 +261,13 @@ def place_label(
                 first = (entities, rect)
             if fits and inside_first is None:
                 inside_first = (entities, rect)
-            if fits and ctx.free(rect) and clear_of_views(ctx, rect) and _leader_free(ctx, att, tip, anchor, crossing):
+            if (
+                fits
+                and ctx.free(rect)
+                and clear_of_views(ctx, rect)
+                and _leader_free(ctx, att, tip, anchor, crossing)
+                and not (strict and _on_dimension_lines(ctx, entities, rect))
+            ):
                 ctx.reserve(rect)
                 ctx.extras.setdefault("segments", []).append((tip, anchor))
                 return entities, True
@@ -316,6 +323,23 @@ def _segment_hits_rect(a: Point, b: Point, rect: Rect) -> bool:
 
 
 LEADER_CLEARANCE_MM = 1.5
+DIMENSION_LINE_CLEARANCE_MM = 0.6  # a label keeps this far from the extension and dimension lines already drawn
+
+
+def _on_dimension_lines(ctx: Context, entities: list[Entity], rect: Rect) -> bool:
+    """Whether a label (its entities and the rectangle it takes) touches a dimension or extension line already on the sheet:
+    a datum, a frame or a symbol does not stand on the lines of another item (ISO 129-1; the review flags it)."""
+    lines = ctx.extras.get("dimension_lines", [])
+    if not lines:
+        return False
+    mine = segments_of(entities)
+    for a in lines:
+        start, end = (a[0], a[1]), (a[2], a[3])
+        if _segment_hits_rect(start, end, rect):
+            return True
+        if any(_segment_distance(start, end, (b[0], b[1]), (b[2], b[3])) < DIMENSION_LINE_CLEARANCE_MM for b in mine):
+            return True
+    return False
 
 
 def _leader_free(ctx: Context, att: Attach, tip: Point, anchor: Point, crossing: bool = False) -> bool:

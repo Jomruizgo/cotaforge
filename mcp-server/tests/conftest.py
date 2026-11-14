@@ -85,6 +85,7 @@ class DrawingFake(FakeAdapter):
         self.layout_report: dict[str, Any] = {}  # what the next layout call reports (layout_placed...)
         self.layout_fails: str | None = None  # the next layout call fails with this message
         self.weldment: Any = None  # what a review of a welded part says of its bodies and joints (``DrawingWeldPlan``)
+        self.sheet_views: tuple[str, ...] = ()  # the views the described sheet says it has
 
     def _need_sheet(self, sheet: str | None) -> str:
         from cotaforge.contract import AdapterError, ErrorCode, ErrorInfo
@@ -297,6 +298,7 @@ class DrawingFake(FakeAdapter):
                     answers=answers(n),
                     facts=dict(self.facts) if request.review else {},
                     weldment=self.weldment if request.review else None,
+                    views=self.sheet_views,
                     approved_by=self.drawings[n].get("approved_by", ""),
                     edits=self.drawings[n]["edits"],
                     reports=reports(n),

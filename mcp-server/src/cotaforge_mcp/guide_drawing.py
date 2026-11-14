@@ -102,7 +102,8 @@ COMPOSE_LINES = (
     "items: from where the positions and sizes are counted; a datum_dims takes the place of the default location, so the "
     "holes are never dimensioned twice] | fits [hole_dim | dim with fit=] | tol [dim | hole_dim with tol=] | gdt [gdt "
     "items] | finish [finish items] | sections [section | detail | aux_view] | welds [weld items] | notes [text | note] | "
-    "a WELDED PART also: bodies [{component, name}: the designation of each body of the cut list] | welding {process, "
+    "a WELDED PART also: bodies [{component, name}: the designation of each body of the cut list] | positions [dim items: "
+    "where the bodies stand on the plate, the plan measures them and proposes the dimensions; [] when a jig fixes them] | welding {process, "
     "quality: B|C|D (ISO 5817), tolerance: A|B|C|D (ISO 13920): the weld note and the title block come from it} | "
     "sheet {template?, angle?, scale?, title?, title_block?, symmetry?...: only what the engineer fixed} | answers "
     '{"req.coating": "no aplica: why"} (a row that does not apply; a measured one only on his order, with by= and reason=).',
@@ -138,7 +139,7 @@ ITEM_LINES = (
     "hole_dim: the callout of holes with a leader on the view that shows them as circles. at=[x,y,z] (any point of the "
     'hole\'s axis, 0.05 mm; or a list of points) | face="face:N" (hole faces, inspect(action=holes) lists them) | '
     "all=true; view?, side? (where the callout goes), offset_mm?, centre_marks? (default true), dowel? (true: a "
-    "registration / dowel hole: ◎ leads the callout and a ring marks each hole). Equal holes share ONE "
+    "registration / dowel hole: the callout ends in 'registro' ('dowel' in English) and a ring marks each hole). Equal holes share ONE "
     'callout with the count ("4× Ø8 pasante", "Ø6 ↧ 10", "M6 ↧ 12"; ↧ is depth, ⌴ counterbore); a counterbore is two lines. The '
     "thread and its depth come from the hole op that made the hole; a hole made any other way (imported, patterned) "
     "is described by its geometry; only when its diameter is a tap drill (Ø5 for M6, Ø6,8 for M8...) the reply and "
@@ -388,7 +389,7 @@ QUALITY_LINES = (
     "CALLOUTS: equal holes share one callout (4× ...). Its leader is short, goes to the hole and the side that is "
     "clean, never crosses another leader, cuts the outline once, and its text lies outside the part, off the "
     "dimension lines; review says leader_crossing / leader_crosses_part when it cannot. Dowel or registration holes: "
-    "hole_dim fit=H7 dowel=true -> ◎ 4× Ø6 H7 (+0.012/0) through and a ring round each hole; review asks "
+    "hole_dim fit=H7 dowel=true -> 4× Ø6 H7 (+0.012/0) through, dowel, and a ring round each hole; review asks "
     "(dowel_unmarked: no hold) for a through hole of 25 mm or less with a hole fit of grade 8 or finer.",
     "NOTES: numbered in the NOTAS block, the thickness first ('Espesor 19': the sheet writes it when it has ONE "
     "standard view), yours in the order added. A note is for fabrication and general remarks, never for a geometric "
@@ -497,8 +498,11 @@ TOPIC_OUTPUT = "drawing:output"
 TOPIC_QUALITY = "drawing:quality"
 TOPIC_DONE = "drawing:done"
 LAYOUT_LINE = (
-    "A sheet built in one order (compose) has its dimensions and leaders placed by one global layout: it writes side and offset_mm "
-    "on a dim, and elbow_mm [dx, dy] (the vector from the tip of a leader to its elbow, page mm, y up) on a callout; "
+    "A sheet built in one order (compose) has its dimensions, leaders, datums, weld symbols and angles placed by one global layout: "
+    "it writes side and offset_mm on a dim (offset_mm is the arc radius of an angle) and on a datum, elbow_mm [dx, dy] (the vector from "
+    "the tip of a leader to its elbow, page mm, y up) on a callout, leader_mm [tip x, tip y, elbow x, elbow y] (page mm) on a hole_dim "
+    "and anchor_at [x, y] (page mm, the junction of the arrow lines and the reference line) on a weld, and tip_at [x, y] (page mm, where the triangle touches the face) on a datum; the overall and datum_dims "
+    "items, notes, frames and balloons stand where their own drawer put them and the layout plans around them; "
     "what it cannot place it lists as layout_unplaced. thread_dims (no fields): the callout of every external thread, as "
     "dim items kind=diameter (the harness adds it itself: rq_threads)."
 )

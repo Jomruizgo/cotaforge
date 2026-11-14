@@ -141,7 +141,13 @@ def draw_items(ctx: Context, items: list[dict[str, Any]]) -> list[ItemResult]:
         # an item on a section view is drawn after the sections: the view exists once its section item has been drawn
         return max(own, PHASE_ON_SECTION) if isinstance(view, str) and SECTION_LABEL.match(view) else own
 
-    for position in sorted(range(len(items)), key=lambda i: (phase(i), i)):
+    def outermost(position: int) -> int:
+        """The overall size is drawn after the other dimensions of its phase: the lines stack outward in the order they are
+        drawn and the overall one stands outside the smaller ones (ISO 129-1), so the extension lines of the dimensions
+        inside it never cross its line."""
+        return 1 if items[position].get("type") == "overall" else 0
+
+    for position in sorted(range(len(items)), key=lambda i: (phase(i), outermost(i), i)):
         spec = items[position]
         kind = spec.get("type", "?")
         item_id = str(spec.get("id", "?"))

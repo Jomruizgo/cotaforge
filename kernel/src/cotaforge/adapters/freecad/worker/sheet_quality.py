@@ -299,9 +299,9 @@ def _dowels(data: ReviewInput) -> list[Finding]:
         if stacks and all(items_holes.looks_like_dowel(spec, s) for s in stacks):
             text = ctx.say(
                 f"{spec['id']}: agujeros pasantes con ajuste {spec['fit']}. Si son de pasador o de registro, márcalos con "
-                "dowel=true (la llamada lleva ◎ y cada agujero un anillo); si no, ignóralo.",
+                "dowel=true (la llamada termina en «registro» y cada agujero lleva un anillo); si no, ignóralo.",
                 f"{spec['id']}: through holes with fit {spec['fit']}. If they are dowel or registration holes, mark them "
-                "with dowel=true (the callout gets ◎ and each hole a ring); if not, ignore this.",
+                "with dowel=true (the callout ends in 'dowel' and each hole gets a ring); if not, ignore this.",
             )
             out.append(Finding("dowel_unmarked", "info", text, (str(spec["id"]),), key=str(spec["id"])))
     return out

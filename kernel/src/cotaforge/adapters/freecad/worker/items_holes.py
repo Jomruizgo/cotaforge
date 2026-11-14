@@ -9,6 +9,7 @@ pattern) is described by its geometry only: the item says "rosca no declarada" i
 """
 
 import dataclasses
+import math
 import re
 from typing import Any
 
@@ -16,7 +17,7 @@ import sheet_callout
 import sheet_section
 import sheet_thread
 import sheet_tol
-from items_common import asked, mark_once, outward_diagonal, place_callout, place_leader, view_looking_along
+from items_common import asked, leader_at, mark_once, outward_diagonal, place_callout, place_leader, view_looking_along
 from sheet_context import (
     COMMON_FIELDS,
     SECTION_LABEL,
@@ -24,6 +25,7 @@ from sheet_context import (
     HoleInfo,
     ItemError,
     ItemType,
+    Point,
     check_fields,
     hole_stacks,
     v_bool,
@@ -36,6 +38,25 @@ from sheet_draw import centre_mark
 from sheet_model import AXES, THREAD, Arc, Circle
 from sheet_units import NativeDim, Ref2
 
+def v_leader(value: Any) -> list[Any]:
+    """The leader of a callout the global layout placed: its tip and its elbow, ``[tip x, tip y, elbow x, elbow y]`` (page mm),
+    or a list of them when the callout has a leader for each group of holes."""
+    if isinstance(value, list | tuple) and value and all(isinstance(v, list | tuple) for v in value):
+        return [_leader_of(v) for v in value]
+    return _leader_of(value)
+
+
+def _leader_of(value: Any) -> list[float]:
+    if (
+        not isinstance(value, list | tuple)
+        or len(value) != 4
+        or any(isinstance(c, bool) or not isinstance(c, int | float) or not math.isfinite(c) for c in value)
+    ):
+        msg = "must be [tip x, tip y, elbow x, elbow y] in page mm"
+        raise ItemError(msg)
+    return [float(c) for c in value]
+
+
 CHECKS = {
     "at": v_points3,
     "face": v_ids("face"),
@@ -44,14 +65,18 @@ CHECKS = {
     "dowel": v_bool,
     "text": v_str(120),
     "thread": v_str(24),
+    "leader_mm": v_leader,  # where the global layout ended the leader: written by it, not asked for
     **sheet_tol.CHECKS,
     **COMMON_FIELDS,
     "view": v_view_or_section,
 }
 DEPTH_EPS_MM = 0.05
+TIP_TOLERANCE_MM = 0.8  # a planned tip is on the circle of the hole it leaves
 DEPTH = "↧"  # ISO 7200 / ASME Y14.5 depth symbol (osifont, TechDraw's own font, has it)
 COUNTERBORE = "⌴"  # counterbore / spotface symbol (the countersink one is ⌵)
-DOWEL = "◎"  # registration (dowel) hole: leads its callout, and a ring is drawn round the hole in the view
+DOWEL_WORDS = ("registro", "dowel")  # registration (dowel) hole: ends its callout in this word (never a GD&T symbol: ISO 1101
+# symbols stand only inside a feature control frame, and the concentricity one would be read as a tolerance), and a ring
+# is drawn round the hole in the view
 DOWEL_RING_GAP_MM = 1.6  # the ring is this far outside the hole's circle
 DOWEL_MAX_DIAMETER_MM = 25.0  # a hole-basis fit on a larger hole is a seat (a bearing, a spigot), not a dowel
 DOWEL_MAX_GRADE = 8
@@ -176,8 +201,10 @@ def looks_like_dowel(spec: dict[str, Any], stack: list[HoleInfo]) -> bool:
 def _native_callout(
     ctx: Context, view: str, scale: float, centre: tuple[float, float], diameter: float, lines: list[str]
 ) -> None:
-    """The callout just placed (``place_leader`` kept where) as the TechDraw diameter dimension of the hole's outer
-    circle: FreeCAD measures it, the text is the whole callout, and it sits where the shelf text sits."""
+    """The callout just placed (``place_leader`` kept where) as a TechDraw dimension of the hole's outer circle: FreeCAD
+    measures it, the text is the whole callout, and it sits where the shelf text sits. It is a RADIUS dimension on purpose
+    (the text is arbitrary): TechDraw draws a diameter one through the circle with an arrow on each side, and the leader
+    of a callout (ISO 128-22, ISO 129-1) ends with ONE arrow on the circle, its line pointing at the centre."""
     ctx.used_view(view)
     anchor = ctx.extras["anchors"][ctx.extras["current"]][-1]
     x0, y0, x1, y1 = anchor["rect"]
@@ -185,11 +212,11 @@ def _native_callout(
         NativeDim(
             item=str(ctx.extras["current"]),
             name=f"c{len(ctx.extras.get('natives', {}).get(ctx.extras['current'], [])) + 1}",
-            kind="diameter",
+            kind="radius",
             view=view,
             refs=(Ref2("circle", (centre[0], centre[1], diameter / 2 * scale)),),
             label=((x0 + x1) / 2, (y0 + y1) / 2),
-            expected=diameter,
+            expected=diameter / 2,
             text="\n".join(lines),
             leader=True,
             rect=anchor["rect"],
@@ -255,6 +282,20 @@ def _thread_arc(view: Any, hole: HoleInfo) -> list[Any]:
     return [Arc(cx, cy, major / 2 * view.scale, sheet_thread.OPEN_FROM_DEG, sheet_thread.OPEN_TO_DEG, THREAD)]
 
 
+def _planned_leader(spec: dict[str, Any], group: list[Any], radius: float) -> tuple[Point, Point, Point] | None:
+    """The ``leader_mm`` of the item as (tip, elbow, centre of the hole the tip is on), or ``None`` when the item has none or
+    no hole of this group has the tip on its circle (the views moved since: the leader is searched again)."""
+    planned = spec.get("leader_mm")
+    if planned is None:
+        return None
+    for vector in planned if isinstance(planned[0], list | tuple) else [planned]:
+        tip, elbow = (vector[0], vector[1]), (vector[2], vector[3])
+        for _stack, centre, _view in group:
+            if abs(math.dist(centre, tip) - radius) <= TIP_TOLERANCE_MM:
+                return tip, elbow, centre
+    return None
+
+
 def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     stacks = [_declared_thread(ctx, spec, s) for s in _stacks(_select(ctx, spec))]
     target = _section_target(ctx, spec)
@@ -313,7 +354,7 @@ def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             contradictions += sheet_callout.problems(ctx, spec["text"], stack, len(group))
         dowel = _is_dowel(spec, stack)
         if dowel:
-            lines[0] = f"{DOWEL} {lines[0]}"
+            lines[-1] = f"{lines[-1]}, {ctx.say(*DOWEL_WORDS)}"
         if view.derived:  # the bore cut lengthwise: the diameter dimension across it, the thread lines, nothing else
             sheet_section.dimension_bore(ctx, view, stack, " ".join(lines), spec.get("side"), spec.get("offset_mm"))
             if "thread" in spec and stack[0].thread is not None:
@@ -321,7 +362,11 @@ def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             summary.append(f"{view_name}: {' / '.join(lines)}")
             continue
         radius = stack[-1].diameter / 2 * view.scale
-        if asked(spec):  # the engineer says where: the leader goes exactly there, from the hole that sticks out most
+        planned = _planned_leader(spec, group, radius)
+        if planned is not None:  # the global layout ended the leader here: from the hole whose circle holds its tip
+            tip, elbow, centre = planned
+            ctx.add(leader_at(ctx, tip, elbow, lines))
+        elif asked(spec):  # the engineer says where: the leader goes exactly there, from the hole that sticks out most
             diagonal = outward_diagonal(view, group[0][1], spec.get("side"))
             _, centre, _ = max(
                 ((s, c, v) for s, c, v in group), key=lambda g: diagonal[0] * g[1][0] + diagonal[1] * g[1][1]

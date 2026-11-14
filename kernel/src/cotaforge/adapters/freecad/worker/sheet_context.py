@@ -349,6 +349,10 @@ class Geometry:
         """The box of every live body of the part (a weldment), in document axes; none when it cannot be told."""
         return []
 
+    def body_boxes_by_id(self) -> "dict[str, tuple[Vec3, Vec3]]":
+        """The box of every live body of the part (a weldment) by its id, in document axes; none when it cannot be told."""
+        return {}
+
     def assembly_holes(self) -> "list[AssemblyHole]":
         """The full round holes of the components of an assembly (none for a part)."""
         return []

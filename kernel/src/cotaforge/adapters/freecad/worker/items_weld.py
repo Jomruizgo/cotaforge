@@ -33,6 +33,7 @@ from sheet_context import (
     v_bool,
     v_enum,
     v_num,
+    v_point2,
 )
 from sheet_draw import arrow
 from sheet_model import DIMENSIONS, Arc, Circle, Entity, Line, Polyline, Solid, Text, text_width
@@ -56,6 +57,7 @@ TIP_FRACTIONS = (0.5, 0.35, 0.65, 0.25, 0.75)  # the middle of a seam first, nev
 DISTANCES = (8.0, 12.0, 18.0, 26.0, 36.0)
 FAR_DISTANCES = (46.0, 58.0)  # a group of joints spread over a view needs the reference line farther from the first arrow
 PARALLEL_DEG = 20.0
+PICTORIAL = ("isometric", "iso", "exploded")  # the names of the views that are pictures, not projections
 NEAR_TIP_MM = 0.9
 SAME_TIP_MM = 1.0  # two joints whose seams project onto each other in a view share the arrow
 Rect = tuple[float, float, float, float]
@@ -95,6 +97,7 @@ CHECKS = {
     "view": COMMON_FIELDS["view"],
     "side": COMMON_FIELDS["side"],
     "offset_mm": COMMON_FIELDS["offset_mm"],
+    "anchor_at": v_point2,  # where the global layout put the reference line (page mm): written by it, not asked for
 }
 
 
@@ -230,16 +233,15 @@ def seen_spots(ctx: Context, view: ViewInfo, joint: Any) -> list[Spot]:
 
 
 def views_to_try(ctx: Context, wanted: str | None) -> list[ViewInfo]:
-    """The views a joint may be shown in: the three standard ones, then the pictorial (isometric) one, where the seams of
-    the joints a standard view hides behind the near ones are often seen."""
+    """The views a joint may be shown in: the three standard (orthographic) ones, never the pictorial one: in an isometric view the
+    seam is distorted and the arrow side of ISO 2553 is ambiguous. A joint no orthographic view shows needs a view or a section
+    that does (the review says so); a view asked for by name is drawn as asked and the review flags it when it is pictorial."""
     if wanted is not None:
         try:
             return [ctx.view(wanted)]
         except ItemError:
             return [ctx.any_view(wanted)]
-    out = [ctx.views[n] for n in VIEW_ORDER if n in ctx.views]
-    iso = ctx.extras.get("views_extra", {}).get("isometric")
-    return out + ([iso] if iso is not None else [])
+    return [ctx.views[n] for n in VIEW_ORDER if n in ctx.views]
 
 
 def best_view(ctx: Context, joints: list[Any], wanted: str | None) -> tuple[ViewInfo, list[Spot]] | None:
@@ -450,7 +452,48 @@ def _arrow_tip(
     return None if best is None else best[1]
 
 
-def place(ctx: Context, members: list[Member], spec: dict[str, Any], count: int = 1) -> tuple[list[Entity], list[Point], Point, Rect, bool]:
+def _with_arrows(entities: list[Entity], tips: list[Point], anchor: Point) -> list[Entity]:
+    for t in tips:
+        entities = [*entities, Line(t[0], t[1], anchor[0], anchor[1], DIMENSIONS), arrow(t, _unit((t[0] - anchor[0], t[1] - anchor[1])))]
+    return entities
+
+
+def _place_at(
+    ctx: Context, members: list[Member], spec: dict[str, Any], count: int, anchor: Point
+) -> tuple[list[Entity], list[Point], Point, Rect, bool] | None:
+    """The symbol exactly where the global layout put its reference line (``anchor_at``): the arrow of the first joint ends on
+    the nearest point of its seam (never its end, never along it), the others on theirs. ``None`` when the arrows cannot all be
+    drawn from there (the automatic search takes over: a symbol never loses an arrow to a planned place)."""
+    _, lead_spots = members[0]
+    visible = visible_segments(ctx, lead_spots[0].view)
+    best: tuple[float, Point] | None = None
+    for spot in lead_spots:
+        along = _unit((spot.b[0] - spot.a[0], spot.b[1] - spot.a[1]))
+        for fraction in TIP_FRACTIONS:
+            tip = spot.at(fraction)
+            length = math.dist(tip, anchor)
+            direction = _unit((tip[0] - anchor[0], tip[1] - anchor[1]))
+            if length < 6.0 or abs(direction[0] * along[0] + direction[1] * along[1]) > math.cos(math.radians(PARALLEL_DEG)):  # noqa: PLR2004
+                continue
+            cost = length + 8.0 * _crossings(visible, tip, anchor)
+            if best is None or cost < best[0]:
+                best = (cost, tip)
+    if best is None:
+        return None
+    tip = best[1]
+    entities, rect = symbol(anchor, 1.0 if anchor[0] >= tip[0] else -1.0, spec, ctx.comma, count)
+    tips = [tip]
+    for member in members[1:]:
+        other = _arrow_tip(ctx, member, anchor, rect, visible, 99, tips)
+        if other is None:
+            return None
+        if other not in tips:
+            tips.append(other)
+    return _with_arrows(entities, tips, anchor), tips, anchor, rect, ctx.inside(rect) and ctx.free(rect)
+
+
+def place(
+ctx: Context, members: list[Member], spec: dict[str, Any], count: int = 1) -> tuple[list[Entity], list[Point], Point, Rect, bool]:
     """The first free place for ONE reference line with an arrow to each joint of ``members`` (ISO 2553: several arrow
     lines may leave one reference line when the welds are identical): the anchor, a direction and a distance such that the
     symbol is inside the frame and clear of everything on the sheet, and every arrow ends on a seam of its joint across
@@ -461,6 +504,11 @@ def place(ctx: Context, members: list[Member], spec: dict[str, Any], count: int 
     distances = (spec["offset_mm"],) if spec.get("offset_mm") is not None else (DISTANCES[:1] if explicit else DISTANCES)
     _, lead_spots = members[0]
     visible = visible_segments(ctx, lead_spots[0].view)
+    planned = spec.get("anchor_at")
+    if planned is not None:
+        found = _place_at(ctx, members, spec, count, (float(planned[0]), float(planned[1])))
+        if found is not None:
+            return found
     if len(members) > 1 and spec.get("offset_mm") is None and not explicit:
         distances = (*distances, *FAR_DISTANCES)
     for allowed in (0, 1, 2, 4, 6) if not explicit else (0, 99):
@@ -500,9 +548,7 @@ def place(ctx: Context, members: list[Member], spec: dict[str, Any], count: int 
                             break
         if best is not None:
             _, entities, tips, anchor, rect = best
-            for t in tips:
-                entities = [*entities, Line(t[0], t[1], anchor[0], anchor[1], DIMENSIONS), arrow(t, _unit((t[0] - anchor[0], t[1] - anchor[1])))]
-            return entities, tips, anchor, rect, True
+            return _with_arrows(entities, tips, anchor), tips, anchor, rect, True
     # nothing clean: the lead joint at the natural direction, inside the frame, so the sheet shows where it should go
     spot = lead_spots[0]
     tip = spot.at(0.5)
@@ -538,14 +584,15 @@ def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     names = " ; ".join(f"{j.bodies[0]} + {j.bodies[1]}" for j in joints)
     if not groups:
         msg = ctx.say(
-            f"ninguna vista muestra la unión {names}: su cordón queda oculto o de canto. Pide otra vista (view=) o añade una vista que la muestre",
-            f"no view shows the joint {names}: its seam is hidden or edge-on. Ask for another view (view=) or add a view that shows it",
+            f"ninguna vista ortogonal muestra la unión {names}: su cordón queda oculto o de canto (un símbolo de soldadura no va en la isométrica). Añade una vista o un corte que lo muestre",
+            f"no view shows the joint {names}: its seam is hidden or edge-on in every orthographic view (a weld symbol never goes on the isometric one). Add a view or a section that shows it",
         )
         raise ItemError(msg)
     parts: list[str] = []
     clean_all = True
     for view, members in groups:
         ctx.used_view(view.name)
+        ctx.extras.setdefault("weld_views", {}).setdefault(str(spec["id"]), []).append(view.name)
         entities, tips, anchor, rect, clean = place(ctx, members, spec, len(joints) if unseen else 1)
         ctx.add(entities)
         ctx.reserve(rect)

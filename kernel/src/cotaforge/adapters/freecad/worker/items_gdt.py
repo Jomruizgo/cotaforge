@@ -15,7 +15,7 @@ measurement; it is the only number on the sheet that does not come from the mode
 from dataclasses import dataclass
 from typing import Any
 
-from items_attach import attach_face, place_label
+from items_attach import _point_segment, attach_face, place_label
 from items_common import FRAME_CELL_MM, asked
 from sheet_context import (
     COMMON_FIELDS,
@@ -28,6 +28,7 @@ from sheet_context import (
     v_enum,
     v_ids,
     v_num,
+    v_point2,
     v_str,
 )
 from sheet_draw import arrow
@@ -161,7 +162,11 @@ DATUM_CHECKS = {
     "view": COMMON_FIELDS["view"],
     "side": COMMON_FIELDS["side"],
     "offset_mm": COMMON_FIELDS["offset_mm"],
+    "tip_at": v_point2,  # where the global layout left the triangle on the face (page mm): written by it, not asked for
 }
+
+
+TIP_ON_TRACE_MM = 1.0  # a planned tip is on the trace of its face (the views moved since: it is searched again)
 
 
 def check_datum(spec: dict[str, Any]) -> dict[str, Any]:
@@ -247,6 +252,11 @@ def draw_datum(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         )
         raise ItemError(msg)
     att = attach_face(ctx, face_id, spec.get("view"), spec.get("side"))
+    placed = spec.get("tip_at")
+    if placed is not None and att.trace is not None:  # the layout slid the triangle along the face: it stays where it left it
+        point = (float(placed[0]), float(placed[1]))
+        if _point_segment(point, att.trace[0], att.trace[1]) <= TIP_ON_TRACE_MM:
+            att.tip = point
 
     def build(anchor: Point, direction: tuple[float, float]) -> tuple[list[Entity], tuple[float, float, float, float]]:
         triangle, base = _triangle(att.tip, direction)

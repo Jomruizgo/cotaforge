@@ -45,6 +45,7 @@ import geometry as g
 import gui
 import hole_colours
 import holes
+import items_notes
 import Part
 import provenance as prov
 import queries
@@ -1096,6 +1097,9 @@ def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         "next": int(carried.get("next", 2)) if carried is not None else 2,
     }
     if carried is not None:
+        # the places the global layout gave were decided for the views of the old sheet (another paper, another scale): they
+        # are not the engineer's and a rebuild takes them off, so a layout of the new sheet plans them again
+        sheet_plan_bridge.forget_planned(spec["items"], carried.get("layout"))
         for kept_key in CARRIED_KEYS:
             if kept_key in carried:
                 spec[kept_key] = json.loads(json.dumps(carried[kept_key]))
@@ -1451,6 +1455,10 @@ def _sync_auto_items(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None)
         doc, spec.get("body"), standard[0], op, turned_of(doc, spec, op) is not None
     ):
         wanted[AUTO_THICKNESS_ID] = {"id": AUTO_THICKNESS_ID, "type": "note", "auto": "thickness"}
+    if AUTO_THICKNESS_ID in wanted and any(
+        i.get("type") == "note" and not i.get("auto") and items_notes.states_thickness(str(i.get("text") or "")) for i in items
+    ):
+        del wanted[AUTO_THICKNESS_ID]  # a note of the engineer states the thickness: the sheet does not say it twice
     items = [i for i in items if i.get("auto") != "iso286"]  # a note of older sheets that no sheet writes any more
     have = {str(i["id"]) for i in items}
     for key, item in wanted.items():
@@ -1750,12 +1758,7 @@ def global_layout(doc: reg.DocumentRec, page: Any, spec: dict[str, Any], op: str
     stands at. What the planner placed before is planned again (it is not the engineer's). When the planned sheet collides
     more than the one it replaces, nothing is kept. Returns what the call reports (``layout_*``)."""
     items = [dict(i) for i in spec.get("items", [])]
-    before = {str(k): v for k, v in (spec.get("layout") or {}).get("placed", {}).items()}
-    for item in items:  # a place the planner gave is not a place the engineer asked for
-        mine = before.get(str(item.get("id")))
-        if mine and all(item.get(k) == v for k, v in mine.items()):
-            for key in mine:
-                item.pop(key, None)
+    sheet_plan_bridge.forget_planned(items, spec.get("layout"))  # a place the planner gave is not a place the engineer asked for
     spec["items"] = items
     sheet, _results, ctx = compose(doc, page, spec, 1, 1, op)
     units = list(ctx.extras.get("units", []))
@@ -1768,14 +1771,23 @@ def global_layout(doc: reg.DocumentRec, page: Any, spec: dict[str, Any], op: str
         [u for u in units if u.item_type != "parts_list"],
         items,
         lists[0] if lists else None,
-        [(e.x1, e.y1, e.x2, e.y2) for e in ctx.extras.get("view_ink", []) if isinstance(e, model.Line) and e.layer == model.CONTOUR],
+        sheet_plan_bridge.view_outline(ctx.extras.get("view_ink", [])),
     )
     outcome = sheet_plan_bridge.run(prepared)
     unplaced = [f"{key}: {why}" for key, why in outcome.unplaced]
     kept: dict[str, dict[str, Any]] = {}
     if outcome.placements:
-        planned = [{**i, **outcome.placements[str(i["id"])]} if str(i["id"]) in outcome.placements else i for i in items]
-        _, answers, after = compose(doc, page, {**spec, "items": planned}, 1, 1, op)
+        wanted = dict(outcome.placements)
+        for attempt in range(4):  # a place that makes a new collision is dropped, the others stay
+            planned = [{**i, **wanted[str(i["id"])]} if str(i["id"]) in wanted else i for i in items]
+            _, answers, after = compose(doc, page, {**spec, "items": planned}, 1, 1, op)
+            known = {(c.a, c.b, c.kind) for c in ctx.extras.get("collisions", [])}
+            blamed = {n for c in after.extras.get("collisions", []) if (c.a, c.b, c.kind) not in known for n in (c.a, c.b)}
+            dropped = [k for k in wanted if k in blamed]
+            if not dropped or len(wanted) == len(dropped) or attempt == 3:
+                break
+            for key in dropped:
+                del wanted[key]
         broke = {r.id for r in answers if r.status == "error"}
         worse = len(after.extras.get("collisions", [])) > len(ctx.extras.get("collisions", []))
         if worse:
@@ -1784,10 +1796,11 @@ def global_layout(doc: reg.DocumentRec, page: Any, spec: dict[str, Any], op: str
                 for key in outcome.placements
             ]
         else:
-            kept = {k: v for k, v in outcome.placements.items() if k not in broke}
+            kept = {k: v for k, v in wanted.items() if k not in broke}
             unplaced += [
-                f"{key}: the CAD refused the planned place: kept where it was" for key in outcome.placements if key in broke
+                f"{key}: the planned place made a collision: kept where it was" for key in outcome.placements if key not in wanted
             ]
+            unplaced += [f"{key}: the CAD refused the planned place: kept where it was" for key in wanted if key in broke]
     spec["items"] = [{**i, **kept[str(i["id"])]} if str(i["id"]) in kept else i for i in items]
     spec["layout"] = {"placed": kept, "unplaced": unplaced}
     return {

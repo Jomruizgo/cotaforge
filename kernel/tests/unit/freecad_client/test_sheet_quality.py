@@ -399,7 +399,7 @@ def test_the_same_size_in_two_views_is_flagged_without_blocking() -> None:
     ctx.extras.setdefault("units", [])
     data = review.ReviewInput(ctx.extras["items"], {r.id: r for r in results}, ctx, ctx.sheet, [])
     (finding,) = of_code(quality.check(data), "dimension_repeated")
-    assert finding.severity == "info" and finding.items == ("o1", "w") and "ISO 129" in finding.message
+    assert finding.severity == "info" and set(finding.items) == {"o1", "w"} and "ISO 129" in finding.message
     assert "dimension_repeated" in checks.NON_BLOCKING
 
 
@@ -490,7 +490,8 @@ def test_two_leaders_that_cross_are_a_finding() -> None:
 
 def test_the_dowel_callout_has_its_marker_its_fit_with_deviations_and_a_ring_on_each_hole() -> None:
     ctx, _ = sheet_of()
-    assert "◎ 4× Ø6 H7 (+0,012/0) pasante" in ctx.sheet.texts()
+    assert "4× Ø6 H7 (+0,012/0) pasante, registro" in ctx.sheet.texts()
+    assert not any("◎" in t for t in ctx.sheet.texts())  # a GD&T symbol stands only inside a frame
     rings = [e for e in ctx.sheet.of_layer(model.AXES) if isinstance(e, model.Circle)]
     assert len(rings) == 4 and {round(r.r, 2) for r in rings} == {4.6}
     # not asked for, not a dowel: the same fit on a hole without dowel=true gets no marker and the review asks
@@ -609,3 +610,48 @@ def test_segments_cross_only_when_they_cross_and_not_when_they_meet_at_an_end() 
     assert not collide.segments_cross((0, 0, 10, 10), (10, 10, 20, 0))  # meet at an end
     assert not collide.segments_cross((0, 0, 10, 0), (0, 5, 10, 5))  # parallel
     assert not collide.segments_cross((0, 0, 10, 0), (0, 0, 10, 0))  # the same line: an overlap, not a crossing
+
+
+# --- the order of the dimension lines, and the callout leaders ----------------------------------------------------------------
+
+
+def lines_of(ctx: sc.Context, item_id: str) -> collide.Ink:
+    """What one item drew on the sheet (page mm, y up)."""
+    start, end = ctx.extras["item_slices"][item_id]
+    return collide.ink_of(item_id, ctx.sheet.entities[start:end])
+
+
+def test_the_overall_size_stands_outside_the_dimensions_it_encloses_and_nothing_crosses_its_line() -> None:
+    ctx, _ = plate(one_view=True)
+    ctx.holes[:] = [h for h in ctx.holes if is_dowel(h)]
+    ctx.extras["symmetry"] = {"x": 50.0, "y": 30.0}  # the spacing of the dowels goes under the view, as the overall width does
+    results = draw(ctx, {"type": "overall", "id": "o1", "side": "below"}, {"type": "datum_dims", "id": "loc", "auto": True})
+    assert all(r.status in ("ok", "warning") for r in results), results
+    box = ctx.views["top"].box
+    overall = [s for s in lines_of(ctx, "o1").dimension_lines if s[1] == s[3] and s[1] < box[1]]
+    inner = [s for s in lines_of(ctx, "loc").dimension_lines if s[1] == s[3] and s[1] < box[1]]
+    assert len(overall) == 1 and inner, (overall, inner)  # both stack under the view
+    assert overall[0][1] < min(s[1] for s in inner)  # the overall one is the farthest from the part (ISO 129-1: the larger outside)
+    for s in lines_of(ctx, "loc").lines:  # an extension line of a smaller dimension stops short of the overall line
+        crosses = s[0] == s[2] and min(s[1], s[3]) < overall[0][1] < max(s[1], s[3]) and overall[0][0] <= s[0] <= overall[0][2]
+        assert not crosses, s
+
+
+def test_a_hole_callout_is_a_radius_dimension_and_its_leader_ends_on_the_circle_without_entering_it() -> None:
+    ctx, _ = sheet_of()
+    assert [(n.kind, n.expected) for n in ctx.extras["natives"]["dowels"]] == [("radius", 3.0)]  # a diameter one has two arrows
+    top = ctx.views["top"]
+    circles = [(*top.project(h.centre), h.diameter / 2 * top.scale) for h in ctx.holes]
+    for key in ("dowels", "clear", "tap"):
+        long = [s for s in lines_of(ctx, key).lines if (s[2] - s[0]) ** 2 + (s[3] - s[1]) ** 2 > 36 and s[1] != s[3]]
+        assert long, key
+        s = long[0]
+        ends = [(s[0], s[1]), (s[2], s[3])]
+        touching = [
+            (c, e) for c in circles for e in ends if abs(((e[0] - c[0]) ** 2 + (e[1] - c[1]) ** 2) ** 0.5 - c[2]) < 0.3
+        ]
+        assert touching, (key, s)
+        (cx, cy, r), _tip = touching[0]
+        for t in (i / 20 for i in range(1, 21)):  # no point of the leader is inside the circle it points at
+            x, y = s[0] + (s[2] - s[0]) * t, s[1] + (s[3] - s[1]) * t
+            assert ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 >= r - 0.3, (key, t)
