@@ -849,12 +849,16 @@ MEASURED_REFUSAL = (
 )
 
 
-def _guard_answer(session: Session, sheet: str | None, item_id: str, verdict: str, ordered: bool) -> None:
+def _guard_answer(
+    session: Session, sheet: str | None, item_id: str, verdict: str, ordered: bool, info: DrawingSheetInfo | None = None
+) -> None:
     """A row that is not active on this sheet cannot be answered; a ``does not apply`` on a row the harness measured, or on
-    a finding that is a measurement, is refused unless the engineer ordered it."""
+    a finding that is a measurement, is refused unless the engineer ordered it. ``info``: the reviewed sheet, when the caller
+    answers several points in a row (an answer does not change which rows apply: the CAD is not asked for the review again)."""
     if "describe_drawing" not in session.capabilities.tools:
         return
-    info = sheet_info(session, sheet, review=True)
+    if info is None:
+        info = sheet_info(session, sheet, review=True)
     if info is None:
         return
     rows = {r.id: r for r in sheet_requirements(session, info)}
@@ -907,6 +911,7 @@ def answer(
     text: str | None,
     by: str | None = None,
     reason: str | None = None,
+    reviewed: DrawingSheetInfo | None = None,
 ) -> str:
     if not item_id or not text:
         raise ToolError(
@@ -939,7 +944,7 @@ def answer(
         ordered = by.strip()
         said = f"{said} [ordered by {ordered}: «{' '.join(reason.split())}»]"
     if not is_memory:
-        _guard_answer(session, sheet, item_id, verdict, bool(ordered))
+        _guard_answer(session, sheet, item_id, verdict, bool(ordered), reviewed)
     given = AnnotateDrawingRequest(
         operation_id="drawing_answer",
         action="answer",
