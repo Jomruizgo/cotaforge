@@ -168,17 +168,23 @@ def describe(ctx: Context, hole: HoleInfo, diameter_text: str | None = None) -> 
     return [f"{d} {DEPTH} {depth}"]
 
 
-def stack_lines(ctx: Context, stack: list[HoleInfo], count: int, diameter_text: str | None = None) -> list[str]:
-    """The callout of the holes on one axis; a tolerance (``diameter_text``) goes on the smallest, the one that is the
-    hole (the larger ones are its counterbore)."""
-    lines: list[str] = []
+def stack_parts(ctx: Context, stack: list[HoleInfo], diameter_text: str | None = None) -> list[list[str]]:
+    """The callout lines of each hole on one axis (the larger ones, a counterbore, say so)."""
+    parts: list[list[str]] = []
     previous: HoleInfo | None = None
     for hole in stack:
         part = describe(ctx, hole, diameter_text if hole is stack[0] else None)
         if previous is not None and hole.through is False and hole.diameter > previous.diameter:
             part[0] = f"{COUNTERBORE} {part[0]}"
-        lines += part
+        parts.append(part)
         previous = hole
+    return parts
+
+
+def stack_lines(ctx: Context, stack: list[HoleInfo], count: int, diameter_text: str | None = None) -> list[str]:
+    """The callout of the holes on one axis; a tolerance (``diameter_text``) goes on the smallest, the one that is the
+    hole (the larger ones are its counterbore)."""
+    lines = [line for part in stack_parts(ctx, stack, diameter_text) for line in part]
     if count > 1:
         lines[0] = f"{count}× {lines[0]}"
     return lines
@@ -238,6 +244,18 @@ def _section_target(ctx: Context, spec: dict[str, Any]) -> Any:
     """The section view the item names (``view="A-A"``), ``None`` for a standard view or none."""
     name = spec.get("view")
     return ctx.view(name) if isinstance(name, str) and SECTION_LABEL.match(name) else None
+
+
+def _in_place_view(ctx: Context, hole: HoleInfo, wanted: Any) -> Any:
+    """The section standing in the main view (``section in_place``) when its plane runs along the axis of ``hole``: a bore
+    that no view sees as a circle is called out there, across it. ``wanted`` is the view the item named, if any."""
+    for label, parent in ctx.extras.get("in_place_views", {}).items():
+        if wanted is not None and wanted not in (label, parent):
+            continue
+        at, normal = ctx.extras["section_planes"][label]
+        if any(h.index == hole.index for h in sheet_section.holes_cut(ctx, at, normal)):
+            return ctx.extras["sections"][label]
+    return None
 
 
 def _declared_thread(ctx: Context, spec: dict[str, Any], stack: list[HoleInfo]) -> list[HoleInfo]:
@@ -338,6 +356,9 @@ def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             view = view_looking_along(ctx, stack[0].direction, spec.get("view"))
             owner = sheet_pattern.pattern_of(ctx, stack[0])  # a bolt circle is one callout with ITS count, not every equal hole
             key = (*_signature(stack), None if owner is None else min(owner.reps))
+            if view is None:  # no view sees it as a circle: the section that stands in the main view cuts it lengthwise
+                view = _in_place_view(ctx, stack[0], spec.get("view"))
+                key = ("bore", stack[0].index)
         if view is None:
             where = f"the {spec['view']} view" if "view" in spec else "front, top or right"
             skipped.append(
@@ -376,7 +397,12 @@ def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         if dowel:
             lines[-1] = f"{lines[-1]}, {ctx.say(*DOWEL_WORDS)}"
         if view.derived:  # the bore cut lengthwise: the diameter dimension across it, the thread lines, nothing else
-            sheet_section.dimension_bore(ctx, view, stack, " ".join(lines), spec.get("side"), spec.get("offset_mm"))
+            if len(stack) > 1 and view.name in ctx.extras.get("in_place_views", {}) and "text" not in spec:
+                # the section is the main view: each step of the bore has its own Ø (the counterbore says its depth)
+                for hole, part in zip(stack, stack_parts(ctx, stack, diameter_text), strict=True):
+                    sheet_section.dimension_bore(ctx, view, [hole], " ".join(part), spec.get("side"), spec.get("offset_mm"))
+            else:
+                sheet_section.dimension_bore(ctx, view, stack, " ".join(lines), spec.get("side"), spec.get("offset_mm"))
             if "thread" in spec and stack[0].thread is not None:
                 ctx.add(sheet_section.thread_lines(view, stack[0], stack[0].thread[0], stack[0].thread[1]))
             summary.append(f"{view_name}: {' / '.join(lines)}")

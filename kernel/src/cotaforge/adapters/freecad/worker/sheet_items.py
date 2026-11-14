@@ -135,11 +135,16 @@ def draw_items(ctx: Context, items: list[dict[str, Any]]) -> list[ItemResult]:
     order within a phase, so a callout looks for room around the dimensions whatever the order they were added in; the
     results come back in list order."""
     results: list[ItemResult | None] = [None] * len(items)
+    in_place = any(i.get("type") == "section" and i.get("in_place") for i in items)
 
     def phase(position: int) -> int:
         kind = items[position].get("type")
         own = REGISTRY[kind].phase if kind in REGISTRY else 0
         view = items[position].get("view")
+        if in_place and kind in ("hole_dim", "overall") and view is None:
+            # the bores are called out on the section that stands in the main view, and the overall size stands outside
+            # the dimensions of that section (ISO 129-1), so it is drawn after them
+            return max(own, PHASE_ON_SECTION)
         # an item on a section view is drawn after the sections: the view exists once its section item has been drawn
         return max(own, PHASE_ON_SECTION) if isinstance(view, str) and SECTION_LABEL.match(view) else own
 

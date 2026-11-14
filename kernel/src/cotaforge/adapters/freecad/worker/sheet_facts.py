@@ -12,6 +12,7 @@ import geometry as g
 import holes
 import registry as reg
 import sheet_checks as sck
+import sheet_flats as flats_mod
 import sheet_keyway as keyway
 
 FULL_TURN = 2.0 * math.pi - 0.02  # a cylinder that goes all the way round (the faces of one cylinder add up to this)
@@ -63,6 +64,34 @@ def collect_assembly(doc: reg.DocumentRec) -> sck.PartFacts:
     return facts
 
 
+def _flats_of(
+    groups: dict[tuple[Any, ...], list[tuple[str, Any, float, float]]],
+    spans: dict[tuple[Any, ...], list[float]],
+    flats: list[keyway.Flat],
+    slots: list[keyway.Slot],
+) -> list[flats_mod.FlatFace]:
+    """The flats of the turned axes of one body: planar faces parallel to an axis that lie inside its largest round (the faces
+    of a keyway are not flats of the round)."""
+    axes: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for key, span in spans.items():
+        if key[3]:
+            continue  # a bore is not a turned surface
+        arc = sum(a for _, _, a, _ in groups[key])
+        info = axes.setdefault(
+            (key[0], key[1]),
+            {"axis": key[0], "point": (span[2], span[3], span[4]), "radius": 0.0, "lo": span[0], "hi": span[1], "turned": False},
+        )
+        info["radius"] = max(info["radius"], key[2])
+        info["lo"], info["hi"] = min(info["lo"], span[0]), max(info["hi"], span[1])
+        info["turned"] = info["turned"] or arc >= flats_mod.TURNED_ARC_RAD
+    turned = [flats_mod.Turned(i["axis"], i["point"], i["radius"], i["lo"], i["hi"], i["turned"]) for i in axes.values()]
+    slot_faces = frozenset(
+        f.face_id for slot in slots for f in (slot.wall_a, slot.wall_b, slot.bottom) if f is not None and f.face_id
+    )
+    candidates = [flats_mod.Flat(f.face_id, f.normal, f.centre) for f in flats if f.face_id]
+    return flats_mod.find_flats(turned, candidates, slot_faces)
+
+
 def collect(doc: reg.DocumentRec, bodies: list[reg.BodyRec]) -> sck.PartFacts:
     """The rounds and the whole cylinders of ``bodies``; a hole (a concave cylinder all the way round) is neither."""
     facts = sck.PartFacts(sheet_metal=any(f.kind in SHEET_METAL_KINDS for f in doc.features))
@@ -106,6 +135,7 @@ def collect(doc: reg.DocumentRec, bodies: list[reg.BodyRec]) -> sck.PartFacts:
         slots = keyway.find_slots(cylinders, flats)
         facts.keyways += len(slots)
         facts.keyway_slots.extend(slots)
+        facts.flats.extend(_flats_of(groups, spans, flats, slots))
         for key, members in groups.items():
             concave, radius = key[3], key[2]
             if sum(arc for _, _, arc, _ in members) >= FULL_TURN:

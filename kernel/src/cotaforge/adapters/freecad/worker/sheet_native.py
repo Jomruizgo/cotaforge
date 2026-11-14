@@ -366,6 +366,11 @@ def build(fc_doc: Any, page: Any, unit: su.Unit, sheet: str) -> Built:
                 if view is None:
                     msg = f"the sheet has no {dim.view} view"
                     raise LookupError(msg)
+                if not bool(getattr(view, "Visibility", True)):
+                    # a section stands in place of this view (``in_place``): TechDraw draws no dimension on a hidden view,
+                    # so the dimension is the sheet's own drawing over the section
+                    msg = f"the {dim.view} view is not drawn (a section stands in its place)"
+                    raise LookupError(msg)
                 frames[dim.view] = Frame(page, view)
         if _cosmetic_points(frames, dims):
             fc_doc.recompute()
