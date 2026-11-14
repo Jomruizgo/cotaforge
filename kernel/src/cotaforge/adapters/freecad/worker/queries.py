@@ -10,6 +10,7 @@ import sys
 import traceback
 from typing import Any
 
+import appearance
 import fc
 import FreeCAD as App
 import geometry as g
@@ -1331,7 +1332,9 @@ def test_view_color(params: dict[str, Any]) -> dict[str, Any]:
     """Test-only: the raw ``ViewObject`` colour property (``DiffuseColor``/``LineColorArray``, default
     ``DiffuseColor``) of any object in any OPEN document, addressed by FreeCAD's own document/object names
     -- never a harness handle id, so it also works on a document ``test_reopen_document`` just loaded
-    (which has no harness registry entries at all)."""
+    (which has no harness registry entries at all). Read from the object the 3D view paints (a PartDesign
+    body's Tip: the body's own property is not what is on the screen), the colours in FreeCAD 1.1's
+    ``(r, g, b, opacity)``."""
     op = params.get("operation_id")
     doc_name = str(params.get("document", ""))
     obj_name = str(params.get("object", ""))
@@ -1342,7 +1345,7 @@ def test_view_color(params: dict[str, Any]) -> dict[str, Any]:
     obj = fc_doc.getObject(obj_name)
     if obj is None or obj.ViewObject is None:
         raise invalid_reference(obj_name, op)
-    return {"value": [list(color) for color in getattr(obj.ViewObject, prop)]}
+    return {"value": [list(color) for color in getattr(appearance.paint_object(obj).ViewObject, prop)]}
 
 
 def _plain(value: Any) -> Any:

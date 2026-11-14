@@ -30,6 +30,7 @@ import traceback
 from collections.abc import Callable, Iterator
 from typing import Any
 
+import appearance
 import changes
 import fc
 import FreeCAD as App
@@ -59,9 +60,9 @@ VIEW_METHODS = {
 # Drag-selecting fires the observer once per sub-element; only the selection ``debounce_s`` after the
 # last one is reported (CAD-selection seam).
 SELECTION_DEBOUNCE_S = 0.15
-# Opaque orange: ``queries.show_entities``' one temporary paint colour (RGBA, FreeCAD's own convention for
-# ``DiffuseColor``/``LineColorArray`` entries).
-HIGHLIGHT_COLOR: highlight.RGBA = (1.0, 0.55, 0.0, 0.0)
+# Opaque orange: ``queries.show_entities``' one temporary paint colour, ``(r, g, b, opacity)``: on FreeCAD 1.1 the 4th
+# component of a face or edge colour is the OPACITY, so ``0.0`` is invisible (see ``appearance``).
+HIGHLIGHT_COLOR: highlight.RGBA = (1.0, 0.55, 0.0, 1.0)
 
 _highlight_state = highlight.HighlightState()
 _appearance_state: dict[tuple[str, str], list[Any]] = {}  # (document, object) -> the ShapeAppearance before a graded paint
@@ -829,7 +830,8 @@ def sheet_color_pixels(page: Any, rgb: tuple[int, int, int] = SHEET_COLOR, tol: 
 # itself, same separation ``queries.py`` already keeps for every other query. Deliberately NEVER touches
 # ``Gui.Selection``: doing so would feed back through the ``_SelectionObserver`` below exactly as if the
 # engineer had picked the entity themselves (BUG-class this feature exists to avoid), and would also
-# visibly steal the engineer's own current pick. Only ``ViewObject.DiffuseColor``/``LineColorArray`` are
+# visibly steal the engineer's own current pick. Only the per-face ``ShapeAppearance`` and the per-edge
+# ``LineColorArray`` of the ``ViewObject`` that paints (``appearance.paint_object``: a body's Tip) are
 # ever written here, computed by the FreeCAD-free ``highlight`` module so the colour arithmetic itself is
 # unit-testable without a real FreeCAD.
 
@@ -857,12 +859,15 @@ def clear_highlight(fc_doc: Any) -> None:
                 _highlight_state.discard(doc_name, object_name)  # gone: nothing left to restore
                 continue
             # The REAL current topology count, never the property's own live length: confirmed against
-            # real FreeCAD, a stale DiffuseColor/LineColorArray is left exactly as it was across a
+            # real FreeCAD, a stale ShapeAppearance/LineColorArray is left exactly as it was across a
             # topology change (a fillet, say) instead of being resized -- reading the property back would
             # never notice the mismatch ``highlight.restore_value`` needs to detect.
-            current_length = len(obj.Shape.Faces) if attr == "DiffuseColor" else len(obj.Shape.Edges)
-            setattr(obj.ViewObject, attr, highlight.restore_value(original, current_length))
-            _highlight_state.discard(doc_name, object_name)
+            if attr == "ShapeAppearance":
+                base = highlight.base_index([appearance.rgba(m) for m in original])
+                obj.ViewObject.ShapeAppearance = appearance.restore(list(original), len(obj.Shape.Faces), base)
+            else:
+                obj.ViewObject.LineColorArray = highlight.restore_value(original, len(obj.Shape.Edges))
+            _highlight_state.discard(doc_name, object_name, attr)
         except Exception:  # noqa: BLE001 - one bad restore must never block the rest or crash the worker
             sys.stderr.write(traceback.format_exc())
     _restore_appearance(fc_doc)
@@ -889,7 +894,7 @@ def paint_faces(fc_doc: Any, targets: list[tuple[Any, int, highlight.RGBA]]) -> 
     """Colour faces on screen until the next ``clear_highlight`` of this document: ``targets`` are ``(the object the
     window shows, face index, colour)``. FreeCAD 1.1 draws a per-face colour from the ``ShapeAppearance`` of the view of
     the object the window SHOWS (the Tip of a PartDesign body, never the body: confirmed on 1.1.3, where a
-    ``DiffuseColor`` set on the body's view paints nothing). A colour is FreeCAD's own ``(r, g, b, transparency)``.
+    ``DiffuseColor`` set on the body's view paints nothing). A colour is ``(r, g, b, opacity)`` (``appearance``).
     Returns whether something was painted; never marks the document modified."""
     clear_highlight(fc_doc)
     if not ACTIVE or not targets:
@@ -907,9 +912,7 @@ def paint_faces(fc_doc: Any, targets: list[tuple[Any, int, highlight.RGBA]]) -> 
         shown: list[Any] = list(original) if len(original) == faces else [original[0]] * faces
         for index, colour in entries:
             if 0 <= index < faces:
-                material = App.Material()
-                material.DiffuseColor = (colour[0], colour[1], colour[2], 1.0 - colour[3])
-                shown[index] = material
+                shown[index] = appearance.recolored(shown[index], colour)
         _appearance_state[(fc_doc.Name, obj.Name)] = original
         view.ShapeAppearance = shown
         painted = True
@@ -935,8 +938,9 @@ def drop_highlight(fc_doc_name: str) -> None:
 def highlight_entities(fc_doc: Any, targets: list[tuple[Any, str, int]]) -> None:
     """Temporarily recolour ``targets`` (``(object, "face"|"edge", index)``) with ``HIGHLIGHT_COLOR``.
     Always clears any highlight left over from a previous call on THIS document first (never another open
-    document's). Groups by object so an object with two highlighted faces has its ``DiffuseColor`` read
-    and written once, not twice. Never marks the document modified and never calls ``Gui.Selection`` (see
+    document's). Groups by object so an object with two highlighted faces has its ``ShapeAppearance`` read
+    and written once, not twice. The colours go to the object the 3D view paints (``appearance.paint_object``),
+    never to a PartDesign body, whose edge colours the view ignores. Never marks the document modified and never calls ``Gui.Selection`` (see
     the module note above)."""
     clear_highlight(fc_doc)
     if not ACTIVE or not targets:
@@ -945,20 +949,23 @@ def highlight_entities(fc_doc: Any, targets: list[tuple[Any, str, int]]) -> None
     by_object: dict[Any, list[tuple[str, int]]] = {}
     for obj, kind, index in targets:
         by_object.setdefault(obj, []).append((kind, index))
-    for obj, entries in by_object.items():
+    for owner, entries in by_object.items():
+        obj = appearance.paint_object(owner)
         view = obj.ViewObject
         if view is None:
             continue
         face_indices = [i for k, i in entries if k == "face"]
         edge_indices = [i for k, i in entries if k == "edge"]
         if face_indices:
-            current = list(view.DiffuseColor)
-            _highlight_state.remember(doc_name, obj.Name, "DiffuseColor", current)
+            materials = appearance.read(view)
+            current = [appearance.rgba(m) for m in materials]
+            _highlight_state.remember(doc_name, obj.Name, "ShapeAppearance", materials)
             # ``current`` is a length-1 "uniform colour" list until now on a never-recoloured shape
             # (confirmed against real FreeCAD): expand it to one entry per face FIRST, or painting index
             # 0 into that length-1 list would set the shape's ONE colour and recolour the whole object.
             expanded = highlight.expand_to_length(current, len(obj.Shape.Faces))
-            view.DiffuseColor = highlight.recolor(expanded, face_indices, HIGHLIGHT_COLOR)
+            painted = highlight.recolor(expanded, face_indices, HIGHLIGHT_COLOR)
+            view.ShapeAppearance = appearance.from_rgba(painted, materials)
         if edge_indices:
             current = list(view.LineColorArray)
             _highlight_state.remember(doc_name, obj.Name, "LineColorArray", current)

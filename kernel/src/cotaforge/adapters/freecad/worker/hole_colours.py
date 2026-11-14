@@ -11,15 +11,17 @@ follows every face through every operation (``FeatureRec.created_faces`` -> ``Bo
 or mirrored copy of a coloured hole takes the colour of its seed.
 
 Painting. Only a visible worker has a ``ViewObject``; ``sync`` runs after every operation that changes the model and writes
-the per-face ``DiffuseColor`` only when the list the object has is not what the holes need (``hole_paint.plan``), so a
-document without holes costs one pass over its feature list and nothing else. FreeCAD saves that list with the document's
-GUI state, and ``sync`` also runs when a document is opened, which re-derives it from the registry.
+the per-face ``ShapeAppearance`` of the object the view paints (``appearance.paint_object``: a body's Tip) only when the
+list it has is not what the holes need (``hole_paint.plan``), so a document without holes costs one pass over its feature
+list and nothing else. FreeCAD saves that list with the document's GUI state, and ``sync`` also runs when a document is
+opened, which re-derives it from the registry.
 """
 
 import sys
 import traceback
 from typing import Any
 
+import appearance
 import hole_paint
 
 PATTERN_KINDS = frozenset({"linear_pattern", "circular_pattern", "mirror"})
@@ -198,11 +200,6 @@ def declarations(doc: Any, feature: Any) -> tuple[str | None, str | None, int | 
 # --- the 3D view -------------------------------------------------------------------------------------------------------
 
 
-def _rgba(value: Any) -> hole_paint.RGBA:
-    parts = [float(c) for c in value]
-    return (parts[0], parts[1], parts[2], parts[3] if len(parts) > 3 else 0.0)
-
-
 def _owner(body: Any) -> str | None:
     return body.fc_body if body.kind == "partdesign" else body.result_obj
 
@@ -228,20 +225,28 @@ def _sync(doc: Any) -> None:
     convention = {colour for colour, _ in painted.values()}
     for body in doc.live_bodies():
         name = _owner(body)
-        obj = fc_doc.getObject(name) if name else None
+        owner = fc_doc.getObject(name) if name else None
+        obj = None if owner is None else appearance.paint_object(owner)
         view = None if obj is None else obj.ViewObject
         if view is None:
             continue
-        key = (fc_doc.Name, obj.Name)
+        key = (fc_doc.Name, owner.Name)
         wanted = face_colours(doc, body) if painted else {}
         if not wanted and key not in _painted:
             continue
         ours = convention | _painted.get(key, set())
         faces = len(obj.Shape.Faces)
-        base = _rgba((*tuple(view.ShapeColor)[:3], view.Transparency / 100.0 if hasattr(view, "Transparency") else 0.0))
-        new = hole_paint.plan([_rgba(c) for c in view.DiffuseColor], faces, wanted, ours, base)
+        materials = appearance.read(view)
+        current = [appearance.rgba(m) for m in materials]
+        shape_colour = (
+            *tuple(view.ShapeColor)[:3],
+            1.0 - (view.Transparency / 100.0 if hasattr(view, "Transparency") else 0.0),
+        )
+        base = hole_paint.base_of(current, ours, shape_colour)
+        new = hole_paint.plan(current, faces, wanted, ours, base)
         if new is not None:
-            view.DiffuseColor = new
+            # ``[]`` is "nothing of ours left": the one colour of the object, as a single material
+            view.ShapeAppearance = appearance.from_rgba(new or [base], materials)
         _painted[key] = set(ours) | set(wanted.values())
         if not wanted:
             _painted.pop(key, None)
