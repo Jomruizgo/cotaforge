@@ -1,6 +1,6 @@
 # ruff: noqa: E501
 """The faces of plain holes in the 3D window of the REAL visible worker: every face about the axis of a drilled hole is
-painted green in the body's own ``ViewObject.DiffuseColor`` (the bore, the wall and floor of a counterbore, the cone of a
+painted green in the per-face colours of what the 3D view paints (the Tip of the body; the bore, the wall and floor of a counterbore, the cone of a
 countersink, the floor of a blind hole), whether the hole operation made the counterbore or a pocket concentric with the hole
 did, and nothing else of the part is painted.
 
@@ -64,7 +64,7 @@ READ_THE_WINDOW = f"""
 import math
 HOLES = {HOLES!r}
 body = [o for o in doc.Objects if o.TypeId == "PartDesign::Body"][0]
-colours = [list(c) for c in body.ViewObject.DiffuseColor]
+colours = [list(c) for c in (body.Tip or body).ViewObject.DiffuseColor]
 faces = body.Shape.Faces
 if len(colours) == 1:
     colours = colours * len(faces)
