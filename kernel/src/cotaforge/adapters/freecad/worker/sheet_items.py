@@ -22,6 +22,7 @@ import items_gdt
 import items_holes
 import items_lines
 import items_notes
+import items_pattern
 import items_views
 import items_weld
 from sheet_context import SECTION_LABEL, Context, ItemError, ItemResult, ItemType
@@ -43,6 +44,7 @@ MODULES = (
     items_explode,
     items_lines,
     items_weld,
+    items_pattern,
 )
 
 REGISTRY: dict[str, ItemType] = {t.name: t for module in MODULES for t in module.ITEMS}

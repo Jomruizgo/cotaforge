@@ -313,6 +313,7 @@ ROWS: tuple[Row, ...] = (
         codes=(
             "hole_not_located",
             "hole_partly_located",
+            "pattern_not_polar",
             "hole_no_reference",
             "hole_no_callout",
             "feature_no_dimension",
