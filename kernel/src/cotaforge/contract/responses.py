@@ -548,11 +548,44 @@ class SheetOutput(BaseModel, frozen=True):
     warnings: tuple[str, ...] = ()
 
 
+class SheetFinding(BaseModel, frozen=True):
+    """Something measured on the sheet that lies wrong (``kind``: ``overlap``, ``crossing``, ``stack_order``,
+    ``stack_gap``, ``outside``): ``text`` for the agent and the ``box`` on the page (mm, y up) where to look."""
+
+    kind: str
+    text: str
+    box: tuple[float, float, float, float]
+    view: str = ""
+    items: tuple[str, ...] = ()
+
+
+class SheetCrop(BaseModel, frozen=True):
+    """A zoomed image written next to the capture: ``label`` says which view and region it shows, ``findings`` the indexes
+    (in ``CaptureDrawingResult.findings``) of the findings it holds."""
+
+    label: str
+    view: str
+    region: tuple[float, float, float, float]
+    path: str
+    size_px: tuple[int, int]
+    px_per_mm: float
+    findings: tuple[int, ...] = ()
+
+
 class CaptureDrawingResult(SheetOutput, frozen=True):
-    """The sheet image: its size in pixels and, with a ``region``, the part of the sheet it shows (page mm)."""
+    """The sheet image: its size in pixels and, with a ``region``, the part of the sheet it shows (page mm). ``edits`` is
+    the sheet's change counter at the moment of the capture. ``findings`` is what was measured on the sheet (always, for the
+    whole sheet); with ``crops`` in the request, ``zoomed`` are the crops written next to the image and ``left_out`` the
+    areas the cap on their number left out."""
 
     size_px: tuple[int, int] = (0, 0)
     region: tuple[float, float, float, float] | None = None
+    sheet: str = ""
+    edits: int = 0
+    annotations: int = 0
+    findings: tuple[SheetFinding, ...] = ()
+    zoomed: tuple[SheetCrop, ...] = ()
+    left_out: tuple[str, ...] = ()
 
 
 class ExportDrawingResult(SheetOutput, frozen=True):

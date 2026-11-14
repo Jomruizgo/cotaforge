@@ -265,6 +265,9 @@ class Session:
         is that fragment saving the document itself, not somebody else."""
         self.purpose = DEFAULT_PURPOSE
         """What the document is for: ``sketch`` (a concept model) or ``detail`` (features); kept in the record."""
+        self.sheet_looks: dict[tuple[str, str], Any] = {}
+        """The last whole-sheet capture of each sheet this session took (drawing_look): export waits for one taken after the
+        last change of the sheet."""
         self.mem = design_memory.MemState()
         """Roles, stage and the answers given at milestones: kept in the document and in the record."""
         self._aliases: dict[str, FeatureHandle] = {}

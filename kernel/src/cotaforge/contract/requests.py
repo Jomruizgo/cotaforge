@@ -821,6 +821,12 @@ class CaptureDrawingRequest(Request):
     width: int = Field(default=1400, ge=64, le=6000)
     sheet: str | None = Field(default=None, pattern=SHEET_NAME_PATTERN)
     region: tuple[float, float, float, float] | None = None
+    crops: bool = False
+    """Also write zoomed crops (``<path stem>-crop<n>.png``) of the annotated area of each view and of every measured
+    finding, at about 10 px per mm, capped in number and size. Whole sheet only: ignored with a ``region``."""
+    crops_given_at: int | None = None
+    """The change counter (``edits``) of the sheet at which its crops were last handed over: with ``crops``, a sheet that is
+    still at that counter draws none (the same images again are tokens for nothing and seconds of painting)."""
 
 
 class ExportDrawingRequest(Request):

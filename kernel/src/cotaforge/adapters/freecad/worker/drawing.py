@@ -63,6 +63,7 @@ import sheet_isoview
 import sheet_items
 import sheet_keyway
 import sheet_layout
+import sheet_look
 import sheet_mirror
 import sheet_model as model
 import sheet_native
@@ -3699,7 +3700,63 @@ def capture(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     out = _outcome(page, ctx, spec, sheet, renderer, warnings)
     out["size_px"] = list(size)
     out["region"] = list(region) if region is not None else None
+    out["sheet"] = str(spec.get("sheet", ""))
+    out["edits"] = int(spec.get("edits", 0))
+    found = sheet_look.layout_findings(ctx)
+    out["findings"] = [
+        {"kind": f.kind, "text": f.text, "box": list(f.box), "view": f.view, "items": list(f.items)} for f in found
+    ]
+    notes = [
+        box
+        for u in ctx.extras.get("units", [])
+        if u.kind == sheet_units.KIND_ITEM and u.entities and (box := sheet_units.bounds(u.entities)) is not None
+    ]
+    out["annotations"] = len(notes)
+    out["zoomed"], out["left_out"] = [], []
+    if params.get("crops") and region is None and params.get("crops_given_at") != out["edits"]:
+        out["zoomed"], out["left_out"] = _crops(page, sheet, renderer, out, notes, found, path, out["warnings"])
     return out
+
+
+def _crops(
+    page: Any,
+    sheet: model.Sheet,
+    renderer: str,
+    out: dict[str, Any],
+    notes: list[Any],
+    found: list[sheet_look.LayoutFinding],
+    path: str,
+    warnings: list[str],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """The zoomed crops of one capture (``sheet_look.select_crops``), each written next to ``path`` as ``<stem>-crop<n>.png``
+    from the same source as the image itself."""
+    views = [(str(v["name"]), tuple(v["rect"])) for v in out["views"]]
+    chosen, left = sheet_look.select_crops(views, notes, found, (sheet.width, sheet.height))
+    stem = os.path.splitext(path)[0]
+    svg = sheet_svg.to_svg(sheet) if renderer != "techdraw" else ""
+    written: list[dict[str, Any]] = []
+    for n, crop in enumerate(chosen, start=1):
+        target = f"{stem}-crop{n}.png"
+        try:
+            if renderer == "techdraw":
+                size = gui.render_png(page, target, crop.width_px, (sheet.width, sheet.height), crop.region)
+            else:
+                size = sheet_render.render_png(svg, target, crop.width_px, sheet.width, sheet.height, crop.region)
+        except Exception as exc:  # noqa: BLE001 - a crop that cannot be drawn is said, never a failed capture
+            warnings.append(f"the crop {crop.label} could not be drawn ({type(exc).__name__}: {exc})")
+            continue
+        written.append(
+            {
+                "label": crop.label,
+                "view": crop.view,
+                "region": list(crop.region),
+                "path": target,
+                "size_px": list(size),
+                "px_per_mm": crop.px_per_mm,
+                "findings": list(crop.findings),
+            }
+        )
+    return written, left
 
 
 def spec_name_of_first(doc: reg.DocumentRec, op: str | None) -> str:

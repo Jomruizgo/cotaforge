@@ -40,7 +40,7 @@ from cotaforge.contract import (
 from cotaforge.ir import FaceRef
 from pydantic import ValidationError
 
-from cotaforge_mcp import design_memory, drawing_compose, drawing_gate, feature_tools, pdf_check, rules
+from cotaforge_mcp import design_memory, drawing_compose, drawing_gate, drawing_look, feature_tools, pdf_check, rules
 from cotaforge_mcp.reply import Image, Reply, ToolError, first_validation_issues, ok
 from cotaforge_mcp.schemas import DrawingArgs, ExportArgs, ViewArgs
 from cotaforge_mcp.session import Session
@@ -501,6 +501,10 @@ def _create_request(session: Session, args: DrawingArgs) -> DrawingRequest:
     )
 
 
+LOOK_NEXT = (
+    "next: look at every image and read what was measured; fix each point, then capture again: export waits for a "
+    "whole-sheet capture taken after the last change"
+)
 STEPS_NEXT = (
     'next: ask what the requirements above lack BEFORE drawing it, then drawing(action="add", items=[...]) a '
     "few at a time (one feature or group per call: the engineer "
@@ -664,14 +668,25 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
             path = folder / "sheet.png"
             result = session.adapter.capture_drawing(
                 CaptureDrawingRequest(
-                    operation_id="drawing_capture", path=str(path), width=width, sheet=args.sheet, region=region
+                    operation_id="drawing_capture",
+                    path=str(path),
+                    width=width,
+                    sheet=args.sheet,
+                    region=region,
+                    crops=region is None,
+                    crops_given_at=drawing_look.crops_given_at(session, args.sheet),
                 )
             )
             data = path.read_bytes()
+            give, look = drawing_look.attach(session, result, region, None)
+            crops = drawing_look.crop_images(result, lambda p: Path(p).read_bytes()) if give else []
         finally:
             with contextlib.suppress(OSError):
                 shutil.rmtree(folder)
-        return Reply("\n".join(_capture_lines(result, len(data))), images=[Image(data)])
+        lines = [*_capture_lines(result, len(data)), *look]
+        if region is None:
+            lines.append(LOOK_NEXT)
+        return Reply("\n".join(lines), images=[Image(data), *crops])
 
 
 def _region(value: list[float] | None) -> tuple[float, float, float, float] | None:
