@@ -67,6 +67,7 @@ from cotaforge.contract.mould import (
     PartingAnalysisRequest,
     PartingAnalysisResult,
 )
+from cotaforge.contract.mould_parts import MouldComponentRequest, SlideMechanismRequest
 from cotaforge.contract.native import RunNativeRequest, RunNativeResult
 from cotaforge.contract.probe import ToolOverlapRequest, ToolOverlapResult
 from cotaforge.contract.requests import (
@@ -543,6 +544,32 @@ class Adapter(ABC):
             ErrorInfo(
                 code=ErrorCode.not_supported,
                 message="mould_split: this adapter cannot split a block along a parting surface into core and cavity",
+                recoverable=False,
+            )
+        )
+
+    @tool("mould_component", Group.CONSTRUCTION, optional=True)
+    def mould_component(self, request: MouldComponentRequest) -> OperationResult:
+        """Build each part of a catalogue component (a plate, a pin, a bush, a ring) as a NEW body made of the CAD's own
+        sketches and features, with its catalogue reference as properties. The result carries the new bodies in
+        ``created_bodies`` (in the order of the parts). Adapters that cannot keep parametric history cannot say so."""
+        raise AdapterError(
+            ErrorInfo(
+                code=ErrorCode.not_supported,
+                message="mould_component: this adapter cannot build catalogue parts as native parametric bodies",
+                recoverable=False,
+            )
+        )
+
+    @tool("slide_mechanism", Group.CONSTRUCTION, optional=True)
+    def slide_mechanism(self, request: SlideMechanismRequest) -> OperationResult:
+        """Add the carrier, gibs, angle pin, locking heel, detent and wear plate of a slide of a ``mould_split`` step, as
+        NEW native bodies, after checking the stroke, the wedge angle and the closed and open positions. The result
+        carries the bodies in ``created_bodies`` and the checks in ``text``."""
+        raise AdapterError(
+            ErrorInfo(
+                code=ErrorCode.not_supported,
+                message="slide_mechanism: this adapter cannot build the mechanism of a mould slide",
                 recoverable=False,
             )
         )

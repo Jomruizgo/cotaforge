@@ -132,6 +132,7 @@ from cotaforge.contract import (
     MeasureBodiesResult,
     MirrorBodyRequest,
     MirrorRequest,
+    MouldComponentRequest,
     MouldSplitRequest,
     MoveBodyRequest,
     NewDocumentRequest,
@@ -168,6 +169,7 @@ from cotaforge.contract import (
     ShowEntitiesRequest,
     ShowEntitiesResult,
     ShrinkBodyRequest,
+    SlideMechanismRequest,
     SketchRequest,
     SketchResult,
     SketchStatusRequest,
@@ -242,7 +244,7 @@ DRAWING_METHODS = frozenset(
 )
 
 
-MOULD_METHODS = frozenset({"draft_analysis", "parting_analysis", "mould_split"})
+MOULD_METHODS = frozenset({"draft_analysis", "parting_analysis", "mould_split", "mould_component", "slide_mechanism"})
 # The mould tools read every face of the part and cast rays at its triangles (and a split cuts and checks solids): a part
 # of hundreds of faces takes minutes. Like an import they wait for as long as the CAD is alive and using CPU, never for a
 # fixed time that would kill the worker and the document with it.
@@ -773,6 +775,12 @@ class FreeCADAdapter(Adapter):
 
     def mould_split(self, request: MouldSplitRequest) -> OperationResult:
         return self._call("mould_split", request, OperationResult)
+
+    def mould_component(self, request: MouldComponentRequest) -> OperationResult:
+        return self._call("mould_component", request, OperationResult)
+
+    def slide_mechanism(self, request: SlideMechanismRequest) -> OperationResult:
+        return self._call("slide_mechanism", request, OperationResult)
 
     def split(self, request: SplitRequest) -> OperationResult:
         return self._call("split", request, OperationResult)

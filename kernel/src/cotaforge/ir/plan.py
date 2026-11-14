@@ -92,6 +92,8 @@ _BODY_PRODUCING_OP_NAMES: frozenset[str] = frozenset(
         "mirror_body",
         "shrink_body",
         "mould_split",
+        "mould_component",
+        "slide_mechanism",
         "split",
         "extrude",
         "revolve",
@@ -485,6 +487,8 @@ def _direct_id_refs(op: OperationBase) -> list[tuple[str, str]]:
             refs.append((op.a, "insert_component"))  # type: ignore[attr-defined]
     if name == "set_joint":
         refs.append((op.joint, "add_joint"))  # type: ignore[attr-defined]
+    if name == "slide_mechanism":
+        refs.append((op.split, "mould_split"))  # type: ignore[attr-defined]
     if name == "check_interference" and op.components is not None:  # type: ignore[attr-defined]
         refs.extend((component_id, "insert_component") for component_id in op.components)  # type: ignore[attr-defined]
     return refs
@@ -553,6 +557,8 @@ def _v3_ref_types(plan: Plan) -> None:
                 _raise_v3(plan, op, "component", ref_id, target)  # an adapter operation may return one as well
             elif kind == "add_joint" and target.op != "add_joint":
                 _raise_v3(plan, op, "joint", ref_id, target)
+            elif kind == "mould_split" and target.op != "mould_split":
+                _raise_v3(plan, op, "mould split", ref_id, target)
             elif kind == "datum_plane" and target.op != "ref_plane" and not is_extension_op(target.op):
                 _raise_v3(plan, op, "datum_plane", ref_id, target)
             elif kind == "datum_axis" and target.op != "ref_axis" and not is_extension_op(target.op):
