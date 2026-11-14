@@ -311,12 +311,15 @@ def sync(fc_doc: Any, page: Any, units: list[su.Unit], page_h: float, sheet: str
         if key not in wanted:
             _remove(fc_doc, have.pop(key))
             report.removed.append(key)
-    report.fallbacks = sheet_native.sync(fc_doc, page, [u for u in units if u.natives], sheet, have, report)
-    sheet_native.sync_flags(page, [u for u in units if u.natives and u.key not in report.fallbacks])
+    # the cosmetic edges first: a dimension may measure one (the pitch circle of a bolt pattern), so its view must have it
     drawn: list[str] = []
+    report.fallbacks = sheet_native.sync_cosmetics(page, [u for u in units if u.natives], drawn)
+    if drawn:
+        fc_doc.recompute()
     report.fallbacks.update(
-        sheet_native.sync_cosmetics(page, [u for u in units if u.natives and u.key not in report.fallbacks], drawn)
+        sheet_native.sync(fc_doc, page, [u for u in units if u.natives and u.key not in report.fallbacks], sheet, have, report)
     )
+    sheet_native.sync_flags(page, [u for u in units if u.natives and u.key not in report.fallbacks])
     report.updated += [k for k in drawn if k not in report.touched()]  # the edges of a view are made or taken off
     have = owned(page)  # the native objects were made again: what is on the page now
     for unit in units:

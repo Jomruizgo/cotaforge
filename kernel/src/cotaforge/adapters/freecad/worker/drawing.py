@@ -3599,7 +3599,7 @@ def review_findings(
         findings.append(
             {
                 "code": "foreign_symbol",
-                "severity": "warning",
+                "severity": "info",  # the items still drawn this way are listed in tests/unit/freecad_client/test_native_only.py
                 "message": ctx.say(
                     f"La hoja tiene {len(foreign)} símbolo(s) que no son de la biblioteca de FreeCAD ({', '.join(keys)[:120]}): "
                     "son un dibujo suelto que no sigue a su vista ni se edita línea a línea, y se queda si se borra la vista. "

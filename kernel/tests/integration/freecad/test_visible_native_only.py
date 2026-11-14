@@ -95,19 +95,17 @@ print(json.dumps({
         visible,
         """
 top = view("Top")
-tags = [t for entry in json.loads(top.CotaforgeCosmetic).values() for t in entry[1]]
-def ends(tag):
-    e = top.getCosmeticEdge(tag)
+def ends(e):
     try:
         float(e.Radius)
-        return [float(e.Center.x), float(e.Center.y)]
+        return [float(e.Center.x), float(e.Center.y), float(e.Radius)]
     except TypeError:
         return [float(e.Start.x), float(e.Start.y), float(e.End.x), float(e.End.y)]
-before = [ends(t) for t in tags]
+before = [ends(e) for e in top.CosmeticEdges]
 x0 = float(top.X)
 top.X = x0 + 25.0
 doc.recompute()
-print(json.dumps({"same": before == [ends(t) for t in tags], "moved": float(top.X) - x0, "count": len(tags)}))
+print(json.dumps({"same": before == [ends(e) for e in top.CosmeticEdges], "moved": float(top.X) - x0, "count": len(before)}))
 """,
     )
     assert moved["same"] and abs(moved["moved"] - 25.0) < 1e-6 and moved["count"] >= 4, moved

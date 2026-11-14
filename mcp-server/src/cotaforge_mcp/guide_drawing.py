@@ -17,10 +17,7 @@ SHEET_RULES = (
     "it is chosen from the part (the reply says). Title "
     "defaults to the document name, date to today, material to "
     "the document's (it follows doc set_material while you leave it empty), "
-    "general_tolerances to ISO 2768-mK. What the title block has a field for never goes into the notes: a free note that "
-    "states the material ('Material: ...'), the general tolerances or the scale is put in its field of the title block "
-    "(the reply says so; a note that contradicts what the title block already says stays and the review reports it). "
-    "scale is a ratio (1:2, 2:1, 0.5); omitted, the largest standard one that fits. "
+    "general_tolerances to ISO 2768-mK. scale is a ratio (1:2, 2:1, 0.5); omitted, the largest standard one that fits. "
     "It returns only when every view has finished computing: never start a step on a view yourself while one is "
     "still computing (TechDraw does that in the background and a step on a half-computed view can crash the CAD).",
     "Several sheets: a new sheet= name makes another sheet of the same document (body=<body id> draws that body "

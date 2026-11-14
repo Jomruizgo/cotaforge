@@ -14,6 +14,7 @@ from typing import Any
 import drawing
 import main
 import sheet_mirror
+import sheet_native
 import sheet_model as model
 from harness import (
     call,
@@ -191,7 +192,7 @@ def check_every_item_shows_on_the_page_when_it_is_added_and_the_page_matches_the
         if key:
             if key != "vl":  # hidden and centre lines of view_lines are the views' own: no object
                 seen.add(key)
-            assert keys() - {"threads", "iso286"} == seen, (keys(), seen)
+            assert keys() - {"threads", "iso286", "loc"} == seen, (keys(), seen)  # loc: its dimensions, once datums locate the holes
             assert result["window"] != "unchanged", result["window"]
         problems = drawing.compare_window(_rec(), None, "check")
         assert problems == [], problems
@@ -441,8 +442,8 @@ def check_every_centre_mark_is_at_the_projected_centre_of_its_hole_in_the_sheet_
             owned.X = float(owned.X) + 0.5
         else:  # a TechDraw view: the crosses are cosmetic edges of it; the engineer deletes one of them by hand
             top = next(v for v in drawing.part_views(page) if drawing.view_key(v) == "top")
-            tag = json.loads(str(top.CotaforgeCosmetic))["loc"][1][0]
-            top.removeCosmeticEdge(tag)
+            kind, values = json.loads(str(top.CotaforgeCosmetic))["loc"][1][0]
+            top.removeCosmeticEdge(str(sheet_native._find(top, (kind, tuple(values))).Tag))  # noqa: SLF001
         problems = drawing.centre_mark_problems(_rec(), None, "check")
         assert problems and any("not at the centre of any hole" in p or "page does not" in p for p in problems), (
             problems
