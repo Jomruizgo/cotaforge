@@ -52,6 +52,7 @@ LABEL_ROOM_MM = 9.0  # below a view: its label
 ROOM_MARGIN_MM = 4.0  # clear space around a new view
 ROOM_GAP_MM = 18.0  # between the parent and a view placed beside it (dimensions go there)
 REMOVED_GAP_MM = 40.0  # a removed section stands this far from the part at least: the arrows and letters of its cutting line (17 mm) and its own dimension line fit between
+REMOVED_DIMS_MM = 26.0  # the strip of a removed section on the side of the part: its width dimension (line 10 mm out, text, arrows)
 ROOM_STEP_MM = 8.0
 ROOM_TRIES = 30
 SCAN_STEP_MM = 10.0
@@ -517,7 +518,11 @@ def draw_section(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         # a REMOVED section stands on the extension of its cutting line: above or below the part, centred on the line (ISO 128-40),
         # so the cut and its view read as one; beside the part only when neither side has room
         directions = [line, (-line[0], -line[1]), gaze_page, (-gaze_page[0], -gaze_page[1])]
-        centre = find_room(ctx, room[0], room[1], parent_rect, directions, anchor, REMOVED_GAP_MM)
+        # room for the strip between the part and the view, where its width dimension stands: asked on the part side and given
+        # back, so the dimension never lies on the dimension lines of the part's own stack
+        centre = find_room(ctx, room[0], room[1] + REMOVED_DIMS_MM, parent_rect, directions, anchor, REMOVED_GAP_MM)
+        if centre is not None and abs(centre[1] - (parent_rect[1] + parent_rect[3]) / 2) > abs(centre[0] - anchor[0]):
+            centre = (centre[0], centre[1] + (REMOVED_DIMS_MM / 2 if centre[1] > (parent_rect[1] + parent_rect[3]) / 2 else -REMOVED_DIMS_MM / 2))
     else:
         align = ((parent_rect[0] + parent_rect[2]) / 2, (parent_rect[1] + parent_rect[3]) / 2)
         directions = [gaze_page, (-gaze_page[0], -gaze_page[1]), line, (-line[0], -line[1])]

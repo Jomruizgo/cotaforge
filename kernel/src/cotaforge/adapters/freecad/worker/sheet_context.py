@@ -518,7 +518,11 @@ class Context:
         self.stacks[(view, side)] = slot + 1
         if offset_mm is not None:
             return offset_mm
-        return DEFAULT_OFFSET_MM + STACK_STEP_MM * (slot + self.nudge())
+        # a nudged line moves out, and so does every line drawn after it on this side: the order of the stack (the shorter
+        # nearest the part, ISO 129-1) is never turned over by the placement pass
+        shifts = self.extras.setdefault("stack_shift", {})
+        shifts[(view, side)] = max(shifts.get((view, side), 0), self.nudge())
+        return DEFAULT_OFFSET_MM + STACK_STEP_MM * (slot + shifts[(view, side)])
 
     def reserve_dimension(self, entities: list[Entity], strip: Rect) -> None:
         """Reserve what a dimension takes: ``strip`` (its line, arrows and text, where no label may go) and, apart, the

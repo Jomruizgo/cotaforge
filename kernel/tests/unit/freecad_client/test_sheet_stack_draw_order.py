@@ -48,6 +48,23 @@ def test_dimensions_move_only_inside_their_own_phase() -> None:
     assert ids(items, out) == ["l260", "l340", "l100"]
 
 
+def test_a_nudged_line_moves_out_with_every_line_drawn_after_it_never_past_a_longer_one() -> None:
+    """The placement pass nudges a line that collides farther out: the lines drawn after it on that side move with it, so the longer
+    one (drawn last) never ends up nearer the part than the shorter ones (the 125 inside the 168 of a real shaft sheet)."""
+    import sheet_context as sc  # noqa: PLC0415
+    import sheet_model as model  # noqa: PLC0415
+
+    ctx = sc.Context(sheet=model.Sheet(420.0, 297.0), views={}, holes=[], geometry=sc.Geometry(), area=(20.0, 40.0, 410.0, 287.0))
+    ctx.extras["nudges"] = {"b": 1}
+    distances = []
+    for item in ("a", "b", "c"):
+        ctx.extras["current"] = item
+        distances.append(ctx.stack_distance("front", "below", None))
+    assert distances == sorted(distances) and len(set(distances)) == 3
+    assert distances[2] - distances[1] == sc.STACK_STEP_MM  # c stands one step beyond b, not back on the slot b left
+    assert distances[1] - distances[0] == 2 * sc.STACK_STEP_MM  # b was nudged one slot out
+
+
 def test_a_dimension_that_cannot_be_measured_keeps_its_place() -> None:
     items = [dist("l340"), dist("ghost"), dist("l260")]
     out = sheet_items.shortest_first(None, items, [0, 1, 2], lambda _i: 0)  # type: ignore[arg-type]
