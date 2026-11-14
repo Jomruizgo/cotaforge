@@ -229,7 +229,8 @@ ITEM_LINES = (
     "(a point of the plane) + normal=[x,y,z] (the direction the viewer looks; the plane must be seen edge-on in the "
     "parent view); view? (the parent, where the cutting line goes: default the first that fits), letter? (default "
     "the next "
-    "free one: A, B...), flip? (look from the other side), in_place? (true, with holes=\"axis\": the section stands IN the "
+    "free one: A, B...), flip? (look from the other side), removed? (true: a REMOVED section, ISO 128-40: the cut view stands "
+    "on the extension of its cutting line, above or below the part, centred on the line; a keyway's section is one), in_place? (true, with holes=\"axis\": the section stands IN the "
     "main view, in its frame, place and scale, and that view is not drawn; no cutting line, no letters (ISO 128-44: the "
     "plane is the axis of symmetry); a part of revolution whose features are all coaxial. Dimension it on view=A-A: each "
     "Ø (dim kind=diameter; a bore's hole_dim gives one Ø per step) and the heights direct from the seating face, never "
@@ -417,9 +418,24 @@ WELD_LINE = (
     "welded sheet needs a parts list and a balloon per body (weld_list_missing, item_without_balloon, balloon_not_in_list)."
 )
 
+BASELINE_LINE = (
+    "baseline_dims: from=\"face:N\" (required), view?, side?. The length of every step of a turned part counted from ONE datum "
+    "face, as parallel dimensions (ISO 129-1), made into dim items <id>1, <id>2... The datum is never chosen for the engineer: it is "
+    "the axial reference the intent file names (the shoulder or the end the functional lengths are counted from) or the face "
+    "he picks when asked. The lines stack shortest nearest the part, longest outermost, 7 mm apart; a chain stays only where it is "
+    "functional (a groove width, a keyway set from its shoulder). Put the stack on one side of the long view (side=below) and "
+    "the diameters on the other: a diameter callout cannot cross a dimension line. The review HOLDS the export for parallel "
+    "dimensions in the wrong order (dimension_stack_order: the longer nearer the part), lines closer than 6,5 mm "
+    "(dimension_gap) and an extension line across another dimension's line (dimension_crossing)."
+)
+
 KEYWAY_LINE = (
-    "keyway_dims (no fields): the dimensions of the keyways the walls of the part show -- width, depth as the standards give "
-    "it (d - t1 on a shaft, d + t2 in a hub), length, position -- as dim items <id>_w, _t, _l, _p. The harness adds them "
+    "keyway_dims (fit?, depth_tol?, section?, letter?): the dimensions of the keyways the walls of the part show -- width, depth "
+    "as the standards give it (d - t1 on a shaft, d + t2 in a hub), length, position -- as dim items <id>_w, _t, _l, _p. The "
+    "width and the depth go on a REMOVED section across the keyway (a section item with removed=true, <id>_sec, placed on the "
+    "extension of its cutting line: no end view is made for a keyway); the length and the position, on the long view. fit is the "
+    "ISO 286 class of the width (P9, N9: asked, never assumed), depth_tol [upper, lower] the deviations of the depth, section=false "
+    "keeps the old end view dimensions, letter the letter of the section. The harness adds them "
     "itself (rq_keyway); only the width's fit class is asked. chamfer_dims (no fields): a callout (size x angle) of every "
     "chamfer no dimension gives yet, flat or on a round edge (a shaft end), as dim items kind=chamfer; the harness adds it "
     "itself (rq_chamfers). Assemblies: the harness also adds the parts list and a balloon per position on the isometric "
@@ -495,6 +511,7 @@ VIEWS_LINE = (
 )
 
 TOPIC_ITEMS = "drawing:items"
+TOPIC_DIMS = "drawing:dims"
 TOPIC_MARKS = "drawing:marks"
 TOPIC_VIEWS = "drawing:views"
 TOPIC_ASSEMBLY = "drawing:assembly"
@@ -513,6 +530,7 @@ LAYOUT_LINE = (
 
 SUBTOPICS = (
     TOPIC_ITEMS,
+    TOPIC_DIMS,
     TOPIC_MARKS,
     TOPIC_VIEWS,
     TOPIC_ASSEMBLY,
@@ -521,11 +539,11 @@ SUBTOPICS = (
     TOPIC_DONE,
 )
 INDEX_LINE = (
-    "MORE (the item reference is split: each reply is read in full): cad_guide(topic=drawing:items) holes, "
-    "dimensions, position dimensions, tolerances | drawing:marks datums, GD&T frames, finish, notes, hidden / centre "
+    "MORE (split; each reply is read whole): cad_guide(topic=drawing:items) holes, "
+    "dimensions, position dimensions, tolerances | drawing:dims baseline lengths, keyway section | drawing:marks datums, GD&T frames, finish, notes, hidden / centre "
     "lines | drawing:views section, detail, auxiliary view, review | drawing:assembly parts list, balloons, exploded | "
-    "drawing:output how export(action=pdf|dxf) writes the sheet, DXF layers, line weights, projection=hlr | "
-    "drawing:quality the quality floor: location of the holes, callouts, dowels, notes, title block, one view | "
+    "drawing:output export(action=pdf|dxf), layers, line weights, projection=hlr | "
+    "drawing:quality quality floor: hole location, callouts, dowels, notes, title block, one view | "
     "drawing:done WHEN A DRAWING MAY BE EXPORTED: requirements, who reviews it, answer, approve. Look at the "
     "sheet (drawing capture) before you write it."
 )
@@ -543,7 +561,8 @@ def drawing_text(tools: Collection[str], part: str = "", flow: str = "steps") ->
     if part:
         groups = {
             TOPIC_ITEMS: [ITEM_INTRO[0], *ITEM_LINES[0:4]],
-            TOPIC_MARKS: [*ITEM_LINES[4:9], WELD_LINE, KEYWAY_LINE],
+            TOPIC_DIMS: [BASELINE_LINE, KEYWAY_LINE],
+            TOPIC_MARKS: [*ITEM_LINES[4:9], WELD_LINE],
             TOPIC_VIEWS: [*ITEM_LINES[9:12], ITEM_LINES[13], LAYOUT_LINE],
             TOPIC_ASSEMBLY: [ITEM_LINES[12]],
             TOPIC_OUTPUT: [SHEET_RULES[2], PROJECTION_LINE, VIEW_LINE],
