@@ -75,6 +75,14 @@ def test_a_cylinder_without_axis_cannot_be_dismissed_on_the_agents_word() -> Non
     assert "cylinder_no_axis" in dr.MEASURED_FINDINGS
 
 
+def test_a_flat_of_a_turned_part_without_its_diagonals_is_met_by_view_lines_and_cannot_be_dismissed() -> None:
+    assert "flat_face_unmarked" in dr.MEASURED_FINDINGS
+    washer = {**PLATE, "holes": 1, "bosses": 1}
+    assert "req.centre_lines" in rows(washer, (finding("flat_face_unmarked"),))
+    (added,) = [a for a in plan(washer, (finding("flat_face_unmarked"),)) if a.item["type"] == "view_lines"]
+    assert added.item == {"type": "view_lines", "id": dr.VIEW_LINES_ID} and added.rows == ("req.centre_lines",)
+
+
 # --- a view with nothing in it ----------------------------------------------------------------------------------------------
 
 
