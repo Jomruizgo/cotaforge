@@ -1391,6 +1391,7 @@ def _expand_keyway_dims(
     import items_views  # noqa: PLC0415 - the letters of the views
 
     _KEYWAY_FALLBACK.clear()
+    along_side = "above" if turned_of(doc, spec, op) is not None else None  # a turned part's lengths stack below: the keyway's stand above
     slots =sheet_facts.collect(doc, _bodies(doc, spec.get("body"), op)).keyway_slots
     shown = tuple(views_of(spec))
     views_made = [i for i in [*spec.get("items", ()), *requested] if isinstance(i, dict) and i.get("type") in ("section", "detail", "aux_view")]
@@ -1421,18 +1422,18 @@ def _expand_keyway_dims(
                 free = [letter for letter in items_views.LETTERS if letter not in taken]
                 letter = str(item.get("letter") or free[min(auto, len(free) - 1)])
                 section = f"{letter}-{letter}"
-            dims = sheet_keyway.dimension_specs(slot, name, shown, section, item.get("fit"), depth_tol)
+            dims = sheet_keyway.dimension_specs(slot, name, shown, section, item.get("fit"), depth_tol, along_side)
             if section and any(d.get("view") == section for d in dims):  # no width or depth to carry: no section
                 taken.add(section[0])
                 _KEYWAY_FALLBACK[f"{name}_sec"] = [
-                    d for d in sheet_keyway.dimension_specs(slot, name, shown, None, item.get("fit"), depth_tol) if str(d["id"]).endswith(("_w", "_t"))
+                    d for d in sheet_keyway.dimension_specs(slot, name, shown, None, item.get("fit"), depth_tol, along_side) if str(d["id"]).endswith(("_w", "_t"))
                 ]
                 made.append(
                     {"type": "section", "id": f"{name}_sec", "at": [round(v, 4) for v in sheet_keyway.middle_of(slot)],
                      "normal": list(slot.cylinder.axis), "letter": section[0], "removed": True}
                 )  # fmt: skip
             elif section:
-                dims = sheet_keyway.dimension_specs(slot, name, shown, None, item.get("fit"), depth_tol)
+                dims = sheet_keyway.dimension_specs(slot, name, shown, None, item.get("fit"), depth_tol, along_side)
             made += dims
         if not made:
             raise invalid_request("the part has no keyway whose walls can be dimensioned (keyway_dims)", op)

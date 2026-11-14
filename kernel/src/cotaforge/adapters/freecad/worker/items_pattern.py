@@ -61,6 +61,7 @@ CHECKS = {
     "side": COMMON_FIELDS["side"],
 }
 ARC_OVER_MM = 6.0  # the arc of an angle is this far outside the holes of the pattern
+ARC_NEST_MM = 7.0  # the arc of a lone hole stands this much beyond the arc of the ring of holes: their texts never meet
 LEADER_DIAGONALS = (45.0, 135.0, 225.0, 315.0)
 RAY_SKEW_DEG = 0.37
 REF_OVER_MM = 4.0  # the centre line a first-hole angle is counted from reaches this far past the holes
@@ -181,7 +182,7 @@ def _angle(ctx: Context, spec: dict[str, Any], pattern: sheet_pattern.Pattern, v
         for ring in sheet_pattern.patterns_of(ctx):
             if parallel(ring.direction, pattern.direction):
                 widest = max(holes[i].diameter for i in ring.indexes) / 2 * view.scale
-                reach = max(reach, ring.radius * view.scale + widest + ARC_OVER_MM)
+                reach = max(reach, ring.radius * view.scale + widest + ARC_OVER_MM + ARC_NEST_MM)
     arc = spec.get("offset_mm") or reach
     a0, a1 = (ref, angle) if off > 0 else (angle, ref)
     text = f"{ctx.num(round(abs(off), 2))}°"

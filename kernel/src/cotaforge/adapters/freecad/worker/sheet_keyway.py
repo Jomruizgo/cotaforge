@@ -230,6 +230,7 @@ def dimension_specs(
     section: str | None = None,
     fit: str | None = None,
     depth_tol: tuple[float, float] | None = None,
+    along_side: str | None = None,
 ) -> list[dict[str, object]]:
     """The ``dim`` items that say a keyway to the shop, measured on the model: the width (between the walls), the depth as
     the standards give it (``d - t1`` on a shaft, ``d + t2`` in a hub: from the bottom to the opposite side of the cylinder),
@@ -237,7 +238,9 @@ def dimension_specs(
     of the shaft to the first plane that ends it). A dimension whose faces are not found, or that does not lie along a model
     axis, is left out: nothing is guessed. ``section`` is the label of the removed section across the keyway (``A-A``): the
     width and the depth go on it, with the width's class (``fit``) and the depth's deviations (``depth_tol``: upper, lower);
-    without one they go in the view of the sheet that looks along the axis of the cylinder, when it has it."""
+    without one they go in the view of the sheet that looks along the axis of the cylinder, when it has it. ``along_side`` is the side of
+    the view the length and the position stand on (``above`` on a turned part: its lengths stack below, and a dimension nothing
+    pins is moved by the layout into that stack, across the ends of the keyway)."""
     c, out = slot.cylinder, []
     profile = PROFILE_VIEW.get(axis_name(c.axis) or "")
     view = {"view": section} if section else {"view": profile} if profile in views else {}
@@ -258,6 +261,7 @@ def dimension_specs(
     lengthwise = axis_name(c.axis)
     if lengthwise is None:
         return out
+    side = {"side": along_side} if along_side else {}
     inside = _dot(slot.wall_a.centre, c.axis)
     ends = sorted(slot.ends, key=lambda f: _dot(f.centre, c.axis))
     caps = sorted(slot.caps, key=lambda f: _dot(f.centre, c.axis))
@@ -268,18 +272,18 @@ def dimension_specs(
     if slot.rounds:  # closed by two half circles: the length runs between the farthest points of the walls, the position from the shoulder to the near one
         low_end, high_end = slot.rounds
         p_low, p_high = ({"at": list(round_tip(slot, low_end, -1.0))}, {"at": list(round_tip(slot, high_end, 1.0))})
-        out.append({"type": "dim", "kind": "distance", "id": f"{prefix}_l", "from": p_low, "to": p_high, "along": lengthwise})
+        out.append({"type": "dim", "kind": "distance", "id": f"{prefix}_l", "from": p_low, "to": p_high, "along": lengthwise, **side})
         near = cap_low if cap_low is not None else cap_high
         if near is not None and near.face_id:
-            out.append({"type": "dim", "kind": "distance", "id": f"{prefix}_p", "from": {"face": near.face_id}, "to": p_low if cap_low is not None else p_high, "along": lengthwise})
+            out.append({"type": "dim", "kind": "distance", "id": f"{prefix}_p", "from": {"face": near.face_id}, "to": p_low if cap_low is not None else p_high, "along": lengthwise, **side})
     elif first is not None and last is not None and first.face_id and last.face_id:  # closed at both ends
-        out.append({"type": "dim", "kind": "distance", "id": f"{prefix}_l", "from": {"face": first.face_id}, "to": {"face": last.face_id}, "along": lengthwise})
+        out.append({"type": "dim", "kind": "distance", "id": f"{prefix}_l", "from": {"face": first.face_id}, "to": {"face": last.face_id}, "along": lengthwise, **side})
         near = cap_low if cap_low is not None else cap_high
         start = first if cap_low is not None else last
         if near is not None and near.face_id and start.face_id:
-            out.append({"type": "dim", "kind": "distance", "id": f"{prefix}_p", "from": {"face": near.face_id}, "to": {"face": start.face_id}, "along": lengthwise})
+            out.append({"type": "dim", "kind": "distance", "id": f"{prefix}_p", "from": {"face": near.face_id}, "to": {"face": start.face_id}, "along": lengthwise, **side})
     else:  # open out through an end of the shaft: its length is measured to that end
         end, cap = (first, cap_high) if first is not None else (last, cap_low)
         if end is not None and cap is not None and end.face_id and cap.face_id:
-            out.append({"type": "dim", "kind": "distance", "id": f"{prefix}_l", "from": {"face": end.face_id}, "to": {"face": cap.face_id}, "along": lengthwise})
+            out.append({"type": "dim", "kind": "distance", "id": f"{prefix}_l", "from": {"face": end.face_id}, "to": {"face": cap.face_id}, "along": lengthwise, **side})
     return out

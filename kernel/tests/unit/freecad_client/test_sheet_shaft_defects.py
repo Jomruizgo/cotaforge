@@ -268,3 +268,23 @@ def test_a_hole_counted_about_the_axis_draws_its_pitch_circle_and_is_located_by_
     stored, results = run(ctx, *sp.auto_items(lone_pin(), ["top"], (sc.unit((0.0, 0.0, 1.0)), (0.0, 0.0, 6.0))))
     assert all(r.status == "ok" for r in results), [r.detail for r in results]
     assert 9 in ctx.extras["polar_located"] and "Ø50" in ctx.sheet.texts() and stored
+
+
+def test_the_length_and_the_position_of_a_keyway_stand_on_the_side_a_turned_part_leaves_them_not_in_its_stack_of_lengths() -> None:
+    slot = keyway_slot()
+    plain = {s["id"]: s for s in kw.dimension_specs(slot, "kw", ("front",))}
+    assert "side" not in plain["kw_l"] and "side" not in plain["kw_p"]
+    pinned = {s["id"]: s for s in kw.dimension_specs(slot, "kw", ("front",), None, None, None, "above")}
+    assert pinned["kw_l"]["side"] == pinned["kw_p"]["side"] == "above" and "side" not in pinned["kw_w"]
+
+
+def test_the_arc_of_a_lone_hole_stands_beyond_the_arc_of_the_ring_so_their_texts_never_meet() -> None:
+    from .test_sheet_pattern import context, run  # noqa: PLC0415
+
+    ctx = context(lone_pin())
+    _, results = run(ctx, *sp.auto_items(lone_pin(), ["top"], (sc.unit((0.0, 0.0, 1.0)), (0.0, 0.0, 6.0))))
+    assert all(r.status == "ok" for r in results), [r.detail for r in results]
+    radii = sorted(e.r for e in ctx.sheet.entities if isinstance(e, model.Arc) and e.layer == model.DIMENSIONS)
+    assert len(radii) == 2 and radii[1] - radii[0] >= 6.0, radii
+    boxes = [sheet_collide.text_box(e) for e in ctx.sheet.entities if isinstance(e, model.Text) and "°" in e.text]
+    assert len(boxes) == 2 and (boxes[0][2] <= boxes[1][0] or boxes[1][2] <= boxes[0][0] or boxes[0][3] <= boxes[1][1] or boxes[1][3] <= boxes[0][1])
