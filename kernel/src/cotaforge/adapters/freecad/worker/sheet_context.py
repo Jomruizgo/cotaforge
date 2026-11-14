@@ -165,6 +165,12 @@ class HoleInfo:
     fit: str | None = None  # the tolerance class the ``hole`` operation declared (``H7``): its ``hole_dim`` default
     hole_class: str | None = None  # precision | plain | threaded, as the convention classed it when the hole was made
     precision_grade: int | None = None  # the IT grade that convention called precision
+    tip: float = 0.0  # the height of the drill point of a blind hole: the cone past ``depth`` (0: flat bottom or through)
+
+    @property
+    def length(self) -> float:
+        """How far the hole reaches along its axis from where it opens: the wall and the drill point."""
+        return self.depth + self.tip
 
     def on_axis(self, p: Vec3, tol: float = POSITION_TOL_MM) -> bool:
         """Whether ``p`` lies on the axis of the hole (within ``tol`` mm) -- how an ``at`` finds its hole."""

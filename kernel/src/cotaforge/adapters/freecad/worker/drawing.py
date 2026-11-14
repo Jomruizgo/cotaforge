@@ -2510,6 +2510,7 @@ def hole_infos(doc: reg.DocumentRec, body: str | None, op: str | None) -> list[s
                 fit,
                 made_class,
                 grade,
+                float(hole.get("tip_mm") or 0.0),
             )
         )
     return out

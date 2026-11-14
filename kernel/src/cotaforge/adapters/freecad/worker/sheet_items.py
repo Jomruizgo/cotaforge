@@ -24,6 +24,7 @@ import items_lines
 import items_notes
 import items_views
 import items_weld
+import sheet_centre
 from sheet_context import SECTION_LABEL, Context, ItemError, ItemResult, ItemType
 
 PHASE_ON_SECTION = 5  # after the views (3) and the balloons (4)
@@ -183,6 +184,7 @@ def draw_items(ctx: Context, items: list[dict[str, Any]]) -> list[ItemResult]:
                 status, detail = "warning", "; ".join([detail, *notes]) if detail else "; ".join(notes)
             results[position] = ItemResult(item_id, kind, status, detail)
             ctx.extras.setdefault("item_slices", {})[item_id] = (mark[0], len(ctx.sheet.entities))
+    sheet_centre.trim(ctx)  # the centre lines stop short of the dimensions and texts the items put in their way
     return [r for r in results if r is not None]
 
 

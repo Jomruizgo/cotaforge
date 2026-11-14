@@ -19,12 +19,14 @@ from typing import Any
 import hole_class
 import iso286
 import items_holes
+import sheet_centre
 import sheet_checks
 import sheet_tol
 from items_common import view_segments
 from items_dims import AXES
 from sheet_collide import Segment, ink_of, segments_cross
 from sheet_context import Context, HoleInfo, ItemError
+from sheet_model import CENTRE_OVERSHOOT_MM
 from sheet_review import Finding, ReviewInput, _hole_of_ref, _measure, _of, ask_reference
 
 OUTLINE_SLACK_MM = 0.5  # a dimension this close to the outline is on it, not inside it
@@ -37,6 +39,7 @@ def check(data: ReviewInput) -> list[Finding]:
     for part in (
         _leaders,
         _dimensions_inside,
+        _centre_lines,
         _partly_located,
         _dowels,
         _fit_differs,
@@ -126,6 +129,36 @@ def _leaders_across_dimensions(data: ReviewInput, leaders: list[dict[str, Any]])
             "dimension (ISO 128-22). Move the callout (side, offset_mm or leader_mm) or the dimension (offset_mm) to leave a clear way.",
         )
         out.append(Finding("leader_crosses_dimension", "warning", text, ids, key="+".join(ids)))
+    return out
+
+
+# --- centre lines -------------------------------------------------------------------------------------------------------
+
+
+def _centre_lines(data: ReviewInput) -> list[Finding]:
+    """A centre line that goes through a dimension line or a dimension text, or farther past its feature than the set
+    overshoot without a reason (ISO 128-24: a short, fixed reach; it never reaches a dimension)."""
+    ctx = data.ctx
+    out: list[Finding] = []
+    for rec, why in sheet_centre.crossings(ctx):
+        first, last = sheet_centre.overshoots(rec)
+        where = f"{rec.item} ({rec.view})" if rec.item else rec.view
+        if why == "crosses":
+            text = ctx.say(
+                f"Un eje de {where} cruza una cota o su texto: un eje sobrepasa el rasgo {CENTRE_OVERSHOOT_MM:g} mm como mucho y no llega a ninguna cota "
+                "(acorta el eje con extend_mm o aleja la cota con offset_mm).",
+                f"A centre line of {where} goes through a dimension or its text: a centre line passes its feature by {CENTRE_OVERSHOOT_MM:g} mm at most and "
+                "never reaches a dimension (shorten it with extend_mm or move the dimension with offset_mm).",
+            )
+            out.append(Finding("centre_line_crosses", "warning", text, (rec.item,) if rec.item else (), key=f"{rec.item}:{rec.view}:{rec.line.x1:.1f},{rec.line.y1:.1f}"))
+        else:
+            text = ctx.say(
+                f"Un eje de {where} sobrepasa su rasgo {max(first, last):.1f} mm (lo fijado es {CENTRE_OVERSHOOT_MM:g} mm) sin decir por qué: "
+                "añade reason a la línea o acórtalo.",
+                f"A centre line of {where} passes its feature by {max(first, last):.1f} mm (the set overshoot is {CENTRE_OVERSHOOT_MM:g} mm) "
+                "without saying why: add reason to the line or shorten it.",
+            )
+            out.append(Finding("centre_line_long", "warning", text, (rec.item,) if rec.item else (), key=f"{rec.item}:{rec.view}:{rec.line.x1:.1f},{rec.line.y1:.1f}"))
     return out
 
 

@@ -18,6 +18,7 @@ direction lacks one, so the agent asks the engineer which face or edge the posit
 from dataclasses import dataclass
 from typing import Any
 
+import sheet_centre
 from items_common import mark_once
 from items_holes import describe
 from sheet_context import (
@@ -38,14 +39,14 @@ from sheet_context import (
     v_points3,
 )
 from sheet_draw import centre_mark, exact_box, linear_dimension, table
-from sheet_model import AXES, TEXT, Line, Text, text_width
+from sheet_model import AXES, CENTRE_OVERSHOOT_MM, TEXT, Line, Text, text_width
 from sheet_units import NativeDim, Ref2
 
 GAP_MM = 1.0
 END_MM = 2.0
 VALUE_HEIGHT = 3.5
 POSITION_ON_DATUM_MM = 0.05  # a hole this near the datum line needs no dimension from it
-LINK_OVERSHOOT_MM = 3.0  # a centre line that orders a row or a column of holes goes this far past the last one
+LINK_OVERSHOOT_MM = CENTRE_OVERSHOOT_MM  # a centre line that orders a row or a column of holes goes this far past the last one
 AUTO_VIEWS = ("top", "front", "right")  # the order a hole is looked for as a circle, as hole_dim does
 
 
@@ -388,9 +389,12 @@ def _symmetry_line(ctx: Context, view: ViewInfo, plane: float, horizontal: bool)
     box = view.box
     reach = LINK_OVERSHOOT_MM
     if horizontal:  # the plane is the vertical line x = plane
-        ctx.add([Line(plane, box[1] - reach, plane, box[3] + reach, AXES)])
+        ends = (plane, box[1]), (plane, box[3])
     else:
-        ctx.add([Line(box[0] - reach, plane, box[2] + reach, plane, AXES)])
+        ends = (box[0], plane), (box[2], plane)
+    line = sheet_centre.side_line(ctx, view.name, ends[0], ends[1], reach)  # the same reach at both ends, short of any dimension
+    if line is not None:
+        ctx.add([line])
 
 
 def _ordinates(
