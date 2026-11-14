@@ -88,6 +88,17 @@ def _walls(c: Cylinder, a: Flat, b: Flat) -> bool:
 
 
 @dataclass(frozen=True)
+class Round:
+    """A rounded end of a slot (a keyway of form A, cut with an end mill, ends in a half circle): the cylindrical face, a point of
+    its axis and its radius. Nothing else of the part is at the end of such a keyway: no plane ends it."""
+
+    face_id: str
+    centre: Vec3
+    axis: Vec3
+    radius: float
+
+
+@dataclass(frozen=True)
 class Slot:
     """A keyway as the walls of the part show it: its two walls, the bottom (``None`` when none is found), the planes that end
     it along the axis (none when it runs out through the end of the shaft, one when it does, two when it is closed), the
@@ -103,6 +114,42 @@ class Slot:
     up: Vec3
     width: float
     reach: float | None
+    rounds: tuple[Round, ...] = ()
+    """The half circles that end it along the axis (``with_rounds``), in the order of the axis, when no plane does."""
+
+
+def with_rounds(slot: Slot, candidates: list[Round]) -> Slot:
+    """``slot`` with the rounded ends the part has for it: cylinders across the shaft (their axis along the way the slot opens)
+    as wide as the slot, centred on its middle plane and lying along the cylinder it is cut in. A slot a plane ends keeps none."""
+    if slot.ends:
+        return slot
+    c = slot.cylinder
+    lateral = _cross(c.axis, slot.up)
+    mid = tuple((slot.wall_a.centre[i] + slot.wall_b.centre[i]) / 2 for i in range(3))
+    found = []
+    for r in candidates:
+        if abs(abs(_dot(r.axis, slot.up)) - 1.0) > PARALLEL or abs(2 * r.radius - slot.width) > 0.2 + 0.02 * slot.width:
+            continue
+        if abs(_dot(_sub(r.centre, mid), lateral)) > SYMMETRY_MM:
+            continue
+        along = _dot(r.centre, c.axis)
+        if c.lo - AXIAL_SLACK_MM <= along <= c.hi + AXIAL_SLACK_MM:
+            found.append(r)
+    found.sort(key=lambda r: _dot(r.centre, c.axis))
+    if len(found) < 2:
+        return slot
+    return Slot(c, slot.wall_a, slot.wall_b, slot.bottom, slot.ends, slot.caps, slot.up, slot.width, slot.reach, (found[0], found[-1]))
+
+
+def round_tip(slot: Slot, end: Round, outward: float) -> Vec3:
+    """The point of the wall at the farthest reach of a rounded end along the axis of the shaft (``outward``: -1 the low end, +1 the
+    high one), half way down the slot: a point OF the part, so a dimension can start from it."""
+    c = slot.cylinder
+    mid = slot.cylinder.point
+    along = _dot(end.centre, c.axis) + outward * end.radius - _dot(mid, c.axis)
+    top = c.radius
+    depth = (slot.reach + top) / 2 if slot.reach is not None else top
+    return tuple(round(mid[i] + c.axis[i] * along + slot.up[i] * depth, 4) for i in range(3))  # type: ignore[return-value]
 
 
 def _unit(v: Vec3) -> Vec3:
@@ -218,7 +265,14 @@ def dimension_specs(
     last = next((f for f in reversed(ends) if _dot(f.centre, c.axis) > inside), None)
     cap_low = caps[0] if caps and _dot(caps[0].centre, c.axis) < inside else None
     cap_high = caps[-1] if caps and _dot(caps[-1].centre, c.axis) > inside else None
-    if first is not None and last is not None and first.face_id and last.face_id:  # closed at both ends
+    if slot.rounds:  # closed by two half circles: the length runs between the farthest points of the walls, the position from the shoulder to the near one
+        low_end, high_end = slot.rounds
+        p_low, p_high = ({"at": list(round_tip(slot, low_end, -1.0))}, {"at": list(round_tip(slot, high_end, 1.0))})
+        out.append({"type": "dim", "kind": "distance", "id": f"{prefix}_l", "from": p_low, "to": p_high, "along": lengthwise})
+        near = cap_low if cap_low is not None else cap_high
+        if near is not None and near.face_id:
+            out.append({"type": "dim", "kind": "distance", "id": f"{prefix}_p", "from": {"face": near.face_id}, "to": p_low if cap_low is not None else p_high, "along": lengthwise})
+    elif first is not None and last is not None and first.face_id and last.face_id:  # closed at both ends
         out.append({"type": "dim", "kind": "distance", "id": f"{prefix}_l", "from": {"face": first.face_id}, "to": {"face": last.face_id}, "along": lengthwise})
         near = cap_low if cap_low is not None else cap_high
         start = first if cap_low is not None else last
