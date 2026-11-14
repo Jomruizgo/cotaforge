@@ -57,6 +57,10 @@ UNSUPPORTED: dict[str, str] = {
         "keyway_dims is made into plain dim items when it is added (drawing add) and is never stored: if you read "
         "this, the part has no keyway whose walls can be dimensioned"
     ),
+    "baseline_dims": (
+        "baseline_dims is made into plain dim items when it is added (drawing add) and is never stored: if you read this, "
+        "the face it counts from is not a shoulder or an end of the part"
+    ),
     "thread_dims": (
         "thread_dims is made into plain dim items (kind diameter) when it is added (drawing add) and is never "
         "stored: if you read this, every external thread of the part has its callout"
@@ -127,6 +131,33 @@ def prepare_all(ctx: Context, items: list[dict[str, Any]]) -> None:
             prepare(ctx, group)
 
 
+def shortest_first(
+    ctx: Context, items: list[dict[str, Any]], order: list[int], group: Any
+) -> list[int]:
+    """``order`` with the distance dimensions that stack by the order they are drawn (those with no ``offset_mm``) put shortest
+    first inside each group (``group(position)``: the phase), the other items where they were. The lines stack outward in
+    the order they are drawn, so a length counted from a datum stands nearer the part than a longer one it runs along (ISO
+    129-1), whatever order the agent listed them in; the extension lines of the short one then never cross the line of the
+    long one."""
+    spans: dict[int, float] = {}
+    for position in order:
+        spec = items[position]
+        if spec.get("type") == "dim" and spec.get("kind") == "distance" and spec.get("offset_mm") is None:
+            span = items_dims.distance_span(ctx, spec)
+            if span is not None:
+                spans[position] = span
+    out = list(order)
+    seen: dict[Any, list[int]] = {}
+    for slot, position in enumerate(order):
+        if position in spans:
+            seen.setdefault(group(position), []).append(slot)
+    for slots in seen.values():
+        ranked = sorted((order[s] for s in slots), key=lambda p: (spans[p], p))
+        for slot, position in zip(slots, ranked, strict=True):
+            out[slot] = position
+    return out
+
+
 def draw_items(ctx: Context, items: list[dict[str, Any]]) -> list[ItemResult]:
     """Draw every item; an item that cannot be drawn becomes an ``error`` result (and leaves nothing on the sheet), the
     others are still drawn. Items are drawn by phase (lines and dimensions, then leaders, then free text) and in list
@@ -152,7 +183,8 @@ def draw_items(ctx: Context, items: list[dict[str, Any]]) -> list[ItemResult]:
         inside it never cross its line."""
         return 1 if items[position].get("type") == "overall" else 0
 
-    for position in sorted(range(len(items)), key=lambda i: (phase(i), outermost(i), i)):
+    order = sorted(range(len(items)), key=lambda i: (phase(i), outermost(i), i))
+    for position in shortest_first(ctx, items, order, lambda i: (phase(i), outermost(i))):
         spec = items[position]
         kind = spec.get("type", "?")
         item_id = str(spec.get("id", "?"))
