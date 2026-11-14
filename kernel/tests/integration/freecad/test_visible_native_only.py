@@ -56,8 +56,8 @@ def _native(adapter: FreeCADAdapter, code: str) -> Any:
 
 
 def test_what_the_sheet_draws_on_a_view_is_the_views_and_follows_the_engineers_hand_edits(
-    visible: FreeCADAdapter,
-) -> None:  # noqa: F811
+    visible: FreeCADAdapter,  # noqa: F811
+) -> None:
     shots = Path(os.environ.get("COTAFORGE_TEST_SHOTS") or ".")
     shots.mkdir(parents=True, exist_ok=True)
     doc, _ = _build_plate(visible)
@@ -80,16 +80,24 @@ def test_what_the_sheet_draws_on_a_view_is_the_views_and_follows_the_engineers_h
     state = _native(
         visible,
         """
-top = view("Top")
+own, edges, hidden = {}, 0, []
+for v in group.Views:
+    for key, entry in json.loads(getattr(v, "CotaforgeCosmetic", "{}") or "{}").items():
+        own[key] = own.get(key, 0) + len(entry[1])
+    edges += len(v.CosmeticEdges)
+    if v.HardHidden:
+        hidden.append(str(v.Type))
 print(json.dumps({
-    "own": json.loads(top.CotaforgeCosmetic),
-    "edges": len(top.CosmeticEdges),
-    "hidden": bool(top.HardHidden),
+    "own": own,
+    "edges": edges,
+    "hidden": hidden,
     "symbols": [o.Name for o in page.Views if o.TypeId == "TechDraw::DrawViewSymbol"],
 }))
 """,
     )
-    assert set(state["own"]) >= {"vl", "threads"} and state["edges"] >= 4 and state["hidden"], state
+    assert set(state["own"]) >= {"vl", "threads", "loc"} and state["edges"] >= 4 and state["hidden"], state
+    review = visible.describe_drawing(DescribeDrawingRequest(operation_id="r", review=True)).sheets[0]
+    assert not [f for f in review.findings if f.code == "foreign_symbol"], review.findings  # nothing of ours is a loose drawing
     # 2. move the view: the cosmetic edges are in the view's own coordinates, so they stay on the same features
     moved = _native(
         visible,
@@ -110,22 +118,21 @@ print(json.dumps({"same": before == [ends(e) for e in top.CosmeticEdges], "moved
     )
     assert moved["same"] and abs(moved["moved"] - 25.0) < 1e-6 and moved["count"] >= 4, moved
     _state(visible, doc, "sheet_png", path=str(shots / "native_moved_view.png"))
-    # 3. change the model: TechDraw recomputes and the dimensions say the new number
+    # 3. change the model (the four dowel holes go from 6 to 7 mm): TechDraw recomputes, nothing breaks and the dimension
+    #    on a dowel hole says the new radius
     changed = _native(
         visible,
         """
-pads = [o for o in doc.Objects if o.TypeId == "PartDesign::Pad"]
-pads[0].Length = 25.0
+holes = [o for o in doc.Objects if o.TypeId == "PartDesign::Hole" and abs(float(o.Diameter) - 6.0) < 1e-6]
+for h in holes:
+    h.Diameter = 7.0
 doc.recompute()
-for _ in range(40):
-    App.processEvents() if hasattr(App, "processEvents") else None
-page.recompute(True)
-doc.recompute()
-dims = [o for o in page.Views if "DimExtent" in o.TypeId or "Dimension" in o.TypeId]
-print(json.dumps({"values": sorted(round(abs(float(d.getRawValue())), 3) for d in dims)}))
+bad = [o.Name for o in doc.Objects if "Invalid" in o.State or "RecomputeError" in str(o.State)]
+dims = [o for o in page.Views if o.TypeId == "TechDraw::DrawViewDimension"]
+print(json.dumps({"holes": len(holes), "bad": bad, "values": sorted(round(abs(float(d.getRawValue())), 3) for d in dims)}))
 """,
     )
-    assert 25.0 in changed["values"] and 19.0 not in changed["values"], changed
+    assert changed["holes"] == 4 and changed["bad"] == [] and 3.5 in changed["values"], changed
     # 4. delete the view: what is on it goes with it, and nothing of the harness's drawing is left behind
     gone = _native(
         visible,
@@ -142,5 +149,3 @@ print(json.dumps({"had": before, "symbols": symbols, "still_there": [o.Name for 
     )
     assert gone["had"] >= 4 and gone["symbols"] == [] and gone["still_there"] == [], gone
     _state(visible, doc, "sheet_png", path=str(shots / "native_deleted_view.png"))
-    review = visible.describe_drawing(DescribeDrawingRequest(operation_id="r", review=True)).sheets[0]
-    assert not [f for f in review.findings if f.code == "foreign_symbol"], review.findings

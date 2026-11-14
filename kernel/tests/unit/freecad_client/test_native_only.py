@@ -81,3 +81,24 @@ def test_a_library_symbol_is_told_from_one_the_harness_drew(tmp_path: Path) -> N
         assert "Nope.svg" in str(exc)
     else:
         raise AssertionError("a file the library lacks must be refused")
+
+
+def _installed_library() -> Path | None:
+    import os
+
+    roots = [os.environ.get("COTAFORGE_FREECAD_ROOT", ""), r"C:\Program Files\FreeCAD 1.1"]
+    for root in roots:
+        folder = Path(root, "data", "Mod", "TechDraw", "Symbols") if root else None
+        if folder is not None and folder.is_dir():
+            return folder
+    return None
+
+
+def test_the_gdt_map_names_files_of_freecads_library_or_says_it_has_none() -> None:
+    folder = _installed_library()
+    if folder is None:
+        return  # no FreeCAD library on this machine: the names are checked where it is
+    named = {f for entry in sheet_symbols.GDT_LIBRARY.values() for f in entry.values() if f}
+    missing = sorted(f for f in named if not (folder / f).is_file())
+    assert not missing, f"not in FreeCAD's symbol library: {missing}"
+    assert sheet_symbols.GDT_LIBRARY["straightness"] == {"frame": None, "symbol": None}  # a gap, said as one

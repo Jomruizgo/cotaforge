@@ -21,6 +21,29 @@ SYMBOL_TYPE = "TechDraw::DrawViewSymbol"
 LIBRARY_DIR = ("Mod", "TechDraw", "Symbols")
 PROP_LIBRARY = "CotaforgeLibrary"  # on a symbol: the library file it was made from (relative to the library folder)
 
+# What FreeCAD's own library has for each GD&T characteristic, datum and finish symbol the sheet draws (paths in the library
+# folder). ``frame`` is the file with the feature control frame (symbol and empty cells), ``symbol`` the bare glyph. The
+# library files carry no editable text, so a tolerance value or a datum letter is a native annotation over the cell it goes in;
+# ``None`` is a gap: the library has no file for it and the symbol must be composed from native objects, never generated SVG.
+GDT_LIBRARY: dict[str, dict[str, str | None]] = {
+    "flatness": {"frame": "gd-and-t/FlatnessFrame.svg", "symbol": "gd-and-t/flatness.svg"},
+    "circularity": {"frame": "gd-and-t/RoundnessFrame.svg", "symbol": "gd-and-t/roundness.svg"},
+    "cylindricity": {"frame": "gd-and-t/CylindricityFrame.svg", "symbol": "gd-and-t/cylindricity.svg"},
+    "parallelism": {"frame": "gd-and-t/ParallelismFrame.svg", "symbol": "gd-and-t/parallelism.svg"},
+    "perpendicularity": {"frame": "gd-and-t/SquarenessFrame.svg", "symbol": "gd-and-t/perpendicularity.svg"},
+    "concentricity": {"frame": "gd-and-t/ConcentricityFrame.svg", "symbol": "gd-and-t/concentricity.svg"},
+    "position": {"frame": None, "symbol": "gd-and-t/position.svg"},
+    "symmetry": {"frame": None, "symbol": "gd-and-t/symmetry.svg"},
+    "total_runout": {"frame": None, "symbol": "gd-and-t/totalrunout.svg"},
+    "angularity": {"frame": None, "symbol": "gd-and-t/angularity-left.svg"},
+    "profile_line": {"frame": None, "symbol": "gd-and-t/profile-tolerance-of-line.svg"},
+    "profile_surface": {"frame": None, "symbol": "gd-and-t/profile-tolerance-of-plane.svg"},
+    "straightness": {"frame": None, "symbol": None},
+    "runout": {"frame": None, "symbol": None},
+    "datum": {"frame": "misc/Datum_Up.svg", "symbol": "gd-and-t/ReferenceSurface.svg"},
+    "finish": {"frame": "surface-roughness-symbols/Roughness.svg", "symbol": "surface-roughness-symbols/RoughnessGeneral.svg"},
+}
+
 _cache: dict[str, dict[str, str]] = {}
 
 
@@ -28,15 +51,21 @@ def library_root(resource_dir: str) -> Path:
     return Path(resource_dir, *LIBRARY_DIR)
 
 
+EXTRA_ROOTS: list[Path] = []
+"""Folders of symbol files besides FreeCAD's own that the sheet may insert (the ISO 1101 frame set the product ships for what
+FreeCAD's library lacks: files, never SVG made at run time). Empty until that set is registered here."""
+
+
 def library(resource_dir: str) -> dict[str, str]:
-    """Every SVG of FreeCAD's symbol library by its path relative to the library folder (``/`` separators), with its text."""
+    """Every SVG of FreeCAD's symbol library (and of ``EXTRA_ROOTS``) by its path relative to its folder (``/`` separators),
+    with its text."""
     found = _cache.get(resource_dir)
     if found is None:
-        root = library_root(resource_dir)
         found = {}
-        if root.is_dir():
-            for path in sorted(root.rglob("*.svg")):
-                found[path.relative_to(root).as_posix()] = path.read_text(encoding="utf-8", errors="replace")
+        for root in (library_root(resource_dir), *EXTRA_ROOTS):
+            if root.is_dir():
+                for path in sorted(root.rglob("*.svg")):
+                    found[path.relative_to(root).as_posix()] = path.read_text(encoding="utf-8", errors="replace")
         _cache[resource_dir] = found
     return found
 
