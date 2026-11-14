@@ -88,6 +88,8 @@ __all__ = [
     "RefPlaneOperation",
     "RevolveOperation",
     "ShellOperation",
+    "ShrinkBodyOperation",
+    "MouldSplitOperation",
     "SketchOperation",
     "SplitOperation",
     "SweepOperation",
@@ -620,6 +622,156 @@ class MirrorBodyOperation(OperationBase):
     plane: PlaneRef | FaceRef
 
 
+MAX_SHRINKAGE_PERCENT = 10.0
+"""Above this a shrinkage is not a plastic's but a typing mistake (no moulding material shrinks a tenth of its size)."""
+
+
+def _shrinkage_note(percent: Any, source: str) -> str:
+    """The sentence the step's intent carries: the shrinkage as given (a number, or X / Y / Z) and its source."""
+    if isinstance(percent, (list, tuple)):
+        values = [f"{float(v):g}" for v in percent]
+        if len(set(values)) > 1:
+            return f"shrinkage X {values[0]} % / Y {values[1]} % / Z {values[2]} % (source: {source})"
+        percent = percent[0]
+    return f"shrinkage {float(percent):g} % isotropic (source: {source})"
+
+
+class ShrinkBodyOperation(OperationBase):
+    """Derive the CAVITY of a mould from ``source`` (the plastic part): a NEW body scaled up by the plastic's
+    shrinkage, so the part comes out at its nominal size once it has cooled. The new body is LINKED to the source: when
+    the part changes, the cavity follows (the source itself is untouched). ``shrinkage_percent`` is one number (the same
+    on every axis) or ``[x, y, z]`` when the material's data differs along the flow and across it; the scale on an axis
+    is ``1 + percent / 100``. ``factor_source`` says where the number comes from (the material datasheet, the moulder,
+    the engineer): it is mandatory, and the step's intent always ends up carrying the shrinkage and its source. The
+    scaling is about the source body's own origin. A per-axis shrinkage turns curved faces into B-spline surfaces
+    (an affine map of a cylinder is not one); an equal one keeps every surface exact."""
+
+    op: Literal["shrink_body"] = "shrink_body"
+    source: BodyRef
+    shrinkage_percent: float | Vec3
+    factor_source: str = Field(min_length=3)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _intent_carries_the_shrinkage(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        percent, source, intent = data.get("shrinkage_percent"), data.get("factor_source"), data.get("intent")
+        if percent is None or not isinstance(source, str) or not isinstance(intent, str) or not intent.strip():
+            return data
+        try:
+            note = _shrinkage_note(percent, source.strip())
+        except (TypeError, ValueError, IndexError):
+            return data  # the field validators say what is wrong with the numbers
+        return data if note in intent else {**data, "intent": f"{intent.rstrip()} [{note}]"}
+
+    @field_validator("shrinkage_percent")
+    @classmethod
+    def _shrinkage_is_plausible(cls, value: float | Vec3) -> float | Vec3:
+        values = (value,) if isinstance(value, (int, float)) else value
+        if not all(math.isfinite(v) and 0.0 < v <= MAX_SHRINKAGE_PERCENT for v in values):
+            msg = f"shrinkage_percent must be above 0 and at most {MAX_SHRINKAGE_PERCENT:g} on every axis"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("factor_source")
+    @classmethod
+    def _source_is_said(cls, value: str) -> str:
+        if not value.strip():
+            msg = "factor_source must say where the shrinkage comes from (datasheet, moulder, engineer)"
+            raise ValueError(msg)
+        return value.strip()
+
+    def scale(self) -> Vec3:
+        """The scale per axis: ``1 + percent / 100``."""
+        values = (
+            (self.shrinkage_percent,) * 3
+            if isinstance(self.shrinkage_percent, (int, float))
+            else self.shrinkage_percent
+        )
+        return (1.0 + values[0] / 100.0, 1.0 + values[1] / 100.0, 1.0 + values[2] / 100.0)
+
+
+def _split_note(data: dict[str, Any]) -> str:
+    """The sentence a ``mould_split`` step's intent carries: the pull, the block, the decision on the walls with no draft
+    and the slides asked for. The parting line itself is measured by the CAD and reported by the step."""
+    pull = data.get("pull")
+    pull_text = pull if isinstance(pull, str) else "(" + ", ".join(f"{float(c):g}" for c in pull) + ")"
+    size, margin = data.get("block_size_mm"), data.get("margin_mm")
+    if size is not None:
+        block = "block " + " x ".join(f"{float(c):g}" for c in size) + " mm (given by the engineer)"
+    elif margin is not None:
+        block = f"block = the part's box grown {float(margin):g} mm on every side (given by the engineer)"
+    else:
+        block = "block = the part's box grown by the proposed margin (the larger of 25 mm and a fifth of its longest side)"
+    walls = data.get("zero_draft_to")
+    slides = data.get("slides", "none")
+    slide_text = (
+        "no slides"
+        if slides == "none"
+        else "slides: all the proposed"
+        if slides == "all"
+        else "slides accepted: " + ", ".join(str(n) for n in slides)
+    )
+    return (
+        f"mould split: pull {pull_text} (the core opens along it), {block}, "
+        + (f"walls with no draft go to the {walls}" if walls else "no decision on walls with no draft")
+        + f", {slide_text}"
+    )
+
+
+class MouldSplitOperation(OperationBase):
+    """Split the negative of ``source`` (the SHRUNK part, from ``shrink_body``) into the mould's two inserts: cut the part
+    out of an insert block and slice what is left along the parting surface into two NEW bodies, the CAVITY (fixed half)
+    and the CORE (moving half). ``pull`` is the direction the core opens along: the faces of the part that look along it
+    are the core's, the ones that look against it the cavity's. The parting line is the edge loop between them, measured
+    by the CAD on the real model (see ``inspect action=parting``); the parting surface is a plane when the line lies in
+    one, else a run-off surface (every edge pushed outward, corners mitred, steps as walls), plus a flat shut-off for each
+    opening through the part. The block is ``block_size_mm`` (x, y, z, centred on the part) or the part's box grown by
+    ``margin_mm`` (a proposed 25 mm or a fifth of the longest side when neither is given: not a standard).
+    ``zero_draft_to`` says which half forms the walls with no draft that touch both (required when there are some).
+    ``slides`` lists the undercut regions formed by a slide (``all`` or their numbers): a part with an undercut that no
+    slide forms is refused, it would be trapped. Each accepted slide is one more new body. The source stays. The step
+    checks that each half is one valid solid, that core + cavity + slides + part add up to the block within 0.01 %, and
+    that the part leaves each half along the pull and each slide leaves along its own direction. The step's intent always
+    ends up carrying the pull, the block, the decision and the slides. The inserts are plain solids, NOT linked to the
+    part: after changing the part, run the step again. The core and the slides have no step name of their own (the
+    step names the cavity): ask for their ids."""
+
+    op: Literal["mould_split"] = "mould_split"
+    source: BodyRef
+    pull: AxisName | Vec3
+    block_size_mm: Vec3 | None = None
+    margin_mm: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    zero_draft_to: Literal["core", "cavity"] | None = None
+    slides: Literal["none", "all"] | tuple[int, ...] = "none"
+    min_draft_deg: float = Field(default=1.0, ge=0, le=45, allow_inf_nan=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _intent_carries_the_split(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or data.get("pull") is None:
+            return data
+        intent = data.get("intent")
+        if not isinstance(intent, str) or not intent.strip():
+            return data
+        try:
+            note = _split_note(data)
+        except (TypeError, ValueError, IndexError):
+            return data  # the field validators say what is wrong
+        return data if note in intent else {**data, "intent": f"{intent.rstrip()} [{note}]"}
+
+    @model_validator(mode="after")
+    def _one_block(self) -> "MouldSplitOperation":
+        if self.block_size_mm is not None and self.margin_mm is not None:
+            msg = "give the block as block_size_mm or margin_mm, not both"
+            raise ValueError(msg)
+        if self.block_size_mm is not None and not all(c > 0 for c in self.block_size_mm):
+            msg = "block_size_mm must be above 0 on every axis"
+            raise ValueError(msg)
+        return self
+
+
 class SplitOperation(OperationBase):
     """Cut a body in two along ``plane`` (a base plane, a datum plane or a planar face; it is not required to pass
     through the origin). The source is CONSUMED. ``positive`` is the piece on the side the plane's normal points to,
@@ -795,6 +947,8 @@ OP_NAMES: frozenset[str] = frozenset(
         "draft",
         "mirror",
         "mirror_body",
+        "shrink_body",
+        "mould_split",
         "split",
         "base_flange",
         "edge_flange",
@@ -845,6 +999,8 @@ OP_CATEGORY: dict[str, OpCategory] = {
     "rotate": "multibody",
     "copy_body": "multibody",
     "mirror_body": "multibody",
+    "shrink_body": "multibody",
+    "mould_split": "multibody",
     "split": "multibody",
     # sheet_metal: only offered by a CAD that has the sheet-metal capability (a bent part, its flat pattern).
     "base_flange": "sheet_metal",
@@ -889,6 +1045,8 @@ Operation = Annotated[
     | DraftOperation
     | MirrorOperation
     | MirrorBodyOperation
+    | ShrinkBodyOperation
+    | MouldSplitOperation
     | SplitOperation
     | BaseFlangeOperation
     | EdgeFlangeOperation

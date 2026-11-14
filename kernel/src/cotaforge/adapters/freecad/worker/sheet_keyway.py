@@ -169,21 +169,36 @@ def axis_name(v: Vec3) -> str | None:
     return next((name for name, a in AXIS_NAMES if abs(abs(_dot(v, a)) - 1.0) < 1e-3), None)
 
 
-def dimension_specs(slot: Slot, prefix: str, views: tuple[str, ...] = ()) -> list[dict[str, object]]:
+def middle_of(slot: Slot) -> Vec3:
+    """The point of the axis of the cylinder halfway along the keyway (where a section across it is cut)."""
+    c = slot.cylinder
+    along = _dot(slot.wall_a.centre, c.axis) - _dot(c.point, c.axis)
+    return (c.point[0] + c.axis[0] * along, c.point[1] + c.axis[1] * along, c.point[2] + c.axis[2] * along)
+
+
+def dimension_specs(
+    slot: Slot,
+    prefix: str,
+    views: tuple[str, ...] = (),
+    section: str | None = None,
+    fit: str | None = None,
+    depth_tol: tuple[float, float] | None = None,
+) -> list[dict[str, object]]:
     """The ``dim`` items that say a keyway to the shop, measured on the model: the width (between the walls), the depth as
     the standards give it (``d - t1`` on a shaft, ``d + t2`` in a hub: from the bottom to the opposite side of the cylinder),
     the length (between the planes that end it; out through the end of the shaft: to that end) and the position (from the end
     of the shaft to the first plane that ends it). A dimension whose faces are not found, or that does not lie along a model
-    axis, is left out: nothing is guessed. ``views`` are the views of the sheet; the width and the depth go in the one that
-    looks along the axis of the cylinder when it has it."""
+    axis, is left out: nothing is guessed. ``section`` is the label of the removed section across the keyway (``A-A``): the
+    width and the depth go on it, with the width's class (``fit``) and the depth's deviations (``depth_tol``: upper, lower);
+    without one they go in the view of the sheet that looks along the axis of the cylinder, when it has it."""
     c, out = slot.cylinder, []
     profile = PROFILE_VIEW.get(axis_name(c.axis) or "")
-    view = {"view": profile} if profile in views else {}
+    view = {"view": section} if section else {"view": profile} if profile in views else {}
     across = axis_name(slot.wall_a.normal)
     if across is not None and slot.wall_a.face_id and slot.wall_b.face_id:
         out.append(
             {"type": "dim", "kind": "distance", "id": f"{prefix}_w", "from": {"face": slot.wall_a.face_id},
-             "to": {"face": slot.wall_b.face_id}, "along": across, **view}
+             "to": {"face": slot.wall_b.face_id}, "along": across, **view, **({"fit": fit} if fit else {})}
         )  # fmt: skip
     deep = axis_name(slot.up)
     if deep is not None and slot.bottom is not None and slot.bottom.face_id:
@@ -191,7 +206,7 @@ def dimension_specs(slot: Slot, prefix: str, views: tuple[str, ...] = ()) -> lis
         opposite = tuple(c.point[i] + c.axis[i] * (along_axis - _dot(c.point, c.axis)) - slot.up[i] * c.radius for i in range(3))
         out.append(
             {"type": "dim", "kind": "distance", "id": f"{prefix}_t", "from": {"face": slot.bottom.face_id},
-             "to": {"at": [round(v, 4) for v in opposite]}, "along": deep, **view}
+             "to": {"at": [round(v, 4) for v in opposite]}, "along": deep, **view, **({"tol": list(depth_tol)} if depth_tol else {})}
         )  # fmt: skip
     lengthwise = axis_name(c.axis)
     if lengthwise is None:

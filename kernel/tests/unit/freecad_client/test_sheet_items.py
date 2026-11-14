@@ -135,6 +135,7 @@ def test_the_registry_has_the_built_types_and_names_the_planned_ones() -> None:
     assert set(items.REGISTRY) == {
         "hole_dim",
         "hole_positions",
+        "pattern_dim",
         "line",
         "dim",
         "datum_dims",

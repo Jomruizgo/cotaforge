@@ -591,7 +591,7 @@ def draw_exception(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
 
 ITEMS = (
     ItemType("parting_line", "pl", check_parting, draw_parting, frozenset(CHECKS_PARTING), phase=1),
-    ItemType("pull_direction", "pd", check_pull, draw_pull, frozenset(CHECKS_PULL), phase=2),
+    ItemType("pull_direction", "pu", check_pull, draw_pull, frozenset(CHECKS_PULL), phase=2),
     ItemType("mould_zone", "mz", check_zone, draw_zone, frozenset(CHECKS_ZONE), phase=2),
     ItemType("no_draft", "nd", check_exception, draw_exception, frozenset(CHECKS_EXCEPTION), phase=1),
 )

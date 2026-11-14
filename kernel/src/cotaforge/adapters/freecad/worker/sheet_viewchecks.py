@@ -3,13 +3,17 @@
 
 * ``dimension_side``: a dimension whose extension lines cross the part while the other side is free or clearly nearer;
 * ``dimension_crossing``: an extension line across the dimension line of another dimension (ISO 129);
+* ``dimension_stack_order`` / ``dimension_gap``: parallel dimensions go shortest nearest the part, longest outermost, at least
+  ``MIN_PARALLEL_GAP_MM`` apart (ISO 129-1);
 * ``datum_on_line``: the triangle, box or stem of a datum on a line of another item;
 * ``datum_unused``: a datum item whose letter no tolerance frame (``gdt``) cites;
 * ``leader_not_on_chamfer``: the leader of a chamfer callout not on the chamfer's line, not from outside or not perpendicular;
 * ``view_redundant``: a view that only carries a cutting line, or whose dimensions another view repeats;
 * ``arrows_inside_short``: a short dimension with its arrows inside.
 
-They are style: listed and answerable, they never hold an export (``sheet_checks.NON_BLOCKING``).
+``dimension_crossing``, ``dimension_stack_order`` and ``dimension_gap`` are measurements of the sheet as drawn and HOLD an export
+(a shop reader takes an extension line across another dimension's line for the end of a measure); the others are style: listed
+and answerable, they never hold an export (``sheet_checks.NON_BLOCKING``).
 ``sheet_review.review`` calls ``check`` after its own checks.
 """
 
@@ -35,6 +39,7 @@ def check(data: ReviewInput) -> list[Finding]:
     return [
         *_sides(data),
         *_crossings(data),
+        *_stacks(data),
         *_datums(data),
         *_unused_datums(data),
         *_chamfers(data),
@@ -519,6 +524,50 @@ def _crossings(data: ReviewInput) -> list[Finding]:
         )
         named = tuple(dict.fromkeys(k for k in (f.owner, f.other) if k in types))
         out.append(Finding("dimension_crossing", "warning", text, named, key=f"{f.owner}x{f.other}"))
+    return out
+
+
+# --- the stack of parallel dimensions: order and gap -------------------------------------------------------------------------------
+
+
+def _stacks(data: ReviewInput) -> list[Finding]:
+    """Parallel dimensions on one side of a view go from the shortest, nearest the part, to the longest, outermost, at least
+    ``MIN_PARALLEL_GAP_MM`` apart (ISO 129-1). Measured on the lines as the sheet draws them: a 260 outside a 340 has its extension
+    lines across the 340's line and the two texts nearly touch. Blocking: the layout puts them in order, so what is left here is a
+    placement made by hand (side, offset_mm) or one the layout could not make."""
+    ctx = data.ctx
+    shapes: list[rules.DimShape] = ctx.extras.get("dim_shapes", [])
+    if len(shapes) < 2:
+        return []
+    types = {str(i["id"]): str(i.get("type")) for i in data.items}
+    views = _views(ctx)
+    out: list[Finding] = []
+    for f in rules.dimension_stacks(shapes, {n: v.box for n, v in views.items()}):
+        label = lambda k: f"{k} ({types[k]})" if k in types else k  # noqa: E731
+        named = tuple(dict.fromkeys(k for k in (f.owner, f.other) if k in types))
+        key = f"{f.owner}~{f.other}"
+        if f.kind == "order":
+            text = ctx.say(
+                f"En la vista {f.view} ({_es(f.side)}), {label(f.owner)} ({ctx.num(round(f.owner_mm, 1))} mm) está más cerca de la pieza que "
+                f"{label(f.other)} ({ctx.num(round(f.other_mm, 1))} mm) y es más larga: las cotas paralelas van de la más corta, junto a la "
+                "pieza, a la más larga, por fuera (ISO 129-1); así las líneas de extensión de la corta no cruzan la línea de la larga. "
+                "Intercámbialas (offset_mm / side) o quita la colocación a mano y deja que la hoja las ordene.",
+                f"In the {f.view} view ({f.side}), {label(f.owner)} ({ctx.num(round(f.owner_mm, 1))} mm) stands nearer the part than "
+                f"{label(f.other)} ({ctx.num(round(f.other_mm, 1))} mm) and is longer: parallel dimensions go from the shortest, nearest "
+                "the part, to the longest, outermost (ISO 129-1), so the extension lines of the short one do not cross the line of the "
+                "long one. Swap them (offset_mm / side) or drop the hand placement and let the sheet order them.",
+            )
+            out.append(Finding("dimension_stack_order", "warning", text, named, key=key))
+        else:
+            text = ctx.say(
+                f"En la vista {f.view} ({_es(f.side)}), las líneas de {label(f.owner)} y {label(f.other)} van una junto a otra a "
+                f"{ctx.num(round(f.gap_mm, 1))} mm: el mínimo entre cotas paralelas es {ctx.num(rules.MIN_PARALLEL_GAP_MM)} mm (la altura del texto, 3,5 mm, más el "
+                "sitio de las flechas; lo normal son 7 mm) y los textos casi se tocan. Sepáralas (offset_mm).",
+                f"In the {f.view} view ({f.side}), the lines of {label(f.owner)} and {label(f.other)} run side by side "
+                f"{ctx.num(round(f.gap_mm, 1))} mm apart: the minimum between parallel dimensions is {ctx.num(rules.MIN_PARALLEL_GAP_MM)} mm (the text height, 3.5 mm, plus "
+                "the room of the arrows; 7 mm is usual) and their texts nearly touch. Move them apart (offset_mm).",
+            )
+            out.append(Finding("dimension_gap", "warning", text, named, key=key))
     return out
 
 

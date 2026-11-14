@@ -29,6 +29,8 @@ FREECAD_MODULES = {
     "Part",
     "Import",
     "Sketcher",
+    "Draft",  # FreeCAD's own module (the linked clone of shrink_body)
+    "BOPTools",  # FreeCAD's Part module helpers (SplitAPI.slice cuts a solid by a surface)
     "PartDesign",
     "AssemblyApp",
     "JointObject",

@@ -310,6 +310,7 @@ def test_the_drawing_schema_names_the_new_arguments_and_stays_small(make: MakeSe
 DRAWING_TOPICS = (
     "drawing",
     "drawing:items",
+    "drawing:dims",
     "drawing:marks",
     "drawing:mould",
     "drawing:views",

@@ -146,8 +146,11 @@ def test_the_workflow_runs_on_pull_requests_tags_and_by_hand_and_only_drafts_rel
     triggers = data[True]  # YAML 1.1 reads the key `on` as True
     assert set(triggers) == {"pull_request", "push", "workflow_dispatch"}
     assert triggers["push"]["tags"] == ["v*"]
+    assert set(triggers["push"]["branches"]) == {"develop", "main"}  # every merge is built and installed
     paths = set(triggers["pull_request"]["paths"])
-    assert {"kernel/**", "mcp-server/**", "plugin/**", "packaging/**", ".claude-plugin/**"} <= paths
+    packed = {"plugin/**", "packaging/**", ".claude-plugin/**", "kernel/pyproject.toml", "mcp-server/pyproject.toml"}
+    assert packed <= paths  # a PR that changes what the installer packs runs it before the merge
+    assert {"mcp-server/src/cotaforge_mcp/cli.py", "mcp-server/src/cotaforge_mcp/launcher.py"} <= paths
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "--draft" in text and "gh release create" in text
     assert "--latest" not in text and "gh release edit" not in text

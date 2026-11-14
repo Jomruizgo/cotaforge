@@ -315,6 +315,7 @@ ROWS: tuple[Row, ...] = (
         codes=(
             "hole_not_located",
             "hole_partly_located",
+            "pattern_not_polar",
             "hole_no_reference",
             "hole_no_callout",
             "feature_no_dimension",
@@ -358,7 +359,7 @@ ROWS: tuple[Row, ...] = (
         ),
         proposal=("añadir view_lines", "add view_lines"),
         triggers=("holes", "bosses"),  # an assembly too: the sleeves, pins and bores of its components
-        codes=("centre_mark_missing", "cylinder_no_axis", "flat_face_unmarked"),  # the last: the diagonals of a flat of a turned part
+        codes=("centre_mark_missing", "cylinder_no_axis", "flat_face_unmarked", "centre_line_crosses", "centre_line_long"),  # the last: the diagonals of a flat of a turned part
         measured=("holes", "bosses"),
     ),
     Row(
@@ -370,12 +371,16 @@ ROWS: tuple[Row, ...] = (
         ),
         standard="ISO 129-1",
         question=(
-            "¿Qué diámetros del eje son funcionales y cuáles son libres?",
-            "Which diameters of the shaft are functional and which are free?",
+            "¿Qué diámetros del eje son funcionales y cuáles son libres, y desde qué cara (resalte o extremo) se cuentan las longitudes?",
+            "Which diameters of the shaft are functional and which are free, and from which face (shoulder or end) are the lengths counted?",
         ),
         proposal=(
-            "todos los escalones con su diámetro en la vista lateral o en el corte, los funcionales con su ajuste",
-            "every step with its diameter on the side view or the section, the functional ones with their fit",
+            "todos los escalones con su diámetro en la vista lateral o en el corte, los funcionales con su ajuste; las longitudes desde UNA "
+            "cara de referencia, en paralelo (baseline_dims from=<la referencia axial del archivo de intención; sin ella, la que elija el "
+            "ingeniero>), y en cadena solo lo funcional",
+            "every step with its diameter on the side view or the section, the functional ones with their fit; the lengths from ONE datum "
+            "face, as parallel dimensions (baseline_dims from=<the axial reference of the intent file; with none, the one the engineer "
+            "picks>), and chained only what is functional",
         ),
         only="part",
         triggers=("turned",),
@@ -639,6 +644,9 @@ MEASURED_FINDINGS = frozenset(
         "duplicate_dimension",
         "over_dimensioned",
         "views_overlap",
+        "dimension_crossing",
+        "dimension_stack_order",
+        "dimension_gap",
         "view_over_title_block",
         "view_outside_frame",
         "text_outside_frame",
@@ -648,6 +656,8 @@ MEASURED_FINDINGS = frozenset(
         "leader_crosses_part",
         "leader_crosses_dimension",
         "dimension_inside_outline",
+        "centre_line_crosses",
+        "centre_line_long",
         "material_title_block_empty",
         "material_inconsistent",
         "material_only_in_note",

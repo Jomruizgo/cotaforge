@@ -50,10 +50,10 @@ PART_SEP = "@"  # ``<item id>@<n>``: the n-th leader of an item that drew severa
 PARALLEL_TOL_MM = 0.05
 ROUND_MM = 0.5
 FOOT_MIN_MM = 4.0  # an extension line reaches farther than the edges of an arrowhead (they are at most 3.5 mm long)
-MOVABLE_TYPES = frozenset({"dim", "hole_dim", "datum", "weld"})
+MOVABLE_TYPES = frozenset({"dim", "hole_dim", "datum", "weld", "pattern_dim"})
 PLACE_KEYS = ("side", "offset_mm", "elbow_mm", "leader_mm", "anchor_at", "tip_at")
 """The fields that say where an item stands: an item that has one was placed by its author (or by the planner before) and stays."""
-LEADER_TYPES = frozenset({"dim", "hole_dim", "balloons", "gdt", "finish"})
+LEADER_TYPES = frozenset({"dim", "hole_dim", "balloons", "gdt", "finish", "pattern_dim"})
 REF_MIN_MM = 14.0  # the reference line of a weld symbol (``items_weld.MIN_REF_MM``)
 ARROW_MIN_MM = 6.0  # an arrow line is longer than this; a flag pole or an arrowhead is not
 LEADER_LINE_MM = 6.0
@@ -454,6 +454,8 @@ def _wants_kind(item_type: str, spec: Mapping[str, Any]) -> str:
     if item_type == "dim":
         kind = spec.get("kind", "distance")
         return "leader" if kind in CALLOUT_KINDS else str(kind) if kind in ("distance", "angle") else ""
+    if item_type == "pattern_dim":  # the diameter of the pitch circle is a leader, the angle of the first hole an arc
+        return "angle" if spec.get("kind") == "angle" else "leader"
     if item_type == "datum":
         return "" if "on" in spec else "datum"  # the datum of an axis stands on the shelf of its callout by design
     return {"hole_dim": "leader", "weld": "weld"}.get(item_type, "")

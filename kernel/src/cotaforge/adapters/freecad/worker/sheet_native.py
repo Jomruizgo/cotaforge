@@ -24,6 +24,7 @@ import FreeCAD as App
 import gui
 import sheet_notefit
 import sheet_units as su
+from sheet_draw import lifted_label
 
 PROP_ITEM = "CotaforgeItem"
 PROP_SHEET = "CotaforgeSheet"
@@ -266,6 +267,14 @@ def _style(obj: Any, dim: su.NativeDim) -> None:
         vo.FlipArrowheads = dim.arrows == "outside"
 
 
+def _label_of(dim: su.NativeDim) -> tuple[float, float]:
+    """The label to give TechDraw's dimension object: a horizontal or vertical distance gets it moved off its line, so that the
+    dimension line is where the sheet drew it (``sheet_draw.lifted_label``); the others are placed by their label as it is."""
+    if dim.kind not in DIM_TYPES and dim.orient in ("h", "v"):
+        return lifted_label(dim.orient, (float(dim.label[0]), float(dim.label[1])))
+    return float(dim.label[0]), float(dim.label[1])
+
+
 def _make_dim(
     fc_doc: Any,
     page: Any,
@@ -293,8 +302,9 @@ def _make_dim(
         obj.UnderTolerance = float(dim.tol[1])
     if dim.exact:
         obj.TheoreticalExact = True
-    obj.X = float(dim.label[0]) - frame.x
-    obj.Y = float(dim.label[1]) - frame.y
+    label = _label_of(dim)
+    obj.X = float(label[0]) - frame.x
+    obj.Y = float(label[1]) - frame.y
     tag(obj, key, dim.item, sheet)
     return obj
 
@@ -524,8 +534,8 @@ def compare_unit(page: Any, unit: su.Unit, objects: list[Any]) -> list[str]:
                     f"{unit.key}: {obj.Label} has text {str(obj.FormatSpec)!r} edited by hand (the sheet says {dim.text!r})"
                 )
             if (
-                abs(float(obj.X) - (dim.label[0] - x)) > MOVE_TOL_MM
-                or abs(float(obj.Y) - (dim.label[1] - y)) > MOVE_TOL_MM
+                abs(float(obj.X) - (_label_of(dim)[0] - x)) > MOVE_TOL_MM
+                or abs(float(obj.Y) - (_label_of(dim)[1] - y)) > MOVE_TOL_MM
             ):
                 problems.append(f"{unit.key}: {obj.Label} was moved by hand from where the sheet puts it")
     lines = [line for note in notes for line in note.lines]

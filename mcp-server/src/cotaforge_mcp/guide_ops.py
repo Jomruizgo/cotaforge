@@ -38,6 +38,16 @@ COVERS = {
 # What a designer may type in Spanish -> the English root the names and purposes are written with.
 SPANISH_TERMS = {
     "desmoldeo": "draft",
+    "contraccion": "shrink_body",
+    "contracción": "shrink_body",
+    "merma": "shrink_body",
+    "shrinkage": "shrink_body",
+    "cavidad": "shrink_body",
+    "particion": "mould_split",
+    "partición": "mould_split",
+    "postizo": "mould_split",
+    "macho": "mould_split",
+    "molde": "mould_split",
     "desmold": "draft",
     "salida": "draft",
     "agujero": "hole",

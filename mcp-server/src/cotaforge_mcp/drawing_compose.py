@@ -40,7 +40,7 @@ LOCATION_CODES = frozenset({"hole_not_located", "hole_partly_located"})
 
 KEYS: dict[str, tuple[str, ...]] = {
     "datums": ("datum",),
-    "relations": ("dim", "datum_dims"),
+    "relations": ("dim", "datum_dims", "baseline_dims"),
     "fits": ("hole_dim", "dim"),
     "tol": ("dim", "hole_dim"),
     "gdt": ("gdt",),
@@ -69,6 +69,7 @@ ROW_KEYS: dict[str, tuple[str, ...]] = {
     "req.dimensions": ("relations", "fits", "tol"),
     "req.functional_dimensions": ("relations", "tol"),
     "req.keyway": ("fits", "tol"),
+    "req.turned_part": ("relations", "fits", "answers"),  # the diameters and the lengths from the datum face (baseline_dims)
     "req.surface_texture": ("finish",),
     "req.geometric_tolerance": ("gdt",),
     "req.welds": ("welds",),

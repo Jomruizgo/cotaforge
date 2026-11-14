@@ -12,11 +12,12 @@ letters, and finds room for the new view. A derived view takes the first free pl
 import math
 from typing import Any
 
+import sheet_centre
 import sheet_flats
 import sheet_hatch
 import sheet_section
 import sheet_seen
-from items_common import VIEW_ORDER, mark_once
+from items_common import VIEW_ORDER, hole_mark, mark_once
 from items_holes import _stacks
 from sheet_clip import HATCH_ANGLE_DEG, bbox, clip_to_circle, clip_to_rect, hatch, hatch_spacing, place, relayer
 from sheet_context import (
@@ -51,13 +52,14 @@ LABEL_HEIGHT_MM = 5.0  # the letters of a view are bigger than the dimension tex
 LABEL_ROOM_MM = 9.0  # below a view: its label
 ROOM_MARGIN_MM = 4.0  # clear space around a new view
 ROOM_GAP_MM = 18.0  # between the parent and a view placed beside it (dimensions go there)
+REMOVED_GAP_MM = 40.0  # a removed section stands this far from the part at least: the arrows and letters of its cutting line (17 mm) and its own dimension line fit between
+REMOVED_DIMS_MM = 26.0  # the strip of a removed section on the side of the part: its width dimension (line 10 mm out, text, arrows)
 ROOM_STEP_MM = 8.0
 ROOM_TRIES = 30
 SCAN_STEP_MM = 10.0
 CUT_END_MM = 12.0  # the thick ends of a cutting-plane line
 CUT_OVERSHOOT_MM = 4.0
 CUT_ARROW_MM = 9.0
-HOLE_AXIS_REACH_MM = 3.0  # a centre line goes this far beyond the ends of a hole
 STANDARD_ENLARGEMENTS = (2.0, 5.0, 10.0, 20.0, 50.0)  # ISO 5455
 MAX_DETAIL_MM = 70.0
 LETTERS = "ABCDEFGHJKLMNPRSTUVWXYZ"  # no I, O or Q: they read as digits
@@ -139,13 +141,20 @@ def room_ok(ctx: Context, rect: Rect) -> bool:
 
 
 def find_room(
-    ctx: Context, width: float, height: float, parent: Rect, directions: list[Point], align: Point
+    ctx: Context,
+    width: float,
+    height: float,
+    parent: Rect,
+    directions: list[Point],
+    align: Point,
+    gap: float = ROOM_GAP_MM,
 ) -> Point | None:
     """The centre for a new view ``width`` x ``height`` mm: beside ``parent`` in the first of ``directions`` that has
-    room (aligned with ``align``, the page position the view is projected from), else any free place near the parent."""
+    room (aligned with ``align``, the page position the view is projected from; ``gap`` mm from the parent at least), else
+    any free place near the parent."""
     for dx, dy in directions:
         for step in range(ROOM_TRIES):
-            reach = ROOM_GAP_MM + step * ROOM_STEP_MM
+            reach = gap + step * ROOM_STEP_MM
             if abs(dx) >= abs(dy):
                 cx = parent[2] + reach + width / 2 if dx > 0 else parent[0] - reach - width / 2
                 cy = align[1]
@@ -279,6 +288,7 @@ SECTION_CHECKS = {
     "at_mm": v_point2,
     "hatch": lambda value: v_hatch(value),
     "in_place": v_bool,
+    "removed": v_bool,
 }
 
 
@@ -504,6 +514,15 @@ def draw_section(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     room = (width + 2 * ROOM_MARGIN_MM, height + LABEL_ROOM_MM + 2 * ROOM_MARGIN_MM)
     if "at_mm" in spec:
         centre: Point | None = spec["at_mm"]
+    elif spec.get("removed"):
+        # a REMOVED section stands on the extension of its cutting line: above or below the part, centred on the line (ISO 128-40),
+        # so the cut and its view read as one; beside the part only when neither side has room
+        directions = [line, (-line[0], -line[1]), gaze_page, (-gaze_page[0], -gaze_page[1])]
+        # room for the strip between the part and the view, where its width dimension stands: asked on the part side and given
+        # back, so the dimension never lies on the dimension lines of the part's own stack
+        centre = find_room(ctx, room[0], room[1] + REMOVED_DIMS_MM, parent_rect, directions, anchor, REMOVED_GAP_MM)
+        if centre is not None and abs(centre[1] - (parent_rect[1] + parent_rect[3]) / 2) > abs(centre[0] - anchor[0]):
+            centre = (centre[0], centre[1] + (REMOVED_DIMS_MM / 2 if centre[1] > (parent_rect[1] + parent_rect[3]) / 2 else -REMOVED_DIMS_MM / 2))
     else:
         align = ((parent_rect[0] + parent_rect[2]) / 2, (parent_rect[1] + parent_rect[3]) / 2)
         directions = [gaze_page, (-gaze_page[0], -gaze_page[1]), line, (-line[0], -line[1])]
@@ -845,28 +864,27 @@ def draw_lines(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
                 if view.looks_along(d):
                     c = view.project(stack[0].centre)
                     if mark_once(ctx, view, c):
-                        ctx.add(centre_mark(c[0], c[1], radius_mm * view.scale))
+                        ctx.add(hole_mark(ctx, view, stack[0], c, radius_mm * view.scale))
                         marks += 1
                     continue
                 origin = stack[0].centre
                 reach = [
                     dot(sub(p, origin), unit(d))
                     for h in stack
-                    for p in (
+                    for p in (  # the wall of each hole and, in a blind one, its drill point: the line is centred on all of it
                         h.centre,
-                        tuple(c + u * h.depth for c, u in zip(h.centre, unit(h.direction), strict=True)),
+                        tuple(c + u * h.length for c, u in zip(h.centre, unit(h.direction), strict=True)),
                     )
                 ]
                 pa = view.project(tuple(o + u * min(reach) for o, u in zip(origin, unit(d), strict=True)))  # type: ignore[arg-type]
                 pb = view.project(tuple(o + u * max(reach) for o, u in zip(origin, unit(d), strict=True)))  # type: ignore[arg-type]
-                length = math.dist(pa, pb)
-                if length < 0.5:
+                if math.dist(pa, pb) < 0.5:
                     continue
-                ux, uy = (pb[0] - pa[0]) / length, (pb[1] - pa[1]) / length
-                over = HOLE_AXIS_REACH_MM
-                ctx.add([Line(pa[0] - ux * over, pa[1] - uy * over, pb[0] + ux * over, pb[1] + uy * over, AXES)])
-                ctx.used_view(view.name)
-                axes += 1
+                line = sheet_centre.side_line(ctx, view.name, pa, pb)  # the same overshoot at both ends
+                if line is not None:
+                    ctx.add([line])
+                    ctx.used_view(view.name)
+                    axes += 1
         facts = ctx.extras.get("facts")  # the whole cylinders of the part (pins, shafts, bosses) get theirs too
         for boss in facts.bosses if facts is not None else ():
             d = unit(boss.axis_dir)
@@ -885,20 +903,18 @@ def draw_lines(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
                     half = boss.length / 2
                     pa = view.project(tuple(p - u * half for p, u in zip(boss.axis_point, d, strict=True)))  # type: ignore[arg-type]
                     pb = view.project(tuple(p + u * half for p, u in zip(boss.axis_point, d, strict=True)))  # type: ignore[arg-type]
-                    length = math.dist(pa, pb)
-                    if length < 0.5:
+                    if math.dist(pa, pb) < 0.5:
                         continue
-                    ux, uy = (pb[0] - pa[0]) / length, (pb[1] - pa[1]) / length
-                    over = HOLE_AXIS_REACH_MM
-                    line = Line(pa[0] - ux * over, pa[1] - uy * over, pb[0] + ux * over, pb[1] + uy * over, AXES)
                     drawn = ctx.extras.setdefault("axis_lines", set())
-                    key = (view.name, *sorted(((round(line.x1, 1), round(line.y1, 1)), (round(line.x2, 1), round(line.y2, 1)))))
+                    key = (view.name, *sorted(((round(pa[0], 1), round(pa[1], 1)), (round(pb[0], 1), round(pb[1], 1)))))
                     if key in drawn:
                         continue
                     drawn.add(key)
-                    ctx.add([line])
-                    ctx.used_view(view.name)
-                    axes += 1
+                    line = sheet_centre.side_line(ctx, view.name, pa, pb)
+                    if line is not None:
+                        ctx.add([line])
+                        ctx.used_view(view.name)
+                        axes += 1
         if marks or axes:
             said.append(f"centre marks on {marks} hole view(s), centre lines on {axes}")
         crossed = _flat_diagonals(ctx)

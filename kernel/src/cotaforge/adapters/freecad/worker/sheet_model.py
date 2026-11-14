@@ -27,6 +27,9 @@ ISO_SHADE = "ISO_COLOR"  # the shaded picture under the lines of the isometric v
 PARTING = "PARTICION"  # the parting line of a moulded part: thick, its own line type (long dash, two short ones)
 ZONE = "ZONAS"  # the permitted zones of a moulded part (gate, ejector marks) and their symbols
 
+CENTRE_OVERSHOOT_MM = 2.5  # a centre line goes this far past the feature it marks, at EVERY end (ISO 128-24)
+CENTRE_CLEAR_MM = 1.0  # ... and stops this far short of a dimension line or a dimension text (it never reaches one)
+
 
 @dataclass(frozen=True)
 class LayerStyle:

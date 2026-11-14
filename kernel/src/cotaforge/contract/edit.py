@@ -42,6 +42,7 @@ from cotaforge.contract.requests import (
     Request,
     RevolveRequest,
     ShellRequest,
+    ShrinkBodyRequest,
     SketchRequest,
     SplitRequest,
     SweepRequest,
@@ -88,6 +89,7 @@ REQUEST_BY_KIND: dict[str, type[Request]] = {
     "move_body": MoveBodyRequest,
     "copy_body": CopyBodyRequest,
     "mirror_body": MirrorBodyRequest,
+    "shrink_body": ShrinkBodyRequest,
     "split": SplitRequest,
     "mate_distance": MateDistanceRequest,
 }

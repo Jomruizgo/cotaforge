@@ -492,6 +492,18 @@ def _is_diameter_span(ctx: Context, a: Vec3, b: Vec3, value: float) -> bool:
     return diameter is not None and abs(diameter - value) <= POSITION_EPS_MM and abs(math.dist(a, b) - value) <= POSITION_EPS_MM
 
 
+def distance_span(ctx: Context, spec: dict[str, Any]) -> float | None:
+    """How long a ``dim`` of kind ``distance`` is (mm), or ``None`` when it cannot be measured (``_distance`` then says why).
+    The drawing order stacks the lines outward, so the shorter ones are drawn first (``sheet_items.draw_items``)."""
+    try:
+        a, b = resolve_ref(ctx, spec["from"]), resolve_ref(ctx, spec["to"])
+        name = _along(ctx, a, b, spec.get("along"))
+        axis = AXES[name]
+        return abs(coordinate(b, axis, name) - coordinate(a, axis, name))
+    except (ItemError, KeyError):
+        return None
+
+
 def _distance(ctx: Context, spec: dict[str, Any]) -> str:
     a, b = resolve_ref(ctx, spec["from"]), resolve_ref(ctx, spec["to"])
     name = _along(ctx, a, b, spec.get("along"))

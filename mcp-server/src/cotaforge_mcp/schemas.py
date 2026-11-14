@@ -86,9 +86,11 @@ class InspectArgs(Strict):
         "sweep",
         "holes",
         "validity",
+        "draft",
+        "parting",
     ]
     id: str | None = Field(
-        default=None, description="face/edge id (face, edge); joint step (sweep); CAD feature (tree)"
+        default=None, description="face/edge id (face, edge); joint step (sweep); CAD feature (tree); core|cavity (parting)"
     )
     range: list[float] | None = Field(default=None, min_length=3, max_length=3, description="sweep: [from, to, step]")
     op: str | None = Field(default=None, description="faces: only faces made/changed by this step")
@@ -101,6 +103,9 @@ class InspectArgs(Strict):
         default=None, description="faces: filter"
     )
     normal: list[float] | None = Field(default=None, min_length=3, max_length=3, description="faces: filter by normal")
+    pull: list[float] | None = Field(default=None, min_length=3, max_length=3, description="draft: pull direction")
+    min_draft_deg: float | None = Field(default=None, ge=0, le=45, description="draft: minimum, degrees (default 1)")
+    paint: bool = Field(default=False, description="draft: colour the faces")
     limit: int = Field(default=30, ge=1, le=200, description="max rows")
 
 
@@ -373,6 +378,10 @@ def _inspect_actions(session: "Session") -> list[str]:
         actions.append("sweep")
     if "list_holes" in t:
         actions.append("holes")
+    if "draft_analysis" in t:
+        actions.append("draft")
+    if "parting_analysis" in t:
+        actions.append("parting")
     return actions
 
 
@@ -454,7 +463,7 @@ def _memory_hidden(session: "Session") -> tuple[str, ...]:
 
 
 SHEET_FLOW_NOTE = (
-    ' plan (what the harness puts on the sheet by itself and what it asks) | compose(decisions) (the whole sheet in one '
+    " plan (what the harness puts on the sheet by itself and what it asks) | compose(decisions) (the whole sheet in one "
     'order: cad_guide(topic="drawing:compose")).'
 )
 
@@ -498,7 +507,7 @@ TOOLS: tuple[ToolDef, ...] = (
         "inspect",
         "Read-only measured facts about the document.",
         InspectArgs,
-        "inspect(action=..., id?, op?, face?, between?, where?, sketch?, body?, surface?, normal?, range?, limit?)",
+        "inspect(action=..., id?, op?, face?, between?, where?, sketch?, body?, surface?, normal?, range?, pull?, min_draft_deg?, paint?, limit?)",
         'inspect(action="faces", normal=[0,0,1])',
         _inspect_actions,
     ),

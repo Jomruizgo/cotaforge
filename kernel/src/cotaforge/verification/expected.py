@@ -52,6 +52,7 @@ from cotaforge.contract import (
     joint_delta,
     net_area,
     profile_depths,
+    proposed_block_margin,
     radial_entry,
     sketch_profiles,
 )
@@ -242,6 +243,8 @@ _NON_EDITING_OPS = frozenset(
         "rotate",
         "copy_body",
         "mirror_body",
+        "shrink_body",
+        "mould_split",
         # no geometry at all
         "sketch",
         "ref_plane",
@@ -264,7 +267,7 @@ _NON_EDITING_OPS = frozenset(
 fillet, and whatever the vocabulary grows next) is recorded as a body edit, with or without a row: over-recording only
 downgrades an asserted boolean check to a reported one."""
 
-_POSE_CHANGING_OPS = frozenset({"translate", "rotate", "copy_body", "mirror_body"})
+_POSE_CHANGING_OPS = frozenset({"translate", "rotate", "copy_body", "mirror_body", "shrink_body"})
 """Ops after which the poses recorded for the host's outline and features (``_pad_host``, ``_feature_regions``) can no
 longer be trusted."""
 
@@ -2389,6 +2392,74 @@ class ExpectedComputer:
         ]
         if source_mass.surface_mm2 is not None:
             out.insert(2, _exp("copy_surface", "mm2", source_mass.surface_mm2 * factor**2))
+        return out
+
+    def _op_mould_split(self, op: Any, request: Any, before: StateSnapshot, adapter: Adapter) -> list[Expectation]:
+        """The two inserts (and the slides) are the insert block minus the part, so the document gains exactly the block's
+        volume less the source's: the block is the engineer's ``block_size``, or the source's box grown by ``margin_mm``
+        (or by the proposed margin) on every side. The source stays where it is. The new bodies are registered under the
+        op id (the cavity) and ``<op id>#core``; their shapes are not tracked."""
+        source_mass = adapter.mass_properties(MassRequest(operation_id=op.id, body=request.source))
+        box = self._body_bbox(op, request.source, adapter)
+        sides = tuple(hi - lo for lo, hi in zip(box.min, box.max, strict=True))
+        if request.block_size is not None:
+            size = tuple(request.block_size)
+        else:
+            margin = request.margin_mm if request.margin_mm is not None else proposed_block_margin(max(sides))
+            size = tuple(s + 2.0 * margin for s in sides)
+        for key in (op.id, f"{op.id}#core"):
+            self._body_of_op[key] = key
+            self._shape_by_body[key] = None
+            self._edits[key] = []
+        return [
+            _exp(
+                "volume_delta",
+                "mm3",
+                size[0] * size[1] * size[2] - source_mass.volume_mm3,
+                note="the block less the part: the inserts and the slides fill it exactly",
+            )
+        ]
+
+    def _op_shrink_body(self, op: Any, request: Any, before: StateSnapshot, adapter: Adapter) -> list[Expectation]:
+        """A derived, scaled body (scale ``sx, sy, sz`` about the origin): the document gains ``sx * sy * sz`` times the
+        source's volume, and the NEW body has the source's centroid and box scaled the same way (a plane and a cylinder
+        scale exactly, and an affine map keeps the box of any body exactly the scaled box), while the source stays
+        where it was. The surface is only expected for an equal scale (an unequal one has no simple factor)."""
+        factors: Vec3 = request.scale
+        source_mass = adapter.mass_properties(MassRequest(operation_id=op.id, body=request.source))
+        source_box = self._body_bbox(op, request.source, adapter)
+        self._body_of_op[op.id] = op.id
+        self._shape_by_body[op.id] = None
+        self._edits[op.id] = []
+        uniform = max(factors) - min(factors) < 1e-12
+        spline = (
+            ""
+            if uniform
+            else (
+                "unequal scale: the kernel integrates B-spline faces numerically (measured 0.05 % off), so the volume "
+                "and the centroid are reported, the box is the check"
+            )
+        )
+        out = [
+            _exp(
+                "volume_delta",
+                "mm3",
+                source_mass.volume_mm3 * factors[0] * factors[1] * factors[2],
+                asserted=uniform,
+                note=spline,
+            ),
+            _exp(
+                "copy_centroid",
+                "vec",
+                tuple(c * s for c, s in zip(source_mass.centroid, factors, strict=True)),
+                asserted=uniform,
+                note=spline,
+            ),
+            _exp("source_centroid", "vec", source_mass.centroid),
+            _exp("copy_bbox", "bbox", f.bbox_scale_axes(source_box, factors)),
+        ]
+        if uniform and source_mass.surface_mm2 is not None:
+            out.insert(2, _exp("copy_surface", "mm2", source_mass.surface_mm2 * factors[0] ** 2))
         return out
 
     def _op_mirror_body(self, op: Any, request: Any, before: StateSnapshot, adapter: Adapter) -> list[Expectation]:
