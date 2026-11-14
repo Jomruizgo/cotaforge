@@ -88,6 +88,7 @@ __all__ = [
     "RefPlaneOperation",
     "RevolveOperation",
     "ShellOperation",
+    "ShrinkBodyOperation",
     "SketchOperation",
     "SplitOperation",
     "SweepOperation",
@@ -620,6 +621,76 @@ class MirrorBodyOperation(OperationBase):
     plane: PlaneRef | FaceRef
 
 
+MAX_SHRINKAGE_PERCENT = 10.0
+"""Above this a shrinkage is not a plastic's but a typing mistake (no moulding material shrinks a tenth of its size)."""
+
+
+def _shrinkage_note(percent: Any, source: str) -> str:
+    """The sentence the step's intent carries: the shrinkage as given (a number, or X / Y / Z) and its source."""
+    if isinstance(percent, (list, tuple)):
+        values = [f"{float(v):g}" for v in percent]
+        if len(set(values)) > 1:
+            return f"shrinkage X {values[0]} % / Y {values[1]} % / Z {values[2]} % (source: {source})"
+        percent = percent[0]
+    return f"shrinkage {float(percent):g} % isotropic (source: {source})"
+
+
+class ShrinkBodyOperation(OperationBase):
+    """Derive the CAVITY of a mould from ``source`` (the plastic part): a NEW body scaled up by the plastic's
+    shrinkage, so the part comes out at its nominal size once it has cooled. The new body is LINKED to the source: when
+    the part changes, the cavity follows (the source itself is untouched). ``shrinkage_percent`` is one number (the same
+    on every axis) or ``[x, y, z]`` when the material's data differs along the flow and across it; the scale on an axis
+    is ``1 + percent / 100``. ``factor_source`` says where the number comes from (the material datasheet, the moulder,
+    the engineer): it is mandatory, and the step's intent always ends up carrying the shrinkage and its source. The
+    scaling is about the source body's own origin. A per-axis shrinkage turns curved faces into B-spline surfaces
+    (an affine map of a cylinder is not one); an equal one keeps every surface exact."""
+
+    op: Literal["shrink_body"] = "shrink_body"
+    source: BodyRef
+    shrinkage_percent: float | Vec3
+    factor_source: str = Field(min_length=3)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _intent_carries_the_shrinkage(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        percent, source, intent = data.get("shrinkage_percent"), data.get("factor_source"), data.get("intent")
+        if percent is None or not isinstance(source, str) or not isinstance(intent, str) or not intent.strip():
+            return data
+        try:
+            note = _shrinkage_note(percent, source.strip())
+        except (TypeError, ValueError, IndexError):
+            return data  # the field validators say what is wrong with the numbers
+        return data if note in intent else {**data, "intent": f"{intent.rstrip()} [{note}]"}
+
+    @field_validator("shrinkage_percent")
+    @classmethod
+    def _shrinkage_is_plausible(cls, value: float | Vec3) -> float | Vec3:
+        values = (value,) if isinstance(value, (int, float)) else value
+        if not all(math.isfinite(v) and 0.0 < v <= MAX_SHRINKAGE_PERCENT for v in values):
+            msg = f"shrinkage_percent must be above 0 and at most {MAX_SHRINKAGE_PERCENT:g} on every axis"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("factor_source")
+    @classmethod
+    def _source_is_said(cls, value: str) -> str:
+        if not value.strip():
+            msg = "factor_source must say where the shrinkage comes from (datasheet, moulder, engineer)"
+            raise ValueError(msg)
+        return value.strip()
+
+    def scale(self) -> Vec3:
+        """The scale per axis: ``1 + percent / 100``."""
+        values = (
+            (self.shrinkage_percent,) * 3
+            if isinstance(self.shrinkage_percent, (int, float))
+            else self.shrinkage_percent
+        )
+        return (1.0 + values[0] / 100.0, 1.0 + values[1] / 100.0, 1.0 + values[2] / 100.0)
+
+
 class SplitOperation(OperationBase):
     """Cut a body in two along ``plane`` (a base plane, a datum plane or a planar face; it is not required to pass
     through the origin). The source is CONSUMED. ``positive`` is the piece on the side the plane's normal points to,
@@ -795,6 +866,7 @@ OP_NAMES: frozenset[str] = frozenset(
         "draft",
         "mirror",
         "mirror_body",
+        "shrink_body",
         "split",
         "base_flange",
         "edge_flange",
@@ -845,6 +917,7 @@ OP_CATEGORY: dict[str, OpCategory] = {
     "rotate": "multibody",
     "copy_body": "multibody",
     "mirror_body": "multibody",
+    "shrink_body": "multibody",
     "split": "multibody",
     # sheet_metal: only offered by a CAD that has the sheet-metal capability (a bent part, its flat pattern).
     "base_flange": "sheet_metal",
@@ -889,6 +962,7 @@ Operation = Annotated[
     | DraftOperation
     | MirrorOperation
     | MirrorBodyOperation
+    | ShrinkBodyOperation
     | SplitOperation
     | BaseFlangeOperation
     | EdgeFlangeOperation

@@ -223,7 +223,7 @@ def gather_observation(
     copy_mass: MassProperties | None = None
     copy_bbox: BoundingBox | None = None
     source_mass_after: MassProperties | None = None
-    if op.op in ("copy_body", "mirror_body") and request is not None:
+    if op.op in ("copy_body", "mirror_body", "shrink_body") and request is not None:
         source = getattr(request, "source", None)
         try:
             if source is not None:

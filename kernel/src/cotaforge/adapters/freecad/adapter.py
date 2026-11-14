@@ -74,6 +74,8 @@ from cotaforge.contract import (
     DesignAttributes,
     DocumentInfo,
     DocumentStamp,
+    DraftAnalysisRequest,
+    DraftAnalysisResult,
     DraftRequest,
     DrawingRequest,
     DrawingResult,
@@ -162,6 +164,7 @@ from cotaforge.contract import (
     ShellRequest,
     ShowEntitiesRequest,
     ShowEntitiesResult,
+    ShrinkBodyRequest,
     SketchRequest,
     SketchResult,
     SketchStatusRequest,
@@ -750,6 +753,9 @@ class FreeCADAdapter(Adapter):
     def mirror_body(self, request: MirrorBodyRequest) -> OperationResult:
         return self._call("mirror_body", request, OperationResult)
 
+    def shrink_body(self, request: ShrinkBodyRequest) -> OperationResult:
+        return self._call("shrink_body", request, OperationResult)
+
     def split(self, request: SplitRequest) -> OperationResult:
         return self._call("split", request, OperationResult)
 
@@ -850,6 +856,10 @@ class FreeCADAdapter(Adapter):
         )
         result = self._call("import_geometry", request, ImportGeometryResult, liveness=liveness)
         return result.model_copy(update={"source_units": declared_length_unit(request.path)})
+
+    def draft_analysis(self, request: DraftAnalysisRequest) -> DraftAnalysisResult:
+        """READ-ONLY draft of every face against a pull direction, with the shadow test (``worker/mould.py``)."""
+        return self._call("draft_analysis", request, DraftAnalysisResult)
 
     def list_holes(self, request: ListHolesRequest) -> ListHolesResult:
         """READ-ONLY concave cylindrical faces grouped into holes (``worker/holes.py``)."""

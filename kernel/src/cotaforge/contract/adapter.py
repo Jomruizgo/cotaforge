@@ -60,6 +60,7 @@ from cotaforge.contract.importing import (
     ListHolesRequest,
     ListHolesResult,
 )
+from cotaforge.contract.mould import DraftAnalysisRequest, DraftAnalysisResult
 from cotaforge.contract.native import RunNativeRequest, RunNativeResult
 from cotaforge.contract.probe import ToolOverlapRequest, ToolOverlapResult
 from cotaforge.contract.requests import (
@@ -109,6 +110,7 @@ from cotaforge.contract.requests import (
     SetTimeoutRequest,
     ShellRequest,
     ShowEntitiesRequest,
+    ShrinkBodyRequest,
     SketchRequest,
     SketchStatusRequest,
     SplitRequest,
@@ -511,6 +513,19 @@ class Adapter(ABC):
             )
         )
 
+    @tool("shrink_body", Group.CONSTRUCTION, optional=True)
+    def shrink_body(self, request: ShrinkBodyRequest) -> OperationResult:
+        """Derive a NEW body from a body, scaled by a factor per axis (a mould cavity for a shrinking plastic) and LINKED to
+        its source: when the source changes, the derived body follows. The result carries the new body in
+        ``created_bodies``; the source is untouched. Adapters that cannot keep a link cannot say so."""
+        raise AdapterError(
+            ErrorInfo(
+                code=ErrorCode.not_supported,
+                message="shrink_body: this adapter cannot derive a scaled body linked to its source",
+                recoverable=False,
+            )
+        )
+
     @tool("sweep", Group.CONSTRUCTION, optional=True)
     def sweep(self, request: SweepRequest) -> OperationResult:
         """Move the single closed profile of a sketch along a polyline path (the IR ``sweep``): the volume added is
@@ -887,6 +902,20 @@ class Adapter(ABC):
             ErrorInfo(
                 code=ErrorCode.not_supported,
                 message="list_holes: this adapter cannot list holes; inspect the cylindrical faces instead",
+                recoverable=False,
+            )
+        )
+
+    @tool("draft_analysis", Group.QUERY, optional=True)
+    def draft_analysis(self, request: DraftAnalysisRequest) -> DraftAnalysisResult:
+        """READ-ONLY: the draft of every face of a body (or of every live body) against a pull direction: the smallest
+        lean of each face from it, its area, and whether it can be reached from the pull direction at all (an
+        undercut). Planes are exact, curved faces are sampled (the result says how). With ``paint`` the faces are
+        coloured on screen. Adapters that cannot say so."""
+        raise AdapterError(
+            ErrorInfo(
+                code=ErrorCode.not_supported,
+                message="draft_analysis: this adapter cannot measure the draft of the faces of a body",
                 recoverable=False,
             )
         )
