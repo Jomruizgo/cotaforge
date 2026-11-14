@@ -23,13 +23,14 @@ import sheet_checks
 import sheet_interface
 import sheet_isoview
 import sheet_thread
+import sheet_turned
 import sheet_weldrules
 from items_assembly import rows_of
 from items_dims import AXES, _along, coordinate, resolve_ref
 from items_holes import _declared_thread as items_holes_declared
 from items_holes import _select as select_callout_holes
 from items_holes import _stacks
-from sheet_context import Context, HoleInfo, ItemError, ItemResult, Rect, dot
+from sheet_context import Context, HoleInfo, ItemError, ItemResult, Rect, dot, parallel
 from sheet_context import unit as unit_vector
 from sheet_model import TITLE_BLOCK, Sheet, Text, text_width
 
@@ -86,6 +87,7 @@ def review(data: ReviewInput) -> list[Finding]:
         _gdt_located,
         _view_lines,
         _unused_views,
+        _end_view_of_coaxial_part,
         _collisions,
         _layout,
         _assembly_lists,
@@ -183,12 +185,65 @@ def _unused_views(data: ReviewInput) -> list[Finding]:
         return []
     out: list[Finding] = []
     by_hand = ctx.extras.get("hand_marks", {})  # {view: count} of dimensions / balloons the engineer put on the page
+    stands_for = ctx.extras.get("in_place_views", {})  # a section that stands in the main view: the dimensions on either one
     for name in [*ctx.views, *sections, *extra]:
         if by_hand.get(name) or any(types.get(i) in CARRYING_TYPES for i in use.get(name, ())):
+            continue
+        if name in stands_for and any(
+            types.get(i) in CARRYING_TYPES - {"section"} for i in use.get(stands_for[name], ())
+        ):
             continue
         owner = ctx.extras.get("section_items", {}).get(name, "")
         out.append(_view_without_job(ctx, name, name in sections, owner))
     return out
+
+
+def _coaxial_axis(ctx: Context) -> tuple[float, float, float] | None:
+    """The axis of a part of revolution whose every feature is coaxial and that has something inside (a washer, a bush, a
+    stepped ring, a hollow spacer): one axial section in the main view says it all; ``None`` for any other part."""
+    if ctx.assembly is not None or ctx.weldment is not None or ctx.geometry is None:
+        return None
+    found = ctx.geometry.round_extent()
+    features = ctx.geometry.axial_features() if found is not None else None
+    if found is None or features is None or not sheet_turned.section_only(*features):
+        return None
+    return found[0]
+
+
+def _end_view_of_coaxial_part(data: ReviewInput) -> list[Finding]:
+    """An end view on a part whose features are all coaxial that DOES carry dimensions: the circles it dimensions are the
+    diameters the section gives (``view_adds_nothing``, like the one that carries nothing: ``_unused_views``)."""
+    ctx = data.ctx
+    axis = _coaxial_axis(ctx)
+    if axis is None:
+        return []
+    types = {str(s["id"]): str(s.get("type")) for s in data.items}
+    use = ctx.extras.get("view_use", {})
+    by_hand = ctx.extras.get("hand_marks", {})
+    out: list[Finding] = []
+    for name, view in ctx.views.items():
+        carried = by_hand.get(name) or any(types.get(i) in CARRYING_TYPES for i in use.get(name, ()))
+        if view.derived or not view.looks_along(axis) or not carried:
+            continue  # one that carries nothing is the other check's
+        out.append(Finding("view_adds_nothing", "warning", _coaxial_text(ctx, name), (name,)))
+    return out
+
+
+def _coaxial_text(ctx: Context, name: str) -> str:
+    how = ctx.say(
+        f"quítala (drawing action=remove_view, view={name}) y deja el corte en la vista principal "
+        '(item section holes="axis" in_place=true), que da cada Ø y cada altura',
+        f"drop it (drawing action=remove_view, view={name}) and leave the section in the main view "
+        '(item section holes="axis" in_place=true), which gives every Ø and every height',
+    )
+    return ctx.say(
+        f"La vista {name} es la vista de extremo de una pieza de revolución con todos sus rasgos coaxiales: un solo corte "
+        f"axial más la isométrica la definen entera y la vista de extremo no añade nada ({how}). Solo se queda si enseña "
+        "algo que el corte no enseña; o el ingeniero lo ordena con su razón.",
+        f"The {name} view is the end view of a part of revolution with every feature coaxial: one axial section plus the "
+        f"isometric view define it whole and the end view adds nothing ({how}). It stays only if it shows something the "
+        "section does not; or the engineer orders it with his reason.",
+    )
 
 
 def _view_without_job(ctx: Context, name: str, is_section: bool, owner: str) -> Finding:
@@ -207,7 +262,10 @@ def _view_without_job(ctx: Context, name: str, is_section: bool, owner: str) -> 
             f"quítala (drawing action=remove_view, view={name}) y las demás se reparten el espacio",
             f"drop it (drawing action=remove_view, view={name}) and the others share the room",
         )
-    if turned is not None and view is not None and view.looks_along(turned[0]):
+    coaxial = _coaxial_axis(ctx)
+    if coaxial is not None and view is not None and not view.derived and view.looks_along(coaxial):
+        text = _coaxial_text(ctx, name)
+    elif turned is not None and view is not None and view.looks_along(turned[0]):
         text = ctx.say(
             f"La vista {name} es la vista de extremo de una pieza torneada y no lleva ninguna cota: solo repite círculos que "
             f"ya dan los Ø y la rosca de la vista principal, que lo lleva todo. {how[0].upper() + how[1:]}. Solo se queda si "
@@ -270,6 +328,21 @@ def _hole_of_ref(ctx: Context, ref: dict[str, Any]) -> list[HoleInfo]:
 
 def _distance_dims(data: ReviewInput) -> list[dict[str, Any]]:
     return [i for i in _of(data, "dim") if i.get("kind") == "distance"]
+
+
+def _bores_on_axis(ctx: Context) -> set[int]:
+    """The holes that lie on the axis of revolution of the part itself (a bore of a bush, a ring, a spacer): the axis locates
+    them, no dimension has to."""
+    found = ctx.geometry.round_extent() if ctx.assembly is None and ctx.weldment is None else None
+    box = ctx.extras.get("model_box")
+    if found is None or box is None:
+        return set()
+    middle = tuple((lo + hi) / 2 for lo, hi in zip(box[0], box[1], strict=True))
+    return {
+        h.index
+        for h in ctx.holes
+        if parallel(h.direction, found[0]) and h.on_axis(tuple(middle))  # type: ignore[arg-type]
+    }
 
 
 def _located_holes(data: ReviewInput) -> set[int]:
@@ -392,7 +465,7 @@ def _hole_callouts(data: ReviewInput) -> list[Finding]:
             called.setdefault(h.index, []).append(spec["id"])
         if "text" in spec:  # the engineer's own callout: what it states must agree with the measured hole
             out += _callout_text_findings(ctx, spec, holes)
-    located = _located_holes(data)
+    located = _located_holes(data) | _bores_on_axis(ctx)
     for stack in _stacks(list(ctx.holes)):
         indexes = {h.index for h in stack}
         features = tuple(dict.fromkeys(h.feature for h in stack if h.feature))
@@ -867,6 +940,8 @@ def _view_lines(data: ReviewInput) -> list[Finding]:
     ctx = data.ctx
     if _of(data, "view_lines") or not ctx.holes:
         return []
+    if any(i.get("in_place") for i in _of(data, "section")):
+        return []  # the section that stands in the main view draws the centre line of every bore of the part by itself
     text = ctx.say(
         'El plano tiene agujeros y no lleva líneas ocultas ni ejes: añade {"type":"view_lines"}.',
         'The sheet has holes and no hidden lines or centre lines: add {"type":"view_lines"}.',
