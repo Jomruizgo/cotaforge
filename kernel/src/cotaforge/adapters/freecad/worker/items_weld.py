@@ -183,7 +183,12 @@ def visible_segments(ctx: Context, view: ViewInfo) -> list[Segment] | None:
 
 
 def _on_any(p: Point, segments: list[Segment]) -> bool:
-    return any(_segment_distance(p, p, a, b) <= VISIBLE_TOL_MM for a, b in segments)
+    x, y = p
+    return any(
+        _segment_distance(p, p, a, b) <= VISIBLE_TOL_MM
+        for a, b in segments
+        if not (max(a[0], b[0]) < x - VISIBLE_TOL_MM or min(a[0], b[0]) > x + VISIBLE_TOL_MM or max(a[1], b[1]) < y - VISIBLE_TOL_MM or min(a[1], b[1]) > y + VISIBLE_TOL_MM)
+    )
 
 
 @dataclass
@@ -357,7 +362,11 @@ def _crossings(spot_segments: list[Segment] | None, tip: Point, anchor: Point) -
     if not spot_segments:
         return 0
     n = 0
+    left, right = min(tip[0], anchor[0]) - NEAR_TIP_MM, max(tip[0], anchor[0]) + NEAR_TIP_MM
+    low, high = min(tip[1], anchor[1]) - NEAR_TIP_MM, max(tip[1], anchor[1]) + NEAR_TIP_MM
     for a, b in spot_segments:
+        if max(a[0], b[0]) < left or min(a[0], b[0]) > right or max(a[1], b[1]) < low or min(a[1], b[1]) > high:
+            continue  # far from the arrow, its tip included: it neither crosses it nor lies on its tip (most lines of a view)
         if _segment_distance(tip, tip, a, b) < NEAR_TIP_MM:
             continue
         if _segment_distance(tip, anchor, a, b) == 0.0:
