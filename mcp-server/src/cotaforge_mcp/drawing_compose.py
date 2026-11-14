@@ -47,6 +47,7 @@ KEYS: dict[str, tuple[str, ...]] = {
     "finish": ("finish",),
     "sections": ("section", "detail", "aux_view"),
     "welds": ("weld",),
+    "mould": ("parting_line", "pull_direction", "mould_zone", "no_draft"),
     "positions": ("dim",),
     "notes": ("note",),
 }
@@ -71,6 +72,7 @@ ROW_KEYS: dict[str, tuple[str, ...]] = {
     "req.surface_texture": ("finish",),
     "req.geometric_tolerance": ("gdt",),
     "req.welds": ("welds",),
+    "req.moulded_part": ("mould",),
     "req.general_tolerance": ("sheet",),
     "req.title_block": ("sheet",),
 }

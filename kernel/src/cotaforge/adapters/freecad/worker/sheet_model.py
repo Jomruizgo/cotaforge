@@ -24,6 +24,8 @@ HATCH = "SOMBREADO"
 THREAD = "ROSCAS"
 FLAT_FACES = "CARAS_PLANAS"  # the diagonals of a flat face of a turned part: a layer no native object draws
 ISO_SHADE = "ISO_COLOR"  # the shaded picture under the lines of the isometric view (``Sheet.underlay``), never DXF
+PARTING = "PARTICION"  # the parting line of a moulded part: thick, its own line type (long dash, two short ones)
+ZONE = "ZONAS"  # the permitted zones of a moulded part (gate, ejector marks) and their symbols
 
 
 @dataclass(frozen=True)
@@ -56,12 +58,15 @@ LAYERS: dict[str, LayerStyle] = {
     HATCH: LayerStyle(9, "CONTINUOUS", HAIR_MM),
     THREAD: LayerStyle(3, "CONTINUOUS", THIN_MM),  # ISO 6410: the thin arc at the major diameter of a thread
     FLAT_FACES: LayerStyle(3, "CONTINUOUS", THIN_MM),  # the diagonals of a flat face seen face-on
+    PARTING: LayerStyle(7, "PHANTOM", THICK_MM, (12.0, 3.0, 1.5, 3.0, 1.5, 3.0)),  # colour 7: the same pen as the outline
+    ZONE: LayerStyle(3, "CONTINUOUS", THIN_MM),
 }
 
 LINETYPES: dict[str, tuple[float, ...]] = {
     "CONTINUOUS": (),
     "HIDDEN": (3.0, -1.5),  # DXF pattern: positive = dash, negative = gap
     "CENTER": (6.0, -0.75, 0.125, -0.75),
+    "PHANTOM": (12.0, -3.0, 1.5, -3.0, 1.5, -3.0),  # long dash and two short ones: the parting line (ISO 10135)
 }
 
 TEXT_HEIGHT_MM = 3.5

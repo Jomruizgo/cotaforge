@@ -93,7 +93,9 @@ class Row:
     line of the intent file that declares it, in the designer's own words) or ``title`` (the title block ``create`` fills:
     material, general tolerance, scale, projection) or ``keyway`` (the dimensions of a keyway the walls of the part show:
     width, depth, length, position; its fit class stays a question) or ``parts_list`` (the parts list and a balloon per position on the
-    isometric view of an assembly: both are read from its components) or ``chamfers`` (a callout of every chamfer no dimension gives)."""
+    isometric view of an assembly: both are read from its components) or ``chamfers`` (a callout of every chamfer no dimension gives)
+    or ``mould`` (the parting line of a moulded part, measured on the model: where the outline of the section is widest, along the
+    direction the part is shallowest; the draft, the gate and the ejector zones are decisions, so they stay questions)."""
 
 
 def _n(fact: str, es: str, en: str) -> Need:
@@ -467,6 +469,35 @@ ROWS: tuple[Row, ...] = (
         intent_pattern=r"solda|weld",
     ),
     Row(
+        id="req.moulded_part",
+        auto="mould",
+        title=("Pieza moldeada por inyección", "Moulded part"),
+        must=(
+            "la línea de partición en su propio tipo de línea, la dirección de apertura con el desmoldeo general (valor y símbolo), la zona permitida de inyección y las zonas permitidas de marcas de expulsor, cada una con su símbolo, y las excepciones sin desmoldeo o de arista viva donde hagan falta (no solo notas de texto)",
+            "the parting line in its own line type, the opening direction with the general draft (value and symbol), the permitted gate zone and the permitted ejector-mark zones, each with its symbol, and the no-draft and sharp-edge exceptions where they are needed (not only notes of text)",
+        ),
+        standard="ISO 10135",
+        question=(
+            "¿Qué desmoldeo general lleva la pieza, en qué zona puede entrar el material (inyección) y en cuáles se admiten marcas de expulsor? ¿Qué caras no llevan desmoldeo o llevan arista viva?",
+            "Which general draft does the part take, in which zone may the melt enter (gate) and in which are ejector marks allowed? Which faces take no draft or a sharp edge?",
+        ),
+        proposal=(
+            "la dirección de apertura y la línea de partición como las mide el modelo (la línea de partición la añade el arnés), desmoldeo general de 1°, la inyección en la cara que lo permite el archivo de intención y los expulsores en las cabezas de torreta y el suelo",
+            "the opening direction and the parting line as the model measures them (the harness adds the parting line), a general draft of 1 deg, the gate on the face the intent file allows and the ejectors on the heads of the bosses and the floor",
+        ),
+        triggers=("mould_items", "intent.req.moulded_part"),
+        needs=(
+            _n("mould_parting_on_sheet", "una línea de partición (parting_line, ISO 10135)", "a parting line (parting_line, ISO 10135)"),
+            _n("mould_pull_on_sheet", "la dirección de apertura (pull_direction)", "the opening direction (pull_direction)"),
+            _n("mould_draft_on_sheet", "el desmoldeo general con su valor (pull_direction con draft_deg)", "the general draft with its value (pull_direction with draft_deg)"),
+            _n("mould_gate_on_sheet", "la zona permitida de inyección (mould_zone kind=gate)", "the permitted gate zone (mould_zone kind=gate)"),
+            _n("mould_ejector_on_sheet", "las zonas permitidas de expulsor (mould_zone kind=ejector)", "the permitted ejector zones (mould_zone kind=ejector)"),
+        ),
+        measured=("mould_items",),
+        intent=("process", "function"),
+        intent_pattern=r"inyecci[oó]n|injection|moldeo|mou?lded|mou?lding",
+    ),
+    Row(
         id="req.parts_list",
         auto="parts_list",
         title=("Lista de piezas y globos", "Parts list and balloons"),
@@ -638,6 +669,7 @@ MEASURED_FINDINGS = frozenset(
         "weld_duplicate",
         "view_adds_nothing",
         "sheet_underused",
+        "paper_too_small",
         "part_unnamed",
         "no_isometric",
         "cylinder_no_axis",
@@ -898,6 +930,7 @@ THREADS_ID = AUTO_PREFIX + "threads"
 THREAD_ROW = PREFIX + "thread"
 PARTS_LIST_ID = AUTO_PREFIX + "parts_list"
 BALLOONS_ID = AUTO_PREFIX + "balloons"
+PARTING_ID = AUTO_PREFIX + "parting"
 CALLOUT_CODES = frozenset({"thread_no_callout", "hole_no_callout", "fit_hole_no_tolerance"})
 
 
@@ -913,6 +946,8 @@ def auto_item_id(row: Row) -> str:
         return PARTS_LIST_ID
     if row.auto == "chamfers":
         return CHAMFERS_ID
+    if row.auto == "mould":
+        return PARTING_ID
     if row.auto == "intent_note":
         return AUTO_PREFIX + row.id.removeprefix(PREFIX)
     return ""
@@ -994,6 +1029,15 @@ def plan_additions(
             continue
         item_id = auto_item_id(row)
         if not item_id or r.state == MET or r.answer is not None or item_id in have:
+            continue
+        if row.auto == "mould":
+            if "parting_line" not in kinds:  # the engineer's own parting line comes first
+                out[PARTING_ID] = Addition(
+                    (row.id,),
+                    {"type": "parting_line", "id": PARTING_ID},
+                    "the parting line in its own line type: the opening direction and the level of the parting plane are measured on "
+                    "the model (the part is shallowest along it; the outline of the section is widest there)",
+                )
             continue
         if row.auto == "keyway" and (dimensioned or not r.model_measured):
             continue  # only a keyway the walls of the part show (a measurement) is dimensioned by the harness

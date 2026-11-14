@@ -2184,6 +2184,10 @@ def _exact_box(shape: Any) -> Any:
         return shape.BoundBox
 
 
+MOULD_CACHE = 400
+_MOULD: dict[tuple[Any, ...], Any] = {}  # what was measured for a moulded part (its box, its sections), by document and shapes
+
+
 class LiveGeometry(drawing_assembly.AssemblyRays, drawing_assembly.WeldJoints, sc.Geometry):
     """The lookups items make into the model, on the live document."""
 
@@ -2262,6 +2266,151 @@ class LiveGeometry(drawing_assembly.AssemblyRays, drawing_assembly.WeldJoints, s
         if distance > sc.POSITION_TOL_MM:
             return None
         return g.vec(solutions[0][0])
+
+    # --- a moulded part (ISO 10135): the pull direction and the parting plane are proposed from these ---
+    def _key(self, *parts: Any) -> tuple[Any, ...]:
+        """The key of something measured on THESE shapes of this document: the sheet is drawn again for every item added (and
+        for each nudge of a collision), and a section of a part with hundreds of faces takes seconds."""
+        return (self.doc.id, tuple(shape.hashCode() for shape in self._shapes), *parts)
+
+    def mould_box(self) -> tuple[sc.Vec3, sc.Vec3, sc.Vec3] | None:
+        key = self._key("mould_box")
+        if key not in _MOULD:
+            _MOULD[key] = self._mould_box()
+            if len(_MOULD) > MOULD_CACHE:
+                _MOULD.pop(next(iter(_MOULD)))
+        return _MOULD[key]  # type: ignore[no-any-return]
+
+    def _mould_box(self) -> tuple[sc.Vec3, sc.Vec3, sc.Vec3] | None:
+        boxes = [_exact_box(shape) for shape in self._shapes]
+        if not boxes:
+            return None
+        low = (min(b.XMin for b in boxes), min(b.YMin for b in boxes), min(b.ZMin for b in boxes))
+        high = (max(b.XMax for b in boxes), max(b.YMax for b in boxes), max(b.ZMax for b in boxes))
+        solids = [solid for shape in self._shapes for solid in (shape.Solids or [shape])]  # a compound has no centre of mass of its own
+        volume = sum(float(solid.Volume) for solid in solids)
+        if volume <= 0:
+            return None
+        centre = tuple(sum(float(solid.Volume) * g.vec(solid.CenterOfMass)[i] for solid in solids) / volume for i in range(3))
+        return low, high, centre  # type: ignore[return-value]
+
+    def _section(self, axis: sc.Vec3, distance: float) -> tuple[float, Any] | None:
+        """``(area, wire)`` of the largest closed wire the plane square to ``axis`` at ``distance`` cuts from the part."""
+        key = self._key("section", axis, round(distance, 3))
+        if key in _MOULD:
+            return _MOULD[key]  # type: ignore[no-any-return]
+        found = self._slice(axis, distance)
+        _MOULD[key] = found
+        if len(_MOULD) > MOULD_CACHE:
+            _MOULD.pop(next(iter(_MOULD)))
+        return found
+
+    def _slice(self, axis: sc.Vec3, distance: float) -> tuple[float, Any] | None:
+        best: tuple[float, Any] | None = None
+        direction = App.Vector(*axis)
+        for shape in self._shapes:
+            try:
+                wires = shape.slice(direction, distance)
+            except Exception:  # noqa: BLE001 - a plane that grazes a face: that section is not there
+                continue
+            for wire in wires:
+                try:
+                    area = float(Part.Face(wire).Area) if wire.isClosed() else 0.0
+                except Exception:  # noqa: BLE001, S112
+                    continue
+                if best is None or area > best[0]:
+                    best = (area, wire)
+        return best
+
+    def outline_areas(self, axis: sc.Vec3, around: tuple[float, float] | None = None) -> list[tuple[float, float]]:
+        key = self._key("areas", tuple(axis), around)
+        if key not in _MOULD:
+            _MOULD[key] = self._outline_areas(axis, around)
+        return list(_MOULD[key])
+
+    def _outline_areas(self, axis: sc.Vec3, around: tuple[float, float] | None = None) -> list[tuple[float, float]]:
+        box = self.mould_box()
+        if box is None:
+            return []
+        unit = tuple(abs(c) for c in axis)
+        index = max(range(3), key=lambda i: unit[i])
+        lo, hi = around if around is not None else (box[0][index], box[1][index])
+        count = 32 if around is None else 24
+        step = (hi - lo) / count
+        out: list[tuple[float, float]] = []
+        with _stage("sampling the sections of the part for the parting plane", self.op):
+            for i in range(count):
+                d = lo + (i + 0.5) * step
+                found = self._section(unit, d)  # type: ignore[arg-type]
+                if found is not None:
+                    out.append((d, found[0]))
+            if around is None and out:  # then finer round the widest one, where a shoulder lies between two samples
+                best = max(out, key=lambda s: s[1])[0]
+                out += self.outline_areas(axis, (best - step, best + step))
+        return sorted(out)
+
+    def axial_planes(self, axis: sc.Vec3) -> list[float]:
+        unit = tuple(abs(c) for c in axis)
+        index = max(range(3), key=lambda i: unit[i])
+        found: set[float] = set()
+        for shape in self._shapes:
+            for face in shape.Faces:
+                if g.surface_kind(face) != "plane" or abs(abs(face.normalAt(0, 0).dot(App.Vector(*unit))) - 1.0) > 1e-6:
+                    continue
+                found.add(round(float(g.vec(face.CenterOfMass)[index]), 2))
+        return sorted(found)
+
+    def section_outline(self, axis: sc.Vec3, level: float, centre: sc.Vec3, xdir: sc.Vec3, direction: sc.Vec3) -> list[sc.Point]:
+        unit = tuple(abs(c) for c in axis)
+        best: tuple[float, Any] | None = None
+        for nudge in (-0.02, 0.02):  # a plane on a face of the part has no section: a hair either side of it has
+            found = self._section(unit, level + nudge)  # type: ignore[arg-type]
+            if found is not None and (best is None or found[0] > best[0]):
+                best = found
+        if best is None:
+            return []
+        ydir = sc.cross(direction, xdir)
+        points = best[1].discretize(Deflection=0.05)
+        loop = [(sc.dot(sc.sub((p.x, p.y, p.z), centre), xdir), sc.dot(sc.sub((p.x, p.y, p.z), centre), ydir)) for p in points]
+        if len(loop) > 2 and math.dist(loop[0], loop[-1]) < 1e-6:
+            loop.pop()
+        return loop
+
+    def circle_span(self, a: sc.Vec3, b: sc.Vec3) -> float | None:
+        chord = g.length(g.sub(b, a))
+        if chord < 1e-6:
+            return None
+        along = g.unit(g.sub(b, a))
+        middle = tuple((x + y) / 2 for x, y in zip(a, b, strict=True))
+        tol = sc.POSITION_TOL_MM
+
+        def on_axis(origin: sc.Vec3, axis: sc.Vec3) -> bool:
+            if abs(g.dot(along, axis)) > 1e-3:  # the chord is across the axis
+                return False
+            off = g.sub(middle, origin)
+            return g.length(g.sub(off, g.scale(axis, g.dot(off, axis)))) <= tol  # ... and its middle is on it
+
+        for shape in self._shapes:
+            walls = []  # a bore, a boss or a cone with draft: the axis crosses the chord at its middle (a wall comes in halves)
+            for face in shape.Faces:
+                kind = g.surface_kind(face)
+                if kind not in ("cylinder", "cone"):
+                    continue
+                surf = face.Surface
+                origin = g.vec(surf.Center if kind == "cylinder" else surf.Apex)
+                if on_axis(origin, g.unit(g.vec(surf.Axis))):
+                    walls.append(face)
+            if all(any(w.distToShape(Part.Vertex(g.fcvec(p)))[0] <= tol for w in walls) for p in (a, b)):
+                return chord
+            for edge in shape.Edges:  # a circular edge (the mouth of a bore): both points on it
+                if g.curve_kind(edge) != "circle":
+                    continue
+                curve = edge.Curve
+                if not on_axis(g.vec(curve.Center), g.unit(g.vec(curve.Axis))):
+                    continue
+                if all(edge.distToShape(Part.Vertex(g.fcvec(p)))[0] <= tol for p in (a, b)):
+                    return chord
+        return None
 
     def projection(
         self, centre: sc.Vec3, xdir: sc.Vec3, direction: sc.Vec3, cut: tuple[sc.Vec3, sc.Vec3] | None = None

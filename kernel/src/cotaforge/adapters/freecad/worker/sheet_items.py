@@ -21,6 +21,7 @@ import items_finish
 import items_gdt
 import items_holes
 import items_lines
+import items_mould
 import items_notes
 import items_views
 import items_weld
@@ -43,6 +44,7 @@ MODULES = (
     items_explode,
     items_lines,
     items_weld,
+    items_mould,
 )
 
 REGISTRY: dict[str, ItemType] = {t.name: t for module in MODULES for t in module.ITEMS}

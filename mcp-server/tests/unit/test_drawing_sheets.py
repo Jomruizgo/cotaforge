@@ -311,6 +311,7 @@ DRAWING_TOPICS = (
     "drawing",
     "drawing:items",
     "drawing:marks",
+    "drawing:mould",
     "drawing:views",
     "drawing:assembly",
     "drawing:output",
