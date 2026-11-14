@@ -56,7 +56,9 @@ def is_library_text(resource_dir: str, text: str) -> bool:
     return any(wanted == own.strip() for own in library(resource_dir).values())
 
 
-def make(fc_doc: Any, page: Any, resource_dir: str, relative: str, name: str, x: float, y: float, scale: float = 1.0) -> Any:
+def make(
+    fc_doc: Any, page: Any, resource_dir: str, relative: str, name: str, x: float, y: float, scale: float = 1.0
+) -> Any:
     """Insert the library symbol ``relative`` on ``page`` at (x, y) page mm, as the TechDraw menu does (``Insert SVG symbol``):
     a ``DrawViewSymbol`` whose text is that file."""
     obj = fc_doc.addObject(SYMBOL_TYPE, name)
@@ -64,7 +66,9 @@ def make(fc_doc: Any, page: Any, resource_dir: str, relative: str, name: str, x:
     obj.Symbol = library_file(resource_dir, relative)
     obj.Scale = scale
     obj.X, obj.Y = x, y
-    obj.addProperty("App::PropertyString", PROP_LIBRARY, "Cotaforge", "FreeCAD library symbol this object was made from")
+    obj.addProperty(
+        "App::PropertyString", PROP_LIBRARY, "Cotaforge", "FreeCAD library symbol this object was made from"
+    )
     setattr(obj, PROP_LIBRARY, relative)
     return obj
 

@@ -6,6 +6,7 @@ The requests here are shaped exactly as the adapter sends them (``AnnotateDrawin
 ``add``, ``ids`` for ``remove``.
 """
 
+import json
 import os
 import tempfile
 from typing import Any
@@ -154,8 +155,9 @@ def check_removing_without_ids_is_refused_and_the_sheet_goes_only_with_remove_sh
 def check_every_item_shows_on_the_page_when_it_is_added_and_the_page_matches_the_sheet() -> None:
     base = build_part()
     call("create_drawing", op("d", template="A3", title="Placa", scale=1.0))
-    # the overall dimensions are TechDraw's own objects, not mirrored ones; the thread arc of the M6 is a thing of the views
-    assert keys() <= {"threads", "loc"}, keys()  # loc: the centre lines of the default location
+    # the overall dimensions are TechDraw's own objects, not mirrored ones; the thread arc of the M6 and the centre lines of
+    # the default location are cosmetic edges of the views (no object of their own)
+    assert keys() == set(), keys()
     steps: list[tuple[list[dict[str, Any]], str]] = [
         ([{"type": "view_lines", "id": "vl"}], "vl"),
         ([{"type": "hole_dim", "id": "dowels", "at": [[x, y, 0] for x, y in DOWELS], "fit": "H7"}], "dowels"),
@@ -180,16 +182,15 @@ def check_every_item_shows_on_the_page_when_it_is_added_and_the_page_matches_the
         ([{"type": "note", "id": "n1", "text": "Sin rebabas"}], "n1"),
         ([{"type": "revision", "id": "rv", "index": "A", "description": "Primera emision", "by": "JR"}], ""),
     ]
-    seen: set[str] = {"loc"}  # the default location of the holes is on the page from the start
+    seen: set[str] = set()
     for items, key in steps:
         result = add(*items)
         statuses = {r["id"]: r["status"] for r in result["items"]}
         assert all(statuses[i["id"]] in ("ok", "warning") for i in items), result["items"]
         assert result["changed"] == [i["id"] for i in items]
         if key:
-            seen.add(key)
-            if key == "tbl":
-                seen.discard("loc")  # the table locates every hole: the default location has nothing left to draw
+            if key != "vl":  # hidden and centre lines of view_lines are the views' own: no object
+                seen.add(key)
             assert keys() - {"threads", "iso286"} == seen, (keys(), seen)
             assert result["window"] != "unchanged", result["window"]
         problems = drawing.compare_window(_rec(), None, "check")
@@ -435,10 +436,13 @@ def check_every_centre_mark_is_at_the_projected_centre_of_its_hole_in_the_sheet_
             len(marks),
         )  # a counterbore shares the centre of its hole
         # a cross somebody moved is named
-        owned = next(  # the default location (loc) draws the crosses first; view_lines only the hidden lines
-            o for o in sheet_mirror.owned(page)["loc"] if str(o.TypeId) == "TechDraw::DrawViewSymbol"
-        )
-        owned.X = float(owned.X) + 0.5
+        if projection == "hlr":  # its views are symbols: the crosses are a symbol's drawing
+            owned = next(o for o in sheet_mirror.owned(page)["loc"] if str(o.TypeId) == "TechDraw::DrawViewSymbol")
+            owned.X = float(owned.X) + 0.5
+        else:  # a TechDraw view: the crosses are cosmetic edges of it; the engineer deletes one of them by hand
+            top = next(v for v in drawing.part_views(page) if drawing.view_key(v) == "top")
+            tag = json.loads(str(top.CotaforgeCosmetic))["loc"][1][0]
+            top.removeCosmeticEdge(tag)
         problems = drawing.centre_mark_problems(_rec(), None, "check")
         assert problems and any("not at the centre of any hole" in p or "page does not" in p for p in problems), (
             problems

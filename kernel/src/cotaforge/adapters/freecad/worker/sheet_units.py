@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """The pieces of a composed sheet the CAD window mirrors, as plain data (no FreeCAD import, unit-testable on its own).
 
 The compositor (``drawing.compose``) draws a whole sheet into ``sheet_model`` entities; the PDF, the PNG and the DXF are

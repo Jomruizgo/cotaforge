@@ -1296,13 +1296,15 @@ def apply_title_block(spec: dict[str, Any], given: Any, op: str | None) -> None:
 
 
 def _route_title_block_notes(
-    spec: dict[str, Any], requested: list[Any], op: str | None
+    spec: dict[str, Any], requested: list[Any], op: str | None, material: str = ""
 ) -> tuple[list[Any], list[str]]:
     """Take out of ``requested`` the notes that state a datum the title block has a field for and put the datum in that field
     of the sheet (``items_notes.route_title_block_notes``). Returns the items left and what was moved (said to the agent)."""
     names = set(sheet_template.editable_fields(template_text(spec["template"], op)))
-    kept, moved = items_notes.route_title_block_notes(requested, names, spec.setdefault("fields", {}), bool(spec.get("assembly")))
-    return kept, moved
+    current = {k: str(v) for k, v in spec.get("fields", {}).items()}
+    if not current.get("part_material", "").strip() and not spec.get("assembly"):
+        current["part_material"] = material  # while the sheet has none of its own the title block shows the design's
+    return items_notes.route_title_block_notes(requested, names, spec.setdefault("fields", {}), bool(spec.get("assembly")), current)
 
 
 def _auto_paper(
@@ -1882,7 +1884,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     requested = _expand_chamfer_dims(doc, items, requested, op)
     asked_threads = any(isinstance(i, dict) and i.get("type") == "thread_dims" for i in requested)
     requested = _expand_thread_dims(doc, items, requested, op)
-    requested, routed = _route_title_block_notes(spec, requested, op)
+    requested, routed = _route_title_block_notes(spec, requested, op, material_of(fc_doc))
     if not requested and routed:
         write_spec(page, spec)
         _sync_template_fields(fc_doc, op)

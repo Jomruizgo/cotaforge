@@ -621,11 +621,11 @@ def _make_cosmetic(frame: Frame, n: su.NativeCosmetic) -> str:
     return str(tag)
 
 
-def sync_cosmetics(page: Any, units: list[su.Unit]) -> dict[str, list[str]]:
+def sync_cosmetics(page: Any, units: list[su.Unit], made: list[str] | None = None) -> dict[str, list[str]]:
     """Make the cosmetic edges of the views agree with what the units ask: a unit whose edges on a view already carry the
     signature (and still exist) is left alone, the rest are made again; a unit that is gone takes its edges with it. The edges
     are the view's own: they move with it and go when it does. Returns, for the units that could not be made, the reasons
-    (those units keep their symbol)."""
+    (those units keep their symbol); ``made`` collects the keys of the units whose edges were made or taken off."""
     problems: dict[str, list[str]] = {}
     wanted: dict[str, dict[str, list[su.NativeCosmetic]]] = {}
     for unit in units:
@@ -645,6 +645,8 @@ def sync_cosmetics(page: Any, units: list[su.Unit]) -> dict[str, list[str]]:
         for key in [k for k in stored if k not in mine]:
             _drop(view, list(stored.pop(key)[1]))
             changed = True
+            if made is not None and key not in made:
+                made.append(key)
         for key, natives in mine.items():
             signature = su.cosmetic_signature(natives)
             old = stored.get(key)
@@ -666,6 +668,8 @@ def sync_cosmetics(page: Any, units: list[su.Unit]) -> dict[str, list[str]]:
                 continue
             stored[key] = [signature, tags]
             changed = True
+            if made is not None and key not in made:
+                made.append(key)
         if changed:
             _store(view, stored)
     return problems
@@ -702,26 +706,38 @@ def only_view_bound(unit: su.Unit) -> bool:
 EDGE_TOL = 1e-4
 
 
-def _same_edge(edge: Any, cosmetic: Any) -> bool:
-    """Whether the visible edge ``edge`` is the one the cosmetic edge ``cosmetic`` of the sheet made (TechDraw hands both out
-    together; the shapes it returns are y DOWN while a cosmetic edge is y UP, so a y that is mirrored matches too)."""
+def _cosmetic_geometry(cosmetic: Any) -> tuple[str, tuple[float, ...]]:
+    """What a cosmetic edge is, as its own API gives it: ``line`` x1, y1, x2, y2 or ``circle`` (an arc too) cx, cy, r. The
+    edge raises ``TypeError`` for what it is not (a line has no radius), so a failed ``Radius`` is what says it is a line."""
+    try:
+        radius = float(cosmetic.Radius)
+    except (TypeError, AttributeError):
+        a, b = cosmetic.Start, cosmetic.End
+        return "line", (float(a.x), float(a.y), float(b.x), float(b.y))
+    c = cosmetic.Center
+    return "circle", (float(c.x), float(c.y), radius)
+
+
+def _same_edge(edge: Any, geometry: tuple[str, tuple[float, ...]]) -> bool:
+    """Whether the visible edge ``edge`` is the one a cosmetic edge with ``geometry`` made (TechDraw hands both out together;
+    the shapes it returns are y DOWN while a cosmetic edge is y UP, so a mirrored y matches too)."""
+    kind, values = geometry
     curve = type(edge.Curve).__name__
-    if hasattr(cosmetic, "Start") and curve == "Line":
+    if kind == "line" and curve == "Line":
         ends = [(float(v.Point.x), float(v.Point.y)) for v in (edge.Vertexes[0], edge.Vertexes[-1])]
-        a, b = (float(cosmetic.Start.x), float(cosmetic.Start.y)), (float(cosmetic.End.x), float(cosmetic.End.y))
+        a, b = (values[0], values[1]), (values[2], values[3])
         for sign in (1.0, -1.0):
             want = [(a[0], sign * a[1]), (b[0], sign * b[1])]
-            if all(math.hypot(p[0] - q[0], p[1] - q[1]) < EDGE_TOL for p, q in zip(ends, want, strict=True)) or all(
-                math.hypot(p[0] - q[0], p[1] - q[1]) < EDGE_TOL for p, q in zip(ends, reversed(want), strict=True)
-            ):
-                return True
+            for order in (want, want[::-1]):
+                if all(math.hypot(p[0] - q[0], p[1] - q[1]) < EDGE_TOL for p, q in zip(ends, order, strict=True)):
+                    return True
         return False
-    if hasattr(cosmetic, "Radius") and curve == "Circle":
+    if kind == "circle" and curve == "Circle":
         centre = edge.Curve.Center
-        c = cosmetic.Center
-        return abs(float(edge.Curve.Radius) - float(cosmetic.Radius)) < EDGE_TOL and (
-            math.hypot(float(centre.x) - float(c.x), float(centre.y) - float(c.y)) < EDGE_TOL
-            or math.hypot(float(centre.x) - float(c.x), float(centre.y) + float(c.y)) < EDGE_TOL
+        if abs(float(edge.Curve.Radius) - values[2]) >= EDGE_TOL:
+            return False
+        return any(
+            math.hypot(float(centre.x) - values[0], float(centre.y) - sign * values[1]) < EDGE_TOL for sign in (1.0, -1.0)
         )
     return False
 
@@ -731,14 +747,16 @@ def model_edges(view: Any) -> list[Any]:
     too, and the ones the sheet made (centre lines, thread arcs) are not the part's outline: they are left out of what the
     sheet measures and draws from the view."""
     edges = list(view.getVisibleEdges())
+    scale = float(view.getScale())
     for entry in _stored(view).values():
         for tag in entry[1]:
             try:
-                cosmetic = view.getCosmeticEdge(tag)
+                kind, values = _cosmetic_geometry(view.getCosmeticEdge(tag))
             except Exception:  # noqa: BLE001 - deleted by hand
                 continue
+            geometry = (kind, tuple(v * scale for v in values))  # a cosmetic edge is kept unscaled; the view's edges are not
             for index in range(len(edges) - 1, -1, -1):  # cosmetic edges come after the part's own
-                if _same_edge(edges[index], cosmetic):
+                if _same_edge(edges[index], geometry):
                     del edges[index]
                     break
     return edges

@@ -82,7 +82,9 @@ def test_cosmetic_edges_are_not_part_of_the_signature_of_the_objects_of_a_unit()
     with_edges = su.Unit("h1", "h1", su.KIND_ITEM, (), natives=(dim, cosmetic))
     assert su.signature(plain) == su.signature(with_edges)  # adding a centre line does not remake the dimension
     assert su.object_count(with_edges) == 1
-    assert su.cosmetic_signature([cosmetic]) != su.cosmetic_signature([su.NativeCosmetic("h1", "top", "line", (0, 0, 2, 2), "centre")])
+    assert su.cosmetic_signature([cosmetic]) != su.cosmetic_signature(
+        [su.NativeCosmetic("h1", "top", "line", (0, 0, 2, 2), "centre")]
+    )
 
 
 FIELDS = {"part_material", "general_tolerances", "scale", "creator"}
@@ -90,7 +92,9 @@ FIELDS = {"part_material", "general_tolerances", "scale", "creator"}
 
 def route(*texts: str, assembly: bool = False) -> tuple[list[str], list[str], dict[str, str]]:
     fields: dict[str, str] = {}
-    kept, moved = items_notes.route_title_block_notes([{"type": "note", "text": t} for t in texts], FIELDS, fields, assembly)
+    kept, moved = items_notes.route_title_block_notes(
+        [{"type": "note", "text": t} for t in texts], FIELDS, fields, assembly
+    )
     return [k["text"] for k in kept], moved, fields
 
 
@@ -108,7 +112,10 @@ def test_general_tolerances_and_the_scale_have_their_field_too() -> None:
 
 def test_a_note_on_a_view_or_at_a_place_stays_a_note() -> None:
     fields: dict[str, str] = {}
-    items = [{"type": "note", "text": "Material: ST37", "view": "A-A"}, {"type": "note", "text": "Material: ST37", "at_mm": [10, 10]}]
+    items = [
+        {"type": "note", "text": "Material: ST37", "view": "A-A"},
+        {"type": "note", "text": "Material: ST37", "at_mm": [10, 10]},
+    ]
     kept, moved = items_notes.route_title_block_notes(items, FIELDS, fields)
     assert kept == items and moved == [] and fields == {}
 
@@ -119,3 +126,18 @@ def test_a_template_without_the_field_keeps_the_note_and_an_assembly_has_no_one_
     assert items_notes.route_title_block_notes(note, {"creator"}, fields)[0] == note
     kept, _, got = route("Material: ST37", assembly=True)
     assert kept == ["Material: ST37"] and got == {}
+
+
+def test_a_note_that_contradicts_the_title_block_stays_for_the_review_to_report() -> None:
+    fields: dict[str, str] = {}
+    note = [{"type": "note", "text": "Material: AISI 304"}]
+    kept, moved = items_notes.route_title_block_notes(note, FIELDS, fields, current={"part_material": "AISI 1045"})
+    assert kept == note and moved == [] and fields == {}  # a declared material is never overwritten
+
+
+def test_a_note_that_repeats_the_title_block_is_not_added() -> None:
+    fields: dict[str, str] = {}
+    kept, moved = items_notes.route_title_block_notes(
+        [{"type": "note", "text": "material: aisi 1045"}], FIELDS, fields, current={"part_material": "AISI 1045"}
+    )
+    assert kept == [] and fields == {"part_material": "aisi 1045"} and moved

@@ -71,12 +71,15 @@ TITLE_BLOCK_NOTES: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 
 def route_title_block_notes(
-    requested: list[Any], field_names: set[str], fields: dict[str, str], assembly: bool = False
+    requested: list[Any], field_names: set[str], fields: dict[str, str], assembly: bool = False, current: dict[str, str] | None = None
 ) -> tuple[list[Any], list[str]]:
     """Take out of ``requested`` the free notes that state a datum the title block has a field for (the material, the general
     tolerances, the scale) and put the datum in that field (``fields``, the sheet's own texts): the engineer reads and edits it
-    where a drawing has it and the notes block does not repeat it. A note on a view or at a place stays a note. Returns the
-    items left and what was moved, for the agent."""
+    where a drawing has it and the notes block does not repeat it. A note on a view or at a place stays a note, and so does one
+    that says something else than what the title block already says (``current``: what each field shows now): the review then
+    reports the difference for the engineer to settle; nothing declared is overwritten. Returns the items left and what was
+    moved, for the agent."""
+    shown = current or {}
     kept: list[Any] = []
     moved: list[str] = []
     for raw in requested:
@@ -91,8 +94,12 @@ def route_title_block_notes(
             moved.append("the scale is written by the sheet in the title block: that note was not added")
             continue
         value = " ".join(found.group("value").split())
+        there = " ".join(str(shown.get(field, "")).split())
+        if there and there.casefold() != value.casefold():
+            kept.append(raw)  # it contradicts the title block: it stays, and the review says so
+            continue
         fields[field] = value
-        moved.append(f"{field} ({value}) went into its field of the title block, not into the notes")
+        moved.append(f"{field} ({value}) is in its field of the title block, so it is not a note")
     return kept, moved
 
 

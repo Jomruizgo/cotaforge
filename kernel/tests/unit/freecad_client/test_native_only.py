@@ -34,7 +34,11 @@ def _makers() -> dict[str, list[int]]:
     found: dict[str, list[int]] = {}
     for path in sorted(WORKER_DIR.glob("*.py")):
         lines = path.read_text(encoding="utf-8").splitlines()
-        hits = [n for n, line in enumerate(lines, start=1) if MAKES_A_SYMBOL.search(line) and not line.lstrip().startswith("#")]
+        hits = [
+            n
+            for n, line in enumerate(lines, start=1)
+            if MAKES_A_SYMBOL.search(line) and not line.lstrip().startswith("#")
+        ]
         if hits:
             found[path.name] = hits
     return found

@@ -313,7 +313,11 @@ def sync(fc_doc: Any, page: Any, units: list[su.Unit], page_h: float, sheet: str
             report.removed.append(key)
     report.fallbacks = sheet_native.sync(fc_doc, page, [u for u in units if u.natives], sheet, have, report)
     sheet_native.sync_flags(page, [u for u in units if u.natives and u.key not in report.fallbacks])
-    report.fallbacks.update(sheet_native.sync_cosmetics(page, [u for u in units if u.natives and u.key not in report.fallbacks]))
+    drawn: list[str] = []
+    report.fallbacks.update(
+        sheet_native.sync_cosmetics(page, [u for u in units if u.natives and u.key not in report.fallbacks], drawn)
+    )
+    report.updated += [k for k in drawn if k not in report.touched()]  # the edges of a view are made or taken off
     have = owned(page)  # the native objects were made again: what is on the page now
     for unit in units:
         shown = symbol_unit(unit, unit.key not in report.fallbacks)
@@ -474,13 +478,15 @@ def _cosmetic_crosses(page: Any) -> list[tuple[float, float]]:
         for edge in view.CosmeticEdges:
             if edge.Format.get("style") != sheet_native.ISO_STYLE["centre"]:
                 continue
-            start, end = edge.Start, edge.End
+            kind, values = sheet_native._cosmetic_geometry(edge)  # noqa: SLF001 - the one reader of a cosmetic edge
+            if kind != "line":
+                continue
             lines.append(
                 (
-                    frame.x + float(start.x) * frame.scale,
-                    frame.y + float(start.y) * frame.scale,
-                    frame.x + float(end.x) * frame.scale,
-                    frame.y + float(end.y) * frame.scale,
+                    frame.x + values[0] * frame.scale,
+                    frame.y + values[1] * frame.scale,
+                    frame.x + values[2] * frame.scale,
+                    frame.y + values[3] * frame.scale,
                 )
             )
     return crosses(lines)
