@@ -789,3 +789,34 @@ def only_view_bound(unit: su.Unit) -> bool:
     """Whether everything ``unit`` is on the page lives on the views (hidden-line flags, cosmetic edges): it has no object of
     its own and, once those are made, no symbol either."""
     return bool(unit.natives) and object_count(unit) == 0 and not unit.residue
+
+
+CIRCLE_POINTS = 48
+
+
+def cosmetic_paths(page: Any, key: str) -> list[list[tuple[float, float]]]:
+    """The cosmetic edges the sheet made for unit ``key`` as polylines in page mm (y up), for painting them when the engineer
+    is pointed at the item: a line is its two ends, a circle or an arc the full circle."""
+    paths: list[list[tuple[float, float]]] = []
+    for name in VIEW_LABELS:
+        view = view_object(page, name)
+        entry = _stored(view).get(key) if view is not None else None
+        if entry is None:
+            continue
+        frame = Frame(page, view)
+        for kind, values in entry[1]:
+            if kind == "line":
+                a, b = values[0:2], values[2:4]
+                paths.append([(frame.x + a[0] * frame.scale, frame.y + a[1] * frame.scale), (frame.x + b[0] * frame.scale, frame.y + b[1] * frame.scale)])
+            else:
+                cx, cy, r = values
+                paths.append(
+                    [
+                        (
+                            frame.x + (cx + r * math.cos(2 * math.pi * i / CIRCLE_POINTS)) * frame.scale,
+                            frame.y + (cy + r * math.sin(2 * math.pi * i / CIRCLE_POINTS)) * frame.scale,
+                        )
+                        for i in range(CIRCLE_POINTS + 1)
+                    ]
+                )
+    return paths

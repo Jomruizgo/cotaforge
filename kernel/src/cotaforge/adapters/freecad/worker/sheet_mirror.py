@@ -295,6 +295,32 @@ def symbol_unit(unit: su.Unit, native_ok: bool) -> su.Unit | None:
     return replace(unit, entities=unit.residue, natives=())
 
 
+WAIT_VIEWS_S = 60.0
+POLL_S = 0.05
+SETTLE_S = 0.3
+
+
+def _wait_computed(fc_doc: Any, page: Any) -> None:
+    """Return once every view of ``page`` is computed (nothing touched), running the Qt event loop between polls, as
+    ``drawing.wait_views`` does (this module cannot import it)."""
+    import time  # noqa: PLC0415
+
+    start = time.monotonic()
+    while True:
+        gui.pump()
+        views = [v for v in _view_objects(page) if hasattr(v, "getVisibleEdges")]
+        touched = [v for v in views if "Touched" in [str(x) for x in v.State]]
+        if not touched or time.monotonic() - start > WAIT_VIEWS_S:
+            break
+        fc_doc.recompute()
+        time.sleep(POLL_S)
+    if gui.available():
+        until = time.monotonic() + SETTLE_S
+        while time.monotonic() < until:
+            gui.pump()
+            time.sleep(POLL_S)
+
+
 def sync(fc_doc: Any, page: Any, units: list[su.Unit], page_h: float, sheet: str = "") -> Report:
     """Make the page agree with ``units``: new units are made, changed ones replaced, those that are gone deleted, the
     rest untouched. A unit whose item asked for TechDraw's own objects (native dimensions, annotations) gets them
@@ -316,6 +342,8 @@ def sync(fc_doc: Any, page: Any, units: list[su.Unit], page_h: float, sheet: str
     report.fallbacks = sheet_native.sync_cosmetics(page, [u for u in units if u.natives], drawn)
     if drawn:
         fc_doc.recompute()
+        _wait_computed(fc_doc, page)  # the dimensions measure the edges of the views AS they are now: in the CAD window TechDraw
+        # finishes a view in the background, and a dimension made against the list it had before points at other edges
     report.fallbacks.update(
         sheet_native.sync(fc_doc, page, [u for u in units if u.natives and u.key not in report.fallbacks], sheet, have, report)
     )
