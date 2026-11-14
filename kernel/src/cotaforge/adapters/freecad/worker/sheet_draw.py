@@ -30,8 +30,24 @@ LINE_STEP_MM = (
     7.9  # between the lines of a multi-line callout: TechDraw spaces a dimension's lines 2.25 text heights (measured)
 )
 SHELF_MM = 4.0
+LABEL_LIFT_MM = 3.5  # TechDraw sets a dimension line this far from the label (the text) it is given: measured on the sheet it printed, 6.5 mm from the outline for the 10 mm the sheet drew
 Point = tuple[float, float]
 Rect = tuple[float, float, float, float]
+
+
+def lifted_label(orient: str, label: Point) -> Point:
+    """Where TechDraw's own linear dimension object takes the label the sheet puts at ``label`` (the middle of a horizontal
+    dimension on its line, the middle of a vertical one on its line) so that its dimension line lands ON the line the sheet
+    draws: the text stands on the line (above a horizontal one, left of a vertical one, read from the right), and TechDraw puts
+    the line ``LABEL_LIFT_MM`` off the label it is given, so the label goes that far to the text's side."""
+    if orient == "h":
+        return label[0], label[1] + LABEL_LIFT_MM
+    return label[0] - LABEL_LIFT_MM, label[1]
+
+
+def native_label(orient: str, mid: float, line: float) -> Point:
+    """``lifted_label`` of the overall dimension that runs ``mid`` along its ``line``."""
+    return lifted_label(orient, (mid, line) if orient == "h" else (line, mid))
 
 
 def arrow(tip: Point, direction: Point) -> Solid:

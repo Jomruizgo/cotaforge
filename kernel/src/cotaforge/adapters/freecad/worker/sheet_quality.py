@@ -14,17 +14,21 @@ sheet's own placement should have prevented.
 untouched).
 """
 
+import re
 from typing import Any
 
 import hole_class
 import iso286
 import items_holes
+import sheet_centre
 import sheet_checks
+import sheet_pattern
 import sheet_tol
 from items_common import view_segments
 from items_dims import AXES
 from sheet_collide import Segment, ink_of, segments_cross
 from sheet_context import Context, HoleInfo, ItemError
+from sheet_model import CENTRE_OVERSHOOT_MM
 from sheet_review import Finding, ReviewInput, _hole_of_ref, _measure, _of, ask_reference
 
 OUTLINE_SLACK_MM = 0.5  # a dimension this close to the outline is on it, not inside it
@@ -37,7 +41,9 @@ def check(data: ReviewInput) -> list[Finding]:
     for part in (
         _leaders,
         _dimensions_inside,
+        _centre_lines,
         _partly_located,
+        _patterns,
         _dowels,
         _fit_differs,
         _single_view,
@@ -126,6 +132,36 @@ def _leaders_across_dimensions(data: ReviewInput, leaders: list[dict[str, Any]])
             "dimension (ISO 128-22). Move the callout (side, offset_mm or leader_mm) or the dimension (offset_mm) to leave a clear way.",
         )
         out.append(Finding("leader_crosses_dimension", "warning", text, ids, key="+".join(ids)))
+    return out
+
+
+# --- centre lines -------------------------------------------------------------------------------------------------------
+
+
+def _centre_lines(data: ReviewInput) -> list[Finding]:
+    """A centre line that goes through a dimension line or a dimension text, or farther past its feature than the set
+    overshoot without a reason (ISO 128-24: a short, fixed reach; it never reaches a dimension)."""
+    ctx = data.ctx
+    out: list[Finding] = []
+    for rec, why in sheet_centre.crossings(ctx):
+        first, last = sheet_centre.overshoots(rec)
+        where = f"{rec.item} ({rec.view})" if rec.item else rec.view
+        if why == "crosses":
+            text = ctx.say(
+                f"Un eje de {where} cruza una cota o su texto: un eje sobrepasa el rasgo {CENTRE_OVERSHOOT_MM:g} mm como mucho y no llega a ninguna cota "
+                "(acorta el eje con extend_mm o aleja la cota con offset_mm).",
+                f"A centre line of {where} goes through a dimension or its text: a centre line passes its feature by {CENTRE_OVERSHOOT_MM:g} mm at most and "
+                "never reaches a dimension (shorten it with extend_mm or move the dimension with offset_mm).",
+            )
+            out.append(Finding("centre_line_crosses", "warning", text, (rec.item,) if rec.item else (), key=f"{rec.item}:{rec.view}:{rec.line.x1:.1f},{rec.line.y1:.1f}"))
+        else:
+            text = ctx.say(
+                f"Un eje de {where} sobrepasa su rasgo {max(first, last):.1f} mm (lo fijado es {CENTRE_OVERSHOOT_MM:g} mm) sin decir por qué: "
+                "añade reason a la línea o acórtalo.",
+                f"A centre line of {where} passes its feature by {max(first, last):.1f} mm (the set overshoot is {CENTRE_OVERSHOOT_MM:g} mm) "
+                "without saying why: add reason to the line or shorten it.",
+            )
+            out.append(Finding("centre_line_long", "warning", text, (rec.item,) if rec.item else (), key=f"{rec.item}:{rec.view}:{rec.line.x1:.1f},{rec.line.y1:.1f}"))
     return out
 
 
@@ -447,3 +483,79 @@ def _single_view(data: ReviewInput) -> list[Finding]:
         "goes as a note and the scale grows.",
     )
     return [Finding("single_view_enough", "info", text, tuple(n for n in standard if n != view), key=view)]
+
+
+# --- circular patterns ----------------------------------------------------------------------------------------------------
+
+
+def _pitch_in_note(data: ReviewInput, pattern: sheet_pattern.Pattern) -> bool:
+    """Whether a note states the pitch circle of ``pattern`` (``Ø70``, ``PCD 70``, ``círculo de 70``): its number on the sheet
+    only in words, where no one can measure or check it."""
+    number = re.escape(f"{round(pattern.diameter, 2):g}").replace("\\.", "[.,]")
+    wanted = r"(Ø|⌀|PCD|DPC|c[ií]rculo|circle)\s*(de\s+|of\s+)?" + number + r"(?![0-9])"
+    return any(re.search(wanted, text, re.I) for text in sheet_checks._notes(data))  # noqa: SLF001 - the notes of the sheet
+
+
+def _by_coordinates(data: ReviewInput, pattern: sheet_pattern.Pattern) -> tuple[str, ...]:
+    """The items that locate holes of ``pattern`` by distances from an edge or a datum (X / Y) instead of from its axis."""
+    ctx = data.ctx
+    ids: list[str] = []
+    for spec in data.items:
+        kind = spec.get("type")
+        if kind == "dim" and spec.get("kind") == "distance" and _holes_of(ctx, spec) & pattern.indexes:
+            ids.append(str(spec["id"]))
+        elif kind == "datum_dims" and not spec.get("auto") and _ok(data, spec):
+            view = ctx.views.get(str(spec.get("view", "top")))
+            wanted = spec.get("holes", "all")
+            if view is not None and any(
+                h.index in pattern.indexes and view.looks_along(h.direction) and (wanted == "all" or any(h.on_axis(p) for p in wanted))
+                for h in ctx.holes
+            ):
+                ids.append(str(spec["id"]))
+        elif kind == "datum_dims" and spec.get("auto") and _ok(data, spec) and pattern.indexes & set(ctx.extras.get("loc_axes", {})):
+            ids.append(str(spec["id"]))
+    return tuple(ids)
+
+
+def _patterns(data: ReviewInput) -> list[Finding]:
+    """A circular pattern of holes is located by its pitch circle diameter (a diameter dimension on the view that shows it) and,
+    when its first hole is not on a centre line, the angle of that hole (ISO 129-1): never by the X / Y of each hole, and never
+    with its pitch circle only in a note. The harness draws and dimensions every pattern by itself (``pattern_dim``), so this
+    says what an item of the engineer, or a pattern taken off, left wrong. A pattern whose coordinates the intent declares
+    functional is answered, not changed."""
+    ctx = data.ctx
+    out: list[Finding] = []
+    for pattern in sheet_pattern.patterns_of(ctx):
+        polar = ctx.extras.get("polar", {}).get(min(pattern.reps))
+        ids = _by_coordinates(data, pattern)
+        problems: list[str] = []
+        label = f"{pattern.count}× Ø{ctx.num(round(pattern.diameter, 2))}"
+        if ids:
+            problems.append(ctx.say("sus agujeros se ubican por coordenadas X / Y", "its holes are located by X / Y coordinates"))
+        if polar is None or not polar["diameter"]:
+            note = _pitch_in_note(data, pattern)
+            problems.append(
+                ctx.say(
+                    "el diámetro del círculo de paso está " + ("solo en una nota" if note else "sin acotar") + " (una cota Ø sobre la vista)",
+                    "the pitch circle diameter is " + ("in a note only" if note else "not dimensioned") + " (a Ø dimension on the view)",
+                )
+            )
+        elif polar["need"] > polar["given"]:
+            problems.append(
+                ctx.say(
+                    "falta el ángulo del primer agujero respecto de una línea de centros (pattern_dim kind=angle)",
+                    "the angle of the first hole from a centre line is missing (pattern_dim kind=angle)",
+                )
+            )
+        if not problems:
+            continue
+        text = ctx.say(
+            f"Patrón circular {label}: " + "; ".join(problems) + ". Se ubica con el diámetro del círculo de paso y el ángulo, no con "
+            "X / Y (ISO 129-1): {\"type\":\"pattern_dim\",\"at\":[x,y,z]} (un punto del eje de uno de sus agujeros). Si la intención "
+            "declara esas coordenadas funcionales, responde con esa razón.",
+            f"Circular pattern {label}: " + "; ".join(problems) + ". It is located by its pitch circle diameter and angle, not by "
+            "X / Y (ISO 129-1): {\"type\":\"pattern_dim\",\"at\":[x,y,z]} (a point on the axis of one of its holes). If the intent "
+            "declares those coordinates functional, answer with that reason.",
+        )
+        out.append(Finding("pattern_not_polar", "warning", text, ids, key=f"@{min(pattern.reps)}"))
+    return out
