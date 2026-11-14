@@ -209,6 +209,26 @@ def _samples(rects: list[tuple[float, ...]]) -> list[tuple[float, float]]:
     return centres + [p for r in front for p in _grid(r, 3) if p not in centres]
 
 
+_RAY_ANSWERS: dict[tuple[Any, ...], Any] = {}
+RAY_ANSWERS_CACHE = 500  # answers kept of "which instance shows at each point of a view" (a few per sheet)
+
+
+def _rays_key(doc_id: Any, what: str, units: list[_Unit], frame: tuple[sc.Vec3, ...], *rest: Any) -> tuple[Any, ...]:
+    """What a ray answer depends on: the shapes (a body that changed is another one), the frame they are seen in, and the ask."""
+    shapes = tuple((u.comp_id, u.shape.hashCode(), tuple(round(c, 6) for c in u.low), tuple(round(c, 6) for c in u.high)) for u in units)
+    return (doc_id, what, shapes, tuple(tuple(round(c, 9) for c in v) for v in frame), *rest)
+
+
+def _kept(key: tuple[Any, ...], make: Any) -> Any:
+    """The answer of ``make`` for ``key``, asked once while the shapes stay as they are: a sheet is composed several times per
+    request and the balloons cast the same hundreds of rays every time."""
+    if key not in _RAY_ANSWERS:
+        if len(_RAY_ANSWERS) >= RAY_ANSWERS_CACHE:
+            _RAY_ANSWERS.clear()
+        _RAY_ANSWERS[key] = make()
+    return _RAY_ANSWERS[key]
+
+
 class AssemblyRays:
     """The lookups of an assembly on the live document, mixed into ``LiveGeometry``."""
 
@@ -353,12 +373,18 @@ class AssemblyRays:
         margin_mm: float,
         outward: bool = False,
     ) -> dict[str, list[sc.Vec3]]:
+        units: list[_Unit] = []
+        for cid in self._owner_ids():
+            units += self._displaced(cid, offsets.get(cid))
+        key = _rays_key(self.doc.id, "anchors", units, frame, tuple(instances), margin_mm, outward)
+        found = _kept(key, lambda: self._anchors_of(units, instances, frame, margin_mm, outward))
+        return {cid: list(points) for cid, points in found.items()}
+
+    def _anchors_of(
+        self, units: list[_Unit], instances: list[str], frame: tuple[sc.Vec3, sc.Vec3, sc.Vec3], margin_mm: float, outward: bool
+    ) -> dict[str, list[sc.Vec3]]:
         centre, xdir, direction = frame
         ydir = sc.unit(sc.cross(direction, xdir))
-        everyone = self._owner_ids()
-        units: list[_Unit] = []
-        for cid in everyone:
-            units += self._displaced(cid, offsets.get(cid))
         rects = [_frame_rect(u, centre, xdir, ydir, direction) for u in units]
         full = (centre, xdir, ydir, direction)
         reach = 2.0 * max((math.dist(u.low, u.high) for u in units), default=1.0) + 2.0 * max(
@@ -396,11 +422,15 @@ class AssemblyRays:
         """For each instance, the share (0 to 1) of the outline it has in a view looking against ``frame`` = (centre,
         xdir, direction) that is really its own surface: rays cast on a grid over the box of each of its bodies, counted when
         the first surface they meet is the instance's. A spacer seen as a sliver between two plates has a small share."""
-        centre, xdir, direction = frame
-        ydir = sc.unit(sc.cross(direction, xdir))
         units: list[_Unit] = []
         for cid in self._owner_ids():
             units += self._displaced(cid, offsets.get(cid))
+        key = _rays_key(self.doc.id, "share", units, frame, tuple(instances))
+        return dict(_kept(key, lambda: self._share_of(units, instances, frame)))
+
+    def _share_of(self, units: list[_Unit], instances: list[str], frame: tuple[sc.Vec3, sc.Vec3, sc.Vec3]) -> dict[str, float]:
+        centre, xdir, direction = frame
+        ydir = sc.unit(sc.cross(direction, xdir))
         rects = [_frame_rect(u, centre, xdir, ydir, direction) for u in units]
         full = (centre, xdir, ydir, direction)
         reach = 2.0 * max((math.dist(u.low, u.high) for u in units), default=1.0) + 2.0 * max(
@@ -447,6 +477,8 @@ MAX_BODIES_JOINTED = 60
 SEAM_DEFLECTION_MM = 0.2
 MIN_CONTACT_MM2 = 0.01
 RAY_OFFSET_MM = 0.3  # the ray that tells whether a seam is hidden starts this far in front of it
+HIDDEN_SEAMS_CACHE = 20000  # answers kept of "is this seam point hidden from this side" (a frame asks a few hundred)
+_HIDDEN_SEAMS: dict[tuple[Any, ...], bool] = {}
 
 
 def _plane_frame(face: Any) -> tuple[sc.Vec3, sc.Vec3] | None:
@@ -576,7 +608,19 @@ class WeldJoints:
                 if not shape.isNull() and shape.Solids:
                     cache.append(shape)
             self.__dict__["_ray_shapes"] = cache
+            self.__dict__["_ray_key"] = (self.doc.id, tuple((s.hashCode(), round(s.Volume, 3)) for s in cache))
         direction = g.unit(towards)
+        # the same seam point seen from the same side of the same bodies is asked again by every pass and every request of
+        # a sheet (the weld symbols and the cut list read it): a body that changed is another shape, so it asks again
+        asked = (self.__dict__["_ray_key"], tuple(round(c, 6) for c in point), tuple(round(c, 9) for c in direction))
+        if asked not in _HIDDEN_SEAMS:
+            if len(_HIDDEN_SEAMS) >= HIDDEN_SEAMS_CACHE:
+                _HIDDEN_SEAMS.clear()
+            _HIDDEN_SEAMS[asked] = self._ray_blocked(cache, point, direction)
+        return _HIDDEN_SEAMS[asked]
+
+    def _ray_blocked(self, cache: list[Any], point: sc.Vec3, direction: sc.Vec3) -> bool:
+        """Whether a ray from just in front of ``point`` along ``direction`` meets any of the bodies ``cache``."""
         far = (max(s.BoundBox.DiagonalLength for s in cache) if cache else 0.0) + 10.0
         start = sc.add(point, sc.scale(direction, RAY_OFFSET_MM))
         line = Part.makeLine(g.fcvec(start), g.fcvec(sc.add(point, sc.scale(direction, far))))

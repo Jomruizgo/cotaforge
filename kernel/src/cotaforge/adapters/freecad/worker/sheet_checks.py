@@ -24,6 +24,7 @@ from typing import Any
 
 import iso286
 import sheet_collide
+import sheet_flats
 import sheet_review  # circular on purpose: both import each other as modules and use each other only when called
 import sheet_section
 import sheet_seen
@@ -66,6 +67,7 @@ class PartFacts:
     keyways: int = 0  # slots with parallel walls along the axis of a cylindrical face (``sheet_keyway``)
     keyway_slots: list[Any] = field(default_factory=list)  # the same slots with their faces (``sheet_keyway.Slot``)
     thread_features: int = 0  # features named as a thread that no ``hole`` operation made (an external thread)
+    flats: list[Any] = field(default_factory=list)  # the flats of a turned part (``sheet_flats.FlatFace``): a square flange, wrench flats
 
 
 # --- ids ------------------------------------------------------------------------------------------------------------------
@@ -443,6 +445,29 @@ def _marks(data: Any) -> list[Any]:
     return out
 
 
+# --- flats of a turned part ---------------------------------------------------------------------------------------------
+
+
+def _flats(data: Any) -> list[Any]:
+    """A flat of a turned part that a view sees face-on (a square flange, wrench flats) carries its two diagonals there: with a
+    centre line in the view, its rectangle reads as a cylinder (ISO 128-30)."""
+    ctx = data.ctx
+    by_face: dict[str, list[str]] = {}
+    for view, flat in sheet_flats.missing(ctx, list(data.sheet.entities)):
+        by_face.setdefault(flat.face_id, []).append(view.name)
+    out: list[Any] = []
+    for face_id, names in by_face.items():
+        where = ", ".join(names)
+        text = ctx.say(
+            f"La cara plana {face_id} se ve de frente en la vista {where} sin sus diagonales: con eje en la vista su rectángulo "
+            f'se lee como un cilindro. Añade {{"type":"view_lines"}} (dibuja las diagonales finas de las caras planas).',
+            f"The flat face {face_id} is seen face-on in the {where} view without its diagonals: with a centre line in the view "
+            f'its rectangle reads as a cylinder. Add {{"type":"view_lines"}} (it draws the thin diagonals of the flat faces).',
+        )
+        out.append(_finding("flat_face_unmarked", "info", text, face_id))
+    return out
+
+
 # --- texts on the part ----------------------------------------------------------------------------------------------------
 
 TEXT_ITEMS = frozenset({"dim", "hole_dim", "datum_dims", "overall", "gdt", "finish", "note"})
@@ -772,6 +797,7 @@ def checks(data: Any) -> list[Any]:
         _fine_tolerances,
         _rounds,
         _marks,
+        _flats,
         _text_on_part,
         _notes_missing,
         _material_consistency,

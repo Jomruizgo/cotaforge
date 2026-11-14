@@ -219,9 +219,9 @@ ITEM_LINES = (
     "it back to change it). hole_positions (assembly, auto): Ø, centre and edge distances of the through holes.",
     "view_lines: hidden edges (dashed, layer OCULTAS) and centre lines (layer EJES) in the standard views. hidden? "
     '(true = front and right, false, or a list like ["front","top"]), centres? (default true: a cross on every hole '
-    "or whole cylinder seen as a circle and a centre line along every one seen from the side). Add it to every part "
-    "with holes or pins: without "
-    "it the views show no hidden edges and no axes. It takes the place of the callout's own centre marks (never two).",
+    "or whole cylinder seen as a circle and a centre line along every one seen from the side; thin diagonals on flats "
+    "of a turned part seen face-on). Add it to every part "
+    "with holes or pins (else no hidden edges, no axes). It takes the place of the callout's own centre marks.",
     'section: a cut view. holes="all" (or the points on the axes of the holes the plane goes through, hole_dim style) '
     "cuts through the axes of the holes the parent view shows as circles (they must lie on one line there), "
     'holes="axis" through the axis of revolution of the part (a sleeve, a shaft), or '

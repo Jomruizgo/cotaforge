@@ -356,7 +356,7 @@ ROWS: tuple[Row, ...] = (
         ),
         proposal=("añadir view_lines", "add view_lines"),
         triggers=("holes", "bosses"),  # an assembly too: the sleeves, pins and bores of its components
-        codes=("centre_mark_missing", "cylinder_no_axis"),
+        codes=("centre_mark_missing", "cylinder_no_axis", "flat_face_unmarked"),  # the last: the diagonals of a flat of a turned part
         measured=("holes", "bosses"),
     ),
     Row(
@@ -641,6 +641,7 @@ MEASURED_FINDINGS = frozenset(
         "part_unnamed",
         "no_isometric",
         "cylinder_no_axis",
+        "flat_face_unmarked",
         "chamfer_no_dimension",
     }
 )

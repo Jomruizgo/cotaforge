@@ -22,6 +22,7 @@ TITLE_BLOCK = "ROTULO"
 AXES = "EJES"
 HATCH = "SOMBREADO"
 THREAD = "ROSCAS"
+FLAT_FACES = "CARAS_PLANAS"  # the diagonals of a flat face of a turned part: a layer no native object draws
 ISO_SHADE = "ISO_COLOR"  # the shaded picture under the lines of the isometric view (``Sheet.underlay``), never DXF
 
 
@@ -54,6 +55,7 @@ LAYERS: dict[str, LayerStyle] = {
     AXES: LayerStyle(1, "CENTER", THIN_MM, (6.0, 0.75, 0.125, 0.75)),
     HATCH: LayerStyle(9, "CONTINUOUS", HAIR_MM),
     THREAD: LayerStyle(3, "CONTINUOUS", THIN_MM),  # ISO 6410: the thin arc at the major diameter of a thread
+    FLAT_FACES: LayerStyle(3, "CONTINUOUS", THIN_MM),  # the diagonals of a flat face seen face-on
 }
 
 LINETYPES: dict[str, tuple[float, ...]] = {
