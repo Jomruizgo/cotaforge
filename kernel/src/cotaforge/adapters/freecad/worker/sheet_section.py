@@ -14,6 +14,7 @@ from sheet_context import Context, HoleInfo, ItemError, Point, Vec3, ViewInfo, d
 from sheet_draw import linear_dimension
 from sheet_model import AXES, CENTRE_OVERSHOOT_MM, THREAD, Entity, Line
 from sheet_thread import major_diameter
+from sheet_units import NativeDim, Ref2
 
 PLANE_TOL_MM = 0.05  # an axis lies in the cutting plane within this
 AXIS_REACH_MM = CENTRE_OVERSHOOT_MM  # a centre line goes this far beyond the ends of a bore or a boss
@@ -190,11 +191,29 @@ def dimension_bore(
     dist = ctx.stack_distance(view.name, side, offset_mm)
     if orient == "h":
         line = box[3] + dist if side == "above" else box[1] - dist
-        entities, taken = linear_dimension((end[0] - r, end[1]), (end[0] + r, end[1]), "h", line, text)
+        a, b = (end[0] - r, end[1]), (end[0] + r, end[1])
+        entities, taken = linear_dimension(a, b, "h", line, text)
+        label = (end[0], line)
     else:
         line = box[2] + dist if side == "right" else box[0] - dist
-        entities, taken = linear_dimension((end[0], end[1] - r), (end[0], end[1] + r), "v", line, text)
+        a, b = (end[0], end[1] - r), (end[0], end[1] + r)
+        entities, taken = linear_dimension(a, b, "v", line, text)
+        label = (line, end[1])
     ctx.add(entities)
     ctx.reserve_dimension(entities, taken)
     ctx.used_view(view.name)
+    ctx.native(  # TechDraw's own dimension across the bore: FreeCAD measures the distance between the two walls
+        NativeDim(
+            item=str(ctx.extras["current"]),
+            name=f"b{len(ctx.extras.get('natives', {}).get(str(ctx.extras['current']), [])) + 1}",
+            kind="distance",
+            view=view.name,
+            refs=(Ref2("point", a), Ref2("point", b)),
+            label=label,
+            expected=2 * r / k,
+            text=text,
+            orient=orient,
+            rect=taken,
+        )
+    )
     return f"Ø{ctx.num(2 * r / k)} across the bore in the {view.name} view, {side}"

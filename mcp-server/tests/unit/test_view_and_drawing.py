@@ -181,36 +181,13 @@ def test_create_passes_the_title_block_fields_and_reports_the_sheet(sheet: tuple
     assert "watches the sheet window" in text and "pdf" in text
 
 
-def test_the_default_projection_is_freecads_own_and_says_nothing_about_the_window(
-    sheet: tuple[Caller, DrawingFake],
-) -> None:
+def test_the_projection_option_is_gone_so_a_sheet_has_only_techdraws_own_views(sheet: tuple[Caller, DrawingFake]) -> None:
     call, adapter = sheet
     text = call.ok("drawing", action="create")
-    assert adapter.created[-1].projection == "techdraw"
     assert "projection" not in text and "NO views" not in text
     assert "projection" not in call.ok("drawing", action="list")
-
-
-def test_the_hlr_projection_is_passed_on_and_the_replies_say_its_views_are_symbols(
-    sheet: tuple[Caller, DrawingFake],
-) -> None:
-    call, adapter = sheet
-    created = call.ok("drawing", action="create", projection="hlr")
-    assert adapter.created[-1].projection == "hlr"
-    assert "projection: hlr" in created and "symbols" in created and "NO views" not in created
-    added = call.ok("drawing", action="add", items=[{"type": "hole_dim", "all": True}])
-    assert "window: 1 new" in added and "views:" not in added  # an add answers briefly
-    listed = call.ok("drawing", action="list")
-    assert "projection hlr (views drawn by our own projection)" in listed
-    assert "projection hlr" in call.ok("drawing", action="review")
-    again = call.ok("drawing", action="create", projection="techdraw")  # switching back is a new create
-    assert "projection: hlr" not in again
-
-
-def test_an_unknown_projection_is_refused_by_the_schema(sheet: tuple[Caller, DrawingFake]) -> None:
-    call, adapter = sheet
-    call.err("drawing", action="create", projection="fast")
-    assert adapter.created == []
+    call.err("drawing", action="create", projection="hlr")  # the harness's own projection is no longer an option
+    assert len(adapter.created) == 1
 
 
 def test_the_title_defaults_to_the_document_and_the_sheet_marks_the_document_changed(

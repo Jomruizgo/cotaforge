@@ -18,6 +18,7 @@ import sheet_context as sc  # noqa: E402
 import sheet_model as model  # noqa: E402
 import sheet_review as review  # noqa: E402
 import sheet_thread  # noqa: E402
+from sheet_units import NativeDim  # noqa: E402
 
 from .test_sheet_items import draw, hole  # noqa: E402
 from .test_sheet_views import ViewsGeometry, views_context  # noqa: E402
@@ -102,7 +103,9 @@ def test_a_bore_is_dimensioned_across_its_walls_with_the_measured_diameter() -> 
     )
     assert 6.6 in spans
     assert all(t.y > view.box[3] for t in texts)
-    assert "dia" not in ctx.extras.get("natives", {})  # a section has no TechDraw view to measure in
+    dims = [n for n in ctx.extras["natives"]["dia"] if isinstance(n, NativeDim)]
+    assert len(dims) == 2 and {d.view for d in dims} == {"A-A"}  # TechDraw measures each bore in its own section view
+    assert all(d.kind == "distance" and abs(d.expected - 6.6) < 1e-9 and d.text == "Ø6,6 pasante" for d in dims)
 
 
 def test_a_threaded_bore_is_dimensioned_at_its_major_diameter_with_the_thread_lines_in_the_wall() -> None:
@@ -145,7 +148,7 @@ def test_a_hole_the_plane_does_not_run_along_is_said_and_skipped() -> None:
     assert results["dia"].status == "warning" and "does not run along its axis" in results["dia"].detail
 
 
-def test_a_length_between_two_faces_in_a_section_starts_at_the_end_of_each_face_and_makes_no_native_dimension() -> None:
+def test_a_length_between_two_faces_in_a_section_starts_at_the_end_of_each_face_and_is_measured_in_the_section() -> None:
     ctx = two_bores()
     results = by_id(
         draw(
@@ -165,7 +168,8 @@ def test_a_length_between_two_faces_in_a_section_starts_at_the_end_of_each_face_
     assert results["len"].status == "ok" and "8 mm along z in the A-A view" in results["len"].detail, results[
         "len"
     ].detail
-    assert "len" not in ctx.extras.get("natives", {})
+    (dim,) = ctx.extras["natives"]["len"]
+    assert dim.view == "A-A" and dim.kind == "distance" and abs(dim.expected - 8.0) < 1e-9  # TechDraw's, on the section
     assert "8" in ctx.sheet.texts()
 
 
@@ -446,7 +450,8 @@ def test_the_diameter_in_a_section_is_a_linear_dimension_between_its_silhouette_
     spans = [round(abs(e.x2 - e.x1), 2) for e in lines]
     assert 40.0 in spans, spans  # the dimension line runs between the two silhouette lines, 40 mm apart on the page
     assert arrows and all(a.points[0][1] > view.box[3] or a.points[0][1] < view.box[1] for a in arrows[-2:])
-    assert "od" not in ctx.extras.get("natives", {})  # a section has no TechDraw view to measure in
+    (dim,) = ctx.extras["natives"]["od"]
+    assert dim.view == "A-A" and dim.kind == "distance" and dim.text == "Ø40" and abs(dim.expected - 40.0) < 1e-9
 
 
 # --- a section through the axis of a part of revolution ------------------------------------------------------------------------

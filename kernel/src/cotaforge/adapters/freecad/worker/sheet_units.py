@@ -3,10 +3,9 @@
 
 The compositor (``drawing.compose``) draws a whole sheet into ``sheet_model`` entities; the PDF, the PNG and the DXF are
 written from them. The engineer watches the TechDraw sheet window while the agent builds the sheet, so every piece that
-one item (or the thread arcs, the ISO 286 note, an ``hlr`` view) put on the sheet is also made as an object of the
+one item (or the thread arcs, the ISO 286 note) put on the sheet is also made as an object of the
 TechDraw page (``sheet_mirror``): a ``Unit`` is that piece -- a key, a label and the entities it drew, at their place on
-the page. The key is the item id (``h1``), ``view:front`` / ``view:top`` / ... for the views of an ``hlr`` sheet,
-``threads`` and ``iso286`` for what no item owns.
+the page. The key is the item id (``h1``); ``threads`` and ``iso286`` are for what no item owns.
 
 """
 
@@ -40,7 +39,6 @@ Rect = tuple[float, float, float, float]
 Point = tuple[float, float]
 
 KIND_ITEM = "item"
-KIND_VIEW = "view"
 KIND_EXTRA = "extra"
 TEXT_SLACK = 1.12  # the real font may be wider than ``text_width`` estimates: the SVG fragment is cut at its box
 MARGIN_MM = 1.5
@@ -132,7 +130,31 @@ COSMETIC_STYLES = {  # the layer the compositor draws on -> the kind of line Tec
 }
 
 
-Native = NativeDim | NativeNote | NativeFlag | NativeCosmetic
+@dataclass(frozen=True)
+class NativeView:
+    """A view TechDraw makes of the part: a ``DrawViewSection`` (the cut, its hatch, the cutting line and letter in the parent
+    view), a ``DrawViewDetail`` (a circle of the parent enlarged) or, for an auxiliary view, a ``DrawViewPart`` looked at square
+    to a face. ``box`` is the page rectangle (mm, y up) of what the sheet draws in it: the object is put where that box sits,
+    at ``scale``. ``direction`` is the model vector towards the viewer and ``xdir`` the model vector along the page's x; a section
+    cuts at the plane through ``at`` and a detail is the circle of ``radius`` model mm at ``anchor`` (the parent's own
+    coordinates: model mm from the parent's origin, y up). ``parent`` is the view it hangs from; ``name`` is what the other
+    items call it (``A-A``). Every dimension of the view is a ``NativeDim`` whose ``view`` is that name."""
+
+    item: str
+    name: str
+    kind: str  # section | detail | aux
+    parent: str  # front | top | right | isometric
+    box: Rect
+    scale: float
+    direction: tuple[float, float, float]
+    xdir: tuple[float, float, float]
+    letter: str
+    at: tuple[float, float, float] | None = None
+    anchor: Point | None = None
+    radius: float = 0.0
+
+
+Native = NativeDim | NativeNote | NativeFlag | NativeCosmetic | NativeView
 
 
 @dataclass(frozen=True)
@@ -171,6 +193,8 @@ class Unit:
         marks of a hole callout); without, everything."""
         if not self.natives:
             return self.entities
+        if any(isinstance(n, NativeView) for n in self.natives):
+            return ()  # TechDraw draws the whole view: the cut, its hatch, the cutting line and the letters
         objects = any(isinstance(n, NativeDim | NativeNote) for n in self.natives)
         gone = (NATIVE_LAYERS if objects else set()) | ({HIDDEN} if any(isinstance(n, NativeFlag) for n in self.natives) else set())
         return tuple(e for e in self.entities if getattr(e, "layer", None) not in gone and id(e) not in self.covered)
@@ -237,7 +261,6 @@ def collect(
     slices: dict[str, tuple[int, int]],
     statuses: dict[str, str],
     extras: dict[str, tuple[int, int]],
-    views: dict[str, list[Entity]] | None,
     native: dict[str, dict[str, Any]] | None = None,
     natives: dict[str, list[Native]] | None = None,
 ) -> list[Unit]:
@@ -245,14 +268,11 @@ def collect(
 
     ``slices`` maps an item id to the range of ``entities`` it drew; an item that failed (status ``error``) or drew
     nothing makes no unit. ``extras`` is the same for the pieces no item owns (``threads``). ``views`` are
-    the views of an ``hlr`` sheet (they are not TechDraw objects there, so the window needs them). ``native`` maps the
+    ``native`` maps the
     id of an item that TechDraw's own objects hold (the overall dimensions of a ``techdraw`` sheet) to what the
     mirror needs to put them where the sheet draws them. ``natives`` maps an item id to the TechDraw dimension and
     annotation objects it asks for (``NativeDim`` / ``NativeNote``)."""
     units: list[Unit] = []
-    for name, group in (views or {}).items():
-        if group:
-            units.append(Unit(f"view:{name}", f"view {name}", KIND_VIEW, tuple(group)))
     for key, what in ((KEY_THREADS, "thread arcs"), (KEY_ISO_SCALE, "isometric view scale")):
         if key in extras:
             a, b = extras[key]
@@ -308,6 +328,21 @@ def signature(unit: Unit) -> str:
             ]
         if isinstance(n, NativeFlag):
             return ["f", n.view, n.prop]
+        if isinstance(n, NativeView):
+            return [
+                "v",
+                n.kind,
+                n.name,
+                n.parent,
+                [round(v, 2) for v in n.box],
+                round(n.scale, 4),
+                [round(v, 4) for v in n.direction],
+                [round(v, 4) for v in n.xdir],
+                n.letter,
+                None if n.at is None else [round(v, 3) for v in n.at],
+                None if n.anchor is None else [round(v, 3) for v in n.anchor],
+                round(n.radius, 3),
+            ]
         return ["n", n.name, list(n.lines), [round(v, 2) for v in n.at], n.size, n.step]
 
     return json.dumps(
@@ -323,12 +358,17 @@ def cosmetic_signature(natives: Any) -> str:
 
 
 def object_count(unit: Unit) -> int:
-    """How many native objects ``unit`` is: a dimension each, a note one annotation per line."""
+    """How many native objects ``unit`` is: a dimension or a view each, a note one annotation per line."""
     return sum(
-        1 if isinstance(n, NativeDim) else len(n.lines)
+        1 if isinstance(n, NativeDim | NativeView) else len(n.lines)
         for n in unit.natives
         if not isinstance(n, NativeFlag | NativeCosmetic)
     )
+
+
+def view_of(unit: Unit) -> NativeView | None:
+    """The view ``unit`` is, when it is one (a section, detail or auxiliary view item)."""
+    return next((n for n in unit.natives if isinstance(n, NativeView)), None)
 
 
 def measured_problem(obj: Any, dim: NativeDim) -> str | None:
@@ -378,17 +418,28 @@ def _inside(p: Point, rect: Rect, margin: float = 0.0) -> bool:
 def with_cosmetics(units: list[Unit], views: dict[str, Rect], derived: list[Rect]) -> list[Unit]:
     """``units`` with the lines of the layers TechDraw has a cosmetic edge for (``COSMETIC_STYLES``) asked of the view they lie
     on (``views``: TechDraw's own views by name, with the page box of what they draw; ``derived``: boxes of views the sheet drew
-    itself, whose lines are not any TechDraw view's). A line that lies on no view stays what it was: part of the unit's drawing."""
+    itself, whose lines are not any TechDraw view's). A line that lies on no view stays what it was: part of the unit's drawing.
+    The unit of a view (a section, detail or auxiliary view) is all TechDraw's: its centre and thread lines inside the view are
+    cosmetic edges of it, and the rest of what it drew (the cut, the hatch, the cutting line, the letters) is the view's own."""
     out: list[Unit] = []
     for unit in units:
-        if unit.kind == KIND_VIEW:
-            out.append(unit)
-            continue
         made: list[NativeCosmetic] = []
         covered: set[int] = set()
         seen: set[tuple[str, str, tuple[float, ...], str]] = set()  # the same line drawn twice is one edge
+        own = view_of(unit)
         for e in unit.entities:
             style = COSMETIC_STYLES.get(getattr(e, "layer", ""))
+            if own is not None:
+                covered.add(id(e))
+                if style is not None:
+                    for kind, values in _segments(e):
+                        if _inside(_anchor(kind, values), own.box):
+                            n = NativeCosmetic(unit.key, own.name, kind, values, style)
+                            key = (n.view, n.kind, tuple(round(v, 2) for v in n.values), n.style)
+                            if key not in seen:
+                                seen.add(key)
+                                made.append(n)
+                continue
             if style is None:
                 continue
             parts = _segments(e)
@@ -401,6 +452,10 @@ def with_cosmetics(units: list[Unit], views: dict[str, Rect], derived: list[Rect
                     placed = []
                     break
                 near = [
+                    (((box[0] + box[2]) / 2 - point[0]) ** 2 + ((box[1] + box[3]) / 2 - point[1]) ** 2, name)
+                    for name, box in views.items()
+                    if _inside(point, box)
+                ] or [
                     (((box[0] + box[2]) / 2 - point[0]) ** 2 + ((box[1] + box[3]) / 2 - point[1]) ** 2, name)
                     for name, box in views.items()
                     if _inside(point, box, COSMETIC_MARGIN_MM)

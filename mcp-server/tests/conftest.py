@@ -129,7 +129,6 @@ class DrawingFake(FakeAdapter):
             removed=removed,
             waited_s=0.25,
             warnings=warnings,
-            projection=sheet.get("projection", "techdraw"),
             changed=changed,
             window="1 new" if changed else "",
             **(rebuilt or {}),
@@ -150,7 +149,6 @@ class DrawingFake(FakeAdapter):
             "scale": request.scale or 0.5,
             "items": [{"id": "o1", "type": "overall"}],
             "next": 2,
-            "projection": request.projection,
             "edits": 0,  # counts the changes of the sheet, like the CAD's: a report or a request belongs to one value
             "reports": {},
             "report_n": 0,
@@ -315,7 +313,6 @@ class DrawingFake(FakeAdapter):
                     language=self.drawings[n]["language"],
                     page_mm=(297.0, 210.0),
                     scale=self.drawings[n]["scale"],
-                    projection=self.drawings[n].get("projection", "techdraw"),
                     fields={"title": "plate"},
                     findings=tuple(
                         f.model_copy(update={"answer": answers(n).get(f.id or f.code)}) for f in self.findings

@@ -33,6 +33,7 @@ import os
 import re
 import tempfile
 import time
+import traceback
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date
@@ -56,7 +57,6 @@ import sheet_colours
 import sheet_context as sc
 import sheet_dxf
 import sheet_facts
-import sheet_hlr
 import sheet_interface
 import sheet_iso
 import sheet_isoview
@@ -87,7 +87,6 @@ from protocol import WorkerError, error, invalid_request, not_supported
 SHEET = "Drawing"  # the name of the first sheet
 SPEC_PROP = "CotaforgeSpec"
 SPEC_VERSION = 1
-PROJECTIONS = ("techdraw", "hlr")  # how the standard views are made; "techdraw" is FreeCAD's own default
 SHEET_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,23}$")
 DRAWING_WAIT_S = 90.0
 ASSEMBLY_WAIT_S = 3600.0  # an assembly's views take as long as it is big: the client's liveness rule gives up first
@@ -317,14 +316,20 @@ def _is_dimension(obj: Any) -> bool:
 
 
 def part_views(page: Any) -> list[Any]:
-    """Every view of the page that has projected geometry (the group's items included, dimensions left out)."""
+    """Every view of the page that has projected geometry (the group's items included, dimensions left out). The sections,
+    details and auxiliary views the sheet made from its items are not among them: they are the items', not the sheet's views."""
     views: list[Any] = []
     for obj in page.Views:
         if str(obj.TypeId) == "TechDraw::DrawProjGroup":
             views.extend(obj.Views)
-        elif hasattr(obj, "getVisibleEdges"):
+        elif hasattr(obj, "getVisibleEdges") and sheet_native.PROP_DERIVED not in getattr(obj, "PropertiesList", ()):
             views.append(obj)
     return views
+
+
+def all_views(page: Any) -> list[Any]:
+    """``part_views`` and the sections, details and auxiliary views the items made: what is computed, waited for and exported."""
+    return [*part_views(page), *sheet_native.derived_views(page)]
 
 
 def remove_page(fc_doc: Any, page: Any) -> None:
@@ -403,7 +408,7 @@ def wait_views(fc_doc: Any, page: Any, op: str | None, timeout_s: float = DRAWIN
     fc_doc.recompute()
     while True:
         gui.pump()
-        views = part_views(page)
+        views = all_views(page)
         invalid = [v.Label for v in views if "Invalid" in _state(v)]
         if invalid:
             raise error(
@@ -599,10 +604,10 @@ def _distinct(values: list[float]) -> int:
 
 def turned_of(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None) -> dict[str, Any] | None:
     """How the front view of a TURNED part is oriented (``sheet_turned``): ``None`` for any other sheet (an assembly, an
-    ``hlr`` sheet, a sheet with no front view, a part that is not a body of revolution about x, y or z). Otherwise the axis,
+    a sheet with no front view, a part that is not a body of revolution about x, y or z). Otherwise the axis,
     whether the view is flipped so the thread end is on the right, and the part's length and diameter."""
     body = spec.get("body")
-    if projection_of(spec) == "hlr" or _is_assembly(doc, body) or anchor_of(views_of(spec)) != "front":
+    if _is_assembly(doc, body) or anchor_of(views_of(spec)) != "front":
         return None
     found = LiveGeometry(doc, _shapes(doc, body, op), op).round_extent()
     box = _bounds(doc, body, op)
@@ -708,16 +713,7 @@ def normalise_views(wanted: Any, op: str | None) -> list[str]:
     return [v for v in VIEW_CHOICES if v in names]
 
 
-def projection_of(spec: dict[str, Any]) -> str:
-    """How the sheet's standard views are made: ``techdraw`` (FreeCAD's own default, view objects on the page) or
-    ``hlr`` (projected by us, no view objects)."""
-    return "hlr" if spec.get("projection") == "hlr" else "techdraw"
-
-
 def _scale_of(page: Any) -> float | None:
-    spec = read_spec(page)
-    if spec is not None and projection_of(spec) == "hlr":
-        return float(spec["hlr"]["scale"])
     views = part_views(page)
     return float(views[0].getScale()) if views else None
 
@@ -797,9 +793,6 @@ def _build(
 
     activate(fc_doc)
     names = sheet_template.editable_fields(template_text(spec["template"], op))
-    hlr = projection_of(spec) == "hlr"
-    if hlr:  # the layout is kept in the spec: there are no view objects to read it from
-        spec["hlr"] = _hlr_record(spec, layout, (width, depth, height), box, page_h)
     with _stage("creating the sheet and its template", op):
         old = find_page(fc_doc, name)
         if old is not None:
@@ -814,16 +807,6 @@ def _build(
         template.EditableTexts = title_fields(
             spec, names, layout.scale, index, len(pages(fc_doc)), _revisions(spec), material_of(fc_doc)
         )
-
-    if hlr:
-        try:
-            waited = _project_views(doc, spec, op)  # made now (and kept): the sheet is ready on return
-        except Exception:
-            remove_page(fc_doc, page)  # a sheet that cannot be drawn is not left behind
-            raise
-        _sync_template_fields(fc_doc, op)
-        waited += wait_views(fc_doc, page, op)  # no views to wait for: leaves nothing touched
-        return page, layout, waited, warnings
 
     def centre_y(y_down: float) -> float:  # SVG page y (down) -> TechDraw y (up)
         return page_h - y_down
@@ -899,41 +882,6 @@ def _build(
     return page, layout, waited, warnings
 
 
-def _hlr_record(
-    spec: dict[str, Any],
-    layout: sheet_layout.Layout,
-    size: tuple[float, float, float],
-    box: dict[str, Any] | None,
-    page_h: float,
-) -> dict[str, object]:
-    """The layout of an ``hlr`` sheet as the spec keeps it (page y UP): the scale, the place of the front and isometric
-    views, the size of the part and the model point every group view has at its origin (the centre of the part's box,
-    like TechDraw's projection group)."""
-    assert box is not None  # a part with a volume has a box
-    centre = tuple((float(lo) + float(hi)) / 2 for lo, hi in zip(box["min"], box["max"], strict=True))
-    iso = (layout.iso[0], page_h - layout.iso[1]) if spec.get("isometric", True) else None
-    return sheet_hlr.record(
-        layout.scale,
-        layout.spacing,
-        (layout.front[0], page_h - layout.front[1]),
-        iso,
-        size,
-        centre,  # type: ignore[arg-type]
-        layout.iso_scale,
-    )
-
-
-def _project_views(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None) -> float:
-    """Project the standard views of an ``hlr`` sheet (they are kept for the next composition); seconds it took."""
-    start = time.monotonic()
-    geometry = LiveGeometry(doc, _shapes(doc, spec.get("body"), op), op)
-    try:
-        sheet_hlr.compose_views(geometry, spec["hlr"])
-    except sc.ItemError as exc:
-        raise error("geometry_failed", f"the part could not be projected: {exc}", op) from exc
-    return time.monotonic() - start
-
-
 def _is_assembly(doc: reg.DocumentRec, body: Any) -> bool:
     """Whether the sheet draws an assembly: an assembly document with components, all of it (no ``body``)."""
     return doc.kind == "assembly" and bool(doc.components) and body is None
@@ -973,7 +921,6 @@ def _stated(params: dict[str, Any], old: dict[str, Any]) -> dict[str, Any]:
         "language": language,
         "angle": key_angle(old["template"]),
         "scale": old.get("scale_requested"),
-        "projection": projection_of(old),
         "body": old.get("body"),
     }
     for name in params.get("unset") or ():
@@ -1154,21 +1101,12 @@ def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     _declare_symmetry(spec, params.get("symmetry"))
     if params.get("iso_colour"):  # the convention of the harness; a sheet without the key stays a line drawing
         spec["iso_colour"] = True
-    projection = str(params.get("projection") or "techdraw")
-    if projection not in PROJECTIONS:
-        raise invalid_request(f"unknown projection {projection!r}, expected one of {', '.join(PROJECTIONS)}", op)
-    if projection == "hlr":  # the default (FreeCAD's own) leaves the spec exactly as it always was
-        spec["projection"] = "hlr"
-        if angle != "first":
-            raise invalid_request("angle=third needs projection=techdraw: an hlr sheet is made in first angle", op)
     apply_techdraw_defaults()
     warnings: list[str] = []
     section_wanted: bool | str = False
     assembly_section: dict[str, Any] | None = None
     if params.get("views") is not None:
         chosen = normalise_views(params["views"], op)
-        if projection == "hlr" and set(chosen) != set(views_of(spec)):
-            raise invalid_request("views choose the views of a techdraw sheet: an hlr sheet always has all of them", op)
         spec["views"] = chosen
         if params.get("isometric") is False:  # a part sheet keeps the isometric view and its spec as it was
             spec["isometric"] = False
@@ -1180,14 +1118,14 @@ def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     else:
         if params.get("isometric") is False:
             spec["isometric"] = False
-        picked = _views_for_part(doc, body, op) if projection == "techdraw" and not assembly else None  # noqa: E501
+        picked = _views_for_part(doc, body, op) if not assembly else None  # noqa: E501
         if picked is not None:
             spec["views"], section_wanted, why = picked
             spec["views"] = [*spec["views"], "iso"] if params.get("isometric") is not False else spec["views"]
             if params.get("isometric") is False:
                 spec["isometric"] = False
             warnings.append(f"views chosen from the part ({why}); views=[...] states others")
-        elif assembly and projection == "techdraw":
+        elif assembly:
             found = _views_for_assembly(doc, body, op)
             if found is not None:
                 spec["views"], assembly_section, why = found
@@ -1199,7 +1137,7 @@ def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     if assembly and paper_wanted:  # parts list, balloons and the views of an assembly: A3, not the A4 of a part
         key = "A3"
         spec["template"] = template_key(key, language, angle)
-    if assembly and projection == "techdraw" and "iso" in views_of(spec) and "iso_frame" not in spec:
+    if assembly and "iso" in views_of(spec) and "iso_frame" not in spec:
         frame = _best_isometric(doc, body, op)
         if frame is not None:
             spec["iso_frame"] = [list(frame[0]), list(frame[1])]
@@ -1837,7 +1775,7 @@ def record_action(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any
 
 def _drawn_by_item(ctx: sc.Context) -> dict[str, tuple[Any, ...]]:
     """What every item of the sheet drew, by item id (the views are not items)."""
-    return {u.key: tuple(u.entities) for u in ctx.extras.get("units", []) if u.kind != sheet_units.KIND_VIEW}
+    return {u.key: tuple(u.entities) for u in ctx.extras.get("units", [])}
 
 
 def _edited(item: dict[str, Any], patch: dict[str, Any], op: str | None) -> dict[str, Any]:
@@ -2178,10 +2116,6 @@ def _change_view(doc: reg.DocumentRec, params: dict[str, Any], action: str, op: 
     page = _need_page(doc.fc_doc, params.get("sheet"), op)
     spec = spec_of(page)
     spec.pop("legacy", None)
-    if projection_of(spec) == "hlr":
-        raise invalid_request(
-            "add_view / remove_view choose the views of a techdraw sheet: an hlr sheet has all of them", op
-        )
     view = VIEW_ALIASES.get(str(params.get("view")), str(params.get("view")))
     if view not in VIEW_CHOICES:
         raise invalid_request(f"unknown view {view!r}: the views are {', '.join(VIEW_CHOICES)}", op)
@@ -2993,7 +2927,7 @@ def compose(
 def _sync_hidden_views(doc: reg.DocumentRec, page: Any, spec: dict[str, Any], standing: set[str]) -> None:
     """The page window shows the views the sheet draws: the view a section stands in place of (``in_place``) is hidden in it,
     and shown again when the section goes or could not be drawn (``standing`` are the views a drawn section stands for)."""
-    hidden = sheet_turned.hidden_views(spec.get("items", [])) & standing if projection_of(spec) == "techdraw" else set()
+    hidden = sheet_turned.hidden_views(spec.get("items", [])) & standing
     with gui.unmodified(doc.fc_doc):
         for view in part_views(page):
             if str(view.TypeId) != "TechDraw::DrawProjGroupItem":
@@ -3055,7 +2989,6 @@ def _compose_pass(
     left, top, right, bottom = sheet_layout.drawing_area(page_w, page_h)
     fields = spec.get("fields", {})
     sheet = model.Sheet(page_w, page_h, str(fields.get("title") or page.Label))
-    hlr = projection_of(spec) == "hlr"
     if "geometry" not in cache:
         cache["geometry"] = LiveGeometry(doc, _shapes(doc, spec.get("body"), op), op)
         cache["holes"] = hole_infos(doc, spec.get("body"), op)
@@ -3072,9 +3005,9 @@ def _compose_pass(
         cache["weldment"] = (
             drawing_assembly.weldment_info(doc, language) if spec.get("body") is None and not _is_assembly(doc, None) else None
         )
-        cache["views"] = {} if hlr else view_infos(page)
-        cache["view_entities"] = [] if hlr else view_entities(page)
-        cache["hidden_views"] = set() if hlr else sheet_turned.hidden_views(spec.get("items", []))
+        cache["views"] = view_infos(page)
+        cache["view_entities"] = view_entities(page)
+        cache["hidden_views"] = sheet_turned.hidden_views(spec.get("items", []))
         # the sheet does not draw the view a section stands in place of; the items still see its outline until the section is drawn
         cache["view_entities_shown"] = (
             view_entities(page, cache["hidden_views"]) if cache["hidden_views"] else cache["view_entities"]
@@ -3091,15 +3024,7 @@ def _compose_pass(
     )
     ctx.extras["nudges"] = nudges
     ctx.extras["facts"] = cache["facts"]  # the rounds and whole cylinders of the part (None: an assembly)
-    hlr_views = None
-    if hlr:
-        try:
-            hlr_views = sheet_hlr.compose_views(geometry, spec["hlr"])
-        except sc.ItemError as exc:
-            raise error("geometry_failed", f"the part could not be projected: {exc}", op) from exc
-        sheet_hlr.apply(ctx, hlr_views, _is_assembly(doc, spec.get("body")) or cache["weldment"] is not None)
-    else:
-        ctx.extras["view_boxes"] = view_rects(page)
+    ctx.extras["view_boxes"] = view_rects(page)
     ctx.extras["main_scale"] = scale
     if spec.get("turned"):  # the layout arranged length x diameter: the alternatives the review offers do the same
         ctx.extras["layout_mm"] = (spec["turned"]["length"], spec["turned"]["diameter"], spec["turned"]["diameter"])
@@ -3122,7 +3047,7 @@ def _compose_pass(
     ctx.weldment = cache["weldment"]
     if _is_assembly(doc, spec.get("body")) or ctx.weldment is not None:
         ctx.assembly = drawing_assembly.assembly_info(doc, language) if ctx.weldment is None else None
-        iso = None if hlr else iso_info(page)
+        iso = iso_info(page)
         if iso is not None:
             ctx.extras["views_extra"] = {"isometric": iso}
             ctx.extras["iso_box"] = iso.box
@@ -3157,7 +3082,7 @@ def _compose_pass(
     ctx.extras["title_block"] = sheet_template.title_block_rect(template_entities, page_w)
     if spec.get("iso_colour") and "iso" in views_of(spec) and not _is_assembly(doc, spec.get("body")):
         if "iso_shade" not in cache:  # the picture under the lines of the isometric view (see ``sheet_iso``)
-            iso_view = ctx.extras.get("views_extra", {}).get("isometric") or (None if hlr else iso_info(page))
+            iso_view = ctx.extras.get("views_extra", {}).get("isometric") or iso_info(page)
             cache["iso_shade"], cache["iso_notes"] = (
                 sheet_iso.shade(doc, _bodies(doc, spec.get("body"), op), iso_view, op)
                 if iso_view is not None
@@ -3166,7 +3091,7 @@ def _compose_pass(
         sheet.underlay = list(cache["iso_shade"])
         ctx.extras["iso_notes"] = [ctx.say(es, en) for es, en in cache["iso_notes"]]  # for the reply
     views_start = len(sheet.entities)
-    sheet.extend(hlr_views.entities if hlr_views is not None else cache["view_entities_shown"])
+    sheet.extend(cache["view_entities_shown"])
     ctx.extras["view_ink"] = sheet.entities[views_start:]
     if cache.get("hidden_views"):
         ctx.extras["view_ink"] = list(cache["view_entities"])  # the outline of the hidden view, until its section is drawn
@@ -3174,7 +3099,7 @@ def _compose_pass(
     start = len(sheet.entities)
     sheet.extend(sheet_thread.thread_entities(ctx))
     ranges = {"threads": (start, len(sheet.entities))}
-    iso_view = hlr_views.iso if hlr_views is not None else (iso_info(page) if "iso" in views_of(spec) else None)
+    iso_view = iso_info(page) if "iso" in views_of(spec) else None
     if iso_view is not None and abs(iso_view.scale - scale) > 1e-9:  # its own scale goes under it (ISO 5455)
         label = ctx.say(f"Isométrica {model.fmt_scale(iso_view.scale)}", f"Isometric {model.fmt_scale(iso_view.scale)}")
         start = len(sheet.entities)
@@ -3186,7 +3111,7 @@ def _compose_pass(
         if gone:  # the section could not be drawn (its item says why): the view it should have replaced stays on the sheet
             sheet.extend(view_entities(page, only=gone))
     native = {
-        i["id"]: dict(ctx.extras.get("overall_dims", {})) for i in items if i["type"] == "overall" and not hlr
+        i["id"]: dict(ctx.extras.get("overall_dims", {})) for i in items if i["type"] == "overall"
     }  # TechDraw's own dimension objects, put on the lines the sheet draws
     ctx.extras["units"] = sheet_units.collect(
         sheet.entities,
@@ -3194,17 +3119,24 @@ def _compose_pass(
         ctx.extras.get("item_slices", {}),
         {r.id: r.status for r in results},
         ranges,
-        hlr_views.groups if hlr_views is not None else None,
         native,
-        None if hlr else ctx.extras.get("natives"),  # an hlr sheet has no TechDraw views to measure in
+        ctx.extras.get("natives"),
     )
-    if not hlr:  # the lines TechDraw has a cosmetic edge for are asked of the view they lie on
-        shown = {n: v.box for n, v in ctx.views.items() if not v.derived and n in sheet_native.VIEW_LABELS}
-        if iso_view is not None:
-            shown["isometric"] = iso_view.box
-        ctx.extras["units"] = sheet_units.with_cosmetics(
-            ctx.extras["units"], shown, [v.box for v in ctx.views.values() if v.derived]
-        )
+    # the lines TechDraw has a cosmetic edge for are asked of the view they lie on: a standard view, or a section, detail or
+    # auxiliary view an item made (TechDraw's own view object too); a view drawn some other way keeps its lines as drawn
+    shown = {n: v.box for n, v in ctx.views.items() if not v.derived and n in sheet_native.VIEW_LABELS}
+    if iso_view is not None:
+        shown["isometric"] = iso_view.box
+    made = {
+        n.name: n.box
+        for natives in ctx.extras.get("natives", {}).values()
+        for n in natives
+        if isinstance(n, sheet_units.NativeView)
+    }
+    shown.update(made)
+    ctx.extras["units"] = sheet_units.with_cosmetics(
+        ctx.extras["units"], shown, [v.box for n, v in ctx.extras.get("sections", {}).items() if n not in made]
+    )
     ctx.extras["collisions"] = _collisions(ctx)
     return sheet, results, ctx
 
@@ -3213,10 +3145,7 @@ def _collisions(ctx: sc.Context) -> list[sheet_collide.Collision]:
     """Where the ink of one item lies on the ink of another (items in the order of their drawing, the later one is ``a``)
     or a text lies on the outline of a view."""
     order = {str(i["id"]): n for n, i in enumerate(ctx.extras.get("items", []))}
-    units = sorted(
-        (u for u in ctx.extras["units"] if u.kind != sheet_units.KIND_VIEW),
-        key=lambda u: order.get(u.key, -1),
-    )
+    units = sorted(ctx.extras["units"], key=lambda u: order.get(u.key, -1))
     inks = [sheet_collide.ink_of(u.key, u.entities) for u in units]
     views = [sheet_collide.ink_of("views", ctx.extras.get("view_ink", []))]
     found = sheet_collide.collisions(inks, views)
@@ -3306,9 +3235,14 @@ def _result(
         "items": rows,
         "waited_s": round(waited, 3),
         "warnings": warnings,
-        "projection": projection_of(spec),
         "angle": key_angle(spec["template"]),
     }
+
+
+def _where(exc: BaseException) -> str:
+    """The file and line an exception was raised at (the last frame of its traceback)."""
+    frames = traceback.extract_tb(exc.__traceback__)
+    return f"{os.path.basename(frames[-1].filename)}:{frames[-1].lineno}" if frames else "?"
 
 
 def mirror(doc: reg.DocumentRec, page: Any, ctx: sc.Context, sheet: model.Sheet) -> tuple[str, list[str]]:
@@ -3320,7 +3254,7 @@ def mirror(doc: reg.DocumentRec, page: Any, ctx: sc.Context, sheet: model.Sheet)
         wait_views(doc.fc_doc, page, None)  # the symbols are computed, nothing is left touched
     except Exception as exc:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind
         return "", [
-            f"the sheet window could not be updated ({type(exc).__name__}: {exc}); the PDF and the DXF are right"
+            f"the sheet window could not be updated ({type(exc).__name__}: {exc}, at {_where(exc)}); the PDF and the DXF are right"
         ]
     notes = [
         f"{key}: TechDraw's own objects could not be made ({'; '.join(why)}): it is drawn as a symbol of our drawing"
@@ -3677,7 +3611,6 @@ def describe(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
             "page_mm": list(sheet_layout.PAGES_MM[size]),
             "scale": _scale_of(page) or 1.0,
             "body": spec.get("body"),
-            "projection": projection_of(spec),
             "angle": key_angle(spec["template"]),
             "views": ["isometric" if v == "iso" else v for v in views_of(spec)],
             "fields": {k: v for k, v in spec.get("fields", {}).items() if v},
@@ -3754,30 +3687,23 @@ def sheet_views(page: Any, ctx: sc.Context, spec: dict[str, Any]) -> tuple[list[
     found: list[dict[str, Any]] = []
     notes: list[str] = []
     standard: set[str] = set()
-    if projection_of(spec) == "hlr":
-        rects = ctx.extras.get("view_boxes", [])
-        names = [*sheet_hlr.GROUP, *(["isometric"] if len(rects) > len(sheet_hlr.GROUP) else [])]
-        for name, rect in zip(names, rects, strict=False):
-            found.append({"name": name, "rect": list(rect), "kind": "standard"})
-            standard.add(name)
-    else:
-        for view in part_views(page):
-            try:
-                x, y = _page_position(page, view)
-                box = _view_box(view)
-            except Exception as exc:  # noqa: BLE001 - a view with no geometry has no box to look for ink in
-                notes.append(f"view {view.Label} has no geometry to measure ({type(exc).__name__}: {exc})")
-                continue
-            rect = [x + box.XMin, y - box.YMax, x + box.XMax, y - box.YMin]
-            if str(view.TypeId) == "TechDraw::DrawProjGroupItem":
-                name = view_key(view) or str(view.Label)
-            elif str(view.Label) == sheet_native.VIEW_LABELS["isometric"]:
-                name = "isometric"
-            else:
-                found.append({"name": str(view.Label), "rect": rect, "kind": "native"})
-                continue
-            found.append({"name": name, "rect": rect, "kind": "standard"})
-            standard.add(name)
+    for view in part_views(page):
+        try:
+            x, y = _page_position(page, view)
+            box = _view_box(view)
+        except Exception as exc:  # noqa: BLE001 - a view with no geometry has no box to look for ink in
+            notes.append(f"view {view.Label} has no geometry to measure ({type(exc).__name__}: {exc})")
+            continue
+        rect = [x + box.XMin, y - box.YMax, x + box.XMax, y - box.YMin]
+        if str(view.TypeId) == "TechDraw::DrawProjGroupItem":
+            name = view_key(view) or str(view.Label)
+        elif str(view.Label) == sheet_native.VIEW_LABELS["isometric"]:
+            name = "isometric"
+        else:
+            found.append({"name": str(view.Label), "rect": rect, "kind": "native"})
+            continue
+        found.append({"name": name, "rect": rect, "kind": "standard"})
+        standard.add(name)
     for unit in ctx.extras.get("units", []):
         if unit.item_type in ("section", "detail", "aux_view"):
             rect = _bounds_of_ink(unit.entities)
@@ -3797,9 +3723,9 @@ def _prepare(
     """Everything ``capture`` and ``export`` share, so both write the same thing: the colours TechDraw's PDF writer cannot
     print are normalised (``sheet_colours``), the sheet is composed, and the page is made to show it (``mirror``). Returns
     the composed sheet, its context and the notes for the reply."""
-    notes = sheet_colours.repair(part_views(page))
+    notes = sheet_colours.repair(all_views(page))
     if notes:
-        for view in part_views(page):
+        for view in all_views(page):
             view.touch()
         doc.fc_doc.recompute()
         gui.pump()
