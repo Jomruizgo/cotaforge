@@ -24,7 +24,7 @@ ALLOWED = {"sheet_symbols.py"}
 STILL_DRAWN_BY_HARNESS: dict[str, str] = {
     "sheet_mirror.py": (
         "the units with no native form yet: datum and GD&T symbols, finish symbols, the datum_dims table, detail and "
-        "auxiliary views, sections drawn as sheet geometry, welds, mould symbols (ISO 10135), parts list and balloons"
+        "auxiliary views drawn as sheet geometry"
     ),
 }
 MAKES_A_SYMBOL = re.compile(r"addObject\(\s*(?:SYMBOL|[\"']TechDraw::DrawViewSymbol[\"'])|\.Symbol\s*=[^=]")

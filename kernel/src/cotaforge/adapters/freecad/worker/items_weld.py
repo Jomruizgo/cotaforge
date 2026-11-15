@@ -11,8 +11,10 @@ way: an arrow line that ends on the seam, the continuous reference line, the ele
 before the symbol and the length after it, a circle at the arrow for a weld all round, a flag for a field weld. The symbol
 does not touch another symbol, a dimension or the lines of the views.
 
-The drawing is the sheet's own (lines and text), not TechDraw's weld object: FreeCAD 1.1's ``DrawWeldSymbol`` carries the AWS
-and GOST symbols, no dashed identification line and no length text of ISO 2553.
+On the page of the CAD the weld is TechDraw's own: a ``DrawLeaderLine`` on the seam and a ``DrawWeldSymbol`` with the AWS tiles
+of FreeCAD's library (``sheet_marks``). The AWS form has no dashed identification line (the arrow side goes under the reference
+line, the other side above it), gives the leg and not the throat ``a``, and has no place for the pitch or the number of
+identical joints: those go to the tail text of the weld symbol. The entities drawn here are the headless sheet (PDF, DXF).
 """
 
 import math
@@ -36,6 +38,7 @@ from sheet_context import (
     v_point2,
 )
 from sheet_draw import arrow
+from sheet_marks import NativeWeld
 from sheet_model import DIMENSIONS, Arc, Circle, Entity, Line, Polyline, Solid, Text, text_width
 
 KINDS = ("fillet", "v", "square")
@@ -587,6 +590,75 @@ def _label(spec: dict[str, Any], comma: bool) -> str:
     return f"{kind} {', '.join(extras)}"
 
 
+TAIL_WORDS = {
+    "fillet": ("ángulo", "fillet"),
+    "v": ("a tope en V", "V butt"),
+    "square": ("a tope en I", "square butt"),
+}
+TAIL_SIDES = {"arrow": ("lado flecha", "arrow side"), "other": ("lado opuesto", "other side"), "both": ("ambos lados", "both sides")}
+NATIVE_VIEWS = ("front", "top", "right", "isometric")  # the views that are TechDraw's own: a weld hangs on one of them
+NATIVE_LINE_MIN_MM = 12.0  # the reference line of a weld symbol is at least as long as its tile
+
+
+def tail_text(ctx: Context, spec: dict[str, Any], count: int) -> str:
+    """What TechDraw paints at the tail of the weld symbol, short: the size (the throat ``a`` of ISO 2553; the AWS tile has
+    room for a number only), the segment length and pitch, and the number of identical joints. It is black whatever the
+    theme of the window is: the texts of the tiles are painted in the colour of the theme (white in the dark one)."""
+    parts = [size_text(spec, ctx.comma)]
+    if spec.get("length_mm") is not None:
+        parts.append(length_text(spec, ctx.comma))
+    if count > 1:
+        parts.append(f"{count}×")
+    return " ".join(parts)
+
+
+def words_text(ctx: Context, spec: dict[str, Any], count: int) -> str:
+    """The whole weld in words (the label of the weld symbol in FreeCAD's tree): the kind, the size, the side, the length and pitch,
+    all round, the field flag and the number of identical joints."""
+    index = 0 if ctx.language == "es" else 1
+    parts = [TAIL_WORDS[spec.get("kind", "fillet")][index], size_text(spec, ctx.comma), TAIL_SIDES[spec.get("sides", "arrow")][index]]
+    if spec.get("length_mm") is not None:
+        parts.append(length_text(spec, ctx.comma))
+    if spec.get("all_around"):
+        parts.append(ctx.say("en todo el contorno", "all round"))
+    if spec.get("field"):
+        parts.append(ctx.say("en obra", "field"))
+    if count > 1:
+        parts.append(f"{count}×")
+    return ", ".join(parts)
+
+
+def _native(ctx: Context, view: ViewInfo, spec: dict[str, Any], entities: list[Entity], tips: list[Point], anchor: Point, count: int) -> None:
+    """Ask for the weld as TechDraw's own objects (a leader line, a weld symbol with its AWS tiles): the entities drawn above are the
+    headless sheet, these are what the CAD's page holds. A view the sheet drew itself (a section) has no TechDraw view to hang on."""
+    if view.derived or view.name not in NATIVE_VIEWS or not isinstance(entities[0], Line):
+        return
+    reference = entities[0]  # ``symbol`` draws the reference line first
+    tail = tail_text(ctx, spec, count)
+    # the sheet's own line holds the size and the length inside it; TechDraw paints them as the tail, beyond the end of the line:
+    # the line is that much shorter, so the tail lands in the room the symbol reserved (never less than the AWS tile needs)
+    inside = " ".join(part for part in (size_text(spec, ctx.comma), length_text(spec, ctx.comma)) if part)
+    length = max(NATIVE_LINE_MIN_MM, abs(reference.x2 - reference.x1) - text_width(inside, TEXT_MM) - 1.0)
+    ctx.native(
+        NativeWeld(
+            str(spec["id"]),
+            view.name,
+            tuple(tips),
+            anchor,
+            1.0 if anchor[0] >= tips[0][0] else -1.0,
+            length,
+            spec.get("kind", "fillet"),
+            spec.get("sides", "arrow"),
+            size_text(spec, ctx.comma),
+            length_text(spec, ctx.comma),
+            tail,
+            words_text(ctx, spec, count),
+            bool(spec.get("all_around")),
+            bool(spec.get("field")),
+        )
+    )
+
+
 def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     joints = joints_named(ctx, spec)
     groups, unseen = split_by_view(ctx, joints, spec.get("view"))
@@ -604,6 +676,7 @@ def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         ctx.extras.setdefault("weld_views", {}).setdefault(str(spec["id"]), []).append(view.name)
         entities, tips, anchor, rect, clean = place(ctx, members, spec, len(joints) if unseen else 1)
         ctx.add(entities)
+        _native(ctx, view, spec, entities, tips, anchor, len(joints) if unseen else 1)
         ctx.reserve(rect)
         ctx.extras.setdefault("segments", []).extend((t, anchor) for t in tips)
         clean_all = clean_all and clean
