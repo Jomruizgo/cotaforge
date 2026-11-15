@@ -17,6 +17,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+import gdt_frames
+
 SYMBOL_TYPE = "TechDraw::DrawViewSymbol"
 LIBRARY_DIR = ("Mod", "TechDraw", "Symbols")
 PROP_LIBRARY = "CotaforgeLibrary"  # on a symbol: the library file it was made from (relative to the library folder)
@@ -43,6 +45,10 @@ GDT_LIBRARY: dict[str, dict[str, str | None]] = {
     "datum": {"frame": "misc/Datum_Up.svg", "symbol": "gd-and-t/ReferenceSurface.svg"},
     "finish": {"frame": "surface-roughness-symbols/Roughness.svg", "symbol": "surface-roughness-symbols/RoughnessGeneral.svg"},
 }
+
+# The item types whose symbols are native objects of TechDraw (a library symbol with its leader, or a spreadsheet): a loose
+# drawing of the harness for one of them is a defect of ours, not a unit that has no native form yet, so the review blocks on it.
+MIGRATED_ITEMS = frozenset({"datum", "gdt", "finish", "datum_dims"})
 
 _cache: dict[str, dict[str, str]] = {}
 
@@ -102,11 +108,50 @@ def make(
     return obj
 
 
+def make_library_symbol(
+    fc_doc: Any,
+    page: Any,
+    relative: str,
+    texts: list[str],
+    name: str,
+    owner: Any | None,
+    origin: tuple[float, float],
+    owner_xy: tuple[float, float],
+) -> Any:
+    """Insert a file of the product's symbol library (``gdt_frames``: the ISO 1101 frames, the ISO 5459 datum symbols, the ISO 1302
+    surface symbols: the folder the engineer inserts from with *Insert SVG Symbol*) on ``page``, as the menu does: a
+    ``DrawViewSymbol`` whose text is that file and whose ``EditableTexts`` are ``texts``. ``owner`` is the view it belongs to
+    (``Owner``): the symbol is placed relative to it, follows it when it moves and is edited in the property editor. ``origin`` is
+    where the origin of the drawing of the file lands on the page (mm, y up) and ``owner_xy`` where the owner stands there."""
+    svg = gdt_frames.library_files().get(relative)
+    if svg is None:
+        msg = f"the symbol library {gdt_frames.library_dir()} has no {relative}"
+        raise KeyError(msg)
+    obj = fc_doc.addObject(SYMBOL_TYPE, name)
+    page.addView(obj)
+    obj.ScaleType = "Custom"
+    obj.Scale = 1.0
+    obj.Symbol = svg
+    if texts and len(texts) == len(gdt_frames.editable_fields(svg)):
+        obj.EditableTexts = list(texts)
+    if owner is not None:
+        obj.Owner = owner
+    centre = gdt_frames.symbol_centre(svg, origin)
+    obj.X, obj.Y = centre[0] - owner_xy[0], centre[1] - owner_xy[1]
+    obj.addProperty("App::PropertyString", PROP_LIBRARY, "Cotaforge", "Library symbol this object was made from")
+    setattr(obj, PROP_LIBRARY, relative)
+    return obj
+
+
 def foreign_symbols(page: Any, resource_dir: str) -> list[Any]:
-    """The symbols of ``page`` that are not a file of FreeCAD's library: what the harness drew itself, or the engineer's own."""
+    """The symbols of ``page`` that are not a file of FreeCAD's library nor of the product's (whatever values the engineer typed in
+    its editable texts): what the harness drew itself, or the engineer's own."""
     found: list[Any] = []
     for obj in page.Views:
-        if str(obj.TypeId) == SYMBOL_TYPE and not is_library_text(resource_dir, str(obj.Symbol)):
+        if str(obj.TypeId) != SYMBOL_TYPE:
+            continue
+        text = str(obj.Symbol)
+        if not is_library_text(resource_dir, text) and not gdt_frames.is_frame_symbol(text):
             found.append(obj)
     return found
 

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:freecad="https://www.freecad.org/wiki/index.php?title=Svg_Namespace" version="1.1" width="28.652mm" height="8.15mm" viewBox="-28.077 -4.075 28.652 8.15">
+  <title>ISO 5459 datum feature symbol - frame left, stem 2 steps longer</title>
+  <g id="datum" style="fill:none;stroke:#000000;stroke-width:0.35;stroke-linecap:round;stroke-linejoin:round">
+    <path d="M 0 3.2 L 0 -3.2 L -5.543 0 Z" style="fill:#000000"/>
+    <path d="M -5.543 0 L -20.502 0"/>
+    <path d="M -20.502 3.5 L -27.502 3.5 L -27.502 -3.5 L -20.502 -3.5 Z" style="fill:#ffffff"/>
+  </g>
+  <text freecad:editable="letter" x="-24.002" y="1.25" style="font-size:3.5px;font-family:osifont, Tahoma, 'Segoe UI Symbol', sans-serif;text-anchor:middle;fill:#000000;stroke:none"><tspan>A</tspan></text>
+</svg>

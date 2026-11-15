@@ -3667,26 +3667,52 @@ def review_findings(
                 }
             )
     findings += sheet_dimtext.findings(sheet_dimtext.read(ctx.extras["units"], held), ctx)  # what the dimensions print, as a shop reads it
+    for unit in ctx.extras["units"]:  # a symbol or a leader whose view the engineer deleted stays loose on the page
+        lost = sheet_native.orphaned(unit, held.get(unit.key, []))
+        if lost:
+            findings.append(
+                {
+                    "code": "native_orphaned",
+                    "severity": "warning",
+                    "message": ctx.say(
+                        f"{unit.key}: se borró la vista donde estaba y {len(lost)} objeto(s) de TechDraw ({', '.join(str(o.Label) for o in lost)[:100]}) "
+                        "quedaron sueltos en la hoja (caen a la esquina). Bórralos o devuelve la vista y vuelve a añadir el elemento.",
+                        f"{unit.key}: the view it stood on was deleted and {len(lost)} TechDraw object(s) ({', '.join(str(o.Label) for o in lost)[:100]}) "
+                        "were left loose on the sheet (they fall to the corner). Delete them, or bring the view back and add the item again.",
+                    ),
+                    "items": [unit.key],
+                    "features": [],
+                    "key": unit.key,
+                }
+            )
     foreign = sheet_symbols.foreign_symbols(page, sheet_symbols.resource_dir())
     if foreign:  # a drawing of ours that is not a FreeCAD object: it does not follow its view and the engineer cannot edit it
         keys = sorted({str(getattr(o, sheet_mirror.PROP_KEY, "") or o.Label) for o in foreign})
-        findings.append(
-            {
-                "code": "foreign_symbol",
-                "severity": "info",  # the items still drawn this way are listed in tests/unit/freecad_client/test_native_only.py
-                "message": ctx.say(
-                    f"La hoja tiene {len(foreign)} símbolo(s) que no son de la biblioteca de FreeCAD ({', '.join(keys)[:120]}): "
-                    "son un dibujo suelto que no sigue a su vista ni se edita línea a línea, y se queda si se borra la vista. "
-                    "Debe ser un objeto nativo de TechDraw.",
-                    f"The sheet holds {len(foreign)} symbol(s) that are not from FreeCAD's library ({', '.join(keys)[:120]}): "
-                    "a loose drawing that does not follow its view, cannot be edited line by line and stays when the view is "
-                    "deleted. It must be a native TechDraw object.",
-                ),
-                "items": [k for k in keys if k in {str(i.get("id")) for i in spec.get("items", [])}],
-                "features": [],
-                "key": "",
-            }
-        )
+        kinds = {str(i.get("id")): str(i.get("type")) for i in spec.get("items", [])}
+        ids = set(kinds)
+        migrated = [k for k in keys if kinds.get(k) in sheet_symbols.MIGRATED_ITEMS]
+        # a datum, a frame, a finish symbol or a table drawn loose is a defect that holds the export (its own finding); the units
+        # with no native form yet are listed in tests/unit/freecad_client/test_native_only.py and only inform
+        for group, severity, key in ((migrated, "warning", "native_items"), ([k for k in keys if k not in migrated], "info", "")):
+            if not group:
+                continue
+            findings.append(
+                {
+                    "code": "foreign_symbol",
+                    "severity": severity,
+                    "message": ctx.say(
+                        f"La hoja tiene {len(group)} símbolo(s) que no son de la biblioteca de símbolos de TechDraw ({', '.join(group)[:120]}): "
+                        "son un dibujo suelto que no sigue a su vista ni se edita línea a línea, y se queda si se borra la vista. "
+                        "Debe ser un objeto nativo de TechDraw.",
+                        f"The sheet holds {len(group)} symbol(s) that are not from TechDraw's symbol library ({', '.join(group)[:120]}): "
+                        "a loose drawing that does not follow its view, cannot be edited line by line and stays when the view is "
+                        "deleted. It must be a native TechDraw object.",
+                    ),
+                    "items": [k for k in group if k in ids],
+                    "features": [],
+                    "key": key,
+                }
+            )
     unread = [*sheet_output.native_rows(page), *({"text": t, "view": False} for t in ctx.extras.get("page_unread", []))]
     if unread:  # on the page, in the PDF and in the capture, but not in the composed sheet the review reads
         shown = "; ".join(sheet_output.listed(unread)[:5]) + (f" (+{len(unread) - 5})" if len(unread) > 5 else "")

@@ -136,3 +136,23 @@ def test_a_note_that_repeats_the_title_block_is_not_added() -> None:
         [{"type": "note", "text": "material: aisi 1045"}], FIELDS, fields, current={"part_material": "AISI 1045"}
     )
     assert kept == [] and fields == {"part_material": "aisi 1045"} and moved
+
+
+def test_the_drawing_number_the_draughtsman_and_the_company_have_their_field_too() -> None:
+    fields: dict[str, str] = {}
+    names = {"drawing_number", "creator", "approval_person", "legal_owner_1", "part_material"}
+    notes = [
+        {"type": "note", "text": "Número de plano: PL-0192"},
+        {"type": "note", "text": "Dibujó: J. Ruiz"},
+        {"type": "note", "text": "Aprobó: M. Gil"},
+        {"type": "note", "text": "Company: Acme Tools"},
+        {"type": "note", "text": "Rebabas eliminadas"},
+    ]
+    kept, moved = items_notes.route_title_block_notes(notes, names, fields)
+    assert [k["text"] for k in kept] == ["Rebabas eliminadas"] and len(moved) == 4
+    assert fields == {
+        "drawing_number": "PL-0192",
+        "creator": "J. Ruiz",
+        "approval_person": "M. Gil",
+        "legal_owner_1": "Acme Tools",
+    }

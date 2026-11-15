@@ -14,6 +14,11 @@ long texts (``Ø0,05 Ⓜ CZ``, ``0,02 / 100``).
 Geometry (ISO 1101, ISO 7083): the cell is 7 mm high (twice the 3.5 mm text) and the symbol cell is 7 mm wide; the line
 is 0.35 mm (the line width of the lettering of 3.5 mm text, ISO 128 / ISO 3098), and the text is 3.5 mm.
 
+The same folder holds the datum feature symbols (ISO 5459: ``datum/datum-up.svg`` ...: the triangle, its stem and the framed
+letter, with the letter editable) and the surface texture symbols (ISO 1302: ``finish/finish-required.svg`` ...: the check
+mark with its bar and the roughness text editable). In those the origin of the drawing (0, 0) is the point that lands on the
+feature: the middle of the base of the triangle, the vertex of the check mark, so a sheet places them by that point.
+
 Run ``python build_gdt_frames.py`` to rewrite the files; ``python build_gdt_frames.py --check`` fails when a file on
 disk differs from what this writes (the unit tests do the same).
 """
@@ -206,6 +211,143 @@ def render(characteristic: str, datums: int, width: str = "std") -> str:
     )
 
 
+# --- datum feature symbols (ISO 5459) and surface texture symbols (ISO 1302) ---------------------------------------------------
+
+DATUM_BASE = 6.4  # the filled triangle, as the one of FreeCAD's own Datum_*.svg
+DATUM_HEIGHT = 5.5426
+DATUM_STEM = 8.9596  # from the apex of the triangle to the frame
+DATUM_BOX = 7.0  # the frame of the letter is a square of the height of a feature control frame
+DATUM_STRETCHES = 10  # the stem comes in this many lengths: the one of FreeCAD's own symbol and nine longer ones
+DATUM_STRETCH_MM = 3.0  # each longer by this much (so the frame can stand where the layout of the sheet wants it, within 1.5 mm)
+DATUM_DIRECTIONS = {"up": (0.0, -1.0), "down": (0.0, 1.0), "left": (-1.0, 0.0), "right": (1.0, 0.0)}  # svg, y down: from the feature to the frame
+MARGIN_MM = 0.4
+LONG_RISE = 5.0  # the check mark: the long leg rises this much (the bar is at its top)
+SHORT_RISE = 2.5
+TAN60 = 1.7320508
+BAR_MM = 18.0  # the bar over the roughness text: holds "Ra 12,5"
+BAR_TEXT_PAD = 0.8
+DEFAULT_ROUGHNESS = "Ra 3,2"
+MACHINING = ("required", "forbidden", "any")
+
+
+def _svg(title: str, box: tuple[float, float, float, float], body: list[str]) -> str:
+    x0, y0, x1, y1 = box
+    w, h = x1 - x0 + 2 * MARGIN_MM, y1 - y0 + 2 * MARGIN_MM
+    return "\n".join(
+        [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:freecad="{NAMESPACE_FREECAD}" version="1.1" '
+            f'width="{_n(w)}mm" height="{_n(h)}mm" viewBox="{_n(x0 - MARGIN_MM)} {_n(y0 - MARGIN_MM)} {_n(w)} {_n(h)}">',
+            f"  <title>{title}</title>",
+            *body,
+            "</svg>",
+            "",
+        ]
+    )
+
+
+def _group(name: str, fill: str = "none") -> str:
+    return (
+        f'  <g id="{name}" style="fill:{fill};stroke:#000000;stroke-width:{_n(LINE_MM)};'
+        'stroke-linecap:round;stroke-linejoin:round">'
+    )
+
+
+def _path(points: list[tuple[float, float]], close: bool = False) -> str:
+    return "M " + " L ".join(f"{_n(x)} {_n(y)}" for x, y in points) + (" Z" if close else "")
+
+
+def render_datum(direction: str, stretch: int = 0) -> str:
+    """The datum feature symbol with the frame on the ``direction`` side of the feature: the filled triangle stands on the
+    feature with its base (the origin of the drawing is the middle of the base), the stem runs from its apex to the frame and
+    the letter is the editable text of the frame."""
+    dx, dy = DATUM_DIRECTIONS[direction]
+    px, py = -dy, dx  # across the stem
+
+    def at(along: float, across: float) -> tuple[float, float]:
+        return along * dx + across * px, along * dy + across * py
+
+    near = DATUM_HEIGHT + DATUM_STEM + stretch * DATUM_STRETCH_MM
+    half = DATUM_BOX / 2
+    corners = [at(near, -half), at(near + DATUM_BOX, -half), at(near + DATUM_BOX, half), at(near, half)]
+    base = [at(0, -DATUM_BASE / 2), at(0, DATUM_BASE / 2), at(DATUM_HEIGHT, 0)]
+    centre = at(near + half, 0)
+    xs = [p[0] for p in (*corners, *base)]
+    ys = [p[1] for p in (*corners, *base)]
+    pad = LINE_MM / 2
+    box = (min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad)
+    style = f"font-size:{_n(TEXT_MM)}px;font-family:{FONT};text-anchor:middle;fill:#000000;stroke:none"
+    body = [
+        _group("datum"),
+        f'    <path d="{_path(base, True)}" style="fill:#000000"/>',
+        f'    <path d="{_path([at(DATUM_HEIGHT, 0), at(near, 0)])}"/>',
+        f'    <path d="{_path(corners, True)}" style="fill:#ffffff"/>',
+        "  </g>",
+        f'  <text freecad:editable="letter" x="{_n(centre[0])}" y="{_n(centre[1] + BASELINE_MM - CELL_H / 2)}" style="{style}"><tspan>A</tspan></text>',
+    ]
+    return _svg(f"ISO 5459 datum feature symbol - frame {direction}" + (f", stem {stretch} steps longer" if stretch else ""), box, body)
+
+
+def _check_mark(machining: str) -> tuple[list[str], tuple[float, float]]:
+    """The check mark with its vertex at the origin (svg: y down): the elements and the end of the long leg."""
+    half = LONG_RISE / TAN60
+    top = (half, -LONG_RISE)
+    out: list[str] = []
+    if machining == "required":
+        out.append(f'    <path d="M 0 0 L {_n(-half)} {_n(-LONG_RISE)} L {_n(top[0])} {_n(top[1])} Z"/>')
+    else:
+        short = (-SHORT_RISE / TAN60, -SHORT_RISE)
+        out.append(f'    <path d="M {_n(short[0])} {_n(short[1])} L 0 0 L {_n(top[0])} {_n(top[1])}"/>')
+    if machining == "forbidden":
+        out.append(f'    <circle cx="0" cy="{_n(-SHORT_RISE * 0.96)}" r="{_n(SHORT_RISE * 0.48)}"/>')
+    return out, top
+
+
+def render_finish(machining: str, general: bool = False, bar: bool = True) -> str:
+    """The surface texture symbol with its vertex at the origin: the check mark (a closed triangle when machining is required,
+    a circle in it when it is forbidden), the bar from the top of the long leg and the roughness text under the bar (editable).
+    The general one adds the basic symbol in parentheses ("all the other surfaces")."""
+    marks, top = _check_mark(machining)
+    style = f"font-size:{_n(TEXT_MM)}px;font-family:{FONT};text-anchor:start;fill:#000000;stroke:none"
+    end = top[0] + (BAR_MM if bar else 0.0)
+    body = [_group("finish"), *marks]
+    if bar:
+        body.append(f'    <path d="M {_n(top[0])} {_n(top[1])} H {_n(end)}"/>')
+    body.append("  </g>")
+    if bar:
+        body.append(
+            f'  <text freecad:editable="roughness" x="{_n(top[0] + BAR_TEXT_PAD)}" y="{_n(top[1] + BAR_TEXT_PAD + 2.5)}" style="{style}"><tspan>{DEFAULT_ROUGHNESS}</tspan></text>'
+        )
+    right = end + 0.5
+    if general:
+        paren = f"font-size:6px;font-family:{FONT};text-anchor:start;fill:#000000;stroke:none"
+        x_open = end + 1.0
+        basic, basic_top = _check_mark("any")
+        shift = x_open + 4.5 + (LONG_RISE / TAN60) * 0.5
+        body.append(_group("basic").replace(f'<g id="basic"', f'<g id="basic" transform="translate({_n(shift)} 0)"'))
+        body += basic
+        body.append("  </g>")
+        x_close = shift + basic_top[0] + 0.5
+        body.append(f'  <text x="{_n(x_open)}" y="-0.3" style="{paren}"><tspan>(</tspan></text>')
+        body.append(f'  <text x="{_n(x_close)}" y="-0.3" style="{paren}"><tspan>)</tspan></text>')
+        right = x_close + 2.5
+    box = (-LONG_RISE / TAN60 - LINE_MM, -LONG_RISE - 1.0, right, 0.8)
+    title = (
+        f"ISO 1302 surface texture - machining {machining}"
+        + (", for all the other surfaces" if general else "")
+        + ("" if bar else ", no value")
+    )
+    return _svg(title, box, body)
+
+
+def datum_path(direction: str, stretch: int = 0) -> str:
+    return f"datum/datum-{direction}{f'-{stretch}' if stretch else ''}.svg"
+
+
+def finish_path(machining: str, general: bool = False, bar: bool = True) -> str:
+    return f"finish/finish-{'general-' if general else ''}{machining}{'' if bar else '-bare'}.svg"
+
+
 def all_files() -> dict[str, str]:
     """Every file of the library: the path inside ``cotaforge-gdt`` and its text."""
     files: dict[str, str] = {}
@@ -213,6 +355,13 @@ def all_files() -> dict[str, str]:
         for datums in counts:
             for width in TOLERANCE_W:
                 files[relative_path(name, datums, width)] = render(name, datums, width)
+    for direction in DATUM_DIRECTIONS:
+        for stretch in range(DATUM_STRETCHES):
+            files[datum_path(direction, stretch)] = render_datum(direction, stretch)
+    for machining in MACHINING:
+        files[finish_path(machining)] = render_finish(machining)
+        files[finish_path(machining, general=True)] = render_finish(machining, general=True)
+    files[finish_path("forbidden", bar=False)] = render_finish("forbidden", bar=False)
     return files
 
 
