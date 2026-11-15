@@ -108,9 +108,9 @@ def test_a_create_says_which_settings_it_did_not_get_so_a_rebuild_can_keep_the_s
     call, adapter = sheet
     call.ok("drawing", action="create", template="A3", scale="1:2")
     request = adapter.created[-1]
-    assert request.fresh is False and request.unset == ("angle", "language", "projection", "body")
-    call.ok("drawing", action="create", fresh=True, projection="techdraw")
-    assert adapter.created[-1].fresh is True and "projection" not in adapter.created[-1].unset
+    assert request.fresh is False and request.unset == ("angle", "language", "body")
+    call.ok("drawing", action="create", fresh=True)
+    assert adapter.created[-1].fresh is True
 
 
 def test_a_rebuild_reply_says_what_it_kept_what_no_longer_resolves_and_what_a_fresh_one_threw_away(

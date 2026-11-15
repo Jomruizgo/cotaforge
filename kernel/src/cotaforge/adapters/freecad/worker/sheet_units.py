@@ -3,10 +3,9 @@
 
 The compositor (``drawing.compose``) draws a whole sheet into ``sheet_model`` entities; the PDF, the PNG and the DXF are
 written from them. The engineer watches the TechDraw sheet window while the agent builds the sheet, so every piece that
-one item (or the thread arcs, the ISO 286 note, an ``hlr`` view) put on the sheet is also made as an object of the
+one item (or the thread arcs, the ISO 286 note) put on the sheet is also made as an object of the
 TechDraw page (``sheet_mirror``): a ``Unit`` is that piece -- a key, a label and the entities it drew, at their place on
-the page. The key is the item id (``h1``), ``view:front`` / ``view:top`` / ... for the views of an ``hlr`` sheet,
-``threads`` and ``iso286`` for what no item owns.
+the page. The key is the item id (``h1``); ``threads`` and ``iso286`` are for what no item owns.
 
 """
 
@@ -40,7 +39,6 @@ Rect = tuple[float, float, float, float]
 Point = tuple[float, float]
 
 KIND_ITEM = "item"
-KIND_VIEW = "view"
 KIND_EXTRA = "extra"
 TEXT_SLACK = 1.12  # the real font may be wider than ``text_width`` estimates: the SVG fragment is cut at its box
 MARGIN_MM = 1.5
@@ -237,7 +235,6 @@ def collect(
     slices: dict[str, tuple[int, int]],
     statuses: dict[str, str],
     extras: dict[str, tuple[int, int]],
-    views: dict[str, list[Entity]] | None,
     native: dict[str, dict[str, Any]] | None = None,
     natives: dict[str, list[Native]] | None = None,
 ) -> list[Unit]:
@@ -245,14 +242,11 @@ def collect(
 
     ``slices`` maps an item id to the range of ``entities`` it drew; an item that failed (status ``error``) or drew
     nothing makes no unit. ``extras`` is the same for the pieces no item owns (``threads``). ``views`` are
-    the views of an ``hlr`` sheet (they are not TechDraw objects there, so the window needs them). ``native`` maps the
+    ``native`` maps the
     id of an item that TechDraw's own objects hold (the overall dimensions of a ``techdraw`` sheet) to what the
     mirror needs to put them where the sheet draws them. ``natives`` maps an item id to the TechDraw dimension and
     annotation objects it asks for (``NativeDim`` / ``NativeNote``)."""
     units: list[Unit] = []
-    for name, group in (views or {}).items():
-        if group:
-            units.append(Unit(f"view:{name}", f"view {name}", KIND_VIEW, tuple(group)))
     for key, what in ((KEY_THREADS, "thread arcs"), (KEY_ISO_SCALE, "isometric view scale")):
         if key in extras:
             a, b = extras[key]
@@ -381,9 +375,6 @@ def with_cosmetics(units: list[Unit], views: dict[str, Rect], derived: list[Rect
     itself, whose lines are not any TechDraw view's). A line that lies on no view stays what it was: part of the unit's drawing."""
     out: list[Unit] = []
     for unit in units:
-        if unit.kind == KIND_VIEW:
-            out.append(unit)
-            continue
         made: list[NativeCosmetic] = []
         covered: set[int] = set()
         seen: set[tuple[str, str, tuple[float, ...], str]] = set()  # the same line drawn twice is one edge

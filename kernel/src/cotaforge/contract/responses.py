@@ -313,7 +313,6 @@ class DrawingResult(BaseModel, frozen=True):
     removed: bool = False
     waited_s: float = 0.0
     warnings: tuple[str, ...] = ()
-    projection: Literal["techdraw", "hlr"] = "techdraw"
     angle: Literal["first", "third"] = "first"
     changed: tuple[str, ...] = ()  # ids of the items this call added or took off (the rest is the sheet as it was)
     window: str = ""  # what the call did to the objects of the CAD's sheet window ("1 new", "unchanged")
@@ -481,7 +480,6 @@ class DrawingSheetInfo(BaseModel, frozen=True):
     page_mm: tuple[float, float]
     scale: float
     body: str | None = None
-    projection: Literal["techdraw", "hlr"] = "techdraw"
     angle: Literal["first", "third"] = "first"
     views: tuple[str, ...] = ()
     fields: dict[str, str] = {}

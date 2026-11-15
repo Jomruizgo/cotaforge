@@ -381,7 +381,7 @@ def _item_line(item: Any) -> str:
     )
 
 
-REBUILD_SETTINGS = ("template", "angle", "language", "scale", "projection", "body")
+REBUILD_SETTINGS = ("template", "angle", "language", "scale", "body")
 # the settings of create a rebuild leaves as the sheet has them when the caller does not state them
 
 
@@ -395,12 +395,6 @@ def _rebuild_lines(result: Any) -> list[str]:
     if result.discarded:
         lines.append(f"fresh: threw away {'; '.join(result.discarded)}")
     return lines
-
-
-HLR_NOTICE = (
-    "projection: hlr (our own hidden-line projection, not TechDraw's view objects): the views in the FreeCAD window "
-    "are drawings of that projection (symbols), the same as the PDF; TechDraw's own views are projection=techdraw"
-)
 
 
 def _sheet_summary(result: Any, brief: bool = False) -> list[str]:
@@ -420,8 +414,6 @@ def _sheet_summary(result: Any, brief: bool = False) -> list[str]:
             lines.append(f"sheets: {', '.join(result.sheets)}")
         return lines
     lines = [head + f"; views: {', '.join(result.views)}", f"dimensions: {', '.join(result.dimensions)}"]
-    if result.projection == "hlr":
-        lines.append(HLR_NOTICE)
     if len(result.sheets) > 1:
         lines.append(f"sheets: {', '.join(result.sheets)}")
     if result.items:
@@ -494,7 +486,6 @@ def _create_request(session: Session, args: DrawingArgs) -> DrawingRequest:
         body=BodyHandle(id=args.body) if args.body else None,
         isometric=args.isometric,
         views=tuple(args.views) if args.views else None,
-        projection=args.projection,
         fresh=args.fresh,
         symmetry=args.symmetry,
         unset=tuple(n for n in REBUILD_SETTINGS if n not in args.model_fields_set),
@@ -642,7 +633,6 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                     f"sheet {sheet.sheet}: {sheet.template} at {_ratio(sheet.scale)}, {sheet.language}"
                     + (", third angle" if sheet.angle == "third" else "")
                     + (f", body {sheet.body}" if sheet.body else "")
-                    + (", projection hlr (views drawn by our own projection)" if sheet.projection == "hlr" else "")
                     + (f"; {fields}" if fields else "")
                 )
                 for item in sheet.items:

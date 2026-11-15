@@ -364,8 +364,8 @@ class Geometry:
         raise ItemError(msg)
 
     def view_projection(self, centre: Vec3, xdir: Vec3, direction: Vec3) -> "Projection":
-        """The visible edges of the whole part for a standard view of a sheet made with ``projection="hlr"`` (kept
-        between calls where that is costly); by default the same as ``projection`` without a cut."""
+        """The visible edges of the whole part for a standard view (kept between calls where that is costly); by default
+        the same as ``projection`` without a cut."""
         return self.projection(centre, xdir, direction)
 
     def face_outline(self, face_id: str, centre: Vec3, xdir: Vec3, direction: Vec3) -> list[list[Point]]:

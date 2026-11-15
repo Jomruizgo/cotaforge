@@ -70,11 +70,6 @@ def test_the_same_line_drawn_twice_is_one_edge_and_both_are_covered() -> None:
     assert len(done.natives) == 1 and done.residue == ()
 
 
-def test_the_views_of_an_hlr_sheet_are_left_alone() -> None:
-    view = unit_of("view:front", model.Line(0, 0, 1, 1, model.AXES), kind=su.KIND_VIEW)
-    assert su.with_cosmetics([view], {"top": (-5, -5, 5, 5)}, []) == [view]
-
-
 def test_cosmetic_edges_are_not_part_of_the_signature_of_the_objects_of_a_unit() -> None:
     dim = su.NativeDim("h1", "d", "diameter", "top", (), (0.0, 0.0))
     cosmetic = su.NativeCosmetic("h1", "top", "line", (0, 0, 1, 1), "centre")

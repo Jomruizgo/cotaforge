@@ -17,7 +17,6 @@ What the page holds:
   frames, datum and finish symbols, tables, the section hatch, thread arcs -- is a ``DrawViewSymbol`` whose SVG is that
   item's own drawing (``sheet_svg.fragment``), centred where the drawing sits on the page. TechDraw has dimension and
   leader objects, but they place their own lines and text, so the window would show something other than the PDF;
-* an ``hlr`` sheet has no view objects: its views are symbols of our projection too, so the window is never blank.
 
 Each object carries the key of the unit it mirrors (``CotaforgeKey``); a unit whose object already holds exactly the SVG
 and the position the sheet gives it is left alone, so adding one item to a sheet of thirty touches one object (and an

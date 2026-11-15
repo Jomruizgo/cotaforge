@@ -261,15 +261,6 @@ def check_the_page_follows_the_part_and_a_rebuilt_sheet_keeps_its_items_on_the_p
     assert keys() <= {"threads", "loc"}
 
 
-def check_an_hlr_sheet_shows_its_views_and_items_on_the_page() -> None:
-    build_part()
-    call("create_drawing", op("d", template="A3", scale=1.0, projection="hlr"))
-    assert {"view:front", "view:top", "view:right", "view:isometric", "o1"} <= keys()
-    add({"type": "hole_dim", "id": "h1", "at": [[15, 12, 0]]})
-    assert "h1" in keys() and drawing.compare_window(_rec(), None, "check") == []
-    assert not drawing.part_views(_page())
-
-
 def check_the_window_check_catches_a_page_that_differs_and_an_export_puts_it_right() -> None:
     base = build_part()
     call("create_drawing", op("d", template="A3", scale=1.0))
@@ -422,13 +413,13 @@ def check_every_centre_mark_is_at_the_projected_centre_of_its_hole_in_the_sheet_
     """Real use: the crosses of the circles were painted off their centres in the window. Every hole seen as a circle
     in a view has its cross at the projected 3D centre to 0.01 mm, in the sheet model and in the TechDraw objects."""
     build_part()
-    for projection in ("techdraw", "hlr"):
-        call("create_drawing", op("d", template="A3", scale=1.0, projection=projection, fresh=True))
+    if True:
+        call("create_drawing", op("d", template="A3", scale=1.0, fresh=True))
         add(
             {"type": "view_lines", "id": "vl"},
             {"type": "hole_dim", "id": "dowels", "at": [[x, y, 0] for x, y in DOWELS]},
         )
-        assert drawing.centre_mark_problems(_rec(), None, "check") == [], projection
+        assert drawing.centre_mark_problems(_rec(), None, "check") == []
         page = _page()
         marks = sheet_mirror.page_crosses(page, 297.0)
         holes = drawing.hole_infos(_rec(), None, "check")
@@ -437,13 +428,10 @@ def check_every_centre_mark_is_at_the_projected_centre_of_its_hole_in_the_sheet_
             len(marks),
         )  # a counterbore shares the centre of its hole
         # a cross somebody moved is named
-        if projection == "hlr":  # its views are symbols: the crosses are a symbol's drawing
-            owned = next(o for o in sheet_mirror.owned(page)["loc"] if str(o.TypeId) == "TechDraw::DrawViewSymbol")
-            owned.X = float(owned.X) + 0.5
-        else:  # a TechDraw view: the crosses are cosmetic edges of it; the engineer deletes one of them by hand
-            top = next(v for v in drawing.part_views(page) if drawing.view_key(v) == "top")
-            kind, values = json.loads(str(top.CotaforgeCosmetic))["loc"][1][0]
-            top.removeCosmeticEdge(str(sheet_native._find(top, (kind, tuple(values))).Tag))  # noqa: SLF001
+        # a TechDraw view: the crosses are cosmetic edges of it; the engineer deletes one of them by hand
+        top = next(v for v in drawing.part_views(page) if drawing.view_key(v) == "top")
+        kind, values = json.loads(str(top.CotaforgeCosmetic))["loc"][1][0]
+        top.removeCosmeticEdge(str(sheet_native._find(top, (kind, tuple(values))).Tag))  # noqa: SLF001
         problems = drawing.centre_mark_problems(_rec(), None, "check")
         assert problems and any("not at the centre of any hole" in p or "page does not" in p for p in problems), (
             problems
