@@ -868,7 +868,7 @@ def _bases_last(objects: list[Any]) -> list[Any]:
     return sorted(objects, key=lambda o: str(getattr(o, PROP_ROLE, "")).endswith(ROLE_BASE))
 
 
-DRAWN_WAIT_S = 90.0
+DRAWN_WAIT_S = 60.0
 DRAWN_POLL_S = 0.25
 
 
@@ -883,8 +883,7 @@ def _await_drawn(fc_doc: Any, views: list[Any], wait: Any, needed: bool) -> None
     while time.monotonic() - start < DRAWN_WAIT_S:
         if all(_extent(v) is not None for v in views):
             return
-        gui.pump()
-        fc_doc.recompute()
+        gui.pump()  # no recompute here: it touches the views again and a heavy one starts over
         wait()
         time.sleep(DRAWN_POLL_S)
 
@@ -919,7 +918,7 @@ def sync_views(
             drawn = [o for o in made if not str(getattr(o, PROP_ROLE, "")).endswith(ROLE_BASE)]  # the first is the one the others go by
             fc_doc.recompute()
             wait()
-            _await_drawn(fc_doc, drawn, wait, nv.kind != "detail")
+            _await_drawn(fc_doc, drawn, wait, bool(nv.parts))  # only a section of pieces: a heavy single part keeps the old, short wait
             for obj in drawn:
                 role = str(getattr(obj, PROP_ROLE, ""))
                 _place(
@@ -931,7 +930,7 @@ def sync_views(
                 )
             fc_doc.recompute()
             wait()
-            if any(_extent(o) is None for o in drawn) and nv.kind != "detail":
+            if any(_extent(o) is None for o in drawn):  # a detail too: one TechDraw has not drawn yet stays the sheet's own
                 msg = "TechDraw drew nothing in it"
                 raise RuntimeError(msg)  # noqa: TRY301
             for obj in made:
