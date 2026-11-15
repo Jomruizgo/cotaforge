@@ -19,6 +19,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 "cotaforge.adapters.freecad.worker" = ["templates/*.svg"]
 "cotaforge.memory" = ["base/*.md", "base/*.yaml"]
+"cotaforge.drawing" = ["*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
