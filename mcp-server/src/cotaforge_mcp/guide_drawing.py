@@ -343,6 +343,8 @@ DONE_LINES = (
 )
 
 QUALITY_LINES = (
+    "WHAT A DRAWING IS FOR: the only thing the shop gets. Each view shows something of its own (the isometric may carry "
+    "no dimension); nothing lies on anything else; the paper is used, not mostly empty.",
     "WHAT THE SHEET MUST CARRY is not in this guide: drawing(action=requirements) lists the rows of the table that apply "
     "to THIS part, each met, missing or needing an answer, with the question to ask (create and review print it; the "
     "export waits for it). This guide is HOW it is drawn.",
@@ -350,6 +352,9 @@ QUALITY_LINES = (
     "(template=A4|A3|A2|A1|A0|Letter), projection (angle=first|third: the symbol in the title block, the views "
     "placed the other way round) and the title block are the engineer's choice; what a machinist can make the part "
     "from is not.",
+    'ONE VIEW: a plate or flat part whose holes go through its thickness needs one view: create(views=["top"]) (or '
+    "remove_view front on a sheet that has one other standard view). review says single_view_enough (no hold) when the "
+    "other views add nothing. The sheet then gives width and height on that view and the thickness as a note.",
     "TITLE BLOCK: the template is a TechDraw template kept in the document (FreeCAD edits the same fields). "
     'create or update(title_block={"document_type": ..., "legal_owner_2": ..., "fixed_note_1": ...}) sets '
     "any field by name (document_type, drawing_number, fixed_note_1..3: the standing statements beside the "
@@ -399,9 +404,6 @@ QUALITY_LINES = (
     "feature is coaxial and it is hollow (section holes=axis in_place=true; no end view, no cutting line), else with a "
     "bore the view along its axis and a section A-A; solid ONE view, axis horizontal; plus the isometric. "
     "views=[...] gives all. A part's designation: doc set_title.",
-    'ONE VIEW: a plate or flat part whose holes go through its thickness needs one view: create(views=["top"]) (or '
-    "remove_view front on a sheet that has one other standard view). review says single_view_enough (no hold: the memory principle drawing-sufficient-views covers it) when the "
-    "other views add nothing. The sheet then gives width and height on that view and the thickness as a note.",
 )
 
 WELD_LINE = (
