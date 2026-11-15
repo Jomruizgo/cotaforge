@@ -55,6 +55,7 @@ def _native(adapter: FreeCADAdapter, code: str) -> Any:
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
+@pytest.mark.expected_findings("native_unread")  # the test deletes a view on purpose: the overall dimension it measured is left on the page
 def test_what_the_sheet_draws_on_a_view_is_the_views_and_follows_the_engineers_hand_edits(
     visible: FreeCADAdapter,  # noqa: F811
 ) -> None:
