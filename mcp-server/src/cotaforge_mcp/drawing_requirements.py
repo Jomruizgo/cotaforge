@@ -32,6 +32,7 @@ from typing import Any
 from cotaforge.language import say
 
 from cotaforge_mcp import functional_dimensions as functional
+from cotaforge_mcp import process_stages as stages
 from cotaforge_mcp.measured_alerts import MEASURED_FACT
 
 PREFIX = "req."
@@ -84,6 +85,9 @@ class Row:
     functional: bool = False
     """The row is the functional dimensions of the intent file (``functional_dimensions``): it is active on every sheet, a
     decision when the intent declares none, and met when the sheet gives each declared one directly."""
+    stages: bool = False
+    """The row is the process route of the intent file (``process_stages``): active when the intent declares a route (met when
+    every stage has its dimension) or the part passes several processes with no route declared (a decision)."""
     clause: str = ""
     """The clause or table of ``standard`` this comes from, ONLY when it was checked against the text of the standard."""
     auto: str = ""
@@ -583,6 +587,27 @@ ROWS: tuple[Row, ...] = (
         intent_pattern=functional.MARKER,
     ),
     Row(
+        id="req.process_stages",
+        stages=True,
+        title=("Cotas por etapa de proceso", "Sizes per process stage"),
+        must=(
+            "cada rasgo que pasa por varios procesos (torneado y rectificado; torneado y electroerosión por hilo en un perfil...) lleva una cota por etapa, rotulada con el proceso: el operario de cada proceso lee su tamaño objetivo y su sobremedida; el tamaño final destaca y los intermedios van en un estilo secundario",
+            "every feature that passes several processes (turned, wire cut, ground...) carries one dimension per stage, labelled with the process: the operator of each process reads his target size and his stock; the final size stands out and the intermediate ones are drawn secondary",
+        ),
+        standard="",
+        question=(
+            "¿Qué ruta de proceso sigue cada rasgo (p. ej. torneado → rectificado) y qué tamaño objetivo tiene cada etapa? Se anota en la sección de proceso del archivo de intención; si la pieza pasa por un solo proceso, se responde que no aplica.",
+            "Which process route does each feature follow (e.g. turned -> ground) and which target size does each stage get? It is written in the process section of the intent file; if the part passes a single process, answer that it does not apply.",
+        ),
+        proposal=(
+            "la ruta del archivo de intención con una cota por etapa; las sobremedidas habituales (rectificado: unas décimas sobre la medida; bruto de electroerosión: la punta del perfil más sobremedida) son solo una propuesta que el ingeniero confirma, o «no aplica: un solo proceso»",
+            "the route of the intent file with one dimension per stage; the usual stock (grinding: a few tenths over the size; the blank of a wire cut: the profile tip diameter plus stock) is only a proposal the engineer confirms, or 'does not apply: a single process'",
+        ),
+        only="part",
+        intent=("process",),
+        intent_pattern=r"→|->|=>",
+    ),
+    Row(
         id=MEASURED_ROW,
         title=("Alertas de diseño medidas, resueltas", "Measured design alerts resolved"),
         must=(
@@ -687,6 +712,7 @@ MEASURED_FINDINGS = frozenset(
         "cylinder_no_axis",
         "flat_face_unmarked",
         "chamfer_no_dimension",
+        "stage_no_final",
     }
 )
 """Review findings that state a fact the harness measured on the part or the sheet (a hole with no position, a thread with
@@ -876,6 +902,15 @@ def finding_closed(finding: Any) -> bool:
     return answer_counts(finding.answer, finding.code in MEASURED_FINDINGS)
 
 
+def _passes_several_processes(intent: Intent, row: Row) -> bool:
+    """The process section of the intent file names two processes, one of them a process that needs the stock the one before it
+    leaves (wire cut, grinding, honing), and declares no route: the drafter asks for it. One process, two processes that leave no
+    stock to size (turned and milled) and a part with nothing declared are not asked: the plan reminds the drafter of the route
+    instead (``drawing(action=plan)``)."""
+    found = stages.processes_in(intent.text(row.intent))
+    return len(found) >= 2 and bool(found & stages.STOCK_PROCESSES)
+
+
 def _activated(row: Row, facts: dict[str, int]) -> list[str]:
     return [t for t in row.triggers if facts.get(t, 0) > 0]
 
@@ -889,6 +924,8 @@ def evaluate(
     details: dict[str, tuple[str, ...]] | None = None,
     measures: Sequence[Any] = (),
     components: Sequence[Any] = (),
+    sheet_items: Sequence[Any] = (),
+    language: str = "es",
 ) -> list[Requirement]:
     """The rows that apply to this sheet, in table order, each with its state. ``facts`` empty (the CAD reports none): no
     rows. ``findings`` are the review's, ``answers`` the sheet's by id; ``details`` what the server measured, by row id.
@@ -942,6 +979,19 @@ def evaluate(
             measured = bool(items)
             if items:
                 why = "the intent file declares it"
+        if row.stages:
+            routes = stages.declared(intent.text(row.intent))
+            if routes:
+                lacking = stages.problems(routes, sheet_items, language)
+                state = MISSING if lacking else MET
+                measured = True
+                why = "the intent file declares a process route"
+            elif _passes_several_processes(intent, row):
+                lacking = []
+                state = NEEDS_ANSWER
+                why = "the part passes several processes and the intent file declares no route"
+            else:
+                continue
         answer = answers.get(row.id)
         counts = answer_counts(answer, measured)
         if row.model_only:  # no answer closes it, not even "met" or an order: the model is fixed, or the order is in memory

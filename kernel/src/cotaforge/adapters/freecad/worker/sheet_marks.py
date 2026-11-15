@@ -91,8 +91,19 @@ class NativeLeader:
     arrow: bool = True
 
 
-MARK_TYPES = (NativeWeld, NativeBalloon, NativeTable, NativeLeader)
-WHOLE = (NativeWeld, NativeBalloon, NativeTable)  # the item is nothing but these: no entity of it stays as a drawing
+@dataclass(frozen=True)
+class NativeRevisionMark:
+    """The revision marker next to a changed dimension: FreeCAD's own ``misc/Revision_Triangle`` symbol (a ``DrawViewSymbol``
+    of the library) centred on the page point ``at``, its editable text (``ID``) the revision letter."""
+
+    item: str
+    letter: str
+    at: Point
+    scale: float = 0.6
+
+
+MARK_TYPES = (NativeWeld, NativeBalloon, NativeTable, NativeLeader, NativeRevisionMark)
+WHOLE = (NativeWeld, NativeBalloon, NativeTable, NativeRevisionMark)  # the item is nothing but these: no entity of it stays as a drawing
 
 
 def count(n: object) -> int:
@@ -117,5 +128,7 @@ def dump(n: object) -> list[object]:
         return ["t", n.name, [list(r) for r in n.cells], [round(w, 2) for w in n.widths], [round(h, 2) for h in n.heights], round(n.right, 2), round(n.bottom, 2), n.text_mm]
     if isinstance(n, NativeLeader):
         return ["l", n.view, pts(n.points), n.arrow]
+    if isinstance(n, NativeRevisionMark):
+        return ["r", n.letter, pts((n.at,)), n.scale]
     msg = f"not a mark: {n!r}"
     raise TypeError(msg)

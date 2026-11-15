@@ -88,6 +88,7 @@ class DrawingFake(FakeAdapter):
         self.weldment: Any = None  # what a review of a welded part says of its bodies and joints (``DrawingWeldPlan``)
         self.sheet_views: tuple[str, ...] = ()  # the views the described sheet says it has
         self.collides: set[str] = set()  # item ids whose edit the CAD refuses: the new place lies on another object
+        self.measures: tuple[Any, ...] = ()  # what the dimensions of the sheet state (``DrawingMeasure``), read by a review
 
     def _need_sheet(self, sheet: str | None) -> str:
         from cotaforge.contract import AdapterError, ErrorCode, ErrorInfo
@@ -326,6 +327,7 @@ class DrawingFake(FakeAdapter):
                     else (),
                     answers=answers(n),
                     facts=dict(self.facts) if request.review else {},
+                    measures=tuple(self.measures) if request.review else (),
                     weldment=self.weldment if request.review else None,
                     views=self.sheet_views,
                     approved_by=self.drawings[n].get("approved_by", ""),

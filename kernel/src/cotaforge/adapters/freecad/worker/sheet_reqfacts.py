@@ -169,11 +169,13 @@ def measures(data: Any) -> dict[str, list[dict[str, Any]]]:
     ctx = data.ctx
     out: list[dict[str, Any]] = []
     for m in sheet_review._measure(data):
+        if "size_mm" in m.spec:  # an intermediate process stage states its own size, not the model's
+            continue
         out.append(
             {"id": m.spec["id"], "kind": "distance", "value_mm": round(m.hi - m.lo, 4), "toleranced": "fit" in m.spec or "tol" in m.spec}
         )
     for spec in sheet_review._of(data, "dim"):
-        if spec.get("kind") in ("diameter", "radius"):
+        if spec.get("kind") in ("diameter", "radius") and "size_mm" not in spec:
             value = _diameter_of_face(ctx, spec)
             if value is not None:
                 out.append({"id": spec["id"], "kind": spec["kind"], "value_mm": round(value, 4), "toleranced": "fit" in spec or "tol" in spec})

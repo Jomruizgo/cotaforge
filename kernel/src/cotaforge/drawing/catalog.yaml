@@ -433,11 +433,16 @@ rules:
     applies: {processes: [grinding, wire_edm, turning, casting]}
     text: >-
       A size passing several processes gets one dimension per stage, labelled with its process; the intermediate
-      ones are secondary.
+      ones are secondary. The route is declared in the process section of the intent file (a part that names wire cut,
+      grinding or honing with another process and no route is asked for it); every stage of it has its dimension, and the
+      final size is the model's. The route is the designer's and the drawing gives each stage of that route. The usual stock
+      (a few tenths of a mm on a turned size before grinding; for a profile turning cannot make, the turned blank is the
+      profile tip diameter plus stock) is only a proposal: the engineer confirms every number.
     origin: owner
-    sources: [owner]
-    checks: []
-    weight: debt
+    requirement: req.process_stages
+    sources: [owner, requirements, guide, checks]
+    checks: [stage_no_final]
+    weight: blocks
   - id: callouts.clear
     step: dimensions
     text: >-
@@ -664,6 +669,19 @@ rules:
     weight: blocks
 
   # ---------------------------------------------------------------- deliverables
+  - id: deliverables.revision_on_change
+    step: deliverables
+    text: >-
+      A first issue carries no revision row. A sheet that changes after it went out records the change in the title
+      block's own revision table: the letter, what changed with the previous value, who asked for it and the date, the
+      revision field takes the letter, and FreeCAD's revision marker stands beside each changed dimension. An earlier row
+      is never rewritten. The harness adds the row when the sheet is exported again; the record of what was released is an
+      answer stored in the sheet.
+    standard: ISO 7200
+    origin: owner
+    sources: [owner, guide]
+    checks: [revision_marker_missing]
+    weight: warns
   - id: deliverables.cut_dxf
     step: deliverables
     applies: {processes: [laser_plasma_water, wire_edm]}
