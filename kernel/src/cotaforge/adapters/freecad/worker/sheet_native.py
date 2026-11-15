@@ -669,7 +669,7 @@ def _make_view(fc_doc: Any, page: Any, unit: su.Unit, nv: su.NativeView, sheet: 
         obj.Direction = _vector(nv.direction)
         obj.XDirection = _vector(nv.xdir)
     obj.Label = nv.name
-    obj.Caption = nv.name  # TechDraw's own text under the view (A-A)
+    obj.Caption = su.caption_of(nv.kind, nv.name)  # TechDraw's own text under the view (C - C: see caption_of)
     obj.X = (nv.box[0] + nv.box[2]) / 2
     obj.Y = (nv.box[1] + nv.box[3]) / 2
     tag(obj, unit.key, nv.item, sheet)
@@ -739,6 +739,8 @@ def view_problems(page: Any, unit: su.Unit, nv: su.NativeView, obj: Any) -> list
     if box is None:
         return [f"{unit.key}: TechDraw's {nv.kind} view {nv.name} shows nothing"]
     problems: list[str] = []
+    if su.tight_section_caption(nv.kind, nv.name, str(getattr(obj, "Caption", "") or "")):
+        problems.append(f"{unit.key}: the caption of section {nv.name} has a bare hyphen: in osifont it is drawn over the first letter ({su.caption_of(nv.kind, nv.name)} reads right)")
     want = nv.box
     shift = ((box[0] + box[2]) / 2 - (want[0] + want[2]) / 2, (box[1] + box[3]) / 2 - (want[1] + want[3]) / 2)
     if nv.kind == "detail":

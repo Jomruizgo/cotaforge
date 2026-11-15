@@ -473,3 +473,15 @@ def with_cosmetics(units: list[Unit], views: dict[str, Rect], derived: list[Rect
                 covered.add(id(e))
         out.append(replace(unit, natives=(*unit.natives, *made), covered=frozenset(covered)) if made else unit)
     return out
+
+
+def caption_of(kind: str, name: str) -> str:
+    """The text TechDraw writes under a view. A section's name has its hyphen spaced (``C - C``): in osifont, the font of the
+    TechDraw templates, the bare hyphen of ``C-C`` is drawn over the right side of the first C and the label reads ``E-C``
+    (the letters A, B, D... leave room for it, the C and the G do not)."""
+    return name.replace("-", " - ") if kind == "section" else name
+
+
+def tight_section_caption(kind: str, name: str, caption: str) -> bool:
+    """Whether a section carries its name as it is (``C-C``) where ``caption_of`` spaces it: the label would read ``E-C``."""
+    return kind == "section" and "-" in name and caption.strip() == name.strip()
