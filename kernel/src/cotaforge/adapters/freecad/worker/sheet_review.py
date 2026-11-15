@@ -104,6 +104,9 @@ def review(data: ReviewInput) -> list[Finding]:
     import sheet_viewchecks  # noqa: PLC0415 - the three drawing rules of the views and their dimensions
 
     found += sheet_viewchecks.check(data)
+    import sheet_shopchecks  # noqa: PLC0415 - what a shop reader finds wrong that the other checks do not measure
+
+    found += sheet_shopchecks.check(data)
     return sorted(found, key=lambda f: 0 if f.severity == "warning" else 1)
 
 

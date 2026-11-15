@@ -93,8 +93,12 @@ async def test_shaft_in_steps_mode(workspace: Path, tmp_path: Path) -> None:
         listed = await cad.ok("drawing", action="list")
         print("LIST", listed)
         shot(shots, "steps_shaft", await cad("drawing", action="capture"))
-        print("REVIEW", await cad.ok("drawing", action="review"))
+        review = await cad.ok("drawing", action="review")
+        print("REVIEW", review)
         assert len(re.findall(r"^  \S+ note .*Sin tratamiento", listed, re.M)) == 1, listed
+        # what a shop reader found on the first native sheets: the two seats of one diameter each have their centre line (one continuous
+        # line for the axis), and no length dimension ends where the part has no edge
+        assert "centre_line_gap" not in review and "dimension_off_part" not in review, review
 
 
 async def test_shaft_in_sheet_mode(workspace: Path, tmp_path: Path) -> None:
@@ -113,8 +117,12 @@ async def test_shaft_in_sheet_mode(workspace: Path, tmp_path: Path) -> None:
         listed = await cad.ok("drawing", action="list")
         print("LIST", listed)
         shot(shots, "sheet_shaft", await cad("drawing", action="capture"))
-        print("REVIEW", await cad.ok("drawing", action="review"))
+        review = await cad.ok("drawing", action="review")
+        print("REVIEW", review)
         assert len(re.findall(r"^  \S+ note .*Sin tratamiento", listed, re.M)) == 1, listed
+        # what a shop reader found on the first native sheets: the two seats of one diameter each have their centre line (one continuous
+        # line for the axis), and no length dimension ends where the part has no edge
+        assert "centre_line_gap" not in review and "dimension_off_part" not in review, review
 
 
 async def test_flange_in_sheet_mode(workspace: Path, tmp_path: Path) -> None:

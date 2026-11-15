@@ -586,6 +586,10 @@ def _distance(ctx: Context, spec: dict[str, Any]) -> str:
     )
     ctx.used_view(view.name)
     ctx.record_dimension(("len", name, round(min(ca, cb), 2), round(max(ca, cb), 2)), view.name)
+    if a.kind == "plane" and b.kind == "plane":  # both ends are faces seen edge-on: each must stand on a line of the part (the review looks)
+        ctx.extras.setdefault("face_ends", []).append(
+            (str(ctx.extras["current"]), view.name, orient, tuple(sorted((centres[0][0], centres[1][0]) if orient == "h" else (centres[0][1], centres[1][1]))))
+        )
     ctx.native(
         NativeDim(
             item=str(ctx.extras["current"]),
