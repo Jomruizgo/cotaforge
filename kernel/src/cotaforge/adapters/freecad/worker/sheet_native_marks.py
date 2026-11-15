@@ -161,6 +161,19 @@ def balloon(fc_doc: Any, page: Any, frame: Any, n: sm.NativeBalloon, key: str, n
     return obj
 
 
+REVISION_SYMBOL = "misc/Revision_Triangle.svg"  # FreeCAD's own revision marker: its text ``ID`` is editable
+
+
+def revision_mark(fc_doc: Any, page: Any, n: sm.NativeRevisionMark, key: str, number: int) -> Any:
+    """The revision triangle of FreeCAD's symbol library centred on ``n.at``, with the revision letter as its editable text
+    (the engineer changes it in the property ``EditableTexts``, as for any library symbol that has one)."""
+    obj = sheet_symbols.make(
+        fc_doc, page, sheet_symbols.resource_dir(), REVISION_SYMBOL, _name(page, key, f"revision{number}"), n.at[0], n.at[1], n.scale
+    )
+    obj.EditableTexts = [n.letter]
+    return obj
+
+
 def table(fc_doc: Any, page: Any, n: sm.NativeTable, key: str) -> Any:
     """A ``DrawViewSpreadsheet`` fed by a ``Spreadsheet`` of the document: the cells are the engineer's to edit there."""
     data = fc_doc.addObject(SHEET_TYPE, _name(page, key, "cells"))
@@ -199,6 +212,8 @@ def make(fc_doc: Any, page: Any, frames: dict[str, Any], marks: list[Any], key: 
                 made = [balloon(fc_doc, page, frames[n.view], n, key, balloons)]
             elif isinstance(n, sm.NativeTable):
                 made = [table(fc_doc, page, n, key)]
+            elif isinstance(n, sm.NativeRevisionMark):
+                made = [revision_mark(fc_doc, page, n, key, len(objects) + 1)]
             else:
                 made = [leader(fc_doc, page, frames[n.view], n.points, _name(page, key, f"leader{len(objects) + 1}"), n.arrow)]
             objects += made

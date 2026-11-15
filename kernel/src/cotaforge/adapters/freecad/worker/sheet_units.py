@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sheet_clip import arc_points
-from sheet_marks import MARK_TYPES, WHOLE, NativeBalloon, NativeLeader, NativeTable, NativeWeld
+from sheet_marks import MARK_TYPES, WHOLE, NativeBalloon, NativeLeader, NativeRevisionMark, NativeTable, NativeWeld
 from sheet_marks import count as marks_count
 from sheet_marks import dump as marks_dump
 from sheet_model import (
@@ -85,6 +85,7 @@ class NativeDim:
     rect: Rect | None = None  # the room the label and its line take (page mm), for the collision check
     arrows: str = "auto"  # inside | outside: TechDraw flips the arrowheads to match; auto leaves them to TechDraw
     exact: bool = False  # a theoretically exact dimension: TechDraw frames its text (``TheoreticalExact``)
+    secondary: bool = False  # an intermediate process stage: drawn grey so the final size stands out
     tol_text: tuple[str, str] | None = None  # the upper and lower deviation as the sheet writes them (mm, its decimal sign)
     suffix: str = ""  # written after the measured value (the fit symbol of a toleranced size: ``P9``)
 
@@ -182,7 +183,7 @@ class NativeView:
     radius: float = 0.0
 
 
-Native = NativeDim | NativeNote | NativeFlag | NativeCosmetic | NativeWeld | NativeBalloon | NativeTable | NativeLeader | NativeView | NativeSymbol
+Native = NativeDim | NativeNote | NativeFlag | NativeCosmetic | NativeWeld | NativeBalloon | NativeTable | NativeLeader | NativeRevisionMark | NativeView | NativeSymbol
 
 
 @dataclass(frozen=True)
@@ -353,6 +354,7 @@ def signature(unit: Unit) -> str:
                 n.tol,
                 n.leader,
                 *(["exact"] if n.exact else []),  # only when set: a sheet made before keeps its objects
+                *(["secondary"] if n.secondary else []),
                 *([["tol_text", list(n.tol_text), n.suffix]] if n.tol_text else []),
             ]
         if isinstance(n, NativeFlag):

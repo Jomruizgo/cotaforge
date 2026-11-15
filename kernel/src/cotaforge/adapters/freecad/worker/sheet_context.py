@@ -13,7 +13,7 @@ model point at the view's centre (``getGeometricCenter``); the view is placed on
 import math
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sheet_collide import ink_of, text_box
@@ -621,13 +621,25 @@ class Context:
         it adds are what the headless sheet writes, these are what the CAD's page holds (and TechDraw exports)."""
         item = self.extras.get("current")
         if item is not None:
+            if "size_mm" in self.current_spec():  # an intermediate process stage: its dimension is drawn secondary
+                objects = tuple(replace(o, secondary=True) if hasattr(o, "secondary") else o for o in objects)
             self.extras.setdefault("natives", {}).setdefault(item, []).extend(objects)
+
+    def current_spec(self) -> dict[str, Any]:
+        """The stored spec of the item being drawn (empty when there is none)."""
+        item = self.extras.get("current")
+        specs = self.extras.get("items") or self.extras.get("sheet_items") or []
+        return next((s for s in specs if s.get("id") == item), {})
 
     def record_dimension(self, key: tuple[Any, ...], view: str) -> None:
         """Keep that the item being drawn put a dimension on ``view`` that says ``key`` (what it measures, in the model:
         an axis and the two places it spans, or a diameter and its face): the same thing said in two views is a defect
-        (ISO 129) the review flags."""
+        (ISO 129) the review flags. A dimension of a process stage (``stage``) says the same feature at another stage of its
+        route: the stage is part of the key, so the turned and the ground size of one diameter are not one thing said twice."""
         item = self.extras.get("current")
+        stage = self.current_spec().get("stage")
+        if stage:
+            key = (*key, "stage", str(stage).lower())
         self.extras.setdefault("dim_records", []).append((str(item or ""), view, key))
 
     def used_view(self, name: str) -> None:

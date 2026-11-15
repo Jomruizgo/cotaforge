@@ -214,8 +214,13 @@ ITEM_LINES = (
     "note: text (numbered in a NOTAS block at the bottom left; at_mm puts it elsewhere; the sheet's own notes -- "
     'thickness -- is numbered in the same block); view="A-A" writes it, unnumbered, under that section '
     "view (else beside it). "
-    'revision: index ("A"), description, date?, by? -- a row of the revision table of the title block (the last 5 '
-    "show) and the sheet's revision field. overall: the three overall dimensions (made by create; remove it and add "
+    'revision: index ("A"), description, date?, by?, at?=<id(s) of the changed dimension items> -- a row of the revision '
+    "table of the title block (the last 5 show), the sheet's revision field and, with at, FreeCAD's own revision marker "
+    "(triangle with the letter) beside each of those dimensions. A first issue has no row. You do NOT write it for a sheet that "
+    "was exported before: when it is exported again after the design changed, the harness adds the row itself (letter, what "
+    "changed with the PREVIOUS value, who asked for it, the date) and the markers, and never rewrites an earlier row; give "
+    "export(action=pdf, revision_by=<who asked>, revision_reason=<why>) when the engineer told you. The new row is a change: "
+    "look at the sheet again (capture) before the export goes. overall: the three overall dimensions (made by create; remove it and add "
     "it back to change it). hole_positions (assembly, auto): Ø, centre and edge distances of the through holes.",
     "view_lines: hidden edges (dashed, layer OCULTAS) and centre lines (layer EJES) in the standard views. hidden? "
     '(true = front and right, false, or a list like ["front","top"]), centres? (default true: a cross on every hole '
@@ -546,6 +551,19 @@ TOPIC_ASSEMBLY = "drawing:assembly"
 TOPIC_OUTPUT = "drawing:output"
 TOPIC_QUALITY = "drawing:quality"
 TOPIC_DONE = "drawing:done"
+STAGES_LINE = (
+    "PROCESS STAGES (fields of dim kind=diameter|distance): a feature that passes several processes (turned, wire cut, "
+    "ground) gets one dimension per stage, each labelled with its process: stage=\"torneado\" prints 'Ø45 g6 torneado'. "
+    "The LAST stage is the final size: the model's value, stage only (it stands out). Every earlier stage is an "
+    "intermediate size: stage plus size_mm=<its own target, not the model's> (fit/tol apply to that size); it is a native "
+    "dimension printing that text, drawn grey, and the engineer edits it in FreeCAD. Put them on a section view "
+    "(view=\"A-A\") or a view that shows the feature: three sizes of a diameter stack outside it; keep the final text short "
+    "(show=symbol). The route is the designer's: the process section of the intent file, a line 'Outside diameter: turned "
+    "Ø60,3 -> ground'; a profile turning cannot make: 'Outer profile: turned Ø66,5 -> wire cut'. The sizes are the engineer's too: propose the usual stock (a few tenths of a mm on the size before "
+    "grinding, the profile tip diameter plus stock for the turned blank of a wire cut), never decide it. With a route that needs stock sizes (wire cut, grinding) "
+    "and none declared, drawing(action=plan) asks for it; the requirement req.process_stages holds the export until every "
+    "stage of a declared route has its dimension."
+)
 LAYOUT_LINE = (
     "A sheet built in one order (compose) has its dimensions, leaders, datums, weld symbols and angles placed by one global layout: "
     "it writes side and offset_mm on a dim (offset_mm is the arc radius of an angle) and on a datum, elbow_mm [dx, dy] (the vector from "
@@ -590,7 +608,7 @@ def drawing_text(tools: Collection[str], part: str = "", flow: str = "steps") ->
     if part:
         groups = {
             TOPIC_ITEMS: [ITEM_INTRO[0], *ITEM_LINES[0:4]],
-            TOPIC_DIMS: [BASELINE_LINE, KEYWAY_LINE],
+            TOPIC_DIMS: [BASELINE_LINE, KEYWAY_LINE, STAGES_LINE],
             TOPIC_MARKS: [*ITEM_LINES[4:9], WELD_LINE],
             TOPIC_MOULD: [MOULD_LINE],
             TOPIC_VIEWS: [*ITEM_LINES[9:12], ITEM_LINES[13], PATTERN_LINE],

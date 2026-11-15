@@ -47,6 +47,8 @@ ITEM_FIELDS: dict[str, frozenset[str]] = {
             "show",
             "arrows",
             "exact",
+            "stage",
+            "size_mm",
         }
     ),
     "datum_dims": frozenset(
@@ -57,7 +59,7 @@ ITEM_FIELDS: dict[str, frozenset[str]] = {
     "baseline_dims": frozenset({"from", "view", "side"}),
     "chamfer_dims": frozenset(),
     "thread_dims": frozenset(),
-    "revision": frozenset({"index", "description", "date", "by"}),
+    "revision": frozenset({"index", "description", "date", "by", "at"}),
     "overall": frozenset({"offset_mm", "side"}),
     "hole_positions": frozenset({"auto"}),
     "pattern_dim": frozenset({"kind", "at", "about", "auto", "elbow_mm", "view", "offset_mm", "side"}),

@@ -20,8 +20,9 @@ from sheet_context import (
     v_point2,
     v_str,
 )
-from sheet_model import TEXT, TEXT_HEIGHT_MM, Text, text_width
-from sheet_units import NativeNote
+from sheet_marks import NativeRevisionMark
+from sheet_model import DIMENSIONS, TEXT, TEXT_HEIGHT_MM, Polyline, Text, text_width
+from sheet_units import NativeDim, NativeNote
 
 NOTE_CHARS = 70  # a note longer than this wraps
 VIEW_NOTE_CHARS = 40  # a note that belongs to a view is a short block under it
@@ -40,7 +41,22 @@ def _v_section(value: Any) -> str:
 
 
 NOTE_CHECKS = {"text": v_str(240), "at_mm": v_point2, "auto": v_enum(*AUTO_NOTES), "view": _v_section}
-REVISION_CHECKS = {"index": v_str(4), "description": v_str(80), "date": v_str(12), "by": v_str(12)}
+MAX_REVISION_MARKS = 6
+ITEM_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,23}(?::\d{1,5}(?:\.\d{1,4})?)?$")
+"""An item id, optionally with ``:<value>`` (``hd:11``): the value the changed dimension states, to pick it among the several
+dimensions one item may have (a callout per group of holes)."""
+MARK_W_MM, MARK_H_MM = 11.5263 * 0.6, 10.25 * 0.6  # FreeCAD's revision triangle at the scale the sheet gives it
+
+
+def _v_item_ids(value: Any) -> list[str]:
+    items = value if isinstance(value, list | tuple) else [value]
+    if not items or len(items) > MAX_REVISION_MARKS or any(not isinstance(i, str) or not ITEM_ID_RE.match(i) for i in items):
+        msg = f"must be the id of the changed dimension item, or a list of at most {MAX_REVISION_MARKS}"
+        raise ItemError(msg)
+    return [str(i) for i in items]
+
+
+REVISION_CHECKS = {"index": v_str(4), "description": v_str(80), "date": v_str(12), "by": v_str(12), "at": _v_item_ids}
 
 
 def check_note(spec: dict[str, Any]) -> dict[str, Any]:
@@ -275,7 +291,50 @@ def draw_revision(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     shown = ctx.revisions[-5:]
     if not any(r["index"] == spec["index"] for r in shown):
         return "warning", f"revision {spec['index']} is not shown: the title block has room for the last 5 revisions"
-    return "ok", f"revision {spec['index']} in the revision table"
+    marked = [_mark_at(ctx, str(spec["index"]), str(target)) for target in spec.get("at", [])]
+    missing = [t for t, done in zip(spec.get("at", []), marked, strict=True) if not done]
+    if missing:
+        return "warning", (
+            f"revision {spec['index']} in the revision table, but no marker next to {', '.join(missing)}: "
+            "no dimension of that id is on the sheet (or no free place beside it)"
+        )
+    where = f", marked at {', '.join(spec['at'])}" if spec.get("at") else ""
+    return "ok", f"revision {spec['index']} in the revision table{where}"
+
+
+def _mark_at(ctx: Context, letter: str, target: str) -> bool:
+    """Put FreeCAD's revision triangle with ``letter`` beside the dimension of item ``target``: the first free place right,
+    left, above or below the room its text and line take. False: there is no such dimension, or no place."""
+    target, _, stated = target.partition(":")
+    dims = [n for n in ctx.extras.get("natives", {}).get(target, []) if isinstance(n, NativeDim) and n.rect is not None]
+    if not dims:
+        return False
+    if stated and len(dims) > 1:  # the dimension of the item that states the changed value (a hole's callout may measure its radius)
+        value = float(stated)
+        dims.sort(key=lambda d: min(abs((d.expected or 0.0) - value), abs(2 * (d.expected or 0.0) - value)))
+    rect = dims[0].rect
+    assert rect is not None
+    xm, ym = (rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2
+    half_w, half_h = MARK_W_MM / 2, MARK_H_MM / 2
+    for cx, cy in (
+        (rect[2] + 1.5 + half_w, ym),
+        (rect[0] - 1.5 - half_w, ym),
+        (xm, rect[3] + 1.5 + half_h),
+        (xm, rect[1] - 1.5 - half_h),
+    ):
+        box = (cx - half_w, cy - half_h, cx + half_w, cy + half_h)
+        if ctx.free(box) and ctx.inside(box):
+            ctx.reserve(box)
+            ctx.native(NativeRevisionMark(str(ctx.extras["current"]), letter, (cx, cy)))
+            # the same triangle as ink, for the sheet written without a window (a sheet with its native objects drops it)
+            ctx.add(
+                [
+                    Polyline(((cx - half_w, cy - half_h), (cx + half_w, cy - half_h), (cx, cy + half_h)), DIMENSIONS, closed=True),
+                    Text(cx, cy - half_h + 0.8, letter, 2.5, TEXT, "center"),
+                ]
+            )
+            return True
+    return False
 
 
 ITEMS = (

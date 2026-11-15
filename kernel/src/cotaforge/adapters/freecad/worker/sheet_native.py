@@ -50,6 +50,7 @@ MATCH_TOL = 0.03  # model mm: an edge or vertex of a view is the one asked for
 MOVE_TOL_MM = 0.05
 MEASURED_SPEC = "%.2w"  # TechDraw's format of the measured value: two decimals at most, no trailing zeros, no unit
 FONT_MM = 3.5  # ISO 3098 height of the text of a dimension on an A3 / A4 sheet
+SECONDARY_GREY = (0.45, 0.45, 0.45, 1.0)  # its colour (RGBA: the alpha of FreeCAD's own black is 1.0, opaque)
 GLYPH_LIFT = 0.4  # the middle of an annotation line sits this fraction of its size above the baseline (measured)
 ANNOTATION_FONT = "osifont"
 
@@ -285,6 +286,8 @@ def _style(obj: Any, dim: su.NativeDim) -> None:
         vo, "FlipArrowheads"
     ):  # a view-provider property of the dimension (TechDrawGui)
         vo.FlipArrowheads = dim.arrows == "outside"
+    if dim.secondary and hasattr(vo, "Color"):  # an intermediate process stage: grey, so the final size is what stands out
+        vo.Color = SECONDARY_GREY
 
 
 def _label_of(dim: su.NativeDim) -> tuple[float, float]:
