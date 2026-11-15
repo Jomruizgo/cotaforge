@@ -81,7 +81,7 @@ def check_native_objects_are_listed_by_capture_export_list_and_review() -> None:
     sheet = call("describe_drawing", op("r", review=True))["sheets"][0]
     assert sheet["native"] == captured["native"]
     found = [f for f in sheet["findings"] if f["code"] == "native_unread"]
-    assert len(found) == 1 and found[0]["severity"] == "warning" and found[0]["blocking"] is False
+    assert len(found) == 1 and found[0]["severity"] == "warning" and found[0]["blocking"] is True
     assert "NoteNative" in found[0]["message"] and "no puede leer" in found[0]["message"]
 
 
