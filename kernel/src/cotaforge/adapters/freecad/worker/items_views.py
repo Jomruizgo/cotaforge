@@ -475,6 +475,7 @@ def _draw_in_place(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         ctx.extras["view_ink"] = [*ctx.extras["view_ink_shown"], *ink]
         ctx.extras["view_ink_shown"] = ctx.extras["view_ink"]
     groups = _bodies_of_cut(page_loops, projection.cut_owner)
+    _record_cuts(ctx, label, projection.cut_owner)
     touching = sheet_hatch.touching_bodies(groups)
     styles = sheet_hatch.plan(list(groups), touching, spec.get("hatch"))
     ctx.add(hatch_bodies(groups, styles, spacing))
@@ -561,6 +562,7 @@ def draw_section(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     spacing = hatch_spacing(max(cut_x) - min(cut_x), max(cut_y) - min(cut_y))
     ctx.add(place(projection.visible, ox, oy, k))
     groups = _bodies_of_cut(page_loops, projection.cut_owner)
+    _record_cuts(ctx, label, projection.cut_owner)
     touching = sheet_hatch.touching_bodies(groups)
     styles = sheet_hatch.plan(list(groups), touching, spec.get("hatch"))
     ctx.add(hatch_bodies(groups, styles, spacing))
@@ -637,6 +639,14 @@ def _native_section(
         ctx.native(NativeCosmetic(item_id, parent.name, "line", (p[0], p[1], q[0], q[1]), style))
     for number, (end, _) in enumerate(ends, start=1):
         _native_arrow(ctx, item_id, parent.name, end, gaze, letter, str(number))
+
+
+def _record_cuts(ctx: Context, label: str, owners: list[int]) -> None:
+    """Keep which components a section cut (the review says when a solid part is among them): ``(component, designation, round)``."""
+    parts = ctx.geometry.solid_parts()
+    cut = {parts[o] for o in owners if o in parts}
+    ctx.extras.setdefault("section_cuts", {})[label] = sorted(cut)
+    ctx.extras.setdefault("section_whole", {})[label] = sorted({v for o, v in parts.items() if o not in owners})
 
 
 def _bodies_of_cut(page_loops: list[list[Point]], owners: list[int]) -> dict[str, list[list[Point]]]:

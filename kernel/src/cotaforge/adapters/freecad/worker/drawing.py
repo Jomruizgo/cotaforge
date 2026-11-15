@@ -74,6 +74,7 @@ import sheet_project
 import sheet_render
 import sheet_reqfacts
 import sheet_review
+import sheet_solid
 import sheet_svg
 import sheet_symbols
 import sheet_template
@@ -2630,8 +2631,38 @@ class LiveGeometry(drawing_assembly.AssemblyRays, drawing_assembly.WeldJoints, s
         key = (centre, xdir, direction, cut)
         if key not in self._projections:
             with _stage("projecting the part for a derived view", self.op):
-                self._projections[key] = sheet_project.project(self._shapes, centre, xdir, direction, cut)
+                # the solid parts are NOT left whole here yet: TechDraw's own section (the one in the window) cuts every body, and a
+                # sheet whose drawing differs from TechDraw's falls back to symbols (``native_fallback``). ``sheet_project.project`` can leave
+                # them whole (``whole=``); until the native view can too, the review says which solid parts the section cuts.
+                whole: frozenset[int] = frozenset()
+                self._projections[key] = sheet_project.project(self._shapes, centre, xdir, direction, cut, whole)
         return self._projections[key]
+
+    def solid_parts(self) -> dict[int, tuple[str, str, bool]]:
+        """The solid parts of an assembly (shafts, bolts, screws, nuts, washers, pins, keys, rivets, balls, ribs): ``{index of its
+        shape: (component, designation, a part of revolution with nothing inside)}``. A section does not cut them (they are drawn
+        whole, as if the plane passed behind them, ISO 128-34): ``sheet_solid`` says which parts those are."""
+        cache = self.__dict__.get("_solid_parts")
+        if cache is not None:
+            return dict(cache)
+        found: dict[int, tuple[str, str, bool]] = {}
+        comps = list(self.doc.components.values()) if self.doc.kind == "assembly" else []
+        if comps and len(self._shapes) == len(comps) and not self.doc.live_bodies():  # the shapes are the components', in order
+            info = drawing_assembly.assembly_info(self.doc, "en")
+            names = {inst: grp.name for grp in (info.groups if info is not None else []) for inst in grp.instances}
+            for index, (comp, shape) in enumerate(zip(comps, self._shapes, strict=True)):
+                name = f"{names.get(comp.id, '')} {comp.part_doc}".strip()
+                round_solid = False
+                if len(comps) <= drawing_assembly.MAX_BODIES_MEASURED:
+                    try:
+                        facts = LiveGeometry(self.doc, [shape], self.op).axial_features()
+                    except Exception:  # noqa: BLE001 - a shape the test cannot read is not a round solid
+                        facts = None
+                    round_solid = facts is not None and facts[0] and not facts[1]
+                if sheet_solid.solid_kind(name, round_solid) is not None:
+                    found[index] = (comp.id, name, round_solid)
+        self.__dict__["_solid_parts"] = found
+        return dict(found)
 
     def view_projection(self, centre: sc.Vec3, xdir: sc.Vec3, direction: sc.Vec3) -> sc.Projection:
         poses = tuple(shape.hashCode() for shape in self._shapes)  # the same shapes seen the same way: one projection

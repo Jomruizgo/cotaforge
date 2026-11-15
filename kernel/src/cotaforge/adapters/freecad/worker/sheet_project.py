@@ -119,16 +119,19 @@ def _removal_box(point: sc.Vec3, normal: sc.Vec3, size: float) -> Any:
     return box
 
 
-def cut_shapes_indexed(shapes: list[Any], point: sc.Vec3, normal: sc.Vec3) -> tuple[list[int], list[Any]]:
+def cut_shapes_indexed(
+    shapes: list[Any], point: sc.Vec3, normal: sc.Vec3, whole: frozenset[int] = frozenset()
+) -> tuple[list[int], list[Any]]:
     """The parts of ``shapes`` on the far side of the plane through ``point`` with the given ``normal`` (the viewer looks
-    along ``normal``, so what lies on the side he looks from is removed), with the index of the shape each came from."""
+    along ``normal``, so what lies on the side he looks from is removed), with the index of the shape each came from. The
+    shapes in ``whole`` are not cut: they are kept as they are, drawn whole as if the plane passed behind them."""
     extent = max(s.BoundBox.DiagonalLength for s in shapes)
     reach = 4.0 * extent + 100.0
     box = _removal_box(point, normal, reach)
     owners: list[int] = []
     cut = []
     for index, shape in enumerate(shapes):
-        part = shape.cut(box)
+        part = shape if index in whole else shape.cut(box)
         if not part.isNull() and part.Edges:
             owners.append(index)
             cut.append(part)
@@ -186,18 +189,21 @@ def project(
     xdir: sc.Vec3,
     direction: sc.Vec3,
     cut: tuple[sc.Vec3, sc.Vec3] | None = None,
+    whole: frozenset[int] = frozenset(),
 ) -> sc.Projection:
     """Look at ``shapes`` from ``direction`` (towards the viewer), x axis ``xdir``, origin at ``centre``. With ``cut``
     ``(point, normal)`` the part is first cut by that plane (the viewer's side removed): the result then has the loops of
-    the cut faces and no hidden lines."""
+    the cut faces and no hidden lines. ``whole``: the indexes of the shapes the plane does not cut (the solid parts of an
+    assembly: shafts, bolts, keys...): they are drawn whole and have no cut face."""
     solids = shapes
     loops: list[list[sc.Point]] = []
     owner: list[int] = []
     if cut is not None:
-        owners, solids = cut_shapes_indexed(shapes, cut[0], cut[1])
+        owners, solids = cut_shapes_indexed(shapes, cut[0], cut[1], whole)
         if not solids:
             raise sc.ItemError("the cutting plane leaves nothing of the part")
-        loops = cut_loops(solids, cut[0], cut[1], centre, xdir, direction, owners, owner)
+        cutting = [(o, s) for o, s in zip(owners, solids, strict=True) if o not in whole]
+        loops = cut_loops([s for _, s in cutting], cut[0], cut[1], centre, xdir, direction, [o for o, _ in cutting], owner)
         if not loops:
             raise sc.ItemError("the cutting plane does not cut the part (it misses it or only touches a face)")
     visible, hidden = _hlr(solids, centre, xdir, direction, hidden=cut is None)

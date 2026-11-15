@@ -363,6 +363,11 @@ class Geometry:
         msg = "projections are not available"
         raise ItemError(msg)
 
+    def solid_parts(self) -> dict[int, tuple[str, str, bool]]:
+        """The solid parts of an assembly a section does not cut (shafts, bolts, keys...): ``{index of its shape: (component,
+        designation, a part of revolution with nothing inside)}``; none for a part."""
+        return {}
+
     def view_projection(self, centre: Vec3, xdir: Vec3, direction: Vec3) -> "Projection":
         """The visible edges of the whole part for a standard view (kept between calls where that is costly); by default
         the same as ``projection`` without a cut."""
