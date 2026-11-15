@@ -11,10 +11,12 @@ way: an arrow line that ends on the seam, the continuous reference line, the ele
 before the symbol and the length after it, a circle at the arrow for a weld all round, a flag for a field weld. The symbol
 does not touch another symbol, a dimension or the lines of the views.
 
-On the page of the CAD the weld is TechDraw's own: a ``DrawLeaderLine`` on the seam and a ``DrawWeldSymbol`` with the AWS tiles
-of FreeCAD's library (``sheet_marks``). The AWS form has no dashed identification line (the arrow side goes under the reference
-line, the other side above it), gives the leg and not the throat ``a``, and has no place for the pitch or the number of
-identical joints: those go to the tail text of the weld symbol. The entities drawn here are the headless sheet (PDF, DXF).
+On the page of the CAD the weld is TechDraw's own: a ``DrawLeaderLine`` on the reference line with a ``DrawWeldSymbol`` on it (the AWS
+tiles of FreeCAD's library, ``sheet_marks``) and an arrow ``DrawLeaderLine`` to each joint. AWS writes the size left of the symbol
+and the length right of it, on the reference line (the texts of the tile), the arrow side below the line and the other side above
+it; the tail keeps only how many identical joints the symbol is for. The AWS form has no dashed identification line and gives the
+leg, where the ``a`` of ISO 2553 is the throat: a sheet with welds says in a note that its symbols are ISO 2553's
+(``sheet_weldreview.standard_findings``). The entities drawn here are the headless sheet (PDF, DXF).
 """
 
 import math
@@ -50,6 +52,8 @@ SYMBOL_H = 5.0
 DASH_GAP_MM = 5.0
 PAD_MM = 1.5
 MIN_REF_MM = 14.0
+TAIL_CLEAR_MM = 4.0  # room kept beyond the end of the reference line, for the tail text TechDraw paints there
+TILE_ROOM_MM = 6.0  # more reference line for the texts of the tile: TechDraw puts them ~4 mm from the symbol where the sheet's own put them 0.6 mm (measured in 1.1.3)
 JUNCTION_MM = 3.5  # room at the arrow end of the reference line for the circle or the flag
 CIRCLE_R = 1.8
 FLAG_H = 5.0
@@ -313,6 +317,12 @@ def dashed(x0: float, x1: float, y: float, dash: float = 3.0, gap: float = 1.5) 
     return out
 
 
+def tail_of(count: int) -> str:
+    """The tail of the reference line (AWS: process and notes only): how many identical joints the symbol is for, when it is for
+    more than the arrows mark. The size and the length are on the line, before and after the symbol."""
+    return f"{count}×" if count > 1 else ""
+
+
 def symbol(anchor: Point, sign: float, spec: dict[str, Any], comma: bool, count: int) -> tuple[list[Entity], Rect]:
     """The symbol with its arrow end (the junction of the arrow line and the reference line) at ``anchor``; the reference
     line runs from there towards ``sign`` (+1 right, -1 left). Returns the entities and the rectangle they take."""
@@ -324,7 +334,7 @@ def symbol(anchor: Point, sign: float, spec: dict[str, Any], comma: bool, count:
     w_left = text_width(left, TEXT_MM) + 1.0
     w_right = text_width(right, TEXT_MM) + 1.0 if right else 0.0
     content = w_left + SYMBOL_W + w_right
-    length = max(MIN_REF_MM, JUNCTION_MM + content + 2 * PAD_MM)
+    length = max(MIN_REF_MM, JUNCTION_MM + content + 2 * PAD_MM + TILE_ROOM_MM)  # TechDraw sets the texts of a tile farther from its symbol than the sheet does
     x_lo, x_hi = (ax, ax + length) if sign > 0 else (ax - length, ax)
     out: list[Entity] = [Line(x_lo, ay, x_hi, ay, DIMENSIONS)]
     start = x_lo + (JUNCTION_MM if sign > 0 else 0.0) + PAD_MM
@@ -352,12 +362,14 @@ def symbol(anchor: Point, sign: float, spec: dict[str, Any], comma: bool, count:
         top = max(top, pole)
     tail = x_hi if sign > 0 else x_lo
     x_far = tail + 1.0 if sign > 0 else tail - 1.0
-    if count > 1:
-        multiplier = f"{count}×"
-        out.append(Text(x_far, ay - TEXT_MM * 0.36, multiplier, TEXT_MM, DIMENSIONS, "left" if sign > 0 else "right"))
-        far = text_width(multiplier, TEXT_MM) + 1.0
+    words = tail_of(count)  # the tail of the reference line: the number of identical joints
+    if words:
+        out.append(Text(x_far, ay - TEXT_MM * 0.36, words, TEXT_MM, DIMENSIONS, "left" if sign > 0 else "right"))
+        far = text_width(words, TEXT_MM) + 1.0
         x_lo, x_hi = (x_lo, x_hi + far) if sign > 0 else (x_lo - far, x_hi)
-    rect = (x_lo - 0.5, bottom - 0.8, x_hi + 0.5, top + 0.8)
+    # beyond the end of the reference line is the tail: TechDraw paints its text a little farther than the sheet's own does, so that
+    # side keeps more room
+    rect = (x_lo - (TAIL_CLEAR_MM if sign < 0 else 0.5), bottom - 0.8, x_hi + (TAIL_CLEAR_MM if sign > 0 else 0.5), top + 0.8)
     return out, rect
 
 
@@ -601,15 +613,10 @@ NATIVE_LINE_MIN_MM = 12.0  # the reference line of a weld symbol is at least as 
 
 
 def tail_text(ctx: Context, spec: dict[str, Any], count: int) -> str:
-    """What TechDraw paints at the tail of the weld symbol, short: the size (the throat ``a`` of ISO 2553; the AWS tile has
-    room for a number only), the segment length and pitch, and the number of identical joints. It is black whatever the
-    theme of the window is: the texts of the tiles are painted in the colour of the theme (white in the dark one)."""
-    parts = [size_text(spec, ctx.comma)]
-    if spec.get("length_mm") is not None:
-        parts.append(length_text(spec, ctx.comma))
-    if count > 1:
-        parts.append(f"{count}×")
-    return " ".join(parts)
+    """What TechDraw paints at the tail of the weld symbol (AWS: process and notes, nothing else): the number of identical joints.
+    The size and the length are the texts of the tiles, on the reference line, where the welder looks for them; that the size
+    is the throat ``a`` (or the leg ``z``) of ISO 2553 is a note of the sheet (``sheet_weldreview.standard_findings``)."""
+    return tail_of(count)
 
 
 def words_text(ctx: Context, spec: dict[str, Any], count: int) -> str:
@@ -630,15 +637,14 @@ def words_text(ctx: Context, spec: dict[str, Any], count: int) -> str:
 
 def _native(ctx: Context, view: ViewInfo, spec: dict[str, Any], entities: list[Entity], tips: list[Point], anchor: Point, count: int) -> None:
     """Ask for the weld as TechDraw's own objects (a leader line, a weld symbol with its AWS tiles): the entities drawn above are the
-    headless sheet, these are what the CAD's page holds. A view the sheet drew itself (a section) has no TechDraw view to hang on."""
-    if view.derived or view.name not in NATIVE_VIEWS or not isinstance(entities[0], Line):
+    headless sheet, these are what the CAD's page holds."""
+    if view.name not in NATIVE_VIEWS or not isinstance(entities[0], Line):
         return
     reference = entities[0]  # ``symbol`` draws the reference line first
     tail = tail_text(ctx, spec, count)
-    # the sheet's own line holds the size and the length inside it; TechDraw paints them as the tail, beyond the end of the line:
-    # the line is that much shorter, so the tail lands in the room the symbol reserved (never less than the AWS tile needs)
-    inside = " ".join(part for part in (size_text(spec, ctx.comma), length_text(spec, ctx.comma)) if part)
-    length = max(NATIVE_LINE_MIN_MM, abs(reference.x2 - reference.x1) - text_width(inside, TEXT_MM) - 1.0)
+    # the reference line holds the size before the symbol and the length after it (the texts of the tiles), as the sheet's own
+    # line does; the tail text is painted by TechDraw beyond its end, in the room ``symbol`` reserved for it
+    length = max(NATIVE_LINE_MIN_MM, abs(reference.x2 - reference.x1))
     ctx.native(
         NativeWeld(
             str(spec["id"]),

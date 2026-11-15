@@ -486,8 +486,79 @@ def show_sheet(page: Any) -> None:
             page.ViewObject.doubleClicked()  # opens the window, or brings the open one to the front
         for _ in range(3):
             Gui.updateGui()
+        ink_black(page)
     except Exception:  # noqa: BLE001
         sys.stderr.write(traceback.format_exc())
+
+
+INK_LIGHT = 0.6  # a text lighter than this (0 black .. 1 white) does not show on the white sheet
+
+
+def ink_black(page: Any) -> int:
+    """Paint black every text of the sheet whose colour is too light for white paper, and return how many were repainted.
+
+    Some TechDraw texts (the texts of the tiles of a weld symbol, measured in 1.1.3) take the colour of the window's theme
+    instead of the sheet's ink: white in the dark theme, invisible on the page and in the exported PDF. The theme is a display
+    matter; the sheet the welder reads is the exported one, so this runs before the window is shown and before every export
+    and capture. No-op headless (nothing is painted there)."""
+    if not ACTIVE:
+        return 0
+    import TechDrawGui  # noqa: PLC0415 - only in the GUI binary
+
+    repainted = 0
+    black = QtGui.QColor(0, 0, 0)
+    for item in TechDrawGui.getSceneForPage(page).items():
+        if type(item).__name__ != "QGraphicsTextItem":
+            continue
+        colour = item.defaultTextColor()
+        if (colour.red() + colour.green() + colour.blue()) / 765.0 > INK_LIGHT:
+            item.setDefaultTextColor(black)
+            repainted += 1
+    return repainted
+
+
+def weld_offsets(page: Any, tile_texts: list[str]) -> list[tuple[str, float, float]]:
+    """Where each weld symbol of the window stands against the leader it hangs on: ``(a tile text of it, dx, dy)`` in mm, ``(0, 0)``
+    when it sits on its reference line. The window pulls an object whose origin comes near the origin of a view on to it (measured
+    in 1.1.3: the symbol of a weld sat 3.8 mm off its line), which no property of the object says. ``tile_texts`` are the texts of
+    the tiles of the page (a weld symbol is found by them); empty headless, where nothing is painted."""
+    if not ACTIVE or not tile_texts:
+        return []
+    import TechDrawGui  # noqa: PLC0415 - only in the GUI binary
+
+    found: list[tuple[str, float, float]] = []
+    seen: set[int] = set()
+    for item in TechDrawGui.getSceneForPage(page).items():
+        if type(item).__name__ != "QGraphicsTextItem" or str(item.toPlainText()).strip() not in tile_texts:
+            continue
+        tile = item.parentItem()
+        symbol = tile.parentItem() if tile is not None else None
+        if symbol is None or symbol.parentItem() is None or id(symbol) in seen:
+            continue
+        seen.add(id(symbol))
+        found.append((str(item.toPlainText()).strip(), symbol.pos().x() / SCENE_PER_MM, -symbol.pos().y() / SCENE_PER_MM))
+    return found
+
+
+@contextlib.contextmanager
+def paper_ink() -> Iterator[None]:
+    """For the length of the block the application's text colours are black, whatever the theme of the window: TechDraw makes the
+    texts of a weld tile (and of any item it draws without a colour of its own) in the application's text colour when it redraws
+    the sheet, which happens inside its own export (measured in 1.1.3: ``ink_black`` before the export was undone by it). The
+    palette is put back as it was. No-op headless."""
+    if not ACTIVE:
+        yield
+        return
+    app = QtWidgets.QApplication.instance()
+    old = QtGui.QPalette(app.palette())
+    palette = QtGui.QPalette(old)
+    for role in (QtGui.QPalette.Text, QtGui.QPalette.WindowText, QtGui.QPalette.ButtonText):
+        palette.setColor(role, QtGui.QColor(0, 0, 0))
+    app.setPalette(palette)
+    try:
+        yield
+    finally:
+        app.setPalette(old)
 
 
 def text_width_mm(text: str, size_mm: float, family: str = "osifont") -> float:
@@ -550,7 +621,11 @@ def export_pdf(page: Any, path: str) -> str:
     show_sheet(page)
     for _ in range(3):
         Gui.updateGui()
-    TechDrawGui.exportPageAsPdf(page, path)
+    # what is read is the PDF: no text may be the colour of the window's theme. TechDraw redraws the sheet when it exports, so
+    # the texts are made again then, in the application's text colour: black while the PDF is written
+    with paper_ink():
+        TechDrawGui.exportPageAsPdf(page, path)
+    ink_black(page)
     return "techdraw"
 
 
@@ -572,6 +647,7 @@ def render_png(
         Gui.updateGui()
     x0, y0, x1, y1 = region if region is not None else (0.0, 0.0, page_mm[0], page_mm[1])
     height_px = max(1, round(width_px * (y1 - y0) / (x1 - x0)))
+    ink_black(page)
     image = QtGui.QImage(width_px, height_px, QtGui.QImage.Format.Format_ARGB32)
     image.fill(QtGui.QColor("white"))
     painter = QtGui.QPainter(image)
