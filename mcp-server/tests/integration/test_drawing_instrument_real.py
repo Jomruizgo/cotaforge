@@ -65,6 +65,8 @@ async def hole_items(cad: Cad) -> None:
     )
 
 
+# develop's own plate sheets hold these two too (dimension_gap between the two overall dimensions, sheet_underused:small): not this test's subject
+@pytest.mark.expected_findings("dimension_gap", "sheet_underused")
 async def test_placa19_in_steps_mode_has_the_scheme_of_the_caliper_and_loses_its_side_view(workspace: Path, tmp_path: Path) -> None:
     shots = Path(os.environ.get("COTAFORGE_TEST_SHOTS") or tmp_path / "shots")
     async with running_server(workspace, visible=True) as (cad, _):
@@ -94,6 +96,7 @@ async def test_placa19_in_steps_mode_has_the_scheme_of_the_caliper_and_loses_its
         shot(shots, "ds1_steps_placa19_owner", await cad("drawing", action="capture"))
 
 
+@pytest.mark.expected_findings("dimension_gap", "sheet_underused")
 async def test_placa19_in_sheet_mode_has_the_same_scheme_whatever_the_symmetry(workspace: Path, tmp_path: Path) -> None:
     shots = Path(os.environ.get("COTAFORGE_TEST_SHOTS") or tmp_path / "shots")
     async with running_server(workspace, visible=True) as (cad, _):
@@ -116,6 +119,7 @@ async def test_placa19_in_sheet_mode_has_the_same_scheme_whatever_the_symmetry(w
         shot(shots, "ds1_sheet_placa19_owner", await cad("drawing", action="capture"))
 
 
+@pytest.mark.expected_findings("sheet_underused")
 async def test_a_hole_in_the_middle_of_a_plate_is_dimensioned_from_an_edge_and_a_bare_position_tolerance_asks_for_a_note(
     workspace: Path, tmp_path: Path
 ) -> None:
