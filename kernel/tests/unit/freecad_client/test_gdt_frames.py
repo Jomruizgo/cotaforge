@@ -73,7 +73,7 @@ def test_every_characteristic_of_iso_1101_has_files_and_the_module_and_the_gener
         for datums in gf.DATUM_RANGE[name]:
             for wide in (False, True):
                 assert gf.gdt_frame_file(name, datums, wide=wide) in gf.library_files()
-    assert len(gf.library_files()) == 85  # 37 frames, each with a narrow and a wide tolerance cell, 4 datum symbols, 7 surface texture symbols
+    assert len(gf.library_files()) == 121  # 37 frames, each with a narrow and a wide tolerance cell, 4 datum symbols in 10 stem lengths, 7 surface texture symbols
 
 
 def test_form_tolerances_have_no_datum_cell_orientation_and_run_out_need_one_and_position_and_profile_may_have_none() -> (
@@ -421,3 +421,14 @@ def test_the_centre_of_a_symbol_is_where_its_origin_and_box_put_it() -> None:
     assert gf.frame_width(frame) == pytest.approx(49.0)
     assert gf.gdt_frame_choice("perpendicularity", 0.05, (), ("A", "B"))[0] == "perpendicularity/perpendicularity-2-datums.svg"
     assert gf.gdt_frame_symbol("perpendicularity", 0.05, (), ("A", "B"))[0] == frame
+
+
+def test_the_datum_stem_comes_in_ten_lengths_each_three_millimetres_longer() -> None:
+    assert gf.DATUM_STRETCHES == GEN.DATUM_STRETCHES == 10 and gf.DATUM_STRETCH_MM == GEN.DATUM_STRETCH_MM == 3.0
+    heights = []
+    for stretch in range(gf.DATUM_STRETCHES):
+        svg = gf.datum_symbol("A", "up", stretch)[0]
+        heights.append(gf.symbol_box(svg)[3])
+    assert [round(b - a, 3) for a, b in zip(heights, heights[1:], strict=False)] == [3.0] * 9
+    with pytest.raises(gf.GdtFrameError, match="stem lengths"):
+        gf.datum_file("up", 10)

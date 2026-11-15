@@ -18,6 +18,8 @@ from typing import Any
 
 from gdt_frames import (
     DATUM_CELL_MM,
+    DATUM_STRETCH_MM,
+    DATUM_STRETCHES,
     SYMBOL_CELL_MM,
     GdtFrameError,
     datum_file,
@@ -248,7 +250,9 @@ def _cardinal(direction: tuple[float, float]) -> str:
     return "up" if direction[1] > 0 else "down"
 
 
-def datum_entities(origin: Point, side: str, letter: str) -> tuple[Placed, tuple[float, float, float, float]]:
+def datum_entities(
+    origin: Point, side: str, letter: str, stretch: int = 0
+) -> tuple[Placed, tuple[float, float, float, float]]:
     """The datum symbol of the library drawn on the sheet: the filled triangle stands on the feature with the middle of its base
     at ``origin``, the stem runs from its apex to the framed letter, on ``side`` of the feature. Returns the entities and the
     box of the frame (what the label takes)."""
@@ -258,7 +262,7 @@ def datum_entities(origin: Point, side: str, letter: str) -> tuple[Placed, tuple
     def at(along: float, across: float) -> Point:
         return origin[0] + along * dx + across * px, origin[1] + along * dy + across * py
 
-    near = DATUM_HEIGHT_MM + DATUM_STEM_MM
+    near = DATUM_HEIGHT_MM + DATUM_STEM_MM + stretch * DATUM_STRETCH_MM
     half = DATUM_BOX_MM / 2
     corners = (at(near, -half), at(near + DATUM_BOX_MM, -half), at(near + DATUM_BOX_MM, half), at(near, half))
     base = (at(0.0, -DATUM_BASE_MM / 2), at(0.0, DATUM_BASE_MM / 2))
@@ -276,7 +280,7 @@ def datum_entities(origin: Point, side: str, letter: str) -> tuple[Placed, tuple
     xs = [p[0] for p in corners]
     ys = [p[1] for p in corners]
     box = (min(xs), min(ys), max(xs), max(ys))  # the label: the framed letter (the triangle stands on the feature, the stem is a line)
-    out.origin, out.side, out.rect = origin, side, box
+    out.origin, out.side, out.rect, out.reach, out.stretch = origin, side, box, stem_end, stretch
     return out, box
 
 
@@ -290,7 +294,7 @@ def _native_datum(ctx: Context, spec: dict[str, Any], placed: Placed, view: str 
             item=str(spec["id"]),
             name="s",
             kind="datum",
-            file=datum_file(placed.side),
+            file=datum_file(placed.side, placed.stretch),
             texts=(spec["letter"],),
             at=placed.origin,
             view=view,
@@ -354,7 +358,11 @@ def draw_datum(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             att.tip = point
 
     def build(anchor: Point, direction: tuple[float, float]) -> tuple[list[Entity], tuple[float, float, float, float]]:
-        entities, rect = datum_entities(att.tip_towards(direction), _cardinal(direction), letter)
+        tip = att.tip_towards(direction)
+        far = ((anchor[0] - tip[0]) ** 2 + (anchor[1] - tip[1]) ** 2) ** 0.5
+        # the frame stands where the label was asked to (its near edge ``far`` from the face), as near as the lengths of stem allow
+        stretch = min(DATUM_STRETCHES - 1, max(0, round((far - DATUM_HEIGHT_MM - DATUM_STEM_MM) / DATUM_STRETCH_MM)))
+        entities, rect = datum_entities(tip, _cardinal(direction), letter, stretch)
         return entities, rect
 
     entities, free = place_label(ctx, att, build, spec.get("offset_mm"), asked(spec))

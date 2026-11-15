@@ -42,7 +42,9 @@ class Placed(list):  # type: ignore[type-arg]
     rect: Rect
     origin: Point
     side: str
+    stretch: int
     leader: bool
+    reach: Point  # where the label really joins the feature, when it is not the ``anchor`` asked for (a fixed symbol)
 
 
 @dataclass
@@ -268,6 +270,7 @@ def place_label(
             distance = start + step * NUDGE_MM
             anchor = (tip[0] + direction[0] * distance, tip[1] + direction[1] * distance)
             entities, rect = build(anchor, direction)
+            anchor = getattr(entities, "reach", anchor)  # a symbol of a fixed size reaches where it reaches
             fits = ctx.inside(rect)
             if first is None:
                 first = (entities, rect)

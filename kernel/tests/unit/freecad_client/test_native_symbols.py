@@ -234,3 +234,18 @@ def test_the_symbols_of_the_product_library_are_not_foreign_and_the_other_ones_a
 
 def test_the_items_that_are_native_are_the_ones_a_loose_symbol_is_a_defect_for() -> None:
     assert sheet_symbols.MIGRATED_ITEMS == {"datum", "gdt", "finish", "datum_dims"}
+
+
+def test_a_datum_keeps_the_room_of_its_whole_stem_for_the_leaders_placed_after_it() -> None:
+    ctx = make_context()
+    draw(ctx, {"type": "datum", "id": "dA", "letter": "A", "face": "face:bottom"})
+    tip, reach = ctx.extras["segments"][-1]
+    assert ((reach[0] - tip[0]) ** 2 + (reach[1] - tip[1]) ** 2) ** 0.5 == pytest.approx(5.5426 + 8.9596, abs=1e-3)  # the library symbol has a fixed stem
+
+
+def test_a_datum_pushed_out_takes_the_library_file_with_the_longer_stem() -> None:
+    ctx = make_context()
+    (r,) = draw(ctx, {"type": "datum", "id": "dA", "letter": "A", "face": "face:bottom", "offset_mm": 21.0})
+    assert r.status in ("ok", "warning")
+    (symbol,) = symbols_of(ctx, "dA")
+    assert symbol.file == "datum/datum-down-2.svg"  # its frame 21 mm out: the stem two steps of 3 mm longer than the shortest (14.5 mm)

@@ -217,6 +217,8 @@ DATUM_BASE = 6.4  # the filled triangle, as the one of FreeCAD's own Datum_*.svg
 DATUM_HEIGHT = 5.5426
 DATUM_STEM = 8.9596  # from the apex of the triangle to the frame
 DATUM_BOX = 7.0  # the frame of the letter is a square of the height of a feature control frame
+DATUM_STRETCHES = 10  # the stem comes in this many lengths: the one of FreeCAD's own symbol and nine longer ones
+DATUM_STRETCH_MM = 3.0  # each longer by this much (so the frame can stand where the layout of the sheet wants it, within 1.5 mm)
 DATUM_DIRECTIONS = {"up": (0.0, -1.0), "down": (0.0, 1.0), "left": (-1.0, 0.0), "right": (1.0, 0.0)}  # svg, y down: from the feature to the frame
 MARGIN_MM = 0.4
 LONG_RISE = 5.0  # the check mark: the long leg rises this much (the bar is at its top)
@@ -255,7 +257,7 @@ def _path(points: list[tuple[float, float]], close: bool = False) -> str:
     return "M " + " L ".join(f"{_n(x)} {_n(y)}" for x, y in points) + (" Z" if close else "")
 
 
-def render_datum(direction: str) -> str:
+def render_datum(direction: str, stretch: int = 0) -> str:
     """The datum feature symbol with the frame on the ``direction`` side of the feature: the filled triangle stands on the
     feature with its base (the origin of the drawing is the middle of the base), the stem runs from its apex to the frame and
     the letter is the editable text of the frame."""
@@ -265,7 +267,7 @@ def render_datum(direction: str) -> str:
     def at(along: float, across: float) -> tuple[float, float]:
         return along * dx + across * px, along * dy + across * py
 
-    near = DATUM_HEIGHT + DATUM_STEM
+    near = DATUM_HEIGHT + DATUM_STEM + stretch * DATUM_STRETCH_MM
     half = DATUM_BOX / 2
     corners = [at(near, -half), at(near + DATUM_BOX, -half), at(near + DATUM_BOX, half), at(near, half)]
     base = [at(0, -DATUM_BASE / 2), at(0, DATUM_BASE / 2), at(DATUM_HEIGHT, 0)]
@@ -283,7 +285,7 @@ def render_datum(direction: str) -> str:
         "  </g>",
         f'  <text freecad:editable="letter" x="{_n(centre[0])}" y="{_n(centre[1] + BASELINE_MM - CELL_H / 2)}" style="{style}"><tspan>A</tspan></text>',
     ]
-    return _svg(f"ISO 5459 datum feature symbol - frame {direction}", box, body)
+    return _svg(f"ISO 5459 datum feature symbol - frame {direction}" + (f", stem {stretch} steps longer" if stretch else ""), box, body)
 
 
 def _check_mark(machining: str) -> tuple[list[str], tuple[float, float]]:
@@ -338,8 +340,8 @@ def render_finish(machining: str, general: bool = False, bar: bool = True) -> st
     return _svg(title, box, body)
 
 
-def datum_path(direction: str) -> str:
-    return f"datum/datum-{direction}.svg"
+def datum_path(direction: str, stretch: int = 0) -> str:
+    return f"datum/datum-{direction}{f'-{stretch}' if stretch else ''}.svg"
 
 
 def finish_path(machining: str, general: bool = False, bar: bool = True) -> str:
@@ -354,7 +356,8 @@ def all_files() -> dict[str, str]:
             for width in TOLERANCE_W:
                 files[relative_path(name, datums, width)] = render(name, datums, width)
     for direction in DATUM_DIRECTIONS:
-        files[datum_path(direction)] = render_datum(direction)
+        for stretch in range(DATUM_STRETCHES):
+            files[datum_path(direction, stretch)] = render_datum(direction, stretch)
     for machining in MACHINING:
         files[finish_path(machining)] = render_finish(machining)
         files[finish_path(machining, general=True)] = render_finish(machining, general=True)

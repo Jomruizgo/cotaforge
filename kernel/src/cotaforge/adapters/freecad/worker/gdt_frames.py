@@ -317,23 +317,29 @@ def gdt_frame_file(characteristic: str, datum_cells: int, *, wide: bool = False)
 
 
 DATUM_DIRECTIONS = ("up", "down", "left", "right")  # where the frame of the letter stands against the feature
+DATUM_STRETCHES = 10  # the stem of a datum symbol comes in ten lengths (the files ``-1`` ... ``-9`` are longer by 3 mm each)
+DATUM_STRETCH_MM = 3.0
 MACHINING = ("required", "forbidden", "any")
 FINISH_BAR_MM = 18.0  # the bar of the finish symbols over the roughness text
 ROUGHNESS_FITS_MM = 16.4  # the bar of the finish symbols holds "Ra 12,5" (about 16 mm of text at 3.5 mm)
 
 
-def datum_file(direction: str) -> str:
-    """The path inside the library of the datum feature symbol with its frame on the ``direction`` side of the feature."""
+def datum_file(direction: str, stretch: int = 0) -> str:
+    """The path inside the library of the datum feature symbol with its frame on the ``direction`` side of the feature and its stem
+    ``stretch`` steps longer than the one of FreeCAD's own symbol."""
     if direction not in DATUM_DIRECTIONS:
         msg = f"unknown datum direction {direction!r}: expected one of {', '.join(DATUM_DIRECTIONS)}"
         raise GdtFrameError(msg)
-    return f"datum/datum-{direction}.svg"
+    if not 0 <= stretch < DATUM_STRETCHES:
+        msg = f"a datum symbol has {DATUM_STRETCHES} stem lengths, not {stretch}"
+        raise GdtFrameError(msg)
+    return f"datum/datum-{direction}{f'-{stretch}' if stretch else ''}.svg"
 
 
-def datum_symbol(letter: str, direction: str) -> tuple[str, tuple[str, ...]]:
+def datum_symbol(letter: str, direction: str, stretch: int = 0) -> tuple[str, tuple[str, ...]]:
     """The library file of a datum feature symbol (ISO 5459) and its editable text: ``(svg_text, (letter,))``. The origin of the
     drawing is the middle of the base of the triangle, the point that stands on the feature."""
-    relative = datum_file(direction)
+    relative = datum_file(direction, stretch)
     files = library_files()
     if relative not in files:
         msg = f"the library {library_dir()} has no {relative}"
