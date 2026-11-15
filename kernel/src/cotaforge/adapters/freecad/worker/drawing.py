@@ -64,6 +64,7 @@ import sheet_items
 import sheet_keyway
 import sheet_layout
 import sheet_look
+import sheet_marks
 import sheet_mirror
 import sheet_model as model
 import sheet_native
@@ -3196,7 +3197,7 @@ def _compose_pass(
         ranges,
         hlr_views.groups if hlr_views is not None else None,
         native,
-        None if hlr else ctx.extras.get("natives"),  # an hlr sheet has no TechDraw views to measure in
+        _page_natives(ctx.extras.get("natives"), hlr),
     )
     if not hlr:  # the lines TechDraw has a cosmetic edge for are asked of the view they lie on
         shown = {n: v.box for n, v in ctx.views.items() if not v.derived and n in sheet_native.VIEW_LABELS}
@@ -3207,6 +3208,14 @@ def _compose_pass(
         )
     ctx.extras["collisions"] = _collisions(ctx)
     return sheet, results, ctx
+
+
+def _page_natives(natives: dict[str, list[Any]] | None, hlr: bool) -> dict[str, list[Any]] | None:
+    """The TechDraw objects the items ask for. An ``hlr`` sheet has no TechDraw views to measure in or to hang a mark on: it keeps
+    only the tables, which stand on the page by themselves."""
+    if not hlr or not natives:
+        return None if hlr else natives
+    return {item: [n for n in asked if isinstance(n, sheet_marks.NativeTable)] for item, asked in natives.items()}
 
 
 def _collisions(ctx: sc.Context) -> list[sheet_collide.Collision]:

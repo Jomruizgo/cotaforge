@@ -332,7 +332,7 @@ def _make_note(fc_doc: Any, page: Any, note: su.NativeNote, key: str, sheet: str
     # same X. The window pulls an object whose X is within a few mm of another one onto it (measured in 1.1.3), which
     # moved lines of different widths by up to 2 mm
     longest = max((_text_width(line, note.size) for line in note.lines), default=0.0)
-    block = max(NOTE_BLOCK_MM, longest * NOTE_BLOCK_FACTOR + NOTE_BLOCK_PAD_MM)
+    block = max(NOTE_BLOCK_MM, longest * NOTE_BLOCK_FACTOR + NOTE_BLOCK_PAD_MM) if note.fit else longest * 1.5 + 6.0  # a loose label: the room its words take, with a margin so TechDraw does not wrap them
     for index, line in enumerate(note.lines):
         obj = fc_doc.addObject("TechDraw::DrawViewAnnotation", _object_name(page, key, f"{note.name}{index + 1}"))
         page.addView(obj)
@@ -401,6 +401,15 @@ def build(fc_doc: Any, page: Any, unit: su.Unit, sheet: str) -> Built:
                     msg = f"the {dim.view} view is not drawn (a section stands in its place)"
                     raise LookupError(msg)
                 frames[dim.view] = Frame(page, view)
+        marks = [n for n in unit.natives if isinstance(n, su.MARK_TYPES)]  # welds, balloons, tables, leaders (``sheet_native_marks``)
+        for mark in marks:
+            name = getattr(mark, "view", None)
+            if name is not None and name not in frames:
+                view = view_object(page, name)
+                if view is None or not bool(getattr(view, "Visibility", True)):
+                    msg = f"the sheet has no drawn {name} view for {unit.key}"
+                    raise LookupError(msg)
+                frames[name] = Frame(page, view)
         if _cosmetic_points(frames, dims):
             fc_doc.recompute()
             for frame in frames.values():
@@ -413,10 +422,15 @@ def build(fc_doc: Any, page: Any, unit: su.Unit, sheet: str) -> Built:
             made_lines = _make_note(fc_doc, page, note, unit.key, sheet)
             line_objects.append((note, made_lines))
             result.objects.extend(made_lines)
-        if dims or notes:
+        if marks:
+            import sheet_native_marks  # noqa: PLC0415 - it imports this module
+
+            result.objects.extend(sheet_native_marks.make(fc_doc, page, frames, marks, unit.key, sheet, marks[0].item))
+        if dims or notes or marks:
             fc_doc.recompute()
         for note, made_lines in line_objects:
-            _fit_note(fc_doc, page, made_lines, note)
+            if note.fit:
+                _fit_note(fc_doc, page, made_lines, note)
         for obj, dim in zip(result.objects[: len(dims)], dims, strict=True):
             _style(obj, dim)
             problem = measured_problem(obj, dim)
@@ -555,9 +569,11 @@ def remove(fc_doc: Any, objects: list[Any]) -> None:
     """Delete native objects. The cosmetic vertices they may have made stay in their views (they paint nothing): TechDraw
     numbers the vertices of a view by their order (measured in 1.1.3), so taking one out sends the later dimensions to
     other points; a sheet that is rebuilt starts clean."""
-    for obj in objects:
+    import sheet_native_marks  # noqa: PLC0415 - it imports this module
+
+    for obj in sorted(objects, key=lambda o: str(o.TypeId) == sheet_native_marks.LEADER_TYPE):  # a weld symbol goes before its leader
         if fc_doc.getObject(obj.Name) is not None:
-            fc_doc.removeObject(obj.Name)
+            sheet_native_marks.remove_extras(fc_doc, obj)  # also the tiles of a weld symbol and the cells a table shows
 
 
 # --- cosmetic edges: the lines a unit draws ON a view (centre lines and marks, thread arcs, the parting line) ------------
