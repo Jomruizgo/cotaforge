@@ -48,7 +48,9 @@ def test_every_kind_of_view_item_asks_for_a_techdraw_view(name: str) -> None:
     assert view.parent in ("front", "top", "right", "isometric") and view.scale > 0
     # the sheet draws nothing of it on the page: the cut, the hatch, the cutting line and the letters are the view's own
     assert unit.residue == ()
-    assert su.object_count(unit) == 1
+    letters = [n for n in unit.natives if isinstance(n, su.NativeNote)]
+    assert su.object_count(unit) == 1 + len(letters)  # the view and the letters beside its arrows: annotations
+    assert len(letters) == (1 if name == "aux_view" else 2 if "section" in name else 0)
 
 
 def test_a_section_asks_for_the_plane_the_frame_and_the_scale_of_the_view_it_draws() -> None:
@@ -120,3 +122,24 @@ def test_the_signature_of_a_view_changes_with_what_the_sheet_asks_of_it() -> Non
     same = su.NativeView("s", "A-A", "section", "top", (0.0, 0.0, 50.001, 50.0), 1.0, (0, 0, 1), (1, 0, 0), "A", at=(0, 0, 0))
     sig = [su.signature(su.Unit("s", "s", su.KIND_ITEM, (), natives=(v,))) for v in (a, moved, same)]
     assert sig[0] != sig[1] and sig[0] == sig[2]
+
+
+def test_the_cutting_line_of_a_section_is_cosmetic_edges_of_the_parent_and_not_techdraws_own_section_line() -> None:
+    """TechDraw's own section line is switched off (FreeCAD 1.1.3 writes a damaged PDF for it): thick ends, a chain between,
+    and an arrow with its letter at each end are made of the parent's cosmetic edges and of annotations."""
+    ctx = two_bores()
+    draw(ctx, VIEW_ITEMS["section"])
+    natives = ctx.extras["natives"]["v"]
+    lines = [n for n in natives if isinstance(n, su.NativeCosmetic)]
+    assert {n.view for n in lines} == {"top"}  # on the parent, not on the section
+    styles = sorted(n.style for n in lines)
+    assert styles.count("thick") == 2 and styles.count("centre") == 1 and styles.count("thin") == 6  # 2 x (stem + two sides)
+    assert [n.lines for n in natives if isinstance(n, su.NativeNote)] == [("A",), ("A",)]
+
+
+def test_an_in_place_section_has_no_cutting_line_and_no_letters() -> None:
+    ctx = two_bores()
+    draw(ctx, {"type": "section", "id": "v", "holes": "axis", "in_place": True, "view": "top"})
+    natives = ctx.extras.get("natives", {}).get("v", [])
+    if natives:  # the part has an axis of revolution only in some fixtures: when it does, the plane is the part's axis
+        assert not [n for n in natives if isinstance(n, su.NativeNote | su.NativeCosmetic)]

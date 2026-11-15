@@ -44,9 +44,9 @@ from sheet_context import (
     v_point3,
     v_points3,
 )
-from sheet_draw import arrow, centre_mark, linear_dimension
+from sheet_draw import ARROW_HALF_WIDTH_MM, ARROW_LENGTH_MM, arrow, centre_mark, linear_dimension
 from sheet_model import AXES, CONTOUR, DIMENSIONS, HIDDEN, TEXT, Circle, Entity, Line, Text, fmt
-from sheet_units import NativeFlag, NativeView
+from sheet_units import NativeCosmetic, NativeFlag, NativeNote, NativeView
 
 LABEL_HEIGHT_MM = 5.0  # the letters of a view are bigger than the dimension text
 LABEL_ROOM_MM = 9.0  # below a view: its label
@@ -273,6 +273,29 @@ def _arrow_with_letter(tip_base: Point, direction: Point, letter: str) -> list[E
     at = (tip[0] + direction[0] * 3.5, tip[1] + direction[1] * 3.5)
     out.append(Text(at[0], at[1] - LABEL_HEIGHT_MM / 2, letter, LABEL_HEIGHT_MM, TEXT, "center"))
     return out
+
+
+def _native_arrow(
+    ctx: Context, item_id: str, view: str, tip_base: Point, direction: Point, letter: str, tag: str, letter_at_base: bool = False
+) -> None:
+    """The arrow of a cutting-plane line or a view arrow as TechDraw objects: cosmetic lines of ``view`` (the stem and the two
+    sides of an open 30 degree head: they go with the view) and the letter as a ``DrawViewAnnotation``."""
+    tip = (tip_base[0] + direction[0] * CUT_ARROW_MM, tip_base[1] + direction[1] * CUT_ARROW_MM)
+    back = (tip[0] - direction[0] * ARROW_LENGTH_MM, tip[1] - direction[1] * ARROW_LENGTH_MM)
+    side = (-direction[1] * ARROW_HALF_WIDTH_MM, direction[0] * ARROW_HALF_WIDTH_MM)
+    for p, q in (
+        (tip_base, tip),
+        (tip, (back[0] + side[0], back[1] + side[1])),
+        (tip, (back[0] - side[0], back[1] - side[1])),
+    ):
+        ctx.native(NativeCosmetic(item_id, view, "line", (p[0], p[1], q[0], q[1]), "thin"))
+    at = (tip[0] + direction[0] * 3.5, tip[1] + direction[1] * 3.5)
+    if letter_at_base:  # a view arrow: the letter stands behind the stem, the head points at the face
+        at = (tip_base[0] - direction[0] * 4.0, tip_base[1] - direction[1] * 4.0)
+    width = LABEL_HEIGHT_MM * 0.6
+    ctx.native(
+        NativeNote(item_id, f"l{tag}", (letter,), (at[0] - width / 2, at[1] - LABEL_HEIGHT_MM / 2 + LABEL_HEIGHT_MM), LABEL_HEIGHT_MM)
+    )
 
 
 # --- section ------------------------------------------------------------------------------------------------------------
@@ -550,13 +573,18 @@ def draw_section(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     ctx.add([_label(view_centre[0], view_centre[1] - height / 2 - LABEL_ROOM_MM + 1.5, label)])
     claim(ctx, item_id, rect)
     ctx.add(_cutting_line(parent, anchor, line, gaze_page, letter))
+    lo, hi, thick = _cut_span(parent, anchor, line)
+    cut_ends = (
+        (anchor[0] + line[0] * lo, anchor[1] + line[1] * lo),
+        (anchor[0] + line[0] * hi, anchor[1] + line[1] * hi),
+    )
     # the section is a view the other items may name (view="A-A"): its dimensions, notes and callouts go on it
     box = (ox + k * local[0], oy + k * local[1], ox + k * local[2], oy + k * local[3])
     info = ViewInfo(label, ox, oy, k, direction, xdir, parent.centre, box, derived=True)
     ctx.extras.setdefault("sections", {})[label] = info
     ctx.extras.setdefault("section_items", {})[label] = item_id
     ctx.extras.setdefault("section_planes", {})[label] = (at, normal)
-    _native_section(ctx, item_id, info, parent, at, letter)
+    _native_section(ctx, item_id, info, parent, at, letter, (cut_ends[0], cut_ends[1], gaze_page, thick))
     if ctx.assembly is not None and not {"front", "right"} & set(ctx.views):
         # the section of an assembly is its main view when no outside view shows the height: it carries the overall height
         dist = ctx.stack_distance(label, "right", None)
@@ -580,7 +608,9 @@ def draw_section(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     return "ok", f"{label} in the {parent.name} view{', ' + note if note else ''}; cut faces hatched{extra}"
 
 
-def _native_section(ctx: Context, item_id: str, info: ViewInfo, parent: ViewInfo, at: Vec3, letter: str) -> None:
+def _native_section(
+    ctx: Context, item_id: str, info: ViewInfo, parent: ViewInfo, at: Vec3, letter: str, cut: tuple[Point, Point, Point] | None = None
+) -> None:
     """Ask TechDraw for the section (``DrawViewSection``): the cut, its hatch and the cutting line and letter in the parent view
     are its own. The sheet's drawing of them stays what the headless PDF is written from."""
     if parent.derived:
@@ -588,6 +618,25 @@ def _native_section(ctx: Context, item_id: str, info: ViewInfo, parent: ViewInfo
     ctx.native(
         NativeView(item_id, info.name, "section", parent.name, info.box, info.scale, info.direction, info.xdir, letter, at=at)
     )
+    if cut is None:
+        return
+    # TechDraw's own section line cannot be exported (FreeCAD 1.1.3 writes a damaged PDF for it: measured, vanilla), so it is
+    # switched off and the cutting-plane line is made of the view's cosmetic edges and annotations: thick ends, a chain
+    # line between them, an arrow and a letter at each end (ISO 128-40)
+    lo, hi, gaze, thick = cut
+    ends = ((lo, hi), (hi, lo))
+    ux, uy = (hi[0] - lo[0], hi[1] - lo[1])
+    length = math.hypot(ux, uy) or 1.0
+    ux, uy = ux / length, uy / length
+    segments = (
+        ((lo[0], lo[1]), (lo[0] + ux * thick, lo[1] + uy * thick), "thick"),
+        ((lo[0] + ux * thick, lo[1] + uy * thick), (hi[0] - ux * thick, hi[1] - uy * thick), "centre"),
+        ((hi[0] - ux * thick, hi[1] - uy * thick), (hi[0], hi[1]), "thick"),
+    )
+    for p, q, style in segments:
+        ctx.native(NativeCosmetic(item_id, parent.name, "line", (p[0], p[1], q[0], q[1]), style))
+    for number, (end, _) in enumerate(ends, start=1):
+        _native_arrow(ctx, item_id, parent.name, end, gaze, letter, str(number))
 
 
 def _bodies_of_cut(page_loops: list[list[Point]], owners: list[int]) -> dict[str, list[list[Point]]]:
@@ -614,13 +663,19 @@ def hatch_bodies(
     return out
 
 
-def _cutting_line(parent: ViewInfo, anchor: Point, line: Point, gaze: Point, letter: str) -> list[Entity]:
-    """The cutting-plane line (ISO 128-40): thick at the ends, thin chain between, an arrow and the letter at each end."""
+def _cut_span(parent: ViewInfo, anchor: Point, line: Point) -> tuple[float, float, float]:
+    """Where along its direction the cutting-plane line starts and ends (it reaches past the parent view) and how long its thick
+    ends are."""
     box = parent.box
     corners = [(box[0], box[1]), (box[0], box[3]), (box[2], box[1]), (box[2], box[3])]
     along = [(c[0] - anchor[0]) * line[0] + (c[1] - anchor[1]) * line[1] for c in corners]
     lo, hi = min(along) - CUT_OVERSHOOT_MM, max(along) + CUT_OVERSHOOT_MM
-    thick = min(CUT_END_MM, (hi - lo) / 3)
+    return lo, hi, min(CUT_END_MM, (hi - lo) / 3)
+
+
+def _cutting_line(parent: ViewInfo, anchor: Point, line: Point, gaze: Point, letter: str) -> list[Entity]:
+    """The cutting-plane line (ISO 128-40): thick at the ends, thin chain between, an arrow and the letter at each end."""
+    lo, hi, thick = _cut_span(parent, anchor, line)
 
     def at(t: float) -> Point:
         return anchor[0] + line[0] * t, anchor[1] + line[1] * t
@@ -847,6 +902,8 @@ def draw_aux(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         )
     )
     ctx.add(out)
+    if not parent.derived:
+        _native_arrow(ctx, item_id, parent.name, tail, (-outward[0], -outward[1]), letter, "1", letter_at_base=True)
     return "ok", f"view {letter} square-on to {face_id}, seen from the {parent.name} view"
 
 

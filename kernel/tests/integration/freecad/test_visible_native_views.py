@@ -113,7 +113,7 @@ print(json.dumps({
 """,
     )
     assert state["sections"] == 1 and state["base"] == state["top"], state
-    assert state["symbols"] == [] and len(state["dims"]) == 1 and state["hatch"] == "SvgHatch" and state["edges"] > 0, state
+    assert state["symbols"] == [] and len(state["dims"]) == 1 and state["hatch"] == "PatHatch" and state["edges"] > 0, state
     review = visible.describe_drawing(DescribeDrawingRequest(operation_id="r", review=True)).sheets[0]
     assert not [f for f in review.findings if f.code in ("native_fallback", "window_differs")], review.findings
     _state(visible, doc, "sheet_png", path=str(shots / "native_section_made.png"))

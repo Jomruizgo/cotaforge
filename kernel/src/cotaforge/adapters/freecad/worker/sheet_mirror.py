@@ -117,7 +117,7 @@ def tag_item(obj: Any, item_id: str, sheet: str) -> None:
 
 def _remove(fc_doc: Any, objects: list[Any]) -> None:
     for obj in objects:
-        if fc_doc.getObject(obj.Name) is not None:
+        if sheet_native.alive(fc_doc, obj):
             fc_doc.removeObject(obj.Name)
 
 

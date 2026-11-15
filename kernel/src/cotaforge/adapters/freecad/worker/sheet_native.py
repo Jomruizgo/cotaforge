@@ -33,6 +33,7 @@ PROP_SIG = "CotaforgeSig"
 PROP_VIEWKEY = "CotaforgeViewKey"  # on a view: front / top / right / isometric, or the name of a section, detail or aux view
 PROP_DERIVED = "CotaforgeDerived"  # on a view the sheet made from an item: section | detail | aux
 PROP_PARENT = "CotaforgeParent"  # on that view: the name of the view object it hangs from
+PROP_SLOFF = "CotaforgeSectionLineOff"  # on a parent view: the sheet switched TechDraw's own section line off (it switches it on again)
 NOTE_BLOCK_MM = 175.0  # the width of the text block of every note line (more when a line is longer)
 NOTE_BLOCK_FACTOR = 1.15
 NOTE_BLOCK_PAD_MM = 4.0
@@ -472,14 +473,15 @@ def sync(
     objects could not be made, the reasons (those units stay symbols)."""
     failed: dict[str, list[str]] = {}
     for unit in units:
-        if object_count(unit) == 0 or su.view_of(unit) is not None:  # only view properties (hidden lines), or a view (``sync_views``)
+        count = object_count(unit) - (1 if su.view_of(unit) is not None else 0)  # a view is made by ``sync_views``
+        if count == 0:  # only view properties (hidden lines) and cosmetic edges: no objects to make
             continue
-        objects = held(have.get(unit.key, []))
+        objects = [o for o in held(have.get(unit.key, [])) if alive(fc_doc, o) and PROP_DERIVED not in o.PropertiesList]
         wanted = signature(unit)
         dim_views = {n.view for n in unit.natives if isinstance(n, su.NativeDim)}
         if (
             objects
-            and len(objects) == object_count(unit)
+            and len(objects) == count
             and all(str(getattr(o, PROP_SIG, "")) == wanted for o in objects)
             and not dim_views & set(redo)  # the view it measures was made again: its references were to the old object
             and all(view_object(page, name) is not None for name in dim_views)
@@ -583,8 +585,15 @@ def remove(fc_doc: Any, objects: list[Any]) -> None:
     numbers the vertices of a view by their order (measured in 1.1.3), so taking one out sends the later dimensions to
     other points; a sheet that is rebuilt starts clean."""
     for obj in objects:
-        if fc_doc.getObject(obj.Name) is not None:
+        if alive(fc_doc, obj):
             fc_doc.removeObject(obj.Name)
+
+
+def alive(fc_doc: Any, obj: Any) -> bool:
+    """Whether ``obj`` is still in the document: removing a view takes its dimensions with it, and the name of an object that is
+    gone is not a string any more."""
+    name = getattr(obj, "Name", None)
+    return isinstance(name, str) and fc_doc.getObject(name) is not None
 
 
 # --- the views of the items: sections, details and auxiliary views ----------------------------------------------------------
@@ -592,7 +601,8 @@ def remove(fc_doc: Any, objects: list[Any]) -> None:
 DRAW_TYPES = {"section": "TechDraw::DrawViewSection", "detail": "TechDraw::DrawViewDetail", "aux": "TechDraw::DrawViewPart"}
 PLACE_TOL_MM = 0.5  # how far the drawing of a view may sit from where the sheet puts it before the check says so
 SIZE_TOL = 0.02  # and how much bigger or smaller (a fraction): TechDraw draws the same cut, the same edges
-HATCH_FILE = ("Mod", "TechDraw", "Patterns", "hatch45L.svg")  # the 45 degree thin lines of ISO 128-50, from TechDraw's own library
+HATCH_FILE = ("Mod", "TechDraw", "PAT", "FCPAT.pat")  # TechDraw's own pattern library: lines, not an SVG tile (a PDF with a pattern fill is damaged)
+HATCH_NAME = "Diagonal4"  # 45 degree thin lines
 
 
 def _vector(values: Any) -> Any:
@@ -634,6 +644,8 @@ def _make_view(fc_doc: Any, page: Any, unit: su.Unit, nv: su.NativeView, sheet: 
         raise LookupError(msg)
     obj = fc_doc.addObject(DRAW_TYPES[nv.kind], _object_name(page, unit.key, ""))
     page.addView(obj)
+    if nv.kind == "section":
+        _hide_section_line(parent)
     if nv.kind != "aux":
         obj.BaseView = parent
     obj.Source = list(parent.Source)
@@ -645,8 +657,9 @@ def _make_view(fc_doc: Any, page: Any, unit: su.Unit, nv: su.NativeView, sheet: 
         obj.SectionOrigin = _vector(nv.at)
         obj.XDirection = _vector(nv.xdir)
         obj.SectionSymbol = nv.letter
-        obj.CutSurfaceDisplay = "SvgHatch"
-        obj.FileHatchPattern = _hatch_file()
+        obj.CutSurfaceDisplay = "PatHatch"
+        obj.FileGeomPattern = _hatch_file()
+        obj.NameGeomPattern = HATCH_NAME
     elif nv.kind == "detail":
         assert nv.anchor is not None  # a detail has its circle
         obj.AnchorPoint = App.Vector(float(nv.anchor[0]), float(nv.anchor[1]), 0.0)
@@ -668,6 +681,31 @@ def _make_view(fc_doc: Any, page: Any, unit: su.Unit, nv: su.NativeView, sheet: 
     obj.setEditorMode(PROP_PARENT, 1)
     setattr(obj, PROP_PARENT, str(parent.Name))
     return obj
+
+
+def _hide_section_line(parent: Any) -> None:
+    """Switch off TechDraw's own section line on ``parent``: FreeCAD 1.1.3 exports a page with one as a damaged PDF (a stroke
+    with no colour: measured on a view made by hand), so the cutting-plane line is made of cosmetic edges and annotations. It
+    is a property of the view provider: there is none without a window, and the engineer who opens the file there has it on."""
+    vo = getattr(parent, "ViewObject", None)
+    if parent is None or vo is None or not hasattr(vo, "ShowSectionLine") or not bool(vo.ShowSectionLine):
+        return
+    vo.ShowSectionLine = False
+    if PROP_SLOFF not in parent.PropertiesList:
+        parent.addProperty("App::PropertyBool", PROP_SLOFF, GROUP, "The sheet switched TechDraw's section line off")
+        parent.setEditorMode(PROP_SLOFF, 1)
+    setattr(parent, PROP_SLOFF, True)
+
+
+def _restore_section_lines(page: Any) -> None:
+    """Switch TechDraw's section line on again on the views the sheet switched it off on and no section hangs from now."""
+    hanging = {str(getattr(o, PROP_PARENT, "")) for o in derived_views(page) if str(getattr(o, PROP_DERIVED, "")) == "section"}
+    for view in [*page.Views, *[i for g in page.Views if str(g.TypeId) == "TechDraw::DrawProjGroup" for i in g.Views]]:
+        if PROP_SLOFF in view.PropertiesList and view.Name not in hanging:
+            vo = getattr(view, "ViewObject", None)
+            if vo is not None and hasattr(vo, "ShowSectionLine"):
+                vo.ShowSectionLine = True
+            view.removeProperty(PROP_SLOFF)
 
 
 def _place(page: Any, obj: Any, nv: su.NativeView) -> None:
@@ -733,10 +771,12 @@ def sync_views(
         nv = su.view_of(unit)
         if nv is None:
             continue
-        objects = [o for o in held(have.get(unit.key, [])) if fc_doc.getObject(o.Name) is not None]
+        objects = [o for o in held(have.get(unit.key, [])) if alive(fc_doc, o) and PROP_DERIVED in o.PropertiesList]
         wanted = signature(unit)
-        if len(objects) == 1 and str(getattr(objects[0], PROP_SIG, "")) == wanted and PROP_DERIVED in objects[0].PropertiesList:
+        if len(objects) == 1 and str(getattr(objects[0], PROP_SIG, "")) == wanted:
             report.unchanged.append(unit.key)
+            if nv.kind == "section":
+                _hide_section_line(view_object(page, nv.parent))
             continue
         remove(fc_doc, objects)
         made = None
@@ -758,14 +798,15 @@ def sync_views(
             continue
         fresh.add(nv.name)
         (report.updated if objects else report.created).append(unit.key)
+    _restore_section_lines(page)
     return failed, fresh
 
 
 # --- cosmetic edges: the lines a unit draws ON a view (centre lines and marks, thread arcs, the parting line) ------------
 
 PROP_COSMETIC = "CotaforgeCosmetic"  # on a view: the cosmetic edges the sheet made, {unit key: [signature, [geometry...]]}
-ISO_STYLE = {"centre": 4, "thin": 1, "parting": 8}  # ISO 128-20 line numbers (TechDraw's own list): 04 long dash dot, 01, 08
-ISO_WIDTH_MM = {"centre": 0.25, "thin": 0.25, "parting": 0.5}  # the 0.5 mm group: wide 0.5, narrow 0.25 (as the PDF)
+ISO_STYLE = {"centre": 4, "thin": 1, "parting": 8, "thick": 1}  # ISO 128-20 line numbers (TechDraw's own list): 04 long dash dot, 01, 08
+ISO_WIDTH_MM = {"centre": 0.25, "thin": 0.25, "parting": 0.5, "thick": 0.5}  # the 0.5 mm group: wide 0.5, narrow 0.25 (as the PDF)
 BLACK = (0.0, 0.0, 0.0, 1.0)
 EDGE_TOL = 1e-4
 

@@ -33,6 +33,7 @@ import os
 import re
 import tempfile
 import time
+import traceback
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date
@@ -326,6 +327,11 @@ def part_views(page: Any) -> list[Any]:
     return views
 
 
+def all_views(page: Any) -> list[Any]:
+    """``part_views`` and the sections, details and auxiliary views the items made: what is computed, waited for and exported."""
+    return [*part_views(page), *sheet_native.derived_views(page)]
+
+
 def remove_page(fc_doc: Any, page: Any) -> None:
     """Delete one sheet with everything it owns, in the one order FreeCAD survives: removing a page or a projection
     group before its items crashed the process (segfault inside TechDraw), so the dimensions and loose views go first,
@@ -402,7 +408,7 @@ def wait_views(fc_doc: Any, page: Any, op: str | None, timeout_s: float = DRAWIN
     fc_doc.recompute()
     while True:
         gui.pump()
-        views = part_views(page)
+        views = all_views(page)
         invalid = [v.Label for v in views if "Invalid" in _state(v)]
         if invalid:
             raise error(
@@ -3233,6 +3239,12 @@ def _result(
     }
 
 
+def _where(exc: BaseException) -> str:
+    """The file and line an exception was raised at (the last frame of its traceback)."""
+    frames = traceback.extract_tb(exc.__traceback__)
+    return f"{os.path.basename(frames[-1].filename)}:{frames[-1].lineno}" if frames else "?"
+
+
 def mirror(doc: reg.DocumentRec, page: Any, ctx: sc.Context, sheet: model.Sheet) -> tuple[str, list[str]]:
     """Make the page show what was just composed (``sheet_mirror``); (what it did, warnings). The PDF and the DXF do not
     depend on it, so a failure here is a warning, never an error."""
@@ -3242,7 +3254,7 @@ def mirror(doc: reg.DocumentRec, page: Any, ctx: sc.Context, sheet: model.Sheet)
         wait_views(doc.fc_doc, page, None)  # the symbols are computed, nothing is left touched
     except Exception as exc:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind
         return "", [
-            f"the sheet window could not be updated ({type(exc).__name__}: {exc}); the PDF and the DXF are right"
+            f"the sheet window could not be updated ({type(exc).__name__}: {exc}, at {_where(exc)}); the PDF and the DXF are right"
         ]
     notes = [
         f"{key}: TechDraw's own objects could not be made ({'; '.join(why)}): it is drawn as a symbol of our drawing"
@@ -3711,9 +3723,9 @@ def _prepare(
     """Everything ``capture`` and ``export`` share, so both write the same thing: the colours TechDraw's PDF writer cannot
     print are normalised (``sheet_colours``), the sheet is composed, and the page is made to show it (``mirror``). Returns
     the composed sheet, its context and the notes for the reply."""
-    notes = sheet_colours.repair(part_views(page))
+    notes = sheet_colours.repair(all_views(page))
     if notes:
-        for view in part_views(page):
+        for view in all_views(page):
             view.touch()
         doc.fc_doc.recompute()
         gui.pump()
