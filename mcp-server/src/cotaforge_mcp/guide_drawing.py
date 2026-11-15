@@ -33,7 +33,8 @@ SHEET_RULES = (
     "reply names the views and those objects. region=[x0,y0,x1,y1] (mm on the sheet from its lower left corner) "
     "zooms in: use it to read a dimension or tell a line type before you say it is right. A headless CAD (no "
     "window) cannot paint native objects: the reply then lists them as NOT DRAWN and you must say so, never call "
-    "the sheet fine without them (drawing review lists them as native_unread, a warning: it does not read them). "
+    "the sheet fine without them (drawing review lists them as native_unread, a blocking finding: it does not read them, so answer it with what you see in the capture). "
+    "drawing(add / update / layout / remove_view) says on the spot, as 'this step left N blocking finding(s)', when the step left a view with nothing on it or drawn twice, an extension line across another dimension's line or most of the paper empty: fix it before the next item. "
     "export(action=pdf) checks the file it wrote (one page of the sheet's size, every operator well formed, ink in "
     "every view) and a damaged PDF is an error and is not saved: a native object with a colour outside 0..1 is "
     "normalised before the export, any other cause you fix at its source. "
@@ -346,6 +347,8 @@ DONE_LINES = (
 )
 
 QUALITY_LINES = (
+    "WHAT A DRAWING IS FOR: the only thing the shop gets. Each view shows something of its own (the isometric may carry "
+    "no dimension); nothing lies on anything else; the paper is used, not mostly empty.",
     "WHAT THE SHEET MUST CARRY is not in this guide: drawing(action=requirements) lists the rows of the table that apply "
     "to THIS part, each met, missing or needing an answer, with the question to ask (create and review print it; the "
     "export waits for it). This guide is HOW it is drawn.",
@@ -353,6 +356,9 @@ QUALITY_LINES = (
     "(template=A4|A3|A2|A1|A0|Letter), projection (angle=first|third: the symbol in the title block, the views "
     "placed the other way round) and the title block are the engineer's choice; what a machinist can make the part "
     "from is not.",
+    'ONE VIEW: a plate or flat part whose holes go through its thickness needs one view: create(views=["top"]) (or '
+    "remove_view front on a sheet that has one other standard view). review says single_view_enough (no hold) when the "
+    "other views add nothing. The sheet then gives width and height on that view and the thickness as a note.",
     "TITLE BLOCK: the template is a TechDraw template kept in the document (FreeCAD edits the same fields). "
     'create or update(title_block={"document_type": ..., "legal_owner_2": ..., "fixed_note_1": ...}) sets '
     "any field by name (document_type, drawing_number, fixed_note_1..3: the standing statements beside the "
@@ -402,9 +408,6 @@ QUALITY_LINES = (
     "feature is coaxial and it is hollow (section holes=axis in_place=true; no end view, no cutting line), else with a "
     "bore the view along its axis and a section A-A; solid ONE view, axis horizontal; plus the isometric. "
     "views=[...] gives all. A part's designation: doc set_title.",
-    'ONE VIEW: a plate or flat part whose holes go through its thickness needs one view: create(views=["top"]) (or '
-    "remove_view front on a sheet that has one other standard view). review says single_view_enough (no hold: the memory principle drawing-sufficient-views covers it) when the "
-    "other views add nothing. The sheet then gives width and height on that view and the thickness as a note.",
 )
 
 WELD_LINE = (

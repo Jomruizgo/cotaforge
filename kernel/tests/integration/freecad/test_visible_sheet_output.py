@@ -28,6 +28,7 @@ from cotaforge.contract import (
     ExportDrawingRequest,
     RunNativeRequest,
 )
+from tests.integration.freecad import sheet_gate
 from tests.integration.freecad.test_visible_live_sheet import _build_plate, visible  # noqa: F401 - the fixture and the plate
 
 pytestmark = [
@@ -147,4 +148,5 @@ def test_capture_and_pdf_come_from_one_scene_with_the_native_objects_in_both(
     sheet = visible.describe_drawing(DescribeDrawingRequest(operation_id="r", review=True)).sheets[0]
     assert "NoteNative [DrawViewAnnotation]: text: nota nativa" in " | ".join(sheet.native)
     (finding,) = [f for f in sheet.findings if f.code == "native_unread"]
-    assert finding.severity == "warning" and finding.blocking is False and "NoteNative" in finding.message
+    assert finding.severity == "warning" and finding.blocking is True and "NoteNative" in finding.message  # unread: it holds the export
+    sheet_gate.allow(visible, "native_unread")  # the test put it there on purpose

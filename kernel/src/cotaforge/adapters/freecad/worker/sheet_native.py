@@ -47,6 +47,7 @@ VIEW_LABELS = {"front": "View_front", "top": "View_top", "right": "View_right", 
 DIM_TYPES = {"diameter": "Diameter", "radius": "Radius", "angle": "Angle"}
 MATCH_TOL = 0.03  # model mm: an edge or vertex of a view is the one asked for
 MOVE_TOL_MM = 0.05
+MEASURED_SPEC = "%.2w"  # TechDraw's format of the measured value: two decimals at most, no trailing zeros, no unit
 FONT_MM = 3.5  # ISO 3098 height of the text of a dimension on an A3 / A4 sheet
 GLYPH_LIFT = 0.4  # the middle of an annotation line sits this fraction of its size above the baseline (measured)
 ANNOTATION_FONT = "osifont"
@@ -318,6 +319,12 @@ def _make_dim(
         obj.EqualTolerance = False
         obj.OverTolerance = float(dim.tol[0])
         obj.UnderTolerance = float(dim.tol[1])
+        if dim.tol_text is not None:  # the deviations in mm as the sheet writes them (TechDraw's own would be µm)
+            obj.ArbitraryTolerances = True
+            obj.FormatSpecOverTolerance = dim.tol_text[0]
+            obj.FormatSpecUnderTolerance = dim.tol_text[1]
+        if dim.suffix:
+            obj.FormatSpec = f"{MEASURED_SPEC} {dim.suffix}"
     if dim.exact:
         obj.TheoreticalExact = True
     label = _label_of(dim)
@@ -578,6 +585,11 @@ def compare_unit(page: Any, unit: su.Unit, objects: list[Any]) -> list[str]:
                 problems.append(
                     f"{unit.key}: {obj.Label} has text {str(obj.FormatSpec)!r} edited by hand (the sheet says {dim.text!r})"
                 )
+            if dim.tol_text is not None and (
+                not bool(obj.ArbitraryTolerances)
+                or (str(obj.FormatSpecOverTolerance), str(obj.FormatSpecUnderTolerance)) != dim.tol_text
+            ):
+                problems.append(f"{unit.key}: {obj.Label} has its deviations edited by hand (the sheet says {' / '.join(dim.tol_text)})")
             if (
                 abs(float(obj.X) - (_label_of(dim)[0] - x)) > MOVE_TOL_MM
                 or abs(float(obj.Y) - (_label_of(dim)[1] - y)) > MOVE_TOL_MM

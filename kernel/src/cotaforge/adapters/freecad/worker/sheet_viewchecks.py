@@ -9,6 +9,10 @@
 * ``datum_unused``: a datum item whose letter no tolerance frame (``gdt``) cites;
 * ``leader_not_on_chamfer``: the leader of a chamfer callout not on the chamfer's line, not from outside or not perpendicular;
 * ``view_redundant``: a view that only carries a cutting line, or whose dimensions another view repeats;
+* ``dimension_twice``: the same measure given by two dimensions of one view (stacked, the same size twice); it HOLDS an export;
+* ``text_over_text``: two lines of text of the TechDraw page printed one on the other (the lines of a note); it HOLDS an export;
+* ``view_duplicate``: two views that draw the same thing (the same direction, or two sides of a part of revolution: the profile
+  twice); it HOLDS an export;
 * ``arrows_inside_short``: a short dimension with its arrows inside.
 
 ``dimension_crossing``, ``dimension_stack_order`` and ``dimension_gap`` are measurements of the sheet as drawn and HOLD an export
@@ -24,7 +28,7 @@ import sheet_viewrules as rules
 from sheet_collide import ink_of, segments_of
 from sheet_context import Context, ViewInfo
 from sheet_model import CONTOUR, Line, Polyline, Solid
-from sheet_review import Finding, ReviewInput
+from sheet_review import Finding, ReviewInput, _end_view_of_coaxial_part, _unused_views
 from sheet_units import KIND_ITEM
 
 DIMENSION_TYPES = frozenset({"dim", "overall", "datum_dims"})
@@ -45,12 +49,135 @@ def check(data: ReviewInput) -> list[Finding]:
         *_chamfers(data),
         *_short(data),
         *_redundant(data),
+        *_duplicate_views(data),
+        *_dimension_twice(data),
+        *_text_over_text(data),
         *_hatches(data),
         *_underused(data),
         *_paper_for_notes(data),
         *_no_isometric(data),
         *_crowded(data),
     ]
+
+
+# --- two views that draw the same thing -------------------------------------------------------------------------------------------
+
+
+def _revolution_axis(ctx: Context) -> tuple[float, float, float] | None:
+    """The axis of a part of revolution whose every feature is coaxial (a solid cover of stacked cylinders as much as a ring); ``None``
+    for any other part: a hole off the axis makes its two sides differ."""
+    if ctx.assembly is not None or ctx.weldment is not None or ctx.geometry is None:
+        return None
+    found = ctx.geometry.round_extent()
+    features = ctx.geometry.axial_features() if found is not None else None
+    return found[0] if found is not None and features is not None and features[0] else None
+
+
+def _duplicate_views(data: ReviewInput) -> list[Finding]:
+    """Two views of one sheet that show the same: looking the same way, or, on a part of revolution whose every feature is coaxial,
+    two views across its axis (the profile twice: the front and the top of a turned cover are the same drawing). The one that
+    carries the fewer items is the repeat (a tie leaves the first of front, top, right). It HOLDS the export: a shop reads the
+    second drawing as a second part, and the room it takes is the room the first one could have."""
+    ctx = data.ctx
+    use = ctx.extras.get("view_use", {})
+    axis = _revolution_axis(ctx)
+    named = [(name, v) for name, v in ctx.views.items() if not v.derived]
+    order = {"front": 0, "top": 1, "right": 2}
+    repeats: dict[str, str] = {}  # the repeat -> the view it repeats
+    for i, (na, a) in enumerate(named):
+        for nb, b in named[i + 1 :]:
+            same = math.isclose(sum(p * q for p, q in zip(a.direction, b.direction, strict=True)), 1.0, abs_tol=1e-6)
+            profiles = axis is not None and a.shows_axis_along(axis) and b.shows_axis_along(axis)
+            if not (same or profiles):
+                continue
+            keep, drop = sorted((na, nb), key=lambda n: (-len(use.get(n, ())), order.get(n, 9)))
+            repeats.setdefault(drop, keep)
+    out: list[Finding] = []
+    for name, keep in repeats.items():
+        text = ctx.say(
+            f"La vista {name} repite la vista {keep}: dibujan lo mismo (una pieza de revolución con todos sus rasgos coaxiales "
+            "se ve igual desde cualquier lado del eje). Quítala (drawing action=remove_view, "
+            f"view={name}) y pon sus cotas en {keep}; solo se queda si el ingeniero lo ordena con su razón (by=, reason=).",
+            f"The {name} view repeats the {keep} view: they draw the same thing (a part of revolution with every feature coaxial "
+            "looks the same from any side of its axis). Drop it (drawing action=remove_view, "
+            f"view={name}) and put its dimensions on {keep}; it stays only if the engineer orders it with his reason (by=, reason=).",
+        )
+        out.append(Finding("view_duplicate", "warning", text, (name,), key=name))
+    return out
+
+
+# --- the same measure twice ---------------------------------------------------------------------------------
+
+
+def _dimension_twice(data: ReviewInput) -> list[Finding]:
+    """Two dimensions of ONE view that say the same thing about the part (the same length between the same two places, the same
+    cylinder's diameter): the reader sees "80" twice, stacked, and asks which is the measure. ``dimension_repeated`` is the
+    same size in two views (a suggestion); in one view it is a defect and holds the export."""
+    ctx = data.ctx
+    said: dict[tuple[str, tuple[Any, ...]], list[str]] = {}
+    for item, view, key in ctx.extras.get("dim_records", []):
+        if item:
+            said.setdefault((view, tuple(key)), []).append(item)
+    out: list[Finding] = []
+    for (view, key), items in said.items():
+        ids = tuple(dict.fromkeys(items))
+        if len(ids) < 2:  # noqa: PLR2004 - one item may record a measure twice: that is its own business
+            continue
+        what = (
+            ctx.say(f"La cota {ctx.num(key[3] - key[2])} a lo largo de {key[1]}", f"The dimension {ctx.num(key[3] - key[2])} along {key[1]}")
+            if key[0] == "len"
+            else ctx.say(f"El diámetro Ø{ctx.num(key[1])}", f"The diameter Ø{ctx.num(key[1])}")
+        )
+        text = ctx.say(
+            f"{what} está dada dos veces en la vista {view} ({', '.join(ids)}): el lector ve la misma cota repetida y no sabe cuál "
+            "manda. Quita una (drawing action=remove, ids=[...]).",
+            f"{what} is given twice in the {view} view ({', '.join(ids)}): the reader sees the same dimension repeated and cannot "
+            "tell which one rules. Remove one (drawing action=remove, ids=[...]).",
+        )
+        out.append(Finding("dimension_twice", "warning", text, ids, key=f"{view}/" + "/".join(str(k) for k in key)))
+    return out
+
+
+OVERPRINT_MM = 1.0  # two texts that share more than this in both directions are printed on one another
+
+
+def _text_over_text(data: ReviewInput) -> list[Finding]:
+    """Two text annotations of the page whose rectangles lie on each other by more than ``OVERPRINT_MM`` both ways: the lines of a
+    note printed over one another read as nothing. Measured on the page, not on the composed sheet (the composed sheet plans the
+    lines apart; the window puts them where it puts them)."""
+    ctx = data.ctx
+    boxes: list[tuple[str, rules.Rect]] = list(ctx.extras.get("page_texts", []))
+    ids = {str(i["id"]) for i in data.items}
+    out: list[Finding] = []
+    for i, (la, a) in enumerate(boxes):
+        for lb, b in boxes[i + 1 :]:
+            across = min(a[2], b[2]) - max(a[0], b[0])
+            down = min(a[3], b[3]) - max(a[1], b[1])
+            if across <= OVERPRINT_MM or down <= OVERPRINT_MM:
+                continue
+            named = tuple(dict.fromkeys(k for k in (la.split(" ")[0], lb.split(" ")[0]) if k in ids))
+            text = ctx.say(
+                f"Dos líneas de texto de la hoja ({la}; {lb}) se imprimen una sobre otra en [{ctx.num(round(max(a[0], b[0]), 1))}, "
+                f"{ctx.num(round(max(a[1], b[1]), 1))}]: no se leen. Sepáralas (acorta la nota o muévela con at_mm).",
+                f"Two lines of text of the sheet ({la}; {lb}) are printed on one another at [{ctx.num(round(max(a[0], b[0]), 1))}, "
+                f"{ctx.num(round(max(a[1], b[1]), 1))}]: neither reads. Move them apart (shorten the note or move it with at_mm).",
+            )
+            out.append(Finding("text_over_text", "warning", text, named, key=f"{la}|{lb}"))
+    return out
+
+
+# --- the rules the step that built the sheet answers for -----------------------------------------------------------------------
+
+
+STEP_CODES = ("view_adds_nothing", "view_duplicate", "dimension_crossing", "sheet_underused")
+"""The findings a step of the sheet (``drawing`` add / update) answers for on the spot: a view with nothing on it or drawn twice,
+dimension lines crossed, a sheet left mostly empty. The rest of the review waits for ``review``."""
+
+
+def step_check(data: ReviewInput) -> list[Finding]:
+    """Only the rules of ``STEP_CODES``, each run on the context the step just drew (no check of the rest of the review)."""
+    found = [*_unused_views(data), *_end_view_of_coaxial_part(data), *_duplicate_views(data), *_crossings(data), *_underused(data)]
+    return [f for f in found if f.code in STEP_CODES]
 
 
 # --- the paper a sheet leaves blank ---------------------------------------------------------------------------------------------
@@ -402,8 +529,10 @@ def _views(ctx: Context) -> dict[str, ViewInfo]:
     return {**ctx.views, **ctx.extras.get("sections", {})}
 
 
-def _outlines(ctx: Context, views: dict[str, ViewInfo]) -> dict[str, list[rules.Segment]]:
-    ink = [e for e in ctx.extras.get("view_ink", []) if getattr(e, "layer", None) == CONTOUR]
+def _outlines(
+    ctx: Context, views: dict[str, ViewInfo], layers: tuple[str, ...] = (CONTOUR,)
+) -> dict[str, list[rules.Segment]]:
+    ink = [e for e in ctx.extras.get("view_ink", []) if getattr(e, "layer", None) in layers]
     pieces = segments_of(ink)
     out: dict[str, list[rules.Segment]] = {}
     for name, view in views.items():
@@ -420,7 +549,7 @@ def _es(side: str) -> str:
 
 def _sides(data: ReviewInput) -> list[Finding]:
     ctx = data.ctx
-    shapes: list[rules.DimShape] = ctx.extras.get("dim_shapes", [])
+    shapes: list[rules.DimShape] = ctx.extras.get("dim_shapes_drawn", ctx.extras.get("dim_shapes", []))
     extents = ctx.extras.get("extent_dims", [])
     if not shapes and not extents:
         return []
@@ -713,7 +842,7 @@ def _chamfers(data: ReviewInput) -> list[Finding]:
 def _short(data: ReviewInput) -> list[Finding]:
     ctx = data.ctx
     out: list[Finding] = []
-    for d in rules.short_dimensions(ctx.extras.get("dim_shapes", [])):
+    for d in rules.short_dimensions(ctx.extras.get("dim_shapes_drawn", ctx.extras.get("dim_shapes", []))):
         text = ctx.say(
             f"La cota {d.owner} de la vista {d.view} mide {ctx.num(d.span or 0.0)} mm entre sus líneas de extensión: no caben "
             "el texto y las dos flechas. Pon las flechas por fuera (arrows=outside).",
