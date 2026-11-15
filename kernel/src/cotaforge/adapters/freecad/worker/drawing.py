@@ -3480,7 +3480,7 @@ def read_page_dimensions(page: Any, ctx: sc.Context) -> None:
     """Put the linear dimensions TechDraw holds on ``page`` where the rules that measure dimension lines read them: they replace
     the shapes the composed sheet drew for the same items (``sheet_pageread``), and the ones that cannot be read are kept in
     ``ctx.extras["page_unread"]`` for the ``native_unread`` finding."""
-    drawn = ctx.extras.get("dim_shapes", [])
+    drawn = ctx.extras.setdefault("dim_shapes_drawn", list(ctx.extras.get("dim_shapes", [])))  # what the composed sheet drew: the side rules read these
     try:
         shapes, unread = sheet_pageread.dimension_shapes(page, view_names(page), sheet_mirror.page_position, sheet_mirror.PROP_ITEM)
     except Exception as exc:  # noqa: BLE001 - the page is read whole or listed as unread, never skipped

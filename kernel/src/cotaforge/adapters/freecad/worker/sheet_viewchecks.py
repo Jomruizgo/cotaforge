@@ -483,7 +483,7 @@ def _es(side: str) -> str:
 
 def _sides(data: ReviewInput) -> list[Finding]:
     ctx = data.ctx
-    shapes: list[rules.DimShape] = ctx.extras.get("dim_shapes", [])
+    shapes: list[rules.DimShape] = ctx.extras.get("dim_shapes_drawn", ctx.extras.get("dim_shapes", []))
     extents = ctx.extras.get("extent_dims", [])
     if not shapes and not extents:
         return []
@@ -776,7 +776,7 @@ def _chamfers(data: ReviewInput) -> list[Finding]:
 def _short(data: ReviewInput) -> list[Finding]:
     ctx = data.ctx
     out: list[Finding] = []
-    for d in rules.short_dimensions(ctx.extras.get("dim_shapes", [])):
+    for d in rules.short_dimensions(ctx.extras.get("dim_shapes_drawn", ctx.extras.get("dim_shapes", []))):
         text = ctx.say(
             f"La cota {d.owner} de la vista {d.view} mide {ctx.num(d.span or 0.0)} mm entre sus líneas de extensión: no caben "
             "el texto y las dos flechas. Pon las flechas por fuera (arrows=outside).",

@@ -52,12 +52,22 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) ->
         item.rep_call_failed = True  # type: ignore[attr-defined]
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:
+    """No test sheet without a review (``sheet_gate``): before the fixtures of the test are torn down (the CAD it built the sheet in
+    is still running), every adapter that built a sheet in it has its review run, and the test fails on a blocking finding of the
+    drawing rules it did not list with ``@pytest.mark.expected_findings(...)``."""
+    built = getattr(item, "sheet_gate_built", None)
+    if built and not getattr(item, "rep_call_failed", False):
+        expected = tuple(code for mark in item.iter_markers("expected_findings") for code in mark.args)
+        sheet_gate.check_built(built, expected)
+
+
 @pytest.fixture(autouse=True)
-def every_sheet_is_reviewed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """No test sheet without a review (``sheet_gate``): every adapter that builds a sheet in the test has its review run when the
-    test ends, and the test fails on a blocking finding of the drawing rules it did not list with
-    ``@pytest.mark.expected_findings(...)``."""
+def every_sheet_is_reviewed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remember the adapters that build a sheet in the test (``pytest_runtest_teardown`` reviews them)."""
     built: list[FreeCADAdapter] = []
+    request.node.sheet_gate_built = built
     original = FreeCADAdapter.create_drawing
 
     def watched(self: FreeCADAdapter, *args: object, **kwargs: object) -> object:
@@ -67,8 +77,3 @@ def every_sheet_is_reviewed(request: pytest.FixtureRequest, monkeypatch: pytest.
         return result
 
     monkeypatch.setattr(FreeCADAdapter, "create_drawing", watched)
-    yield
-    marks = [m for m in request.node.iter_markers("expected_findings")]
-    expected = tuple(code for mark in marks for code in mark.args)
-    if built and not getattr(request.node, "rep_call_failed", False):
-        sheet_gate.check_built(built, expected)
