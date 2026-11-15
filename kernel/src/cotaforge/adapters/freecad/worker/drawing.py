@@ -55,6 +55,7 @@ import sheet_checks
 import sheet_collide
 import sheet_colours
 import sheet_context as sc
+import sheet_dimtext
 import sheet_dxf
 import sheet_facts
 import sheet_interface
@@ -2215,6 +2216,48 @@ def _view_box(view: Any) -> Any:
     return Part.Compound(sheet_native.model_edges(view)).optimalBoundingBox(False, False)
 
 
+ORIGIN_NOISE_MM = 0.05  # TechDraw's centre of a view differs from the model's by a bounding-box gap, never by more
+
+
+def _view_origin(view: Any, box: Any, scale: float) -> g.Vec3:
+    """The model point that sits at the origin of the view's own coordinates. ``getGeometricCenter`` is the centre of a
+    bounding box with a gap (measured in 1.1.3: 0.0105 mm off along the axis of a shaft with a keyway) while TechDraw lays
+    its geometry out from the exact one, so a point planned from the first was that much off the vertices of the second and a
+    dimension between them measured a ``4`` as ``4,01``. The exact extents of the model in the axes of the view, against the
+    extents TechDraw drew, give the true one; where the two do not agree (several sources, a part its extents do not tell)
+    the geometric centre is kept."""
+    centre = g.vec(view.getGeometricCenter())
+    try:
+        xdir, direction = App.Vector(*g.vec(view.XDirection)), App.Vector(*g.vec(view.Direction))
+        xdir.normalize()
+        direction.normalize()
+        ydir = direction.cross(xdir)
+        rows = (xdir, ydir, direction)
+        turn = App.Matrix(
+            *[c for r in rows for c in (r.x, r.y, r.z, 0.0)], 0.0, 0.0, 0.0, 1.0
+        )
+        shapes = [s.copy() for s in (getattr(o, "Shape", None) for o in view.Source) if s is not None and not s.isNull()]
+        if not shapes:
+            return centre
+        whole = Part.Compound(shapes)
+        whole.transformShape(turn)
+        extent = whole.optimalBoundingBox(False, False)
+        fixed = list(centre)
+        for axis, lo, hi, drawn_lo, drawn_hi in (
+            (xdir, extent.XMin, extent.XMax, box.XMin / scale, box.XMax / scale),
+            (ydir, extent.YMin, extent.YMax, -box.YMax / scale, -box.YMin / scale),  # TechDraw keeps y down
+        ):
+            true_a, true_b = lo - drawn_lo, hi - drawn_hi  # where the origin is along the axis, from each end
+            now = sum(c * a for c, a in zip(centre, (axis.x, axis.y, axis.z), strict=True))
+            if abs(true_a - true_b) > ORIGIN_NOISE_MM / 5 or abs(true_a - now) > ORIGIN_NOISE_MM:
+                return centre
+            for i, a in enumerate((axis.x, axis.y, axis.z)):
+                fixed[i] += (true_a - now) * a
+        return (fixed[0], fixed[1], fixed[2])
+    except Exception:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind; the planned centre is a fine fallback
+        return centre
+
+
 def view_key(view: Any) -> str | None:
     """The name (``front`` / ``top`` / ``right``) a view of the projection group goes by: the key the sheet tagged it with
     (the anchor of a sheet without a front view is the top or the right one; a label cannot say, FreeCAD makes it unique in
@@ -2244,7 +2287,7 @@ def view_infos(page: Any) -> dict[str, sc.ViewInfo]:
             scale,
             g.vec(view.Direction),
             g.vec(view.XDirection),
-            g.vec(view.getGeometricCenter()),
+            _view_origin(view, box, scale),
             (x + box.XMin, y - box.YMax, x + box.XMax, y - box.YMin),
             vertices=tuple(
                 (x + float(v.X) * scale, y + float(v.Y) * scale)
@@ -3596,6 +3639,7 @@ def review_findings(
                     "features": [],
                 }
             )
+    findings += sheet_dimtext.findings(sheet_dimtext.read(ctx.extras["units"], held), ctx)  # what the dimensions print, as a shop reads it
     foreign = sheet_symbols.foreign_symbols(page, sheet_symbols.resource_dir())
     if foreign:  # a drawing of ours that is not a FreeCAD object: it does not follow its view and the engineer cannot edit it
         keys = sorted({str(getattr(o, sheet_mirror.PROP_KEY, "") or o.Label) for o in foreign})
