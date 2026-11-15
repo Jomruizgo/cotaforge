@@ -21,7 +21,7 @@ import pytest
 from cotaforge_mcp import pdf_check
 from tests.integration.conftest import Cad, finish_drawing, running_server
 from tests.integration.test_drawing_review_gaps_real import build_assembly
-from tests.integration.test_drawing_weldment_real import WELD, build_frame
+from tests.integration.test_drawing_weldment_real import NOTE, WELD, build_frame
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="the visible FreeCAD window is exercised on Windows")
 
@@ -37,7 +37,7 @@ PAGE_CODES = (
     "view_label_ambiguous",
     "mark_overlaps_itself",
 )  # what a shop reader sent back on the sheets of the first version: none may be listed
-NOTES = {"type": "note", "id": "weld", "text": "Proceso MAG, nivel de calidad ISO 5817-C. Tolerancias generales ISO 13920-B. Símbolos de soldadura según ISO 2553: a = garganta"}
+NOTES = NOTE  # the sheet's weld note names ISO 2553: the size before the symbol is the throat
 WELD_SIZED = {**WELD, "all_around": False, "length_mm": 40}  # a size before the symbol and a length after it
 
 LAST_SYMBOLS: list[str] = []  # the symbols the last count found: their unit keys
@@ -327,9 +327,6 @@ async def test_a_moulded_part_has_its_marks_as_native_objects(workspace: Path, t
         ]
         added = await cad.ok("drawing", action="add", items=items)
         print("MARKS", added)
-        shot_reply = await patient(cad, "drawing", action="capture")
-        assert shot_reply.images, shot_reply.text
-        shot(shots, "nt6_mould", shot_reply.images[0].data)  # the sheet first: the checks below wait for a window that is busy for minutes
         found = await kinds(cad)
         print("MOULD", found)
         review = await clean_review(cad, "mould")
@@ -338,6 +335,9 @@ async def test_a_moulded_part_has_its_marks_as_native_objects(workspace: Path, t
         assert not mine & set(LAST_SYMBOLS), LAST_SYMBOLS  # none of the marks is an SVG the harness drew
         assert found.get("TechDraw::DrawLeaderLine", 0) >= 1, found
         assert found.get("TechDraw::DrawViewAnnotation", 0) >= 1, found
+        shot_reply = await patient(cad, "drawing", action="capture")  # last: the window of a big part is busy for minutes
+        assert shot_reply.images, shot_reply.text
+        shot(shots, "nt6_mould", shot_reply.images[0].data)
 
 
 
