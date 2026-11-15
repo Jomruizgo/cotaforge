@@ -33,6 +33,20 @@ SLIDE_TRIES = 5  # distances tried at each place along the trace before the next
 TRACE_MARGIN_MM = 2.0  # a label touches a plane at least this far from the end of its trace
 
 
+class Placed(list):  # type: ignore[type-arg]
+    """The entities of a label together with where it was put (``tip``, ``anchor``, ``rect``, ``origin``, ``side``): what the
+    native TechDraw object that stands for the label needs. ``place_label`` hands back the very list ``build`` made."""
+
+    tip: Point
+    anchor: Point
+    rect: Rect
+    origin: Point
+    side: str
+    stretch: int
+    leader: bool
+    reach: Point  # where the label really joins the feature, when it is not the ``anchor`` asked for (a fixed symbol)
+
+
 @dataclass
 class Attach:
     """The place a label attaches to: ``tip`` on the feature (page mm), ``normal`` the unit direction away from the
@@ -268,6 +282,7 @@ def place_label(
                 distance = start + step * NUDGE_MM
                 anchor = (tip[0] + direction[0] * distance, tip[1] + direction[1] * distance)
                 entities, rect = build(anchor, direction)
+                anchor = getattr(entities, "reach", anchor)  # a symbol of a fixed size reaches where it reaches
                 fits = ctx.inside(rect)
                 if first is None:
                     first = (entities, rect)

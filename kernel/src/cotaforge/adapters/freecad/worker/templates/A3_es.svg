@@ -142,7 +142,11 @@
     <text id="document_type_data_field" x="231" y="272.5" freecad:editable="document_type" data-maxwidth="78" style="font-size:3.5px;text-anchor:start"><tspan/></text>
     <text id="scale_data_field" x="390" y="247.4" freecad:editable="scale" freecad:autofill="scale" data-maxwidth="38" style="font-size:3.5px;text-anchor:middle"><tspan/></text>
     <text id="general_tolerances_data_field" x="311" y="247.4" freecad:editable="general_tolerances" data-maxwidth="58" style="font-size:3.5px;text-anchor:start"><tspan/></text>
+    <text id="general_tolerances_1_data_field" x="311" y="244.7" freecad:editable="general_tolerances_1" data-maxwidth="58" style="font-size:2.8px;text-anchor:start"><tspan/></text>
+    <text id="general_tolerances_2_data_field" x="311" y="248.4" freecad:editable="general_tolerances_2" data-maxwidth="58" style="font-size:2.8px;text-anchor:start"><tspan/></text>
     <text id="part_material_data_field" x="231" y="247.4" freecad:editable="part_material" data-maxwidth="78" style="font-size:3.5px;text-anchor:start"><tspan/></text>
+    <text id="part_material_1_data_field" x="231" y="244.7" freecad:editable="part_material_1" data-maxwidth="78" style="font-size:2.8px;text-anchor:start"><tspan/></text>
+    <text id="part_material_2_data_field" x="231" y="248.4" freecad:editable="part_material_2" data-maxwidth="78" style="font-size:2.8px;text-anchor:start"><tspan/></text>
   </g>
   <g id="revision_table_borders" style="fill:none;stroke:#000000;stroke-width:0.35;stroke-linecap:round;stroke-linejoin:round">
     <rect id="revision_table_frame" x="120" y="251" width="110" height="36" style="stroke-width:0.7"/>
@@ -183,12 +187,12 @@
     <text id="rev_5_date_data_field" x="190.8" y="285.2" freecad:editable="rev_5_date" data-maxwidth="20.4"><tspan/></text>
     <text id="rev_5_by_data_field" x="212.8" y="285.2" freecad:editable="rev_5_by" data-maxwidth="16.4"><tspan/></text>
   </g>
-  <g id="extras_outlines" style="fill:none;stroke:#000000;stroke-width:0.5;stroke-linecap:round;stroke-linejoin:round">
+  <g id="extras_outlines" style="fill:none;stroke:#000000;stroke-width:0.35;stroke-linecap:round;stroke-linejoin:round">
     <path id="first_angle_trapezoid" d="m 132,239 -10,2.5 v 5 l 10,2.5 z"/>
     <circle id="first_angle_inner_circle" cx="139" cy="244" r="2.5"/>
     <circle id="first_angle_outer_circle" cx="139" cy="244" r="5"/>
   </g>
-  <g id="extras_centre_lines" style="fill:none;stroke:#000000;stroke-width:0.25;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:6, 0.75, 0.125, 0.75">
+  <g id="extras_centre_lines" style="fill:none;stroke:#000000;stroke-width:0.18;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:6, 0.75, 0.125, 0.75">
     <path id="first_angle_horizontal" d="m 121,244 h 24"/>
     <path id="first_angle_vertical" d="m 139,250 v -12"/>
   </g>

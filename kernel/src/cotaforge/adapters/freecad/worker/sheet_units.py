@@ -128,6 +128,27 @@ class NativeCosmetic:
     style: str
 
 
+@dataclass(frozen=True)
+class NativeSymbol:
+    """A symbol of the library the harness inserts the way the engineer does (TechDraw's *Insert SVG Symbol*): a
+    ``DrawViewSymbol`` whose ``Symbol`` is the library file ``file`` and whose ``EditableTexts`` are ``texts`` (the tolerance, the
+    datum letters, the roughness: the engineer edits them in the property editor), owned by ``view`` so it follows the view
+    (``Owner``). ``at`` is where the ORIGIN of the drawing of the file lands (page mm, y up): the top-left corner of a feature
+    control frame, the middle of the base of a datum triangle, the vertex of a surface texture symbol. ``leader`` are the
+    waypoints (page mm) of the native ``DrawLeaderLine`` that joins it to the feature or the dimension it controls: the first
+    on the feature (with the arrow when ``arrow``), the last at the symbol; empty when the symbol stands on the feature itself."""
+
+    item: str
+    name: str
+    kind: str  # frame | datum | finish
+    file: str  # path inside the symbol library (``gdt_frames``)
+    texts: tuple[str, ...]
+    at: Point
+    view: str  # front | top | right | isometric: the view it belongs to
+    leader: tuple[Point, ...] = ()
+    arrow: bool = True
+
+
 COSMETIC_STYLES = {  # the layer the compositor draws on -> the kind of line TechDraw is asked for
     AXES: "centre",
     THREAD: "thin",
@@ -161,7 +182,7 @@ class NativeView:
     radius: float = 0.0
 
 
-Native = NativeDim | NativeNote | NativeFlag | NativeCosmetic | NativeWeld | NativeBalloon | NativeTable | NativeLeader | NativeView
+Native = NativeDim | NativeNote | NativeFlag | NativeCosmetic | NativeWeld | NativeBalloon | NativeTable | NativeLeader | NativeView | NativeSymbol
 
 
 @dataclass(frozen=True)
@@ -202,7 +223,7 @@ class Unit:
             return self.entities
         if any(isinstance(n, (*WHOLE, NativeView)) for n in self.natives):
             return ()  # welds, balloons, tables and the views TechDraw makes: the objects are the whole of the item
-        objects = any(isinstance(n, NativeDim | NativeNote) for n in self.natives)
+        objects = any(isinstance(n, NativeDim | NativeNote | NativeSymbol) for n in self.natives)
         gone = (NATIVE_LAYERS if objects else set()) | ({HIDDEN} if any(isinstance(n, NativeFlag) for n in self.natives) else set())
         return tuple(e for e in self.entities if getattr(e, "layer", None) not in gone and id(e) not in self.covered)
 
@@ -336,6 +357,8 @@ def signature(unit: Unit) -> str:
             ]
         if isinstance(n, NativeFlag):
             return ["f", n.view, n.prop]
+        if isinstance(n, NativeSymbol):
+            return ["s", n.name, n.kind, n.file, list(n.texts), [round(v, 2) for v in n.at], n.view, [[round(v, 2) for v in p] for p in n.leader], n.arrow]
         if isinstance(n, MARK_TYPES):
             return marks_dump(n)
         if isinstance(n, NativeView):
@@ -368,12 +391,21 @@ def cosmetic_signature(natives: Any) -> str:
 
 
 def object_count(unit: Unit) -> int:
-    """How many native objects ``unit`` is: a dimension or a view each, a note one annotation per line."""
-    return sum(
-        1 if isinstance(n, NativeDim | NativeView) else marks_count(n) if isinstance(n, MARK_TYPES) else len(n.lines)
-        for n in unit.natives
-        if not isinstance(n, NativeFlag | NativeCosmetic)
-    )
+    """How many native objects ``unit`` is: a dimension or a view each, a note one annotation per line, a symbol the symbol and
+    its leader."""
+    total = 0
+    for n in unit.natives:
+        if isinstance(n, NativeFlag | NativeCosmetic):
+            continue
+        if isinstance(n, NativeSymbol):
+            total += 2 if n.leader else 1
+        elif isinstance(n, NativeDim | NativeView):
+            total += 1
+        elif isinstance(n, MARK_TYPES):
+            total += marks_count(n)
+        else:
+            total += len(n.lines)
+    return total
 
 
 def view_of(unit: Unit) -> NativeView | None:
@@ -525,7 +557,7 @@ def mould_marks(
     arrowhead (the opening direction, a draft exception), every other line, arc and circle (the bar at the tail of the
     arrow, the draft wedge, the hatch of a zone) a cosmetic edge of the view it stands beside, every text an annotation. The
     entities handled are returned by id so the sheet draws none of them again. ``taken`` are the ones already asked for."""
-    if unit.item_type not in MOULD_ITEMS or not views:
+    if unit.item_type not in MOULD_ITEMS:
         return [], set()
     made: list[Native] = []
     covered: set[int] = set()

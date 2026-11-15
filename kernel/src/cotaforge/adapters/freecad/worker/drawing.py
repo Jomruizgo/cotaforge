@@ -85,6 +85,7 @@ import sheet_template_gen
 import sheet_thread
 import sheet_turned
 import sheet_units
+import sheet_weights
 import thread_records
 from protocol import WorkerError, error, invalid_request, not_supported
 
@@ -111,12 +112,12 @@ FULL_CIRCLE_DEG = 359.0  # a hole wall covers the whole circle (``list_holes`` r
 
 TECHDRAW_PREFS = "User parameter:BaseApp/Preferences/Mod/TechDraw/"
 DEFAULT_PREFS: tuple[tuple[str, str, float], ...] = (
-    ("Decorations", "LineGroup", 2),  # TechDraw's own list: "FC 0.50mm" (thick 0.50, thin 0.25), ISO 128-20's group for A4 to A2
+    ("Decorations", "LineGroup", sheet_weights.LINE_GROUP_INDEX),  # TechDraw's own list: "FC 0.35mm" (thick 0.35, thin 0.18), the group of the sheet's table
     ("Dimensions", "FontSize", sheet_native.FONT_MM),  # the 3.5 mm of ISO 3098; TechDraw's own default is 5 mm
 )
 """What a new TechDraw object reads when the engineer adds one by hand to the sheet: the line group and the text size of the
 sheet. Measured in 1.1.3: with the preferences unset a dimension added by hand came out 0.35 mm thick and 5 mm high, next to
-the sheet's 0.25 mm and 3.5 mm."""
+the sheet's own widths and 3.5 mm."""
 
 
 def apply_techdraw_defaults() -> None:
@@ -553,6 +554,22 @@ def title_fields(
     return values
 
 
+def title_block_fields(
+    spec: dict[str, Any],
+    names: list[str],
+    scale: float,
+    index: int,
+    count: int,
+    revisions: list[dict[str, str]],
+    material: str = "",
+    holds: list[str] | None = None,
+) -> dict[str, str]:
+    """``title_fields`` as the title block shows it: a value too long for its field goes on the two lines the template gives it
+    (``sheet_template.wrap_fields``), so no text runs over the field next to it. ``holds`` are the fields of the template the page
+    really has (a sheet made before the two lines existed keeps its template): the value is wrapped only where they are."""
+    return sheet_template.wrap_fields(title_fields(spec, names, scale, index, count, revisions, material), names if holds is None else holds)
+
+
 def _revisions(spec: dict[str, Any]) -> list[dict[str, str]]:
     return [
         {k: str(item.get(k, "")) for k in ("index", "description", "date", "by")}
@@ -572,8 +589,9 @@ def _sync_template_fields(fc_doc: Any, op: str | None) -> None:
         except WorkerError:
             continue
         scale = _scale_of(page) or 1.0
-        page.Template.EditableTexts = title_fields(
-            spec, names, scale, index, len(found), _revisions(spec), material_of(fc_doc)
+        held = [str(k) for k in dict(page.Template.EditableTexts)] or None  # the template the page itself holds
+        page.Template.EditableTexts = title_block_fields(
+            spec, names, scale, index, len(found), _revisions(spec), material_of(fc_doc), held
         )
 
 
@@ -585,6 +603,7 @@ ANCHOR_DIRECTIONS = {  # (direction towards the viewer, x direction) of the one 
     "top": ((0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
     "right": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
 }
+ISO_LABEL_CLEAR_MM = 14.0  # free paper kept under the scale label of the isometric view (below its baseline): no view starts there
 ROW_FIRST_MM = 15.0  # the first baseline row: 10 mm from the view, and its text above the line
 ROW_STEP_MM = 7.0  # each further row
 CALLOUT_SPACING_MM = 34.0  # between the front view and the top / right ones when the part has holes (a callout fits)
@@ -808,7 +827,7 @@ def _build(
         page.Template = template
         write_spec(page, spec)
         index = pages(fc_doc).index(page) + 1
-        template.EditableTexts = title_fields(
+        template.EditableTexts = title_block_fields(
             spec, names, layout.scale, index, len(pages(fc_doc)), _revisions(spec), material_of(fc_doc)
         )
 
@@ -1231,7 +1250,8 @@ def apply_title_block(spec: dict[str, Any], given: Any, op: str | None) -> None:
     if not given:
         return
     names = sheet_template.editable_fields(template_text(spec["template"], op))
-    settable = [n for n in names if n not in COMPUTED_FIELDS and not n.startswith("rev_")]
+    continuation = sheet_template.continuation_fields()  # the two lines of a long value: written by the sheet, never set
+    settable = [n for n in names if n not in COMPUTED_FIELDS and n not in continuation and not n.startswith("rev_")]
     unknown = sorted(k for k in given if k not in settable)
     if unknown:
         raise invalid_request(
@@ -3161,7 +3181,8 @@ def _compose_pass(
     ctx.extras["fields"]["part_material"] = shown_fields.get(
         "part_material", ""
     )  # the design's, while the sheet has none
-    _, _, template_entities = sheet_template.parse(text, shown_fields)
+    ctx.extras["title_overflow"] = sheet_template.overflowing(text, sheet_template.wrap_fields(shown_fields, names))
+    _, _, template_entities = sheet_template.parse(text, sheet_template.wrap_fields(shown_fields, names))
     sheet.extend(template_entities)
     ctx.extras["title_block"] = sheet_template.title_block_rect(template_entities, page_w)
     if spec.get("iso_colour") and "iso" in views_of(spec) and not _is_assembly(doc, spec.get("body")):
@@ -3187,8 +3208,14 @@ def _compose_pass(
     if iso_view is not None and abs(iso_view.scale - scale) > 1e-9:  # its own scale goes under it (ISO 5455)
         label = ctx.say(f"Isométrica {model.fmt_scale(iso_view.scale)}", f"Isometric {model.fmt_scale(iso_view.scale)}")
         start = len(sheet.entities)
-        sheet.add(model.Text((iso_view.box[0] + iso_view.box[2]) / 2, iso_view.box[1] - 6.0, label, anchor="center"))
+        middle = (iso_view.box[0] + iso_view.box[2]) / 2
+        sheet.add(model.Text(middle, iso_view.box[1] - 6.0, label, anchor="center"))
         ranges[sheet_units.KEY_ISO_SCALE] = (start, len(sheet.entities))
+        half = model.text_width(label) / 2 + 1.0
+        # the room under the label is its view's: a detail or another view placed there reads as the owner of the label
+        ctx.reserve((middle - half, iso_view.box[1] - 6.0 - ISO_LABEL_CLEAR_MM, middle + half, iso_view.box[1]))
+        base = iso_view.box[1] - 6.0
+        ctx.extras.setdefault("view_labels", {})["isometric"] = (middle - half + 1.0, base, middle + half - 1.0, base + model.TEXT_HEIGHT_MM)
     results += sheet_items.draw_items(ctx, items)
     if cache.get("hidden_views"):
         gone = cache["hidden_views"] - set(ctx.extras.get("in_place_views", {}).values())
@@ -3671,26 +3698,52 @@ def review_findings(
                 }
             )
     findings += sheet_dimtext.findings(sheet_dimtext.read(ctx.extras["units"], held), ctx)  # what the dimensions print, as a shop reads it
+    for unit in ctx.extras["units"]:  # a symbol or a leader whose view the engineer deleted stays loose on the page
+        lost = sheet_native.orphaned(unit, held.get(unit.key, []))
+        if lost:
+            findings.append(
+                {
+                    "code": "native_orphaned",
+                    "severity": "warning",
+                    "message": ctx.say(
+                        f"{unit.key}: se borró la vista donde estaba y {len(lost)} objeto(s) de TechDraw ({', '.join(str(o.Label) for o in lost)[:100]}) "
+                        "quedaron sueltos en la hoja (caen a la esquina). Bórralos o devuelve la vista y vuelve a añadir el elemento.",
+                        f"{unit.key}: the view it stood on was deleted and {len(lost)} TechDraw object(s) ({', '.join(str(o.Label) for o in lost)[:100]}) "
+                        "were left loose on the sheet (they fall to the corner). Delete them, or bring the view back and add the item again.",
+                    ),
+                    "items": [unit.key],
+                    "features": [],
+                    "key": unit.key,
+                }
+            )
     foreign = sheet_symbols.foreign_symbols(page, sheet_symbols.resource_dir())
     if foreign:  # a drawing of ours that is not a FreeCAD object: it does not follow its view and the engineer cannot edit it
         keys = sorted({str(getattr(o, sheet_mirror.PROP_KEY, "") or o.Label) for o in foreign})
-        findings.append(
-            {
-                "code": "foreign_symbol",
-                "severity": "info",  # the items still drawn this way are listed in tests/unit/freecad_client/test_native_only.py
-                "message": ctx.say(
-                    f"La hoja tiene {len(foreign)} símbolo(s) que no son de la biblioteca de FreeCAD ({', '.join(keys)[:120]}): "
-                    "son un dibujo suelto que no sigue a su vista ni se edita línea a línea, y se queda si se borra la vista. "
-                    "Debe ser un objeto nativo de TechDraw.",
-                    f"The sheet holds {len(foreign)} symbol(s) that are not from FreeCAD's library ({', '.join(keys)[:120]}): "
-                    "a loose drawing that does not follow its view, cannot be edited line by line and stays when the view is "
-                    "deleted. It must be a native TechDraw object.",
-                ),
-                "items": [k for k in keys if k in {str(i.get("id")) for i in spec.get("items", [])}],
-                "features": [],
-                "key": "",
-            }
-        )
+        kinds = {str(i.get("id")): str(i.get("type")) for i in spec.get("items", [])}
+        ids = set(kinds)
+        migrated = [k for k in keys if kinds.get(k) in sheet_symbols.MIGRATED_ITEMS]
+        # a datum, a frame, a finish symbol or a table drawn loose is a defect that holds the export (its own finding); the units
+        # with no native form yet are listed in tests/unit/freecad_client/test_native_only.py and only inform
+        for group, severity, key in ((migrated, "warning", "native_items"), ([k for k in keys if k not in migrated], "info", "")):
+            if not group:
+                continue
+            findings.append(
+                {
+                    "code": "foreign_symbol",
+                    "severity": severity,
+                    "message": ctx.say(
+                        f"La hoja tiene {len(group)} símbolo(s) que no son de la biblioteca de símbolos de TechDraw ({', '.join(group)[:120]}): "
+                        "son un dibujo suelto que no sigue a su vista ni se edita línea a línea, y se queda si se borra la vista. "
+                        "Debe ser un objeto nativo de TechDraw.",
+                        f"The sheet holds {len(group)} symbol(s) that are not from TechDraw's symbol library ({', '.join(group)[:120]}): "
+                        "a loose drawing that does not follow its view, cannot be edited line by line and stays when the view is "
+                        "deleted. It must be a native TechDraw object.",
+                    ),
+                    "items": [k for k in group if k in ids],
+                    "features": [],
+                    "key": key,
+                }
+            )
     unread = [*sheet_output.native_rows(page), *({"text": t, "view": False} for t in ctx.extras.get("page_unread", []))]
     if unread:  # on the page, in the PDF and in the capture, but not in the composed sheet the review reads
         shown = "; ".join(sheet_output.listed(unread)[:5]) + (f" (+{len(unread) - 5})" if len(unread) > 5 else "")
@@ -3713,6 +3766,27 @@ def review_findings(
                 "key": "",
             }
         )
+    off_weights = sheet_mirror.off_table(page)
+    if off_weights:  # a hand-added object, or a TechDraw default that slipped through: the engineer may have chosen it
+        shown = "; ".join(off_weights[:4]) + (f" (+{len(off_weights) - 4})" if len(off_weights) > 4 else "")
+        findings.append(
+            {
+                "code": "line_weight_off_table",
+                "severity": "warning",
+                "message": ctx.say(
+                    f"{len(off_weights)} objeto(s) de la hoja tienen un grosor de línea fuera de la tabla del arnés "
+                    f"(ISO 128-20 grupo 0,35; contorno y ocultas 0,35, finas 0,18, rayado 0,07 mm): {shown}. "
+                    "Si el ingeniero no lo eligió así, ponlo en el grosor de la tabla.",
+                    f"{len(off_weights)} object(s) on the sheet have a line weight outside the harness table "
+                    f"(ISO 128-20 group 0.35; outline and hidden 0.35, thin 0.18, hatching 0.07 mm): {shown}. "
+                    "Unless the engineer chose it so, set it to the table's weight.",
+                ),
+                "items": [],
+                "features": [],
+                "key": "",
+            }
+        )
+    findings += page_findings(page, ctx)
     differs = sheet_mirror.compare(page, ctx.extras["units"], sheet.height)
     if differs:  # the window must show what the PDF shows: a difference is an error of ours, never of the drawing
         shown = "; ".join(differs[:3]) + (f" (+{len(differs) - 3})" if len(differs) > 3 else "")
@@ -3723,6 +3797,118 @@ def review_findings(
         findings.append({"code": "window_differs", "severity": "warning", "message": text, "items": [], "features": []})
     sheet_checks.assign_ids(findings)
     return findings, ctx
+
+
+def _view_name_of(page: Any, obj: Any) -> str:
+    """The name the sheet knows the TechDraw view ``obj`` by (``front``, ``isometric``, a section's key), ``""`` when none."""
+    for name in ("front", "top", "right", "isometric"):
+        found = sheet_native.view_object(page, name)
+        if found is not None and str(found.Name) == str(obj.Name):
+            return name
+    return str(getattr(obj, sheet_native.PROP_VIEWKEY, "") or "")
+
+
+def page_findings(page: Any, ctx: sc.Context) -> list[dict[str, Any]]:
+    """What the TechDraw objects of the page say, read as the engineer and the welder read them (``sheet_pagechecks``): no proof or
+    placeholder text left on the sheet, no table cell wider than its column, a balloon for every listed position and a listing
+    for every balloon, each balloon with a leader that shows and ends on its own part."""
+    import sheet_pagechecks as pc  # noqa: PLC0415 - keeps the page reader out of the import time of the worker
+
+    rows: list[dict[str, Any]] = []
+
+    def add(code: str, message: str, key: str = "") -> None:
+        rows.append({"code": code, "severity": "warning", "message": message, "items": [], "features": [], "key": key})
+
+    read = pc.read_page(page, lambda obj: _view_name_of(page, obj))
+    marked = pc.marker_texts(read.texts)
+    if marked:
+        shown = "; ".join(f"{t.where}: «{t.text}»" for t in marked[:4])
+        add(
+            "page_test_marker",
+            ctx.say(
+                f"La hoja tiene texto que parece de prueba o provisional: {shown}. Lo que se exporta es la hoja: quítalo (una prueba de edición va en una copia).",
+                f"The sheet holds text that reads like a proof or a placeholder: {shown}. The sheet is what gets exported: remove it (an edit proof goes on a copy)."
+            ),
+            marked[0].where,
+        )
+    off = pc.weld_offsets(gui.weld_offsets(page, read.tile_texts))
+    if off:
+        shown = ", ".join(f"«{t}» {mm} mm" for t, mm in off[:4])
+        add(
+            "page_weld_off_line",
+            ctx.say(
+                f"El símbolo de soldadura queda fuera de su línea de referencia ({shown}): la ventana lo atrae al origen de una vista cercana. "
+                "Mueve la soldadura (side u offset_mm) para que su origen quede a más de 7 mm del origen de las vistas.",
+                f"The weld symbol stands off its reference line ({shown}): the window pulls it to the origin of a view near it. "
+                "Move the weld (side or offset_mm) so its origin is more than 7 mm from the origin of the views.",
+            ),
+            off[0][0],
+        )
+    over = pc.cell_overflows(read.cells)
+    if over:
+        shown = "; ".join(f"{c.where} «{c.text}» ({w} mm in {c.width_mm:.1f} mm)" for c, w in over[:4])
+        add(
+            "page_cell_overflow",
+            ctx.say(
+                f"Texto más ancho que su columna en una tabla de la hoja: {shown}. Ensancha la columna o acorta el texto.",
+                f"Text wider than its column in a table of the sheet: {shown}. Widen the column or shorten the text."
+            ),
+            over[0][0].where,
+        )
+    if read.balloons or read.positions:
+        owners = _balloon_owners(ctx, read.balloons)
+        found = pc.balloon_problems(read.balloons, read.positions, owners)
+        if found.no_balloon or found.no_row or found.twice:
+            parts = []
+            if found.no_balloon:
+                parts.append(f"{', '.join(found.no_balloon)} listed with no balloon")
+            if found.no_row:
+                parts.append(f"{', '.join(found.no_row)} in a balloon with no row in the list")
+            if found.twice:
+                parts.append(f"{', '.join(found.twice)} with more than one balloon")
+            add(
+                "page_balloons_not_matching",
+                ctx.say(
+                    "Las filas de la lista y los globos de la hoja no se corresponden uno a uno: " + "; ".join(parts) + ". Cada fila lleva un globo con su guía.",
+                    "The rows of the list and the balloons of the sheet do not match one to one: " + "; ".join(parts) + ". Every row gets one balloon with its leader."
+                ),
+            )
+        if found.no_leader:
+            shown = ", ".join(f"{t} ({length} mm)" for t, length in found.no_leader)
+            add(
+                "page_balloon_no_leader",
+                ctx.say(
+                    f"Globos sin guía visible (menos de {pc.MIN_LEADER_MM:g} mm fuera del círculo): {shown}. La guía llega a la pieza.",
+                    f"Balloons with no visible leader (under {pc.MIN_LEADER_MM:g} mm outside the circle): {shown}. The leader reaches the part."
+                ),
+            )
+        if found.off_part:
+            add(
+                "page_balloon_off_part",
+                ctx.say(
+                    f"La guía de los globos {', '.join(found.off_part)} no termina sobre su pieza.",
+                    f"The leader of balloon(s) {', '.join(found.off_part)} does not end on its own part."
+                ),
+            )
+    return rows
+
+
+def _balloon_owners(ctx: sc.Context, balloons: list[Any]) -> dict[str, bool | None]:
+    """For each balloon of the page, whether the end of its leader lies on a surface of its own part (the ray through that point
+    meets the part first); ``None`` where the geometry cannot say (a view the sheet does not know, a position it has no group for)."""
+    group = ctx.assembly or ctx.weldment
+    positions = {str(g.position): g for g in group.groups} if group is not None else {}
+    out: dict[str, bool | None] = {}
+    for b in balloons:
+        mine = positions.get(b.text.strip())
+        try:
+            view = ctx.any_view(b.view)
+            owner = ctx.geometry.owner_at((view.centre, view.xdir, view.direction), b.origin, {}) if mine and b.view != "exploded" else None
+        except sc.ItemError:
+            out[b.name] = None
+            continue
+        out[b.name] = None if mine is None else owner in mine.instances
+    return out
 
 
 MAX_PRINTED = 160

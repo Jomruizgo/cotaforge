@@ -80,6 +80,8 @@ CIRCLED = {"M": "Ⓜ", "L": "Ⓛ", "P": "Ⓟ"}
 ZONE = ("CZ", "SZ", "UF")
 PREFIX = {"diameter": "Ø", "Ø": "Ø", "spherical_diameter": "SØ", "SØ": "SØ"}
 BAD_LETTERS = "IOQ"  # ISO 5459
+SYMBOL_CELL_MM = 7.0  # the cell with the characteristic symbol, and the height of every cell
+DATUM_CELL_MM = 10.0  # a datum cell
 
 # an estimate of the width of a text at 3.5 mm, to choose between the files (the real font decides at render time)
 STD_FITS_MM = 19.0
@@ -221,7 +223,7 @@ def _datum_text(entry: str | Sequence[str]) -> tuple[str, tuple[str, ...]]:
     return f"{letter} {CIRCLED[str(entry[1]).upper()]}", (letter,)
 
 
-def gdt_frame_symbol(
+def gdt_frame_choice(
     characteristic: str,
     tolerance: float | str,
     modifiers: Iterable[str] = (),
@@ -230,7 +232,8 @@ def gdt_frame_symbol(
     decimal: str = ",",
     width: str | None = None,
 ) -> tuple[str, tuple[str, ...]]:
-    """The library file for a feature control frame and the values of its editable texts: ``(svg_text, editable_texts)``.
+    """The library file for a feature control frame and the values of its editable texts: ``(path, editable_texts)``; the path is
+    inside the library (``gdt_frame_symbol`` gives the text of that file instead).
 
     ``characteristic``: flatness, straightness, circularity, cylindricity, parallelism, perpendicularity, angularity,
     position, concentricity (or coaxiality), symmetry, runout, total_runout, profile_line, profile_surface.
@@ -273,11 +276,35 @@ def gdt_frame_symbol(
         msg = f"the tolerance text {tolerance_text!r} is too long for the {'wide' if wide else 'narrow'} cell of the library"
         raise GdtFrameError(msg)
     relative = _relative(name, count, wide)
-    files = library_files()
-    if relative not in files:
+    if relative not in library_files():
         msg = f"the library {library_dir()} has no {relative}"
         raise GdtFrameError(msg)
-    return files[relative], (tolerance_text, *(text for text, _ in cells))
+    return relative, (tolerance_text, *(text for text, _ in cells))
+
+
+def gdt_frame_symbol(
+    characteristic: str,
+    tolerance: float | str,
+    modifiers: Iterable[str] = (),
+    datums: Sequence[str | Sequence[str]] = (),
+    *,
+    decimal: str = ",",
+    width: str | None = None,
+) -> tuple[str, tuple[str, ...]]:
+    """The library file for a feature control frame and the values of its editable texts: ``(svg_text, editable_texts)``.
+
+    ``characteristic``: flatness, straightness, circularity, cylindricity, parallelism, perpendicularity, angularity,
+    position, concentricity (or coaxiality), symmetry, runout, total_runout, profile_line, profile_surface.
+    ``tolerance``: the value in mm (formatted with ``decimal``) or the text of the cell (``"0,02 / 100"``).
+    ``modifiers``: ``diameter`` (Ø), ``spherical_diameter`` (SØ), one of ``M`` ``L`` ``P`` (circled), one of ``CZ`` ``SZ``
+    ``UF``. ``datums``: up to three cells, each ``"A"``, ``"A-B"`` or ``("A", "M")``. ``width``: ``"std"`` or ``"wide"`` to
+    force the tolerance cell (by default the narrowest that holds the text).
+
+    ``svg_text`` is the file as it is; ``editable_texts`` is in the order of the file: the tolerance, then the datums.
+    Raises ``GdtFrameError`` for a frame ISO 1101 has no such cell for.
+    """
+    relative, texts = gdt_frame_choice(characteristic, tolerance, modifiers, datums, decimal=decimal, width=width)
+    return library_files()[relative], texts
 
 
 def gdt_frame_file(characteristic: str, datum_cells: int, *, wide: bool = False) -> str:
@@ -287,6 +314,86 @@ def gdt_frame_file(characteristic: str, datum_cells: int, *, wide: bool = False)
         msg = f"the library has no {characteristic} frame with {datum_cells} datum cells"
         raise GdtFrameError(msg)
     return _relative(name, datum_cells, wide)
+
+
+DATUM_DIRECTIONS = ("up", "down", "left", "right")  # where the frame of the letter stands against the feature
+DATUM_STRETCHES = 10  # the stem of a datum symbol comes in ten lengths (the files ``-1`` ... ``-9`` are longer by 3 mm each)
+DATUM_STRETCH_MM = 3.0
+MACHINING = ("required", "forbidden", "any")
+FINISH_BAR_MM = 18.0  # the bar of the finish symbols over the roughness text
+ROUGHNESS_FITS_MM = 16.4  # the bar of the finish symbols holds "Ra 12,5" (about 16 mm of text at 3.5 mm)
+
+
+def datum_file(direction: str, stretch: int = 0) -> str:
+    """The path inside the library of the datum feature symbol with its frame on the ``direction`` side of the feature and its stem
+    ``stretch`` steps longer than the one of FreeCAD's own symbol."""
+    if direction not in DATUM_DIRECTIONS:
+        msg = f"unknown datum direction {direction!r}: expected one of {', '.join(DATUM_DIRECTIONS)}"
+        raise GdtFrameError(msg)
+    if not 0 <= stretch < DATUM_STRETCHES:
+        msg = f"a datum symbol has {DATUM_STRETCHES} stem lengths, not {stretch}"
+        raise GdtFrameError(msg)
+    return f"datum/datum-{direction}{f'-{stretch}' if stretch else ''}.svg"
+
+
+def datum_symbol(letter: str, direction: str, stretch: int = 0) -> tuple[str, tuple[str, ...]]:
+    """The library file of a datum feature symbol (ISO 5459) and its editable text: ``(svg_text, (letter,))``. The origin of the
+    drawing is the middle of the base of the triangle, the point that stands on the feature."""
+    relative = datum_file(direction, stretch)
+    files = library_files()
+    if relative not in files:
+        msg = f"the library {library_dir()} has no {relative}"
+        raise GdtFrameError(msg)
+    return files[relative], (_letter(letter),)
+
+
+def finish_file(machining: str, *, general: bool = False, bare: bool = False) -> str:
+    """The path inside the library of a surface texture symbol (ISO 1302): the check mark closed (``required``), with a circle
+    (``forbidden``) or plain (``any``); ``general`` adds the basic symbol in parentheses; ``bare`` is the one with no bar."""
+    if machining not in MACHINING:
+        msg = f"unknown machining {machining!r}: expected one of {', '.join(MACHINING)}"
+        raise GdtFrameError(msg)
+    if bare and (general or machining != "forbidden"):
+        msg = "only the forbidden-removal symbol has a bare form (no bar, no value)"
+        raise GdtFrameError(msg)
+    return f"finish/finish-{'general-' if general else ''}{machining}{'-bare' if bare else ''}.svg"
+
+
+def finish_symbol(
+    machining: str, roughness: str | None, *, general: bool = False
+) -> tuple[str, tuple[str, ...]]:
+    """The library file of a surface texture symbol and its editable text: ``(svg_text, (roughness,))`` (the text is empty for
+    the bare symbol). The origin of the drawing is the vertex of the check mark."""
+    bare = roughness is None and machining == "forbidden" and not general
+    if roughness is not None and _text_mm(roughness) > ROUGHNESS_FITS_MM:
+        msg = f"the roughness text {roughness!r} is too long for the bar of the library symbol"
+        raise GdtFrameError(msg)
+    relative = finish_file(machining, general=general, bare=bare)
+    files = library_files()
+    if relative not in files:
+        msg = f"the library {library_dir()} has no {relative}"
+        raise GdtFrameError(msg)
+    return files[relative], (() if bare else (roughness or "",))
+
+
+def symbol_box(svg_text: str) -> tuple[float, float, float, float]:
+    """The box the symbol is painted in, as its ``viewBox`` says (user units are millimetres): ``(x, y, width, height)``, with y
+    down and the origin of the drawing at (0, 0)."""
+    root = ET.fromstring(svg_text.strip())
+    x, y, w, h = (float(v) for v in root.attrib["viewBox"].split())
+    return x, y, w, h
+
+
+def symbol_centre(svg_text: str, origin: tuple[float, float]) -> tuple[float, float]:
+    """Where a ``DrawViewSymbol`` made from the file stands (its X, Y: the middle of the painted box, page mm, y up) when the origin
+    of the drawing is to be at ``origin`` on the page."""
+    x, y, w, h = symbol_box(svg_text)
+    return origin[0] + x + w / 2, origin[1] - (y + h / 2)
+
+
+def frame_width(svg_text: str) -> float:
+    """The width of a feature control frame (its drawn box without the stroke margin): what the sheet reserves for it."""
+    return symbol_box(svg_text)[2] - 0.35
 
 
 # --- telling a library symbol from another --------------------------------------------------------------------------------

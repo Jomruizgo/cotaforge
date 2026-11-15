@@ -431,6 +431,13 @@ class Geometry:
         msg = "instance visibility is not available"
         raise ItemError(msg)
 
+    def owner_at(self, frame: tuple[Vec3, Vec3, Vec3], local: Point, offsets: dict[str, Vec3]) -> str | None:
+        """The instance whose surface a viewer looking against ``frame`` = (centre, xdir, direction) meets first at the point
+        ``local`` = (u, v) of the view (model mm, the view's own axes); ``None`` when the ray meets nothing, or two instances
+        at the same depth. The balloon of a part ends on a point where this is the part itself."""
+        msg = "instance visibility is not available"
+        raise ItemError(msg)
+
     def assembly_projection(self, centre: Vec3, xdir: Vec3, direction: Vec3, offsets: dict[str, Vec3]) -> "Projection":
         """The whole assembly (components displaced by ``offsets``) looked at like ``projection``, visible edges."""
         msg = "assembly projections are not available"

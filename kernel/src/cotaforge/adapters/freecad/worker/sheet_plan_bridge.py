@@ -258,14 +258,15 @@ def read_angle(entities: Sequence[model.Entity]) -> tuple[tuple[float, float], t
 
 
 def read_datum(ink: sheet_collide.Ink, entities: Sequence[model.Entity]) -> tuple[tuple[float, float], tuple[float, float], Rect] | None:
-    """The symbol of a datum read from its entities (page coordinates, y up): ``(tip, normal, frame)``. The tip is the apex of
-    the triangle on the part, ``normal`` the unit vector (along x or y) from there to its base, ``frame`` the lettered box."""
+    """The symbol of a datum read from its entities (page coordinates, y up): ``(tip, normal, frame)``. The tip is the middle of
+    the base of the triangle, which stands on the part (ISO 5459), ``normal`` the unit vector (along x or y) from there to the apex
+    (to the frame), ``frame`` the lettered box."""
     triangles = [e for e in entities if isinstance(e, model.Solid) and len(e.points) == 3]
     if len(triangles) != 1 or len(ink.frames) != 1:
         return None
-    tip, b1, b2 = triangles[0].points
-    base = ((b1[0] + b2[0]) / 2, (b1[1] + b2[1]) / 2)
-    dx, dy = base[0] - tip[0], base[1] - tip[1]
+    b1, b2, apex = triangles[0].points
+    tip = ((b1[0] + b2[0]) / 2, (b1[1] + b2[1]) / 2)
+    dx, dy = apex[0] - tip[0], apex[1] - tip[1]
     length = math.hypot(dx, dy)
     if length < 1e-6:
         return None

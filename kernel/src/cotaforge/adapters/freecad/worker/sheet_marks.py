@@ -25,14 +25,18 @@ AWS_TILES: dict[str, dict[str, str]] = {
     "v": {"arrow": "Welding/AWS/VDown.svg", "other": "Welding/AWS/VUp.svg"},
     "square": {"arrow": "Welding/AWS/SquareDown.svg", "other": "Welding/AWS/SquareUp.svg"},
 }
-TILE_ROW = {"arrow": 0, "other": -1}  # TechDraw's ``TileRow``: 0 for the arrow side, -1 for the other side
+# TechDraw's ``TileRow`` of each side. Measured in 1.1.3 (the sheet window, in four weld symbols, left- and right-going, the arrow
+# above and below the line): row 0 is painted ABOVE the reference line and row -1 BELOW it, whatever the way the arrow comes. AWS
+# puts the arrow side below the line (``filletDown.svg``, whose horizontal leg is on the line) and the other side above it. NT4 took
+# row 0 for the arrow side and painted every one-sided weld on the wrong side of the joint.
+TILE_ROW = {"arrow": -1, "other": 0}
 
 
 @dataclass(frozen=True)
 class NativeWeld:
-    """One weld symbol: a ``DrawLeaderLine`` from the arrow tip ``tips[0]`` to ``anchor`` and on along the reference line (``length`` mm
-    towards ``sign``: +1 right, -1 left), a ``DrawWeldSymbol`` on it with the AWS tiles of ``kind`` for the ``sides`` asked, the
-    flags (all round, field) and the tail text. More ``tips`` are plain leader lines from the same anchor (identical welds)."""
+    """One weld symbol: a ``DrawLeaderLine`` along the reference line from ``anchor`` (``length`` mm towards ``sign``: +1 right, -1
+    left) with a ``DrawWeldSymbol`` on it (the AWS tiles of ``kind`` for the ``sides`` asked, the flags: all round, field, and the
+    tail text), and an arrow ``DrawLeaderLine`` from ``anchor`` to each of the ``tips`` (the joints the symbol is for)."""
 
     item: str
     view: str  # front | top | right | isometric
@@ -95,7 +99,7 @@ def count(n: object) -> int:
     """How many objects of the page ``n`` is (the objects the page lists: the leaders and the weld symbol, the balloon, the
     table's view; the tiles and the spreadsheet hang on them)."""
     if isinstance(n, NativeWeld):
-        return 1 + len(n.tips)
+        return 2 + len(n.tips)  # the reference line's leader, the weld symbol, an arrow leader per joint
     return 1
 
 

@@ -361,3 +361,31 @@ def test_a_note_that_states_the_material_while_the_title_block_has_none_says_to_
     ctx = views_context([])
     ctx.extras["fields"] = {"part_material": "AISI 1045"}
     assert found("material_only_in_note", run_review(ctx, {"type": "overall"}, note)) == []  # the title block has it: no finding
+
+
+def test_a_note_that_sends_another_datum_to_the_title_block_needs_it_there() -> None:
+    note = {"type": "note", "text": "Tolerancias generales según rótulo"}
+    ctx = views_context([])
+    ctx.extras["fields"] = {"general_tolerances": "", "part_material": "AISI 1045"}
+    (finding,) = found("title_block_field_empty", run_review(ctx, {"type": "overall"}, note))
+    assert finding.severity == "warning" and finding.items == ("n2",) and "general_tolerances" in finding.message
+    assert "title_block_field_empty" not in checks.NON_BLOCKING  # a note that points at nothing holds the export
+    filled = views_context([])
+    filled.extras["fields"] = {"general_tolerances": "ISO 2768-mK"}
+    assert found("title_block_field_empty", run_review(filled, {"type": "overall"}, note)) == []
+    other = views_context([])
+    other.extras["fields"] = {"general_tolerances": ""}
+    plain = {"type": "note", "text": "Tolerancias generales ISO 2768-mK"}  # it says them: it does not point anywhere
+    assert found("title_block_field_empty", run_review(other, {"type": "overall"}, plain)) == []
+
+
+def test_a_note_that_sends_the_drawing_number_or_the_company_to_an_empty_field_is_flagged_once_each() -> None:
+    ctx = views_context([])
+    ctx.extras["fields"] = {"drawing_number": "", "legal_owner_1": "", "creator": "JR"}
+    notes = (
+        {"type": "note", "text": "Número de plano según rótulo"},
+        {"type": "note", "text": "Empresa: ver rótulo"},
+        {"type": "note", "text": "Dibujó: ver rótulo"},
+    )
+    keys = sorted(f.key for f in found("title_block_field_empty", run_review(ctx, {"type": "overall"}, *notes)))
+    assert len(keys) == 2 and keys[0].endswith(":drawing_number") and keys[1].endswith(":legal_owner_1")  # the creator is filled

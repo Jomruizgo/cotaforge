@@ -319,8 +319,9 @@ def test_a_datum_on_an_axis_stands_on_the_shelf_of_the_dimension_callout_with_it
     anchor = ctx.extras["anchors"]["bore"][0]
     triangles = [e for e in ctx.sheet.entities if isinstance(e, model.Solid) and len(e.points) == 3]
     triangle = triangles[-1]
-    assert triangle.points[0][1] == pytest.approx(anchor["elbow"][1])  # its tip touches the shelf line
-    assert triangle.points[1][1] < anchor["elbow"][1]  # and its base is below
+    assert triangle.points[0][1] == pytest.approx(anchor["elbow"][1])  # its base stands on the shelf line (ISO 5459)
+    assert triangle.points[1][1] == pytest.approx(anchor["elbow"][1])
+    assert triangle.points[2][1] < anchor["elbow"][1]  # and its apex, the stem and the frame are below
     letter = next(e for e in ctx.sheet.entities if isinstance(e, model.Text) and e.text == "A")
     assert letter.y < anchor["elbow"][1]
 
@@ -342,7 +343,9 @@ def test_a_datum_on_a_plane_seen_edge_on_touches_its_outline() -> None:
     (r,) = draw(ctx, {"type": "datum", "letter": "B", "face": "face:bottom"})
     assert r.status == "ok" and "surface of face:bottom in the front view" in r.detail
     triangle = next(e for e in ctx.sheet.entities if isinstance(e, model.Solid))
-    assert triangle.points[0] == (150.0, 150.0)  # the middle of the bottom edge of the front view
+    base = ((triangle.points[0][0] + triangle.points[1][0]) / 2, (triangle.points[0][1] + triangle.points[1][1]) / 2)
+    assert base == (150.0, 150.0)  # the middle of its base is the middle of the bottom edge of the front view
+    assert triangle.points[2][1] < 150.0  # the apex points away from the part
 
 
 def test_a_face_seen_face_on_cannot_carry_a_datum_in_that_view() -> None:
@@ -416,8 +419,7 @@ def test_position_with_a_diameter_zone_and_a_modifier_hangs_from_the_callout() -
     ctx = make_context()
     results = draw(
         ctx,
-        BORE,
-        DATUM_A,
+        {"type": "datum", "letter": "A", "face": "face:bottom"},
         {"type": "hole_dim", "face": "face:tapped", "id": "t"},
         {
             "type": "gdt",
@@ -429,7 +431,7 @@ def test_position_with_a_diameter_zone_and_a_modifier_hangs_from_the_callout() -
             "on": "t",
         },
     )
-    assert [r.status for r in results] == ["ok"] * 4, [r.detail for r in results]
+    assert [r.status for r in results] == ["ok"] * 3, [r.detail for r in results]
     assert "Ø0,1" in texts(ctx) and "M6 ↧ 6" in texts(ctx)
     assert any(isinstance(e, model.Glyph) and e.name == "mmc" for e in ctx.sheet.entities)
     anchor = ctx.extras["anchors"]["t"][0]

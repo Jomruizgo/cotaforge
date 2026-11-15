@@ -43,11 +43,14 @@ SHEET_RULES = (
     "outline instead, not the sheet). The DXF is R12 (opens in any CAD), text in the Windows code page, layers by "
     "role (CONTORNO, OCULTAS, COTAS, TEXTO, ROTULO, EJES, SOMBREADO, ROSCAS) with the title block in it: PDF and "
     "DXF show "
-    "the same. Line weights follow ISO 128: the visible outline is thick (0.5 mm), everything else thin (dimension, "
-    "extension and leader lines, centre lines, thread arcs, hidden lines 0,25 mm; hatching 0,18 mm) and every "
-    "dimension or note is written 3,5 mm high; the DXF (R12, no lineweight) carries the weight in the layer colour "
-    "for a standard pen table: colour 7 = 0,50 mm (CONTORNO, ROTULO), 3 = 0,25 mm (COTAS, TEXTO, ROSCAS), 1 = 0,25 mm "
-    "(EJES), 8 = 0,25 mm (OCULTAS), 9 = 0,18 mm (SOMBREADO).",
+    "the same. Line weights come from the harness table (ISO 128-20 group 0.35, hidden lines thick): "
+    "visible and hidden outlines 0,35 mm, dimension, extension and leader lines, centre lines and thread arcs 0,18 mm, "
+    "tangent edges 0,07 mm, hatching 0,07 mm (TechDraw draws its own section hatch at 0,10), sheet frame 0,7 mm; they are set on the sheet's own objects, so a file carries "
+    "them (the views, dimensions and leaders in the CAD with a window: a file saved without one is set when that CAD "
+    "opens it). Every dimension or note is written 3,5 mm high; the DXF (R12, no lineweight) carries the weight in the "
+    "layer colour for a standard pen table: colour 7 = 0,35 mm (CONTORNO, OCULTAS, ROTULO), 3 = 0,18 mm (COTAS, TEXTO, "
+    "ROSCAS), 1 = 0,18 mm (EJES), 9 = 0,07 mm (SOMBREADO). The review warns (line_weight_off_table) of an object "
+    "whose weight is outside the table.",
     "The sheet is part of the document (doc(action=save) keeps it) and its views show the part as it is: after "
     "changing the part, build the sheet again. The part must have volume.",
 )
@@ -516,8 +519,8 @@ NATIVE_LINE = (
     "drawn as a symbol and review says native_fallback), datum_dims (baseline dimensions from the datum edges), "
     "note (one annotation per line), overall, the views, view_lines, centre lines, thread arcs, section / detail / "
     "aux_view (own hatch and cutting line; position follows the parent: clear its expression to move it alone) and "
-    "their dimensions. A SYMBOL (our drawing inside TechDraw) is what TechDraw has no object for: datum, gdt, finish, "
-    "chamfer callouts, exploded, parts list, hole table. "
+    "their dimensions, datum / gdt / finish (library symbols), hole table. A SYMBOL (our drawing inside TechDraw) is "
+    "what TechDraw has no object for: chamfer callouts, exploded, parts list. "
     "Every object has CotaforgeItem (the item id) and CotaforgeSheet. The PDF of a visible CAD is "
     "TechDraw's; a headless CAD (no window to paint) writes it with our own writer from the same sheet, and "
     "export says which; the DXF is always our R12 writer (TechDraw's own DXF has no title block, symbols or notes)."

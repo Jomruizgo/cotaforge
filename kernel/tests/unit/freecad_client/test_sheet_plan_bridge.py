@@ -182,9 +182,8 @@ def test_an_angular_dimension_that_has_its_radius_is_not_moved() -> None:
 def datum_unit(key: str = "dC") -> units.Unit:
     import items_gdt as gdt  # noqa: PLC0415
 
-    triangle, base = gdt._triangle((110.0, 110.0), (0.0, -1.0))  # on the bottom edge of the view, pointing down
-    boxed, _ = gdt._frame_at((110.0, 96.0), (0.0, -1.0), [("letter", "C")])
-    return units.Unit(key, key, units.KIND_ITEM, (triangle, model.Line(base[0], base[1], 110.0, 96.0, model.DIMENSIONS), *boxed), "datum")
+    entities, _ = gdt.datum_entities((110.0, 110.0), "down", "C")  # on the bottom edge of the view, the frame below
+    return units.Unit(key, key, units.KIND_ITEM, tuple(entities), "datum")
 
 
 def test_a_datum_is_read_and_given_a_side_and_a_stem() -> None:

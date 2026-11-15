@@ -95,6 +95,9 @@ def review(data: ReviewInput) -> list[Finding]:
         _assembly_holes,
         _assembly_joints,
         _hidden_instances,
+        _marks_run_over_themselves,
+        _view_labels,
+        _title_block_overflow,
         sheet_checks.checks,  # the finished-drawing list (F6)
     ):
         found += check(data)
@@ -108,6 +111,71 @@ def review(data: ReviewInput) -> list[Finding]:
 
     found += sheet_shopchecks.check(data)
     return sorted(found, key=lambda f: 0 if f.severity == "warning" else 1)
+
+
+# --- what a shop reader sees at a glance ----------------------------------------------------------------------------------
+
+
+def _marks_run_over_themselves(data: ReviewInput) -> list[Finding]:
+    """A mould mark (opening direction and draft, parting line, zones) whose text is crossed by a line of the same mark: the label of
+    an arrow printed over its shaft, a draft value over its wedge. It cannot be read."""
+    import sheet_pagechecks  # noqa: PLC0415
+    import sheet_units  # noqa: PLC0415
+
+    ctx = data.ctx
+    out: list[Finding] = []
+    for unit in ctx.extras.get("units", []):
+        if getattr(unit, "item_type", "") not in sheet_units.MOULD_ITEMS:
+            continue
+        crossed = sheet_pagechecks.self_overlaps(unit.entities)
+        if crossed:
+            shown = ", ".join(f"«{t}»" for t in crossed[:4])
+            text = ctx.say(
+                f"{unit.key} ({unit.item_type}) tiene texto cruzado por una línea de la misma marca: {shown}. Sepáralos "
+                "(side u offset_mm): así no se lee.",
+                f"{unit.key} ({unit.item_type}) has text crossed by a line of the same mark: {shown}. Separate them "
+                "(side or offset_mm): it cannot be read like that.",
+            )
+            out.append(Finding("mark_overlaps_itself", "warning", text, (unit.key,), key=unit.key))
+    return out
+
+
+def _view_labels(data: ReviewInput) -> list[Finding]:
+    """The label of a view (the scale of the isometric one) stands under its own view: never nearer to another view, where it reads as
+    that view's label."""
+    import sheet_pagechecks  # noqa: PLC0415
+
+    ctx = data.ctx
+    labels = ctx.extras.get("view_labels", {})
+    if not labels:
+        return []
+    boxes = {n: v.box for n, v in {**ctx.views, **ctx.extras.get("views_extra", {}), **ctx.extras.get("sections", {})}.items()}
+    out: list[Finding] = []
+    for name, other, own, near in sheet_pagechecks.label_problems(labels, boxes):
+        text = ctx.say(
+            f"La etiqueta de la vista {name} está a {own} mm de ella y a {near} mm de la vista {other}: se lee como la etiqueta de "
+            f"{other}. Cada etiqueta va bajo su vista, más cerca de ella que de cualquier otra.",
+            f"The label of the {name} view is {own} mm from it and {near} mm from the {other} view: it reads as {other}'s label. "
+            "Each label goes under its own view, nearer to it than to any other.",
+        )
+        out.append(Finding("view_label_ambiguous", "warning", text, (), key=name))
+    return out
+
+
+def _title_block_overflow(data: ReviewInput) -> list[Finding]:
+    """A title-block text wider than its field runs over the next field (TechDraw does not shrink a template text): the value is
+    shortened, or its detail goes to a note the field refers to."""
+    ctx = data.ctx
+    out: list[Finding] = []
+    for name, width, limit in ctx.extras.get("title_overflow", []):
+        text = ctx.say(
+            f"El campo «{name}» del cuadro de rotulación mide {width} mm y su casilla {limit} mm: el texto invade el campo vecino. "
+            "Acorta el valor (o pasa el detalle a una nota y pon en el campo la referencia a ella).",
+            f"The title-block field «{name}» takes {width} mm and its box is {limit} mm: the text runs into the next field. "
+            "Shorten the value (or move the detail to a note and put a reference to it in the field).",
+        )
+        out.append(Finding("title_block_overflow", "warning", text, (), key=name))
+    return out
 
 
 # --- helpers ------------------------------------------------------------------------------------------------------------
