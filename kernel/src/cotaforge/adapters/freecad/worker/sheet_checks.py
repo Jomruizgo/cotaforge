@@ -94,13 +94,16 @@ NON_BLOCKING = frozenset(
         "hatch_same_as_neighbour",
         "hatch_pattern_differs",
         "weld_designation_unchecked",
+        "side_view_repeats_section",
+        "assembly_solid_cut",
     }
 )
 """Notices that never hold an export: about the harness (the FreeCAD window, the fallback of an item to a symbol) or suggestions whose
 question is asked anyway (``single_view_enough`` is the plate case of the memory principle ``drawing-sufficient-views``,
 ``dowel_unmarked`` of ``q.callouts``) or that is a matter of style (``dimension_repeated``: the same size in two views,
 ISO 129, which a shop reads without trouble): they are listed and can be answered, but the question is what the export
-waits for."""
+waits for. ``side_view_repeats_section`` is a suggestion like ``view_redundant``; ``assembly_solid_cut`` does not measure
+which way the plane cut the part, so it cannot hold anything."""
 MAX_ID_KEY = 60
 
 

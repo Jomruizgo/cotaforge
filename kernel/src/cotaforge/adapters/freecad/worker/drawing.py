@@ -3577,6 +3577,25 @@ def _last_input(ctx: sc.Context) -> sheet_review.ReviewInput:
     return ctx.extras["review_input"]
 
 
+def view_lines(view: Any) -> list[list[tuple[float, float]]]:
+    """The lines of the part TechDraw drew for ``view`` (visible and hidden, without the cosmetic lines the sheet added), as
+    polylines in the view's own page mm from its origin, y up (``getVisibleEdges`` hands them out at the view's scale with y
+    down: measured on FreeCAD 1.1.3)."""
+    lines: list[list[tuple[float, float]]] = []
+    for edge in [*sheet_native.model_edges(view), *view.getHiddenEdges()]:
+        points: list[tuple[float, float]] = []
+        if type(edge.Curve).__name__ != "Line":
+            try:
+                points = [(float(p.x), -float(p.y)) for p in edge.discretize(Deflection=0.02)]
+            except Exception:  # noqa: BLE001 - a curve FreeCAD cannot sample: its two ends
+                points = []
+        if len(points) < 2:  # noqa: PLR2004
+            points = [(float(v.Point.x), -float(v.Point.y)) for v in edge.Vertexes[:2]]
+        if len(points) >= 2:  # noqa: PLR2004
+            lines.append(points)
+    return lines
+
+
 def read_page_dimensions(page: Any, ctx: sc.Context) -> None:
     """Put the linear dimensions TechDraw holds on ``page`` where the rules that measure dimension lines read them: they replace
     the shapes the composed sheet drew for the same items (``sheet_pageread``), and the ones that cannot be read are kept in
@@ -3594,6 +3613,12 @@ def read_page_dimensions(page: Any, ctx: sc.Context) -> None:
     except Exception as exc:  # noqa: BLE001 - listed, never skipped
         ctx.extras["page_texts"], unread_texts = [], [f"the texts of the page: {type(exc).__name__}: {exc}"]
     ctx.extras["page_unread"] += unread_texts
+    try:  # where the page dimensions measure and the lines TechDraw drew there (``dimension_off_part``)
+        ctx.extras["page_dim_ends"], ctx.extras["page_outlines"] = sheet_pageread.dimension_ends(
+            page, sheet_mirror.page_position, sheet_mirror.PROP_ITEM, view_lines
+        )
+    except Exception:  # noqa: BLE001 - the check then judges the composed sheet
+        ctx.extras["page_dim_ends"], ctx.extras["page_outlines"] = [], {}
 
 
 def _review_data(

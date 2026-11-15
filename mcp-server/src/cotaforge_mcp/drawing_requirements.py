@@ -656,6 +656,7 @@ MEASURED_FINDINGS = frozenset(
         "leader_crosses_part",
         "leader_crosses_dimension",
         "dimension_inside_outline",
+        "dimension_off_part",
         "centre_line_crosses",
         "centre_line_long",
         "material_title_block_empty",

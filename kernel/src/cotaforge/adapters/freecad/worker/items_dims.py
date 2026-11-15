@@ -588,7 +588,7 @@ def _distance(ctx: Context, spec: dict[str, Any]) -> str:
     ctx.record_dimension(("len", name, round(min(ca, cb), 2), round(max(ca, cb), 2)), view.name)
     if a.kind == "plane" and b.kind == "plane":  # both ends are faces seen edge-on: each must stand on a line of the part (the review looks)
         ctx.extras.setdefault("face_ends", []).append(
-            (str(ctx.extras["current"]), view.name, orient, tuple(sorted((centres[0][0], centres[1][0]) if orient == "h" else (centres[0][1], centres[1][1]))))
+            (str(ctx.extras["current"]), view.name, orient, (centres[0], centres[1]), (_trace_span(ctx, view, a, orient), _trace_span(ctx, view, b, orient)))
         )
     ctx.native(
         NativeDim(
@@ -628,6 +628,21 @@ def _trace_end(ctx: Context, view: ViewInfo, ref: "Ref", centre: Point, side: st
     best = max(points, key=pick)
     # keep the coordinate along the measured direction (the face's own position), take the other from the trace end
     return (best[0], centre[1]) if side in ("right", "left") else (centre[0], best[1])
+
+
+def _trace_span(ctx: Context, view: ViewInfo, ref: "Ref", orient: str) -> tuple[float, float] | None:
+    """The stretch a planar face seen edge-on takes ACROSS a dimension that measures to it (page mm: y for a horizontal
+    dimension, x for a vertical one): where the review looks for the line of the part the dimension's end stands on
+    (``sheet_shopchecks``). ``None`` when the geometry cannot say."""
+    if ref.kind != "plane" or not ref.label.startswith("face:"):
+        return None
+    try:
+        loops = ctx.geometry.face_outline(ref.label, view.centre, view.xdir, view.direction)
+    except ItemError:
+        return None
+    index, origin = (1, view.y) if orient == "h" else (0, view.x)
+    across = [origin + p[index] * view.scale for loop in loops for p in loop]
+    return (min(across), max(across)) if across else None
 
 
 def _radius(ctx: Context, spec: dict[str, Any]) -> str:

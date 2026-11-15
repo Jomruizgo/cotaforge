@@ -6,7 +6,9 @@ where TechDraw puts its lines, not where the composed entities have them (a diam
 sheet is an aligned dimension with two extension lines on the page). The rules that measure the lines of the dimensions
 (``dimension_crossing``, the stacks) read what the page holds: ``dimension_shapes`` turns each linear TechDraw dimension
 into the ``DimShape`` of ``sheet_viewrules`` from the two measured points and the two arrow tips FreeCAD reports
-(``getLinearPoints`` in the page millimetres of the view, ``getArrowPositions`` in the view's own unscaled millimetres).
+(``getLinearPoints`` in the page millimetres of the view with y DOWN, ``getArrowPositions`` in the view's own unscaled
+millimetres with y up: measured on FreeCAD 1.1.3). ``dimension_ends`` gives the measured points themselves and the lines
+TechDraw drew for the view each dimension measures: what ``dimension_off_part`` judges.
 
 A dimension this cannot read (an oblique one, one TechDraw has not computed the lines of, a dimension of a view it cannot place,
 an object that fails to answer) is returned apart as an ``(owner, why)`` row: it is never skipped. When the sheet's own drawing of
@@ -16,6 +18,7 @@ review as ``native_unread``, which holds the export.
 
 import math
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from sheet_model import text_width
@@ -57,7 +60,7 @@ def shape_of(
     tips ``arrows`` (the view's unscaled mm) and the view's ``origin`` (page mm) and ``scale``. ``None`` when the dimension line is
     neither vertical nor horizontal or its two ends are the same."""
     ox, oy = origin
-    measured = [(ox + p[0], oy + p[1]) for p in points]
+    measured = [(ox + p[0], oy - p[1]) for p in points]  # ``getLinearPoints`` has y DOWN (the arrow tips have it up): measured on 1.1.3
     tips = [(ox + a[0] * scale, oy + a[1] * scale) for a in arrows]
     if math.dist(tips[0], tips[1]) < 1e-6:
         return None
@@ -121,6 +124,58 @@ def dimension_shapes(
         else:
             shapes.append(shape)
     return shapes, unread
+
+
+@dataclass(frozen=True)
+class PageEnds:
+    """The two measured points of a linear dimension of the page (sheet mm, y up), whether its dimension line is horizontal (it
+    measures along x), the view object it measures (``view``: the key of its lines in ``dimension_ends``) and that view's scale."""
+
+    owner: str
+    view: str
+    horizontal: bool
+    points: tuple[tuple[float, float], tuple[float, float]]
+    scale: float
+
+
+def dimension_ends(
+    page: Any,
+    position: Callable[[Any, Any], tuple[float, float]],
+    item_prop: str,
+    lines_of: Callable[[Any], list[list[tuple[float, float]]]],
+) -> tuple[list[PageEnds], dict[str, list[tuple[float, float, float, float]]]]:
+    """Where each linear dimension of ``page`` measures from and to, and the lines of the part in the views they measure (by the
+    name of the view object, sheet mm): ``lines_of(view)`` gives the polylines TechDraw drew for a view (its own page mm from the
+    view's origin, y up). A dimension that cannot be read (oblique, not computed, failing) is left out: the caller judges it on the
+    composed sheet, and ``dimension_shapes`` already lists it as unread."""
+    ends: list[PageEnds] = []
+    outlines: dict[str, list[tuple[float, float, float, float]]] = {}
+    for obj in page.Views:
+        if not hasattr(obj, "getArrowPositions") or str(getattr(obj, "Type", "")) not in LINEAR:
+            continue
+        view = _first_view(obj)
+        try:
+            if view is None:
+                continue
+            arrows, points = [_point(a) for a in obj.getArrowPositions()], [_point(p) for p in obj.getLinearPoints()]
+            if len(arrows) < 2 or len(points) < 2 or math.dist(arrows[0], arrows[1]) < 1e-6:  # noqa: PLR2004 - a linear dimension has two of each
+                continue
+            scale = float(view.getScale())
+            vertical = abs(arrows[0][0] - arrows[1][0]) * scale <= AXIS_TOL_MM
+            horizontal = abs(arrows[0][1] - arrows[1][1]) * scale <= AXIS_TOL_MM
+            if vertical == horizontal:
+                continue
+            ox, oy = position(page, view)
+            key = str(view.Name)
+            if key not in outlines:
+                outlines[key] = [
+                    (ox + a[0], oy + a[1], ox + b[0], oy + b[1]) for line in lines_of(view) for a, b in zip(line, line[1:], strict=False)
+                ]
+            owner = str(getattr(obj, item_prop, "") or getattr(obj, "Label", "") or getattr(obj, "Name", ""))
+            ends.append(PageEnds(owner, key, horizontal, ((ox + points[0][0], oy - points[0][1]), (ox + points[1][0], oy - points[1][1])), scale))
+        except Exception:  # noqa: BLE001, S112 - FreeCAD raises plain exceptions of every kind: this dimension is judged on the composed sheet
+            continue
+    return ends, outlines
 
 
 def merged(model: list[DimShape], page: list[DimShape]) -> list[DimShape]:

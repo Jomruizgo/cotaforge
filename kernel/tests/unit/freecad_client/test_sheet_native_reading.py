@@ -59,7 +59,8 @@ def test_a_native_dimension_is_read_where_techdraw_puts_its_lines() -> None:
     (shape,), unread = _read([_dim(_view(), **HUB)])
     assert unread == [] and (shape.owner, shape.view) == ("hub", "front")
     assert abs(shape.line_at - (186.0 + 52.49 * 0.5)) < 1e-6  # the dimension line: the arrow tips at the scale of the view
-    assert [round(s[1], 2) for s in shape.extension] == [round(215 + 17.48, 2), round(215 - 17.52, 2)]  # one extension line from each measured point
+    # one extension line from each measured point; ``getLinearPoints`` has y down (the point at 17,48 belongs to the arrow tip at -34,96 / 2)
+    assert [round(s[1], 2) for s in shape.extension] == [round(215 - 17.48, 2), round(215 + 17.52, 2)]
     assert all(abs(s[0] - 189.0) < 1e-6 and abs(s[2] - shape.line_at) < 1e-6 for s in shape.extension)  # horizontal, up to the dimension line
     assert abs(shape.span - 35.0) < 1e-6
 
