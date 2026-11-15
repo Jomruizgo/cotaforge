@@ -26,6 +26,7 @@ import gui
 import sheet_notefit
 import sheet_symbols
 import sheet_units as su
+import sheet_weights as sw
 from sheet_draw import lifted_label
 
 PROP_ITEM = "CotaforgeItem"
@@ -901,7 +902,12 @@ def sync_views(
 
 PROP_COSMETIC = "CotaforgeCosmetic"  # on a view: the cosmetic edges the sheet made, {unit key: [signature, [geometry...]]}
 ISO_STYLE = {"centre": 4, "thin": 1, "parting": 8, "thick": 1}  # ISO 128-20 line numbers (TechDraw's own list): 04 long dash dot, 01, 08
-ISO_WIDTH_MM = {"centre": 0.25, "thin": 0.25, "parting": 0.5, "thick": 0.5}  # the 0.5 mm group: wide 0.5, narrow 0.25 (as the PDF)
+ISO_WIDTH_MM = {  # the table of ``sheet_weights`` (as the PDF the headless CAD writes)
+    "centre": sw.weight(sw.CENTRE),
+    "thin": sw.weight(sw.THREAD),
+    "parting": sw.weight(sw.VISIBLE),
+    "thick": sw.weight(sw.SECTION_LINE),
+}
 BLACK = (0.0, 0.0, 0.0, 1.0)
 EDGE_TOL = 1e-4
 
@@ -1002,6 +1008,15 @@ def _make_cosmetic(frame: Frame, n: su.NativeCosmetic) -> Geometry:
     return geometry
 
 
+def _reweigh(view: Any, natives: list[su.NativeCosmetic], specs: list[Any]) -> None:
+    """Put the weights of the table on the cosmetic edges the sheet made earlier (a file saved before the table changed)."""
+    for n, (kind, values) in zip(natives, specs, strict=False):
+        found = _find(view, (kind, tuple(values)))
+        fmt = dict(found.Format) if found is not None else {}
+        if fmt and abs(float(fmt.get("weight", 0.0)) - ISO_WIDTH_MM[n.style]) > 1e-6:
+            found.Format = {**fmt, "weight": ISO_WIDTH_MM[n.style]}
+
+
 def sync_cosmetics(page: Any, units: list[su.Unit], made: list[str] | None = None) -> dict[str, list[str]]:
     """Make the cosmetic edges of the views agree with what the units ask: a unit whose edges on a view already carry the
     signature (and still exist) is left alone, the rest are made again; a unit that is gone takes its edges with it. The edges
@@ -1036,6 +1051,7 @@ def sync_cosmetics(page: Any, units: list[su.Unit], made: list[str] | None = Non
             signature = su.cosmetic_signature(natives)
             old = stored.get(key)
             if old is not None and old[0] == signature and all(_find(view, (k, tuple(v))) is not None for k, v in old[1]):
+                _reweigh(view, natives, old[1])
                 continue
             if old is not None:
                 _drop(view, old[1])

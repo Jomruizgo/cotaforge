@@ -7,6 +7,7 @@ These are the drawing blocks the items (``items_*.py``) compose; they know nothi
 
 import math
 
+import sheet_weights as sw
 from sheet_model import (
     AXES,
     DIMENSIONS,
@@ -241,13 +242,13 @@ def table(
     if title:
         out.append(Text(x + 1.0, y_top - row_height + 1.8, title, text_height + 0.5, TITLE_BLOCK, "left"))
     bottom = top - count * row_height
-    out.append(Line(x, top, x + total, top, TITLE_BLOCK, 0.35))
+    out.append(Line(x, top, x + total, top, TITLE_BLOCK, sw.weight(sw.TITLE_BLOCK)))
     for index in range(count + 1):
-        out.append(Line(x, top - index * row_height, x + total, top - index * row_height, TITLE_BLOCK, 0.25))
+        out.append(Line(x, top - index * row_height, x + total, top - index * row_height, TITLE_BLOCK, sw.weight(sw.TABLE_GRID)))
     edge = x
     for width in [0.0, *widths]:
         edge += width
-        out.append(Line(edge, top, edge, bottom, TITLE_BLOCK, 0.25))
+        out.append(Line(edge, top, edge, bottom, TITLE_BLOCK, sw.weight(sw.TABLE_GRID)))
     for r, cells in enumerate([header, *rows]):
         left = x
         for width, cell in zip(widths, cells, strict=False):

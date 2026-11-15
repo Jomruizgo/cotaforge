@@ -84,6 +84,7 @@ import sheet_template_gen
 import sheet_thread
 import sheet_turned
 import sheet_units
+import sheet_weights
 import thread_records
 from protocol import WorkerError, error, invalid_request, not_supported
 
@@ -110,12 +111,12 @@ FULL_CIRCLE_DEG = 359.0  # a hole wall covers the whole circle (``list_holes`` r
 
 TECHDRAW_PREFS = "User parameter:BaseApp/Preferences/Mod/TechDraw/"
 DEFAULT_PREFS: tuple[tuple[str, str, float], ...] = (
-    ("Decorations", "LineGroup", 2),  # TechDraw's own list: "FC 0.50mm" (thick 0.50, thin 0.25), ISO 128-20's group for A4 to A2
+    ("Decorations", "LineGroup", sheet_weights.LINE_GROUP_INDEX),  # TechDraw's own list: "FC 0.35mm" (thick 0.35, thin 0.18), the group of the sheet's table
     ("Dimensions", "FontSize", sheet_native.FONT_MM),  # the 3.5 mm of ISO 3098; TechDraw's own default is 5 mm
 )
 """What a new TechDraw object reads when the engineer adds one by hand to the sheet: the line group and the text size of the
 sheet. Measured in 1.1.3: with the preferences unset a dimension added by hand came out 0.35 mm thick and 5 mm high, next to
-the sheet's 0.25 mm and 3.5 mm."""
+the sheet's own widths and 3.5 mm."""
 
 
 def apply_techdraw_defaults() -> None:
@@ -3702,6 +3703,26 @@ def review_findings(
                     f"hatching and line types are not checked): {shown}. They show in the sheet capture and in the PDF: "
                     "look at them in the capture (with a region to zoom) and answer with what you see (not_applies: <why it "
                     "is right>) or correct them; they are not taken as checked and they hold the export.",
+                ),
+                "items": [],
+                "features": [],
+                "key": "",
+            }
+        )
+    off_weights = sheet_mirror.off_table(page)
+    if off_weights:  # a hand-added object, or a TechDraw default that slipped through: the engineer may have chosen it
+        shown = "; ".join(off_weights[:4]) + (f" (+{len(off_weights) - 4})" if len(off_weights) > 4 else "")
+        findings.append(
+            {
+                "code": "line_weight_off_table",
+                "severity": "warning",
+                "message": ctx.say(
+                    f"{len(off_weights)} objeto(s) de la hoja tienen un grosor de línea fuera de la tabla del arnés "
+                    f"(ISO 128-20 grupo 0,35; contorno y ocultas 0,35, finas 0,18, rayado 0,07 mm): {shown}. "
+                    "Si el ingeniero no lo eligió así, ponlo en el grosor de la tabla.",
+                    f"{len(off_weights)} object(s) on the sheet have a line weight outside the harness table "
+                    f"(ISO 128-20 group 0.35; outline and hidden 0.35, thin 0.18, hatching 0.07 mm): {shown}. "
+                    "Unless the engineer chose it so, set it to the table's weight.",
                 ),
                 "items": [],
                 "features": [],
