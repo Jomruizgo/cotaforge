@@ -457,6 +457,9 @@ def _compare_overall(page: Any, held: list[su.Unit]) -> list[str]:
         obj = present.get(f"overall:{name}")
         if obj is None:
             continue
+        if obj.Document.getObject(str(getattr(obj, PROP_VIEW))) is None:  # the engineer deleted the view it measured
+            problems.append(f"overall {name}: the view it measures is gone from the page")
+            continue
         x, y = _label_place(page, obj, info)
         if abs(float(obj.X) - x) > POSITION_TOL_MM or abs(float(obj.Y) - y) > POSITION_TOL_MM:
             problems.append(

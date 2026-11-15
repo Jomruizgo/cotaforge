@@ -67,7 +67,8 @@ class NativeDim:
     truth of a native dimension. ``text`` is the whole text when the item's callout is not the measured number
     (``Ø9 pasante`` and a counterbore, a fit) -- TechDraw's Arbitrary text --; ``None`` shows what TechDraw measures.
     ``label`` is where the text sits (page mm, y up) and so where the dimension line goes; ``tol`` is the (upper,
-    lower) deviation TechDraw prints itself with the measured value; ``leader`` puts the text on a shelf (ISO 129-1
+    lower) deviation TechDraw prints with the measured value, as ``tol_text`` (mm: left to TechDraw's own unit schema a
+    deviation of 12 µm prints as ``-12``); ``suffix`` follows the measured value (a fit symbol); ``leader`` puts the text on a shelf (ISO 129-1
     referencing, for the diameters and radii whose text is long)."""
 
     item: str
@@ -84,6 +85,8 @@ class NativeDim:
     rect: Rect | None = None  # the room the label and its line take (page mm), for the collision check
     arrows: str = "auto"  # inside | outside: TechDraw flips the arrowheads to match; auto leaves them to TechDraw
     exact: bool = False  # a theoretically exact dimension: TechDraw frames its text (``TheoreticalExact``)
+    tol_text: tuple[str, str] | None = None  # the upper and lower deviation as the sheet writes them (mm, its decimal sign)
+    suffix: str = ""  # written after the measured value (the fit symbol of a toleranced size: ``P9``)
 
 
 @dataclass(frozen=True)
@@ -350,6 +353,7 @@ def signature(unit: Unit) -> str:
                 n.tol,
                 n.leader,
                 *(["exact"] if n.exact else []),  # only when set: a sheet made before keeps its objects
+                *([["tol_text", list(n.tol_text), n.suffix]] if n.tol_text else []),
             ]
         if isinstance(n, NativeFlag):
             return ["f", n.view, n.prop]
