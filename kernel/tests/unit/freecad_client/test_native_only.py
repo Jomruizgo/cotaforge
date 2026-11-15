@@ -24,8 +24,7 @@ ALLOWED = {"sheet_symbols.py"}
 STILL_DRAWN_BY_HARNESS: dict[str, str] = {
     "sheet_mirror.py": (
         "the units with no native form yet: datum and GD&T symbols, finish symbols, the datum_dims table, detail and "
-        "auxiliary views, sections drawn as sheet geometry, and every view of an hlr sheet (with the welds, balloons and "
-        "mould marks on it: an hlr sheet has no TechDraw view to hang them on)"
+        "auxiliary views drawn as sheet geometry"
     ),
 }
 MAKES_A_SYMBOL = re.compile(r"addObject\(\s*(?:SYMBOL|[\"']TechDraw::DrawViewSymbol[\"'])|\.Symbol\s*=[^=]")
@@ -74,6 +73,19 @@ def test_the_debt_lists_only_modules_that_still_make_symbols() -> None:
     assert set(STILL_DRAWN_BY_HARNESS) <= set(makers), (
         f"already clean, remove from STILL_DRAWN_BY_HARNESS: {sorted(set(STILL_DRAWN_BY_HARNESS) - set(makers))}"
     )
+
+
+VIEW_MAKERS = ("draw_section", "_draw_in_place", "draw_detail", "draw_aux")
+
+
+def test_a_section_detail_or_auxiliary_view_is_never_only_sheet_geometry() -> None:
+    """Each function that draws a derived view asks TechDraw for the view (``NativeView``): the cut, its hatch, the cutting
+    line and the letters are TechDraw's, and the sheet keeps its own drawing of them only for the headless PDF."""
+    tree = ast.parse((WORKER_DIR / "items_views.py").read_text(encoding="utf-8"))
+    functions = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    for name in VIEW_MAKERS:
+        names = {n.id for n in ast.walk(functions[name]) if isinstance(n, ast.Name)}
+        assert names & {"NativeView", "_native_section"}, f"{name} draws a view without asking TechDraw for it"
 
 
 def test_a_docstring_example_is_not_a_maker() -> None:

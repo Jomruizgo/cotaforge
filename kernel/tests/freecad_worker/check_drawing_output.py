@@ -160,11 +160,3 @@ def check_a_view_the_items_count_and_the_page_lacks_is_a_warning_with_the_pdf_st
     exported = call("export_drawing", op("e", path=_tmp("v.pdf"), format="pdf"))
     assert [v["name"] for v in exported["views"]] == ["front", "top", "isometric"], exported["views"]
     assert any("the page has no right" in w for w in exported["warnings"]), exported["warnings"]
-
-
-def check_an_hlr_sheet_names_its_views_too() -> None:
-    build_part03()
-    call("create_drawing", op("d", template="A3", title="Soporte L", projection="hlr"))
-    exported = call("export_drawing", op("e", path=_tmp("h.pdf"), format="pdf"))
-    assert [v["name"] for v in exported["views"]] == ["front", "top", "right", "isometric"], exported["views"]
-    assert exported["native"] == [] and not any("the page has no" in w for w in exported["warnings"])

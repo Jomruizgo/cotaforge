@@ -1,6 +1,6 @@
 # ruff: noqa: E501
 """Welds, balloons, the parts list and the moulded-part marks are FreeCAD's own objects, on the real FreeCAD (Windows, VISIBLE):
-the welded frame (weld symbol, cut list, balloons) and the assembly (parts list, balloons) in both projection modes, and a
+the welded frame (weld symbol, cut list, balloons) and the assembly (parts list, balloons), and a
 moulded part with its marks. The test also plays the engineer's hand: it edits a weld tile, a balloon number and a cell of the
 list, moves a view and checks that what hangs on it follows.
 
@@ -91,53 +91,48 @@ async def kinds(cad: Cad) -> dict[str, int]:
     return json.loads(line.split("KINDS ", 1)[1].split(" SYMBOLS ", 1)[0])
 
 
-@pytest.mark.parametrize("projection", ["techdraw", "hlr"])
-async def test_the_welded_frame_has_native_welds_a_cut_list_and_balloons(workspace: Path, tmp_path: Path, projection: str) -> None:
+async def test_the_welded_frame_has_native_welds_a_cut_list_and_balloons(workspace: Path, tmp_path: Path) -> None:
     shots = Path(os.environ.get("COTAFORGE_TEST_SHOTS") or tmp_path / "shots")
     async with running_server(workspace, visible=True) as (cad, _):
         await build_frame(cad)
-        await cad.ok("drawing", action="create", template="A3", angle="first", title="Bastidor", projection=projection)
+        await cad.ok("drawing", action="create", template="A3", angle="first", title="Bastidor")
         rows = [{"component": "body:1", "name": "Tubo 40×40×3"}, {"component": "body:5", "name": "Chapa 6"}]
         await cad.ok("drawing", action="add", items=[{"type": "parts_list", "id": "cut", "rows": rows}, {"type": "balloons", "id": "bal", "view": "isometric"}, NOTE, WELD])
         found = await kinds(cad)
-        print("FRAME", projection, found)
-        assert found.get("Spreadsheet::Sheet") == 1 and found.get("TechDraw::DrawViewSpreadsheet") == 1, found  # the cut list, in both modes
-        if projection == "techdraw":
-            assert found.get("TechDraw::DrawViewBalloon") == 2, found  # one per position
-            assert found.get("TechDraw::DrawWeldSymbol") == 1 and found.get("TechDraw::DrawTileWeld", 0) >= 1, found
-            assert found.get("TechDraw::DrawLeaderLine", 0) >= 2, found  # the weld's own and one for the second joint it marks
-            assert not found.get("TechDraw::DrawViewSymbol"), found  # nothing the harness drew
-            hand = await cad.ok("run_native", code=HAND, intent="the engineer edits a tile, a balloon and a cell, then moves a view")
-            print("HAND EDIT", hand)
-            line = next(part for part in hand.splitlines() if "HAND " in part)
-            import json
+        print("FRAME", found)
+        assert found.get("Spreadsheet::Sheet") == 1 and found.get("TechDraw::DrawViewSpreadsheet") == 1, found  # the cut list
+        assert found.get("TechDraw::DrawViewBalloon") == 2, found  # one per position
+        assert found.get("TechDraw::DrawWeldSymbol") == 1 and found.get("TechDraw::DrawTileWeld", 0) >= 1, found
+        assert found.get("TechDraw::DrawLeaderLine", 0) >= 2, found  # the weld's own and one for the second joint it marks
+        assert not found.get("TechDraw::DrawViewSymbol"), found  # nothing the harness drew
+        hand = await cad.ok("run_native", code=HAND, intent="the engineer edits a tile, a balloon and a cell, then moves a view")
+        print("HAND EDIT", hand)
+        line = next(part for part in hand.splitlines() if "HAND " in part)
+        import json
 
-            facts = json.loads(line.split("HAND ", 1)[1])
-            assert facts["now"] == ["a4", "9", "'Pos. editada"], facts
-            before, after = facts["before"]["balloon"], facts["after"]["balloon"]
-            assert before and after and abs(after[0] - before[0] - 30.0) < 0.6 and abs(after[1] - before[1]) < 0.6, facts  # the balloon follows its view
+        facts = json.loads(line.split("HAND ", 1)[1])
+        assert facts["now"] == ["a4", "9", "'Pos. editada"], facts
+        before, after = facts["before"]["balloon"], facts["after"]["balloon"]
+        assert before and after and abs(after[0] - before[0] - 30.0) < 0.6 and abs(after[1] - before[1]) < 0.6, facts  # the balloon follows its view
         shot_reply = await cad("drawing", action="capture")
         assert shot_reply.images, shot_reply.text
-        shot(shots, f"nt4_frame_{projection}", shot_reply.images[0].data)
+        shot(shots, "nt4_frame", shot_reply.images[0].data)
 
 
-@pytest.mark.parametrize("projection", ["techdraw", "hlr"])
-async def test_the_assembly_has_a_native_parts_list_and_balloons(workspace: Path, tmp_path: Path, projection: str) -> None:
+async def test_the_assembly_has_a_native_parts_list_and_balloons(workspace: Path, tmp_path: Path) -> None:
     shots = Path(os.environ.get("COTAFORGE_TEST_SHOTS") or tmp_path / "shots")
     async with running_server(workspace, visible=True) as (cad, _):
         await build_assembly(cad)
-        shown = {} if projection == "hlr" else {"views": ["front", "top", "iso"]}  # an hlr sheet always has all of them
-        made = await cad.ok("drawing", action="create", template="A3", angle="first", title="Conjunto", projection=projection, **shown)
+        made = await cad.ok("drawing", action="create", template="A3", angle="first", title="Conjunto", views=["front", "top", "iso"])
         assert "rq_parts_list" in made and "rq_balloons" in made, made
         found = await kinds(cad)
-        print("ASSEMBLY", projection, found)
+        print("ASSEMBLY", found)
         assert found.get("Spreadsheet::Sheet") == 1 and found.get("TechDraw::DrawViewSpreadsheet") == 1, found
-        if projection == "techdraw":
-            assert found.get("TechDraw::DrawViewBalloon", 0) >= 3, found  # base plate, spacer, top plate
-            assert not found.get("TechDraw::DrawViewSymbol"), found
+        assert found.get("TechDraw::DrawViewBalloon", 0) >= 3, found  # base plate, spacer, top plate
+        assert not found.get("TechDraw::DrawViewSymbol"), found
         shot_reply = await cad("drawing", action="capture")
         assert shot_reply.images, shot_reply.text
-        shot(shots, f"nt4_assembly_{projection}", shot_reply.images[0].data)
+        shot(shots, "nt4_assembly", shot_reply.images[0].data)
 
 
 async def test_a_moulded_part_has_its_marks_as_native_objects(workspace: Path, tmp_path: Path) -> None:

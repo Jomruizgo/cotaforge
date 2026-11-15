@@ -9,11 +9,11 @@ from collections.abc import Collection
 SHEET_RULES = (
     "drawing(action=create, template=A4|A3|A2|A1|A0|Letter, angle=first|third, title?, author?, date?, material?, "
     "scale?, language?, drawing_number?, revision?, general_tolerances?, company?, title_block?, sheet?, body?, "
-    "isometric?, views?, projection?, symmetry?, fresh?) builds a sheet "
+    "isometric?, views?, symmetry?, fresh?) builds a sheet "
     "(an existing sheet of that name is rebuilt keeping its items, answers and reviewer; fresh=true starts over): "
     "front, top and right views (first angle by "
     "default) plus an isometric one, the overall width / height / depth dimensions and the title block (ISO 7200, in "
-    "project language by default; language=es|en changes). Projection is the engineer's choice; no paper stated: "
+    "project language by default; language=es|en changes). No paper stated: "
     "it is chosen from the part (the reply says). Title "
     "defaults to the document name, date to today, material to "
     "the document's (it follows doc set_material while you leave it empty), "
@@ -51,20 +51,6 @@ SHEET_RULES = (
     "changing the part, build the sheet again. The part must have volume.",
 )
 
-PROJECTION_LINE = (
-    "PROJECTION (an option of create; the engineer's choice): projection=techdraw (the default, FreeCAD's own) makes "
-    "the views as TechDraw view objects (FreeCAD's own); on a big assembly (hundreds of "
-    "bodies) FreeCAD takes minutes to hours per view. projection=hlr projects the views with TechDraw.projectEx (what "
-    "section, detail and exploded views already use): same sheet, same numbers, same items, in PDF / PNG / DXF, "
-    "in seconds to minutes; the views in the FreeCAD window are then drawings of that projection (symbols, not "
-    "TechDraw view objects: they cannot be edited there). NEVER choose hlr "
-    "yourself and never switch silently. Only when a create on a large assembly is slow (the progress lines of the "
-    "call show it) OFFER it to the engineer, say what it costs (the views are not TechDraw's own) and wait for the "
-    "answer. "
-    "The mode is kept in the sheet (add, update, save, reopen and export keep it); to change it call create again "
-    "(the sheet is rebuilt and keeps its items). drawing(action=list) shows which mode a sheet uses."
-)
-
 UPDATE_LINE = (
     "After changing the part, drawing(action=update) lays the views out again and keeps every item (dimensions "
     "re-measure the part every time the sheet is drawn, even without update)."
@@ -75,10 +61,9 @@ WINDOW_LINE = (
     "work and can stop you or suggest, so build it in SMALL STEPS -- one feature or one group per drawing(action=add) "
     "call (the dowel holes, then the clearance holes, then the datums, then a frame, then the notes), never thirty "
     "items at once -- and each item appears in the window as soon as it is added. What is native and what is not: the "
-    "views (projection=techdraw), the overall dimensions and the title block / revision texts are TechDraw's own "
-    "objects; every item you add (callouts, dimensions, datum triangles, GD&T frames, finish symbols, tables, notes, "
-    "sections, thread arcs) is a TechDraw SYMBOL object made from the same drawing the PDF is written from, at the "
-    "same place, so the window and the PDF/DXF show the same thing. The window is for watching: edit the sheet only "
+    "views (sections, details and auxiliary views too), the overall dimensions and the title block / revision texts are "
+    "TechDraw's own objects; the other items you add (datum triangles, GD&T frames, finish symbols, tables, notes) are "
+    "TechDraw SYMBOL objects made from the same drawing the PDF is written from, at the same place. The window is for watching: edit the sheet only "
     "through drawing(...); a change made by hand in the window is put back by the next add, remove or export."
 )
 
@@ -526,10 +511,11 @@ NATIVE_LINE = (
     "hole_dim (a diameter dimension with the whole callout as its text: 4x O6 H7, counterbore, depth, thread), "
     "dim distance / radius / angle / diameter (FreeCAD MEASURES them: if its number is not the model's, the item is "
     "drawn as a symbol and review says native_fallback), datum_dims (baseline dimensions from the datum edges), "
-    "note (one annotation per line), overall, the views, and the hidden lines of view_lines. A SYMBOL (a drawing of "
-    "ours inside TechDraw, not editable as dimensions) is what TechDraw has no object for: datum, gdt, finish, "
-    "centre marks and lines, thread arcs, chamfer callouts, section / detail / aux_view / exploded, parts list, "
-    "hole table. Every object has CotaforgeItem (the item id) and CotaforgeSheet. The PDF of a visible CAD is "
+    "note (one annotation per line), overall, the views, view_lines, centre lines, thread arcs, section / detail / "
+    "aux_view (own hatch and cutting line; position follows the parent: clear its expression to move it alone) and "
+    "their dimensions. A SYMBOL (our drawing inside TechDraw) is what TechDraw has no object for: datum, gdt, finish, "
+    "chamfer callouts, exploded, parts list, hole table. "
+    "Every object has CotaforgeItem (the item id) and CotaforgeSheet. The PDF of a visible CAD is "
     "TechDraw's; a headless CAD (no window to paint) writes it with our own writer from the same sheet, and "
     "export says which; the DXF is always our R12 writer (TechDraw's own DXF has no title block, symbols or notes)."
 )
@@ -579,7 +565,7 @@ INDEX_LINE = (
     "MORE (split; each reply is read whole): cad_guide(topic=drawing:items) holes, "
     "dimensions, position dimensions, tolerances | drawing:dims baseline lengths, keyway section | drawing:marks datums, GD&T frames, finish, notes, hidden / centre "
     "lines | drawing:mould moulded parts | drawing:views section, detail, auxiliary view, review | drawing:assembly parts list, balloons, exploded | "
-    "drawing:output export(action=pdf|dxf), layers, line weights, projection=hlr | "
+    "drawing:output export(action=pdf|dxf), layers, line weights | "
     "drawing:quality quality floor: hole location, callouts, dowels, notes, title block, one view | "
     "drawing:done WHEN A DRAWING MAY BE EXPORTED: requirements, who reviews it, answer, approve. Look at the "
     "sheet (drawing capture) before you write it."
@@ -603,7 +589,7 @@ def drawing_text(tools: Collection[str], part: str = "", flow: str = "steps") ->
             TOPIC_MOULD: [MOULD_LINE],
             TOPIC_VIEWS: [*ITEM_LINES[9:12], ITEM_LINES[13], PATTERN_LINE],
             TOPIC_ASSEMBLY: [ITEM_LINES[12]],
-            TOPIC_OUTPUT: [SHEET_RULES[2], PROJECTION_LINE, VIEW_LINE, LAYOUT_LINE],
+            TOPIC_OUTPUT: [SHEET_RULES[2], VIEW_LINE, LAYOUT_LINE],
             TOPIC_QUALITY: QUALITY_LINES,
             TOPIC_DONE: list(DONE_LINES),
         }
@@ -616,5 +602,5 @@ def drawing_text(tools: Collection[str], part: str = "", flow: str = "steps") ->
         else:
             lines += [SHEET_RULES[1], UPDATE_LINE, WINDOW_LINE, NATIVE_LINE, VIEWS_LINE, SPANISH_LINE, INDEX_LINE]
     else:
-        lines += [SHEET_RULES[2], SHEET_RULES[3], PROJECTION_LINE, VIEW_LINE]
+        lines += [SHEET_RULES[2], SHEET_RULES[3], VIEW_LINE]
     return "\n".join(f"- {line}" for line in lines)

@@ -221,14 +221,11 @@ def test_items_are_added_listed_drawn_and_written(drilled: FreeCADAdapter, tmp_p
     assert b"AC1009" in data and b"%%c8 pasante" in data and "Título:".encode("cp1252") in data
 
 
-@pytest.mark.parametrize("projection", ["techdraw", "hlr"])
-def test_a_sheet_in_each_projection_is_built_annotated_described_and_written(
-    drilled: FreeCADAdapter, tmp_path: Path, projection: str
-) -> None:
-    """``techdraw`` is FreeCAD's own default; ``hlr`` projects the standard views itself. Both give the same sheet."""
+def test_a_sheet_is_built_annotated_described_and_written(drilled: FreeCADAdapter, tmp_path: Path) -> None:
+    """The views are FreeCAD's own TechDraw views; the sheet is built, annotated, described and written."""
     ezdxf = pytest.importorskip("ezdxf")
-    made = drilled.create_drawing(DrawingRequest(operation_id="dr", template="A3", projection=projection))  # type: ignore[arg-type]
-    assert made.projection == projection and made.views == ("front", "top", "right", "isometric")
+    made = drilled.create_drawing(DrawingRequest(operation_id="dr", template="A3"))
+    assert made.views == ("front", "top", "right", "isometric")
     assert made.dimensions == ("width 100 mm", "height 20 mm", "depth 60 mm")
     result = drilled.annotate_drawing(
         AnnotateDrawingRequest(
@@ -237,10 +234,9 @@ def test_a_sheet_in_each_projection_is_built_annotated_described_and_written(
             items=({"type": "hole_dim", "all": True}, {"type": "datum_dims"}, {"type": "note", "text": "Sin rebabas"}),
         )
     )
-    assert result.projection == projection and [i.status for i in result.items][2:] == ["ok", "ok"]
-    assert drilled.annotate_drawing(AnnotateDrawingRequest(operation_id="u", action="update")).projection == projection
-    sheet = drilled.describe_drawing(DescribeDrawingRequest(operation_id="l")).sheets[0]
-    assert sheet.projection == projection
+    assert [i.status for i in result.items][2:] == ["ok", "ok"]
+    drilled.annotate_drawing(AnnotateDrawingRequest(operation_id="u", action="update"))
+    drilled.describe_drawing(DescribeDrawingRequest(operation_id="l"))
     png, pdf, dxf = tmp_path / "s.png", tmp_path / "s.pdf", tmp_path / "s.dxf"
     drilled.capture_drawing(CaptureDrawingRequest(operation_id="c", path=str(png), width=1200))
     drilled.export_drawing(ExportDrawingRequest(operation_id="e", path=str(pdf), format="pdf"))
@@ -252,39 +248,6 @@ def test_a_sheet_in_each_projection_is_built_annotated_described_and_written(
     space = doc.modelspace()
     holes = [c for c in space.query("CIRCLE") if round(c.dxf.radius, 2) == 4.0]  # the D8 holes; the block has others
     assert len(holes) == 2 and any("pasante" in t.dxf.text for t in space.query("TEXT"))
-
-
-def test_both_projections_give_the_same_hole_positions_and_callouts(drilled: FreeCADAdapter, tmp_path: Path) -> None:
-    ezdxf = pytest.importorskip("ezdxf")
-    found = {}
-    for projection in ("techdraw", "hlr"):
-        drilled.create_drawing(DrawingRequest(operation_id="dr", template="A3", projection=projection))  # type: ignore[arg-type]
-        drilled.annotate_drawing(
-            AnnotateDrawingRequest(operation_id="a", action="add", items=({"type": "hole_dim", "all": True},))
-        )
-        path = tmp_path / f"{projection}.dxf"
-        drilled.export_drawing(ExportDrawingRequest(operation_id="e", path=str(path), format="dxf"))
-        space = ezdxf.readfile(str(path)).modelspace()
-        found[projection] = (
-            sorted(
-                (round(c.dxf.center.x, 2), round(c.dxf.center.y, 2), round(c.dxf.radius, 2))
-                for c in space.query("CIRCLE")
-                if round(c.dxf.radius, 2) == 4.0  # the D8 holes; the title block has circles of its own
-            ),
-            sorted(t.dxf.text for t in space.query("TEXT")),
-        )
-    assert found["techdraw"] == found["hlr"] and len(found["hlr"][0]) == 2
-
-
-def test_switching_the_projection_is_creating_the_sheet_again(drilled: FreeCADAdapter) -> None:
-    drilled.create_drawing(DrawingRequest(operation_id="dr", projection="hlr"))
-    drilled.annotate_drawing(
-        AnnotateDrawingRequest(operation_id="a", action="add", items=({"type": "note", "text": "uno"},))
-    )
-    again = drilled.create_drawing(DrawingRequest(operation_id="dr"))  # FreeCAD's default
-    # the sheet is made again keeping its items: the note is still there, and the views are now TechDraw's
-    assert again.projection == "techdraw" and [i.type for i in again.items if i.id != "loc"] == ["overall", "note"]
-    assert drilled.describe_drawing(DescribeDrawingRequest(operation_id="l")).sheets[0].projection == "techdraw"
 
 
 def test_the_dxf_of_a_sheet_is_clean_for_a_real_dxf_reader(drilled: FreeCADAdapter, tmp_path: Path) -> None:

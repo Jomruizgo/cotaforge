@@ -586,24 +586,23 @@ def _distance(ctx: Context, spec: dict[str, Any]) -> str:
     )
     ctx.used_view(view.name)
     ctx.record_dimension(("len", name, round(min(ca, cb), 2), round(max(ca, cb), 2)), view.name)
-    if not view.derived:  # a section is made of sheet entities: TechDraw has no view of it to measure in
-        ctx.native(
-            NativeDim(
-                item=str(ctx.extras["current"]),
-                name="d1",
-                kind="distance",
-                view=view.name,
-                refs=(Ref2("point", centres[0]), Ref2("point", centres[1])),
-                label=label,
-                expected=value,
-                text=None if (res is None and not round_span) or rendered.stack is not None else rendered.text,
-                orient=orient,
-                tol=(res.upper, res.lower) if res is not None and rendered.stack is not None else None,
-                rect=taken,
-                arrows=str(spec.get("arrows", "auto")),
-                exact=bool(spec.get("exact")),
-            )
+    ctx.native(
+        NativeDim(
+            item=str(ctx.extras["current"]),
+            name="d1",
+            kind="distance",
+            view=view.name,
+            refs=(Ref2("point", centres[0]), Ref2("point", centres[1])),
+            label=label,
+            expected=value,
+            text=None if (res is None and not round_span) or rendered.stack is not None else rendered.text,
+            orient=orient,
+            tol=(res.upper, res.lower) if res is not None and rendered.stack is not None else None,
+            rect=taken,
+            arrows=str(spec.get("arrows", "auto")),
+            exact=bool(spec.get("exact")),
         )
+    )
     return f"{ctx.num(value)} mm along {name} in the {view.name} view ({a.label} to {b.label}){extra}"
 
 
@@ -721,22 +720,21 @@ def _diameter(ctx: Context, spec: dict[str, Any]) -> str:
         far = (att.tip[0] - 2 * radius * att.normal[0], att.tip[1] - 2 * radius * att.normal[1])
         refs = (Ref2("point", att.tip), Ref2("point", far))
         kind = "distance"
-    if not att.view.derived:
-        ctx.native(
-            NativeDim(
-                item=str(ctx.extras["current"]),
-                name="d1",
-                kind=kind,
-                view=att.view.name,
-                refs=refs,
-                label=_label_of(ctx),
-                expected=2 * face.radius,
-                text=rendered.text,
-                orient="a",
-                leader=True,
-                rect=_anchor_rect(ctx),
-            )
+    ctx.native(
+        NativeDim(
+            item=str(ctx.extras["current"]),
+            name="d1",
+            kind=kind,
+            view=att.view.name,
+            refs=refs,
+            label=_label_of(ctx),
+            expected=2 * face.radius,
+            text=rendered.text,
+            orient="a",
+            leader=True,
+            rect=_anchor_rect(ctx),
         )
+    )
     return f"{rendered.text} in the {att.view.name} view{extra}"
 
 
@@ -870,6 +868,21 @@ def _section_diameter(ctx: Context, spec: dict[str, Any], att: Any, radius_mm: f
     entities, taken = linear_dimension(a, b, orient, line, text, arrows=spec.get("arrows", "auto"))
     ctx.add(entities)
     ctx.reserve_dimension(entities, taken)
+    ctx.native(
+        NativeDim(
+            item=str(ctx.extras["current"]),
+            name="d1",
+            kind="distance",
+            view=view.name,
+            refs=(Ref2("point", a), Ref2("point", b)),
+            label=((a[0] + b[0]) / 2, line) if orient == "h" else (line, (a[1] + b[1]) / 2),
+            expected=2 * radius_mm,
+            text=text,
+            orient=orient,
+            rect=taken,
+            arrows=str(spec.get("arrows", "auto")),
+        )
+    )
     return f"{text} in the {view.name} view, between its two silhouette lines{extra}"
 
 
@@ -926,23 +939,22 @@ def _angle(ctx: Context, spec: dict[str, Any]) -> str:
     ctx.reserve(taken)
     ctx.used_view(view.name)
     reach = 20.0  # any two points of the trace say which line it is
-    if not view.derived:
-        ctx.native(
-            NativeDim(
-                item=str(ctx.extras["current"]),
-                name="a1",
-                kind="angle",
-                view=view.name,
-                refs=tuple(
-                    Ref2("line", (p[0], p[1], p[0] + t[0] * reach, p[1] + t[1] * reach))
-                    for p, t in ((p1, t1), (p2, t2))
-                ),
-                label=((taken[0] + taken[2]) / 2, (taken[1] + taken[3]) / 2),
-                expected=round(theta, 1),
-                text=text if sheet_tol.resolve(spec, round(theta, 1)) is not None else None,
-                rect=taken,
-            )
+    ctx.native(
+        NativeDim(
+            item=str(ctx.extras["current"]),
+            name="a1",
+            kind="angle",
+            view=view.name,
+            refs=tuple(
+                Ref2("line", (p[0], p[1], p[0] + t[0] * reach, p[1] + t[1] * reach))
+                for p, t in ((p1, t1), (p2, t2))
+            ),
+            label=((taken[0] + taken[2]) / 2, (taken[1] + taken[3]) / 2),
+            expected=round(theta, 1),
+            text=text if sheet_tol.resolve(spec, round(theta, 1)) is not None else None,
+            rect=taken,
         )
+    )
     return f"{text} between {spec['faces'][0]} and {spec['faces'][1]} in the {view.name} view{extra}"
 
 

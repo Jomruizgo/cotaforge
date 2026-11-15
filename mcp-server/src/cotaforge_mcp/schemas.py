@@ -200,9 +200,6 @@ class DrawingArgs(Strict):
     )
     title_block: dict[str, str] | None = Field(default=None, description="create, update")
     fresh: bool = Field(default=False, description="create: start over")
-    projection: Literal["techdraw", "hlr"] = Field(
-        default="techdraw", description="create: hlr = own (engineer's choice)"
-    )
     symmetry: bool | None = None  # create, update: only when the design intent declares the part symmetric
     items: list[Any] | None = Field(default=None, description="add: items; remove: ids; review_report: remarks")
     region: list[float] | None = Field(default=None, description="capture: zoom x0,y0,x1,y1 mm")
@@ -544,7 +541,7 @@ TOOLS: tuple[ToolDef, ...] = (
         "drawing(action=create|add|remove|remove_sheet|update|add_view|remove_view|list|read|review|requirements|capture|"
         "answer|approve|request_review|review_choice|review_report, "
         "sheet?, items?, template?, angle?, title?, author?, date?, material?, scale?, language?, drawing_number?, "
-        "revision?, general_tolerances?, company?, title_block?, body?, isometric?, views?, projection?, symmetry?, "
+        "revision?, general_tolerances?, company?, title_block?, body?, isometric?, views?, symmetry?, "
         "region?, id?, text?, by?, reason?)",
         'drawing(action="add", items=[{"type":"hole_dim","all":true}])',
         _drawing_actions,
