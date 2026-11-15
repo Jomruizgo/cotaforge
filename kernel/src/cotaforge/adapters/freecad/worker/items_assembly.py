@@ -470,7 +470,7 @@ def draw_balloons(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     entities: list[Entity] = []
     for number, centre in placed.items():
         entities += _balloon(centre, dots[number], str(number))
-        if name in NATIVE_VIEWS and not view.derived:  # TechDraw's own balloon on its view (the entities are the headless sheet)
+        if name in NATIVE_VIEWS:  # TechDraw's own balloon on its view (the entities are the headless sheet)
             ctx.native(NativeBalloon(str(spec["id"]), name, str(number), centre, dots[number]))
     ctx.add(entities)
     book = ctx.extras.setdefault("balloons", {"drawn": set(), "hidden": {}, "view": {}})
