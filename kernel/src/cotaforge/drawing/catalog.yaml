@@ -33,31 +33,11 @@ features: [hole, hole_group, circular_pattern, thread, fit, revolution_body, fla
 
 # Checks named below that are not on develop yet: the open PR that brings each. Remove the entry when it is merged.
 awaiting_merge:
-  native_orphaned: 59
-  title_block_field_empty: 59
   side_view_repeats_section: 61
   centre_line_gap: 61
   dimension_off_part: 61
   assembly_solid_cut: 61
-  view_duplicate: 62
-  dimension_twice: 62
-  text_over_text: 62
-  weld_standard_unstated: 63
-  page_weld_off_line: 63
-  page_test_marker: 63
-  page_cell_overflow: 63
-  page_balloons_not_matching: 63
-  page_balloon_no_leader: 63
-  page_balloon_off_part: 63
-  mark_overlaps_itself: 63
-  title_block_overflow: 63
-  view_label_ambiguous: 63
-  line_weight_off_table: 64
   assembly_whole_guess: 65
-  dimension_tolerance_unit: 66
-  dimension_value_noise: 66
-  dimension_value_unclean: 66
-  dimension_decimal_sign: 66
 
 rules:
 
@@ -719,7 +699,14 @@ rules:
       read holds the export.
     origin: owner
     sources: [owner, checks]
-    checks: [native_unread, native_fallback]
+    checks: [native_unread]
+    weight: blocks
+  - id: deliverables.native_fallback
+    step: deliverables
+    text: >-
+      An item that could not be made as a FreeCAD object and fell back to another form is said so.
+    origin: harness
+    checks: [native_fallback]
     weight: warns
   - id: deliverables.line_weights
     step: deliverables
