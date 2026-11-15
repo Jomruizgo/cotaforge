@@ -3488,6 +3488,11 @@ def read_page_dimensions(page: Any, ctx: sc.Context) -> None:
     standing_in = {s.owner for s in drawn} - {s.owner for s in shapes}  # an item the composed sheet drew and the page cannot tell
     ctx.extras["dim_shapes"] = sheet_pageread.merged(drawn, shapes)
     ctx.extras["page_unread"] = [why for owner, why in unread if owner not in standing_in]
+    try:
+        ctx.extras["page_texts"], unread_texts = sheet_pageread.text_boxes(page)
+    except Exception as exc:  # noqa: BLE001 - listed, never skipped
+        ctx.extras["page_texts"], unread_texts = [], [f"the texts of the page: {type(exc).__name__}: {exc}"]
+    ctx.extras["page_unread"] += unread_texts
 
 
 def _review_data(

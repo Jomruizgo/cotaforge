@@ -175,3 +175,56 @@ def test_every_rule_of_a_step_is_one_that_holds_the_export() -> None:
 def test_a_sheet_of_one_view_has_nothing_to_report_at_a_step() -> None:
     ctx = sc.Context(model.Sheet(297, 210), {}, [], sc.Geometry(), (0, 0, 1, 1), language="es")
     assert viewchecks.step_check(review.ReviewInput([], {}, ctx, ctx.sheet)) == []
+
+
+# --- the same measure twice ---------------------------------------------------------------------------
+
+
+def _twice(records: list[tuple[str, str, tuple[Any, ...]]]) -> list[review.Finding]:
+    ctx = ring_context()
+    ctx.extras["dim_records"] = records
+    return [f for f in viewchecks.check(review.ReviewInput([], {}, ctx, ctx.sheet)) if f.code == "dimension_twice"]
+
+
+def test_the_same_length_given_by_two_dimensions_of_one_view_holds_the_export() -> None:
+    """The assembly's hole spacing: "80" twice, one over the other."""
+    (found,) = _twice([("d80", "top", ("len", "x", 20.0, 100.0)), ("loc", "top", ("len", "x", 20.0, 100.0))])
+    assert found.items == ("d80", "loc") and "dada dos veces en la vista top" in found.message and "remove" in found.message
+    assert "dimension_twice" not in checks.NON_BLOCKING
+
+
+def test_the_same_size_in_two_views_or_one_item_saying_two_things_is_not_that() -> None:
+    assert _twice([("a", "front", ("len", "x", 0.0, 10.0)), ("b", "top", ("len", "x", 0.0, 10.0))]) == []  # two views: ``dimension_repeated``
+    assert _twice([("dext", "A-A", ("dia", 100.0, "face:2")), ("dext", "A-A", ("dia", 100.0, "overall"))]) == []
+
+
+# --- the lines of a note printed on one another -----------------------------------------------------------------------------------
+
+
+def _note_line(label: str, x: float, y: float, text: str, size: float = 3.5) -> Any:
+    return SimpleNamespace(
+        TypeId="TechDraw::DrawViewAnnotation", Label=label, Name=label, Text=[text], TextSize=size, X=x, Y=y
+    )
+
+
+def _over(lines: list[Any]) -> list[review.Finding]:
+    boxes, unread = pageread.text_boxes(SimpleNamespace(Views=lines))
+    assert unread == []
+    ctx = ring_context()
+    ctx.extras["page_texts"] = boxes
+    items = [{"id": "n4", "type": "note"}, {"id": "n5", "type": "note"}]
+    return [f for f in viewchecks.check(review.ReviewInput(items, {}, ctx, ctx.sheet)) if f.code == "text_over_text"]
+
+
+def test_two_lines_of_a_note_printed_on_one_another_are_flagged_and_lines_one_step_apart_are_not() -> None:
+    """The shaft: the second line of note 5 landed on its first one. Lines 5 mm apart (the step of a note) read."""
+    apart = [_note_line("n4 n1", 235.5, 247.4, "4. Salto radial del extremo"), _note_line("n5 n1", 235.5, 241.4, "5. Chavetero DIN 6885"), _note_line("n5 n2", 235.5, 236.4, "    R3, flancos Ra 3,2")]
+    assert _over(apart) == []
+    (found,) = _over([apart[0], apart[1], _note_line("n5 n2", 235.5, 241.4, "    R3, flancos Ra 3,2. Simetria")])
+    assert found.items == ("n5",) and "se imprimen una sobre otra" in found.message
+    assert "text_over_text" not in checks.NON_BLOCKING
+
+
+def test_texts_side_by_side_on_one_line_are_not_on_one_another() -> None:
+    """Note 7 and note 8 of the shaft stand at one height, a block apart."""
+    assert _over([_note_line("n7 n1", 265.5, 88.4, "7. Chaflanes: 1,5 x 45"), _note_line("n8 n1", 425.5, 88.4, "8. Cantidad: 10 unidades.")]) == []

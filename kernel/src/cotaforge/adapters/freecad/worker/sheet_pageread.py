@@ -128,3 +128,31 @@ def merged(model: list[DimShape], page: list[DimShape]) -> list[DimShape]:
     item drawn as a symbol, a sheet read without its page)."""
     held = {s.owner for s in page}
     return [*(s for s in model if s.owner not in held), *page]
+
+
+LINE_STEP = 1.3  # a line of text takes this many text heights on the page
+
+
+def text_boxes(page: Any) -> tuple[list[tuple[str, tuple[float, float, float, float]]], list[str]]:
+    """The text annotations of ``page`` (``DrawViewAnnotation``: every line of a note, a section letter) as ``(label, rect)`` with
+    ``rect`` the sheet rectangle its text takes (``X, Y`` is where the text starts, the width is the width of its longest line at
+    its size), and the ones that could not be read as rows. Read from the page: what the engineer sees is where TechDraw put the
+    lines, not where the composed sheet planned them."""
+    boxes: list[tuple[str, tuple[float, float, float, float]]] = []
+    unread: list[str] = []
+    for obj in page.Views:
+        if not str(getattr(obj, "TypeId", "")).endswith("DrawViewAnnotation"):
+            continue
+        label = str(getattr(obj, "Label", "") or getattr(obj, "Name", ""))
+        try:
+            lines = [str(t) for t in obj.Text]
+            size = float(getattr(obj.TextSize, "Value", obj.TextSize))
+            x, y = float(getattr(obj.X, "Value", obj.X)), float(getattr(obj.Y, "Value", obj.Y))
+        except Exception as exc:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind: listed, never skipped
+            unread.append(f"{label}: {type(exc).__name__}: {exc}")
+            continue
+        width = max((text_width(line, size) for line in lines), default=0.0)
+        if width <= 0.0:
+            continue
+        boxes.append((label, (x, y - size * LINE_STEP * len(lines) / 2, x + width, y + size * LINE_STEP * len(lines) / 2)))
+    return boxes, unread
