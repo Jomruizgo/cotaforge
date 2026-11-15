@@ -167,7 +167,7 @@ def test_the_review_reports_the_native_objects_it_cannot_read(make: MakeSession,
             severity="warning",
             message="The sheet holds 2 native TechDraw object(s) this review cannot read",
             id="native_unread",
-            blocking=False,
+            blocking=True,
         ),
     )
     call = Caller(make(adapter))

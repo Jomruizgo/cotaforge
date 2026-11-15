@@ -661,6 +661,7 @@ MEASURED_FINDINGS = frozenset(
         "centre_line_crosses",
         "centre_line_long",
         "material_title_block_empty",
+        "title_block_field_empty",
         "material_inconsistent",
         "material_only_in_note",
         "parts_without_balloons",

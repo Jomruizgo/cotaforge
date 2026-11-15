@@ -66,6 +66,13 @@ TITLE_BLOCK_NOTES: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     ("scale", re.compile(r"^\s*(?:escala|scale)\s*[:=]\s*(?P<value>\d+\s*[:/]\s*\d+)\s*$", re.I)),
+    (
+        "drawing_number",
+        re.compile(r"^\s*(?:n[uú]mero\s+de\s+plano|n[º°]\s*de\s+plano|drawing\s+(?:number|no\.?))\s*[:=\-–]\s*(?P<value>\S.*)$", re.I | re.S),
+    ),
+    ("creator", re.compile(r"^\s*(?:dibuj[oó]|dibujado\s+por|drawn\s+by)\s*[:=\-–]\s*(?P<value>\S.*)$", re.I | re.S)),
+    ("approval_person", re.compile(r"^\s*(?:aprob[oó]|aprobado\s+por|approved\s+by)\s*[:=\-–]\s*(?P<value>\S.*)$", re.I | re.S)),
+    ("legal_owner_1", re.compile(r"^\s*(?:empresa|company)\s*[:=\-–]\s*(?P<value>\S.*)$", re.I | re.S)),
 )
 """A datum the title block has a field for never goes into the notes: the note that states it is the field."""
 

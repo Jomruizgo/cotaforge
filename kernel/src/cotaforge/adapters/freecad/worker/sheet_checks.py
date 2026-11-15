@@ -79,7 +79,7 @@ NON_BLOCKING = frozenset(
         "window_differs",
         "layout_unplaced",
         "native_fallback",
-        "native_unread",
+        "line_weight_off_table",
         "hidden_check_partial",
         "single_view_enough",
         "dowel_unmarked",
@@ -96,7 +96,7 @@ NON_BLOCKING = frozenset(
         "weld_designation_unchecked",
     }
 )
-"""Notices that never hold an export: about the harness (the FreeCAD window, TechDraw's own objects) or suggestions whose
+"""Notices that never hold an export: about the harness (the FreeCAD window, the fallback of an item to a symbol) or suggestions whose
 question is asked anyway (``single_view_enough`` is the plate case of the memory principle ``drawing-sufficient-views``,
 ``dowel_unmarked`` of ``q.callouts``) or that is a matter of style (``dimension_repeated``: the same size in two views,
 ISO 129, which a shop reads without trouble): they are listed and can be answered, but the question is what the export
@@ -675,6 +675,41 @@ def _material_consistency(data: Any) -> list[Any]:
     return out
 
 
+# the datums the title block has a field for, by what a note that sends the reader there names (the material has its own
+# finding, ``material_title_block_empty``, which also reads the notes that state it)
+POINTED_FIELDS: tuple[tuple[str, re.Pattern[str], str, str], ...] = (
+    ("general_tolerances", re.compile(r"toleranc|tolerance", re.I), "las tolerancias generales", "the general tolerances"),
+    ("drawing_number", re.compile(r"n[uú]mero\s+de\s+plano|drawing\s+(number|no)", re.I), "el número de plano", "the drawing number"),
+    ("creator", re.compile(r"dibuj[oó]|dibujado|drawn\s+by", re.I), "quién dibujó el plano", "who drew the sheet"),
+    ("approval_person", re.compile(r"aprob[oó]|aprobado|approved\s+by", re.I), "quién aprobó el plano", "who approved the sheet"),
+    ("legal_owner_1", re.compile(r"\bempresa\b|\bcompany\b|propietari|\bowner\b", re.I), "la empresa", "the company"),
+    ("revision_index", re.compile(r"revisi[oó]n|\brevision\b", re.I), "la revisión", "the revision"),
+)
+
+
+def _title_block_pointers(data: Any) -> list[Any]:
+    """A note that sends the reader to the title block for a datum (``según rótulo``, ``see title block``) while the field of that
+    datum is empty: the sheet says "look in the title block" and there is nothing there. The datum goes in its field (the
+    sheet's fields, ``doc`` ``set_material``), never only in the note."""
+    ctx = data.ctx
+    shown = _fields(ctx)
+    out: list[Any] = []
+    for note in sheet_review._of(data, "note"):
+        text = str(note.get("text", ""))
+        if not _SEE_TITLE.search(text):
+            continue
+        for name, pattern, es, en in POINTED_FIELDS:
+            if name in shown and not shown[name].strip() and pattern.search(text):
+                msg = ctx.say(
+                    f"{note['id']} remite {es} al rótulo y el campo «{name}» del rótulo está vacío: escríbelo en el campo (el dato va en su "
+                    "campo del rótulo, no solo en la nota).",
+                    f"{note['id']} sends {en} to the title block and the title block's '{name}' field is empty: write it in the field "
+                    "(a datum goes in its title-block field, not only in the note).",
+                )
+                out.append(_finding("title_block_field_empty", "warning", msg, f"{note['id']}:{name}", (note["id"],)))
+    return out
+
+
 # --- hidden lines, sections, threads --------------------------------------------------------------------------------------
 
 HIDDEN_RATIO = 0.6  # hidden length against visible length in one view
@@ -803,6 +838,7 @@ def checks(data: Any) -> list[Any]:
         _text_on_part,
         _notes_missing,
         _material_consistency,
+        _title_block_pointers,
         _hidden_density,
         _hidden_features,
         _threads,

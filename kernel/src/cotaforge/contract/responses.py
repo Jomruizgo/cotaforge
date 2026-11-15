@@ -313,6 +313,7 @@ class DrawingResult(BaseModel, frozen=True):
     removed: bool = False
     waited_s: float = 0.0
     warnings: tuple[str, ...] = ()
+    step_findings: tuple[str, ...] = ()  # an add / update: the blocking findings of the view, crossing and empty-sheet rules that THIS step brought ("id: message")
     angle: Literal["first", "third"] = "first"
     changed: tuple[str, ...] = ()  # ids of the items this call added or took off (the rest is the sheet as it was)
     window: str = ""  # what the call did to the objects of the CAD's sheet window ("1 new", "unchanged")

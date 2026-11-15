@@ -19,6 +19,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 "cotaforge.adapters.freecad.worker" = ["templates/*.svg"]
 "cotaforge.memory" = ["base/*.md", "base/*.yaml"]
+"cotaforge.drawing" = ["*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -26,6 +27,7 @@ addopts = "-q"
 markers = [
     "freecad: needs the FreeCAD root",
     "visible: needs a display (DISPLAY / WAYLAND_DISPLAY): the FreeCAD GUI worker; run these serially, never with xdist",
+    "expected_findings(*codes): the real test builds a sheet with these defects on purpose (the review it runs at the end lists them)",
 ]
 
 [tool.ruff]

@@ -386,7 +386,7 @@ def check_the_review_flags_an_item_over_the_title_block_and_one_outside_the_fram
 
 
 def check_visible_lines_are_thick_and_everything_else_thin_in_the_svg_and_on_the_techdraw_objects() -> None:
-    """ISO 128: the visible outline is at least 1.8 times the dimension line, in the PDF / SVG and in the window."""
+    """ISO 128-20: the visible outline is at least 1.8 times the dimension line (hidden lines as thick as it), in the PDF / SVG and in the window."""
     import sheet_svg
 
     build_part()
@@ -396,7 +396,8 @@ def check_visible_lines_are_thick_and_everything_else_thin_in_the_svg_and_on_the
     style = model.LAYERS
     outline, dim = style[model.CONTOUR].width_mm, style[model.DIMENSIONS].width_mm
     assert outline >= 1.8 * dim, (outline, dim)
-    for layer in (model.HIDDEN, model.AXES, model.HATCH, model.THREAD, model.TEXT):
+    assert style[model.HIDDEN].width_mm == outline  # the owner's drawings: hidden outlines are as thick as the visible ones
+    for layer in (model.AXES, model.HATCH, model.THREAD, model.TEXT):
         assert style[layer].width_mm <= outline / 1.8, layer
     svg = sheet_svg.to_svg(sheet)
     assert f'stroke-width="{outline:g}"' in svg and f'stroke-width="{dim:g}"' in svg

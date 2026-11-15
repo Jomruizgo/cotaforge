@@ -33,7 +33,8 @@ SHEET_RULES = (
     "reply names the views and those objects. region=[x0,y0,x1,y1] (mm on the sheet from its lower left corner) "
     "zooms in: use it to read a dimension or tell a line type before you say it is right. A headless CAD (no "
     "window) cannot paint native objects: the reply then lists them as NOT DRAWN and you must say so, never call "
-    "the sheet fine without them (drawing review lists them as native_unread, a warning: it does not read them). "
+    "the sheet fine without them (drawing review lists them as native_unread, a blocking finding: it does not read them, so answer it with what you see in the capture). "
+    "drawing(add / update / layout / remove_view) says on the spot, as 'this step left N blocking finding(s)', when the step left a view with nothing on it or drawn twice, an extension line across another dimension's line or most of the paper empty: fix it before the next item. "
     "export(action=pdf) checks the file it wrote (one page of the sheet's size, every operator well formed, ink in "
     "every view) and a damaged PDF is an error and is not saved: a native object with a colour outside 0..1 is "
     "normalised before the export, any other cause you fix at its source. "
@@ -42,11 +43,14 @@ SHEET_RULES = (
     "outline instead, not the sheet). The DXF is R12 (opens in any CAD), text in the Windows code page, layers by "
     "role (CONTORNO, OCULTAS, COTAS, TEXTO, ROTULO, EJES, SOMBREADO, ROSCAS) with the title block in it: PDF and "
     "DXF show "
-    "the same. Line weights follow ISO 128: the visible outline is thick (0.5 mm), everything else thin (dimension, "
-    "extension and leader lines, centre lines, thread arcs, hidden lines 0,25 mm; hatching 0,18 mm) and every "
-    "dimension or note is written 3,5 mm high; the DXF (R12, no lineweight) carries the weight in the layer colour "
-    "for a standard pen table: colour 7 = 0,50 mm (CONTORNO, ROTULO), 3 = 0,25 mm (COTAS, TEXTO, ROSCAS), 1 = 0,25 mm "
-    "(EJES), 8 = 0,25 mm (OCULTAS), 9 = 0,18 mm (SOMBREADO).",
+    "the same. Line weights come from the harness table (ISO 128-20 group 0.35, hidden lines thick): "
+    "visible and hidden outlines 0,35 mm, dimension, extension and leader lines, centre lines and thread arcs 0,18 mm, "
+    "tangent edges 0,07 mm, hatching 0,07 mm (TechDraw draws its own section hatch at 0,10), sheet frame 0,7 mm; they are set on the sheet's own objects, so a file carries "
+    "them (the views, dimensions and leaders in the CAD with a window: a file saved without one is set when that CAD "
+    "opens it). Every dimension or note is written 3,5 mm high; the DXF (R12, no lineweight) carries the weight in the "
+    "layer colour for a standard pen table: colour 7 = 0,35 mm (CONTORNO, OCULTAS, ROTULO), 3 = 0,18 mm (COTAS, TEXTO, "
+    "ROSCAS), 1 = 0,18 mm (EJES), 9 = 0,07 mm (SOMBREADO). The review warns (line_weight_off_table) of an object "
+    "whose weight is outside the table.",
     "The sheet is part of the document (doc(action=save) keeps it) and its views show the part as it is: after "
     "changing the part, build the sheet again. The part must have volume.",
 )
@@ -344,6 +348,8 @@ DONE_LINES = (
 )
 
 QUALITY_LINES = (
+    "WHAT A DRAWING IS FOR: the only thing the shop gets. Each view shows something of its own (the isometric may carry "
+    "no dimension); nothing lies on anything else; the paper is used, not mostly empty.",
     "WHAT THE SHEET MUST CARRY is not in this guide: drawing(action=requirements) lists the rows of the table that apply "
     "to THIS part, each met, missing or needing an answer, with the question to ask (create and review print it; the "
     "export waits for it). This guide is HOW it is drawn.",
@@ -351,6 +357,9 @@ QUALITY_LINES = (
     "(template=A4|A3|A2|A1|A0|Letter), projection (angle=first|third: the symbol in the title block, the views "
     "placed the other way round) and the title block are the engineer's choice; what a machinist can make the part "
     "from is not.",
+    'ONE VIEW: a plate or flat part whose holes go through its thickness needs one view: create(views=["top"]) (or '
+    "remove_view front on a sheet that has one other standard view). review says single_view_enough (no hold) when the "
+    "other views add nothing. The sheet then gives width and height on that view and the thickness as a note.",
     "TITLE BLOCK: the template is a TechDraw template kept in the document (FreeCAD edits the same fields). "
     'create or update(title_block={"document_type": ..., "legal_owner_2": ..., "fixed_note_1": ...}) sets '
     "any field by name (document_type, drawing_number, fixed_note_1..3: the standing statements beside the "
@@ -399,9 +408,6 @@ QUALITY_LINES = (
     "feature is coaxial and it is hollow (section holes=axis in_place=true; no end view, no cutting line), else with a "
     "bore the view along its axis and a section A-A; solid ONE view, axis horizontal; plus the isometric. "
     "views=[...] gives all. A part's designation: doc set_title.",
-    'ONE VIEW: a plate or flat part whose holes go through its thickness needs one view: create(views=["top"]) (or '
-    "remove_view front on a sheet that has one other standard view). review says single_view_enough (no hold: the memory principle drawing-sufficient-views covers it) when the "
-    "other views add nothing. The sheet then gives width and height on that view and the thickness as a note.",
 )
 
 WELD_LINE = (
@@ -513,8 +519,8 @@ NATIVE_LINE = (
     "drawn as a symbol and review says native_fallback), datum_dims (baseline dimensions from the datum edges), "
     "note (one annotation per line), overall, the views, view_lines, centre lines, thread arcs, section / detail / "
     "aux_view (own hatch and cutting line; position follows the parent: clear its expression to move it alone) and "
-    "their dimensions. A SYMBOL (our drawing inside TechDraw) is what TechDraw has no object for: datum, gdt, finish, "
-    "chamfer callouts, exploded, parts list, hole table. "
+    "their dimensions, datum / gdt / finish (library symbols), hole table. A SYMBOL (our drawing inside TechDraw) is "
+    "what TechDraw has no object for: chamfer callouts, exploded, parts list. "
     "Every object has CotaforgeItem (the item id) and CotaforgeSheet. The PDF of a visible CAD is "
     "TechDraw's; a headless CAD (no window to paint) writes it with our own writer from the same sheet, and "
     "export says which; the DXF is always our R12 writer (TechDraw's own DXF has no title block, symbols or notes)."

@@ -29,7 +29,7 @@ TUBE_CODE = (
         for n, (y, z) in enumerate(TUBES, start=1)
     )
 )
-NOTE = {"type": "note", "id": "weld", "text": "Proceso MAG, nivel de calidad ISO 5817-C. Tolerancias generales ISO 13920-B"}
+NOTE = {"type": "note", "id": "weld", "text": "Proceso MAG, nivel de calidad ISO 5817-C. Tolerancias generales ISO 13920-B. Símbolos de soldadura según ISO 2553: a = garganta"}
 WELD = {
     "type": "weld",
     "id": "w1",

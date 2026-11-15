@@ -404,6 +404,8 @@ def _pull_symbol(ctx: Context, anchor: Point, a: Point, draft: float | None) -> 
     tail = anchor
     tip = (anchor[0] + a[0] * ARROW_MM, anchor[1] + a[1] * ARROW_MM)
     n = (-a[1], a[0])
+    if n[0] < -1e-9 or (abs(n[0]) <= 1e-9 and n[1] < 0):  # the draft symbol stands on the side texts read away from (right, or above)
+        n = (-n[0], -n[1])
     out: list[Entity] = [
         Line(tail[0], tail[1], tip[0], tip[1], DIMENSIONS),
         arrow(tip, a),
@@ -414,7 +416,11 @@ def _pull_symbol(ctx: Context, anchor: Point, a: Point, draft: float | None) -> 
         wx, wy = base[0] + 2.0, base[1] + 1.0
         out += _wedge(wx, wy)
         out.append(Text(wx + 10.5, wy - 0.4, f"{ctx.num(draft)}°", 3.5, TEXT, "left"))
-    out.append(Text(tip[0] + n[0] * 2.5, tip[1] + n[1] * 2.5, ctx.say("Apertura", "Opens"), 3.5, TEXT, "left"))
+    word = ctx.say("Apertura", "Opens")
+    if abs(a[0]) >= abs(a[1]):  # the label goes on beyond the head, clear of the shaft and of the draft symbol (it ran over both)
+        out.append(Text(tip[0] + (2.5 if a[0] > 0 else -2.5), tip[1] - 1.2, word, 3.5, TEXT, "left" if a[0] > 0 else "right"))
+    else:
+        out.append(Text(tip[0], tip[1] + 2.5 if a[1] > 0 else tip[1] - 2.5 - 3.5, word, 3.5, TEXT, "center"))
     return out
 
 

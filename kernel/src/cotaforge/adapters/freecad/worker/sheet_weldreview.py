@@ -162,6 +162,29 @@ def class_findings(data: Any) -> list[Any]:
     return [Finding("weld_class_13920", "warning", text, tuple(str(n["id"]) for n in bad))]
 
 
+STANDARD_TEXT = re.compile(r"2553")
+
+
+def standard_findings(data: Any) -> list[Any]:
+    """The size before a weld symbol is the throat ``a`` (or the leg ``z``) of ISO 2553; AWS, the library FreeCAD ships, writes a
+    leg. A welder reads which one the sheet means: a sheet with weld symbols names ISO 2553 in a note (or a text) of its own."""
+    from sheet_review import Finding  # noqa: PLC0415
+
+    ctx = data.ctx
+    welds = data_of(data, "weld")
+    if not welds or any(STANDARD_TEXT.search(str(t)) for t in data.sheet.texts()):
+        return []
+    text = ctx.say(
+        "La hoja lleva símbolos de soldadura y no dice con qué norma se leen: el tamaño delante del símbolo es la garganta a (o el "
+        "cateto z) de ISO 2553, y la biblioteca de FreeCAD es AWS, que da el cateto. Añade una nota («Símbolos de soldadura según "
+        "ISO 2553: a = garganta, z = cateto»).",
+        "The sheet has weld symbols and does not say which standard reads them: the size before the symbol is the throat a (or the "
+        "leg z) of ISO 2553, and FreeCAD's library is AWS, which gives the leg. Add a note (\"Weld symbols to ISO 2553: a = throat, "
+        "z = leg\").",
+    )
+    return [Finding("weld_standard_unstated", "warning", text, tuple(str(w["id"]) for w in welds))]
+
+
 def pictorial_findings(data: Any) -> list[Any]:
     """A weld symbol whose arrow touches a pictorial view (ISO 2553 symbols stand on orthographic views or sections: in a picture
     the seam is distorted and the arrow side is ambiguous)."""
@@ -192,7 +215,7 @@ def findings(data: Any) -> list[Any]:
     from sheet_review import Finding  # noqa: PLC0415
 
     ctx = data.ctx
-    out = class_findings(data) + duplicate_findings(data) + pictorial_findings(data)
+    out = class_findings(data) + duplicate_findings(data) + pictorial_findings(data) + standard_findings(data)
     joints = joints_of(ctx)
     if joints:
         return out + joint_findings(data, joints)

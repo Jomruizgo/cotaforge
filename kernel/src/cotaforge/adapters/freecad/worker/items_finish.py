@@ -10,11 +10,13 @@ block.
 
 from typing import Any
 
-from items_attach import attach_face, clear_of_views, place_label
+from gdt_frames import FINISH_BAR_MM, GdtFrameError, finish_file, finish_symbol
+from items_attach import Placed, attach_face, clear_of_views, place_label
 from items_common import asked
 from sheet_context import COMMON_FIELDS, Context, ItemError, ItemType, Point, check_fields, v_bool, v_enum, v_ids, v_num
 from sheet_draw import arrow
-from sheet_model import DIMENSIONS, Circle, Entity, Line, Polyline, Text, text_width
+from sheet_model import DIMENSIONS, Circle, Entity, Line, Polyline, Text
+from sheet_units import NativeSymbol
 
 LONG_RISE_MM = 5.0
 SHORT_RISE_MM = 2.5
@@ -77,7 +79,7 @@ def symbol(vertex: Point, machining: str, text: str | None) -> tuple[list[Entity
     if machining == "forbidden":
         radius = SHORT_RISE_MM * 0.48
         out.append(Circle(vx, vy + SHORT_RISE_MM * 0.96, radius, DIMENSIONS))
-    width = text_width(text, TEXT_MM) + 2 * BAR_PAD_MM if text else 0.0
+    width = FINISH_BAR_MM if text else 0.0  # the bar of the library symbol (ISO 1302) holds the text
     end = (long_top[0] + width, long_top[1])
     if text:
         out.append(Line(long_top[0], long_top[1], end[0], end[1], DIMENSIONS))
@@ -90,6 +92,23 @@ def symbol(vertex: Point, machining: str, text: str | None) -> tuple[list[Entity
 
 def _text(ctx: Context, spec: dict[str, Any]) -> str | None:
     return f"Ra {fmt_ra(spec['ra'], ctx.comma)}" if "ra" in spec else None
+
+
+def _native(ctx: Context, spec: dict[str, Any], machining: str, text: str | None, general: bool, origin: Point, view: str, leader: tuple[Point, ...]) -> None:
+    """The finish as the library's own symbol (its roughness is the editable text), owned by ``view`` (none: it stands on the
+    page, as the sheet-wide symbol near the title block does) and joined to the face by a native leader when it has one."""
+    try:
+        _, texts = finish_symbol(machining, text, general=general)
+        relative = finish_file(machining, general=general, bare=text is None and machining == "forbidden" and not general)
+    except GdtFrameError as exc:
+        raise ItemError(str(exc)) from exc
+    if view:
+        ctx.used_view(view)
+    ctx.native(
+        NativeSymbol(
+            item=str(spec["id"]), name="s", kind="finish", file=relative, texts=texts, at=origin, view=view, leader=leader
+        )
+    )
 
 
 def _attach_point(points: dict[str, Point], direction: tuple[float, float]) -> Point:
@@ -112,23 +131,35 @@ def draw_face(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     def build(anchor: Point, direction: tuple[float, float]) -> tuple[list[Entity], RECT]:
         _, _, points = symbol((0.0, 0.0), machining, text)
         join = _attach_point(points, direction)
-        entities, rect, _ = symbol((anchor[0] - join[0], anchor[1] - join[1]), machining, text)
+        vertex = (anchor[0] - join[0], anchor[1] - join[1])
+        drawn, rect, _ = symbol(vertex, machining, text)
+        entities = Placed(drawn)
         tip = att.tip_towards(direction)
-        if (anchor[0] - tip[0]) ** 2 + (anchor[1] - tip[1]) ** 2 > ARROW_MIN_MM**2:
+        entities.origin, entities.tip, entities.anchor = vertex, tip, anchor
+        entities.leader = (anchor[0] - tip[0]) ** 2 + (anchor[1] - tip[1]) ** 2 > ARROW_MIN_MM**2
+        if entities.leader:
             entities += [
                 Line(tip[0], tip[1], anchor[0], anchor[1], DIMENSIONS),
                 arrow(tip, (-direction[0], -direction[1])),
             ]
         return entities, rect
 
+    def native(placed: Any) -> None:
+        _native(
+            ctx, spec, machining, text, False, placed.origin, att.view.name,
+            (placed.tip, placed.anchor) if placed.leader else (),
+        )
+
     if att.kind == "plane" and att.normal[1] > 0.9 and spec.get("offset_mm") is None:
         entities, rect = build(att.tip, att.normal)  # standing on the outline
         if ctx.free(rect) and clear_of_views(ctx, rect):
             ctx.reserve(rect)
             ctx.add(entities)
+            native(entities)
             return "ok", f"{label} ({machining}) on {face_id}, touching its outline in the {att.view.name} view"
     entities, free = place_label(ctx, att, build, spec.get("offset_mm"), asked(spec))
     ctx.add(entities)
+    native(entities)
     text_out = f"{label} ({machining}) on {face_id} in the {att.view.name} view"
     return (
         ("ok", text_out)
@@ -145,11 +176,11 @@ def draw_general(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     def build(x: float, y: float) -> tuple[list[Entity], RECT]:
         entities, rect, _ = symbol((x, y), machining, text)
         paren = 6.0
-        x_open = rect[2] + 1.0
+        x_open = rect[2] + 0.5
         entities.append(Text(x_open, y + 0.3, "(", paren, DIMENSIONS, "left"))
-        basic, brect, _ = symbol((x_open + 4.5, y), "any", None)
+        basic, brect, _ = symbol((x_open + 5.943, y), "any", None)
         entities += basic
-        x_close = brect[2] + 0.5
+        x_close = brect[2]
         entities.append(Text(x_close, y + 0.3, ")", paren, DIMENSIONS, "left"))
         return entities, (rect[0], y - 0.5, x_close + 2.5, rect[3] + 1.0)
 
@@ -165,10 +196,12 @@ def draw_general(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         if ctx.free(rect):
             ctx.reserve(rect)
             ctx.add(entities)
+            _native(ctx, spec, machining, text, True, (x, y), "", ())
             return "ok", f"general finish {text or machining} for all the other surfaces, near the title block"
     entities, rect = build(*candidates[0])
     ctx.reserve(rect)
     ctx.add(entities)
+    _native(ctx, spec, machining, text, True, candidates[0], "", ())
     return "warning", f"general finish {text or machining} overlaps other things: no free place near the title block"
 
 
