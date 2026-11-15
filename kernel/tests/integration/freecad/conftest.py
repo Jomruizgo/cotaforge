@@ -8,6 +8,7 @@ import pytest
 
 from cotaforge.adapters.freecad import FreeCADAdapter, FreeCADSession, find_freecad_root
 from cotaforge.adapters.freecad.rpc import WORKER_DIR
+from tests.integration.freecad import sheet_gate
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 WORKER_MAIN = WORKER_DIR / "main.py"
@@ -40,3 +41,34 @@ def adapter(freecad_root: Path, tmp_path_factory: pytest.TempPathFactory) -> Ite
     log_dir = tmp_path_factory.mktemp("freecad-logs")
     with FreeCADSession(freecad_root=freecad_root, timeout_s=60.0, log_dir=log_dir) as connected:
         yield connected
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) -> Iterator[None]:
+    """A test that failed already says what is wrong: its sheet is not reviewed on top of that."""
+    outcome = yield
+    report = outcome.get_result()
+    if report.when == "call" and report.failed:
+        item.rep_call_failed = True  # type: ignore[attr-defined]
+
+
+@pytest.fixture(autouse=True)
+def every_sheet_is_reviewed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """No test sheet without a review (``sheet_gate``): every adapter that builds a sheet in the test has its review run when the
+    test ends, and the test fails on a blocking finding of the drawing rules it did not list with
+    ``@pytest.mark.expected_findings(...)``."""
+    built: list[FreeCADAdapter] = []
+    original = FreeCADAdapter.create_drawing
+
+    def watched(self: FreeCADAdapter, *args: object, **kwargs: object) -> object:
+        result = original(self, *args, **kwargs)  # type: ignore[arg-type]
+        if self not in built:
+            built.append(self)
+        return result
+
+    monkeypatch.setattr(FreeCADAdapter, "create_drawing", watched)
+    yield
+    marks = [m for m in request.node.iter_markers("expected_findings")]
+    expected = tuple(code for mark in marks for code in mark.args)
+    if built and not getattr(request.node, "rep_call_failed", False):
+        sheet_gate.check_built(built, expected)
