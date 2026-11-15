@@ -9,6 +9,8 @@
 * ``datum_unused``: a datum item whose letter no tolerance frame (``gdt``) cites;
 * ``leader_not_on_chamfer``: the leader of a chamfer callout not on the chamfer's line, not from outside or not perpendicular;
 * ``view_redundant``: a view that only carries a cutting line, or whose dimensions another view repeats;
+* ``view_duplicate``: two views that draw the same thing (the same direction, or two sides of a part of revolution: the profile
+  twice); it HOLDS an export;
 * ``arrows_inside_short``: a short dimension with its arrows inside.
 
 ``dimension_crossing``, ``dimension_stack_order`` and ``dimension_gap`` are measurements of the sheet as drawn and HOLD an export
@@ -24,7 +26,7 @@ import sheet_viewrules as rules
 from sheet_collide import ink_of, segments_of
 from sheet_context import Context, ViewInfo
 from sheet_model import CONTOUR, Line, Polyline, Solid
-from sheet_review import Finding, ReviewInput
+from sheet_review import Finding, ReviewInput, _end_view_of_coaxial_part, _unused_views
 from sheet_units import KIND_ITEM
 
 DIMENSION_TYPES = frozenset({"dim", "overall", "datum_dims"})
@@ -45,12 +47,73 @@ def check(data: ReviewInput) -> list[Finding]:
         *_chamfers(data),
         *_short(data),
         *_redundant(data),
+        *_duplicate_views(data),
         *_hatches(data),
         *_underused(data),
         *_paper_for_notes(data),
         *_no_isometric(data),
         *_crowded(data),
     ]
+
+
+# --- two views that draw the same thing -------------------------------------------------------------------------------------------
+
+
+def _revolution_axis(ctx: Context) -> tuple[float, float, float] | None:
+    """The axis of a part of revolution whose every feature is coaxial (a solid cover of stacked cylinders as much as a ring); ``None``
+    for any other part: a hole off the axis makes its two sides differ."""
+    if ctx.assembly is not None or ctx.weldment is not None or ctx.geometry is None:
+        return None
+    found = ctx.geometry.round_extent()
+    features = ctx.geometry.axial_features() if found is not None else None
+    return found[0] if found is not None and features is not None and features[0] else None
+
+
+def _duplicate_views(data: ReviewInput) -> list[Finding]:
+    """Two views of one sheet that show the same: looking the same way, or, on a part of revolution whose every feature is coaxial,
+    two views across its axis (the profile twice: the front and the top of a turned cover are the same drawing). The one that
+    carries the fewer items is the repeat (a tie leaves the first of front, top, right). It HOLDS the export: a shop reads the
+    second drawing as a second part, and the room it takes is the room the first one could have."""
+    ctx = data.ctx
+    use = ctx.extras.get("view_use", {})
+    axis = _revolution_axis(ctx)
+    named = [(name, v) for name, v in ctx.views.items() if not v.derived]
+    order = {"front": 0, "top": 1, "right": 2}
+    repeats: dict[str, str] = {}  # the repeat -> the view it repeats
+    for i, (na, a) in enumerate(named):
+        for nb, b in named[i + 1 :]:
+            same = math.isclose(sum(p * q for p, q in zip(a.direction, b.direction, strict=True)), 1.0, abs_tol=1e-6)
+            profiles = axis is not None and a.shows_axis_along(axis) and b.shows_axis_along(axis)
+            if not (same or profiles):
+                continue
+            keep, drop = sorted((na, nb), key=lambda n: (-len(use.get(n, ())), order.get(n, 9)))
+            repeats.setdefault(drop, keep)
+    out: list[Finding] = []
+    for name, keep in repeats.items():
+        text = ctx.say(
+            f"La vista {name} repite la vista {keep}: dibujan lo mismo (una pieza de revolución con todos sus rasgos coaxiales "
+            "se ve igual desde cualquier lado del eje). Quítala (drawing action=remove_view, "
+            f"view={name}) y pon sus cotas en {keep}; solo se queda si el ingeniero lo ordena con su razón (by=, reason=).",
+            f"The {name} view repeats the {keep} view: they draw the same thing (a part of revolution with every feature coaxial "
+            "looks the same from any side of its axis). Drop it (drawing action=remove_view, "
+            f"view={name}) and put its dimensions on {keep}; it stays only if the engineer orders it with his reason (by=, reason=).",
+        )
+        out.append(Finding("view_duplicate", "warning", text, (name,), key=name))
+    return out
+
+
+# --- the rules the step that built the sheet answers for -----------------------------------------------------------------------
+
+
+STEP_CODES = ("view_adds_nothing", "view_duplicate", "dimension_crossing", "sheet_underused")
+"""The findings a step of the sheet (``drawing`` add / update) answers for on the spot: a view with nothing on it or drawn twice,
+dimension lines crossed, a sheet left mostly empty. The rest of the review waits for ``review``."""
+
+
+def step_check(data: ReviewInput) -> list[Finding]:
+    """Only the rules of ``STEP_CODES``, each run on the context the step just drew (no check of the rest of the review)."""
+    found = [*_unused_views(data), *_end_view_of_coaxial_part(data), *_duplicate_views(data), *_crossings(data), *_underused(data)]
+    return [f for f in found if f.code in STEP_CODES]
 
 
 # --- the paper a sheet leaves blank ---------------------------------------------------------------------------------------------
