@@ -55,6 +55,7 @@ import sheet_checks
 import sheet_collide
 import sheet_colours
 import sheet_context as sc
+import sheet_dimtext
 import sheet_dxf
 import sheet_facts
 import sheet_interface
@@ -69,6 +70,7 @@ import sheet_mirror
 import sheet_model as model
 import sheet_native
 import sheet_output
+import sheet_pageread
 import sheet_pattern
 import sheet_plan_bridge
 import sheet_project
@@ -82,6 +84,7 @@ import sheet_template_gen
 import sheet_thread
 import sheet_turned
 import sheet_units
+import sheet_weights
 import thread_records
 from protocol import WorkerError, error, invalid_request, not_supported
 
@@ -108,12 +111,12 @@ FULL_CIRCLE_DEG = 359.0  # a hole wall covers the whole circle (``list_holes`` r
 
 TECHDRAW_PREFS = "User parameter:BaseApp/Preferences/Mod/TechDraw/"
 DEFAULT_PREFS: tuple[tuple[str, str, float], ...] = (
-    ("Decorations", "LineGroup", 2),  # TechDraw's own list: "FC 0.50mm" (thick 0.50, thin 0.25), ISO 128-20's group for A4 to A2
+    ("Decorations", "LineGroup", sheet_weights.LINE_GROUP_INDEX),  # TechDraw's own list: "FC 0.35mm" (thick 0.35, thin 0.18), the group of the sheet's table
     ("Dimensions", "FontSize", sheet_native.FONT_MM),  # the 3.5 mm of ISO 3098; TechDraw's own default is 5 mm
 )
 """What a new TechDraw object reads when the engineer adds one by hand to the sheet: the line group and the text size of the
 sheet. Measured in 1.1.3: with the preferences unset a dimension added by hand came out 0.35 mm thick and 5 mm high, next to
-the sheet's 0.25 mm and 3.5 mm."""
+the sheet's own widths and 3.5 mm."""
 
 
 def apply_techdraw_defaults() -> None:
@@ -1512,7 +1515,7 @@ def update(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     _sync_auto_items(doc, spec, op)
     _clear_approval(spec)
     page, layout, waited, warnings = _build(doc, spec, op)
-    return _result(doc, page, layout.scale, waited, warnings, op)
+    return _result(doc, page, layout.scale, waited, warnings, op, rules=True)
 
 
 AUTO_LOCATE_ID = "loc"  # the default location of the holes (a datum_dims with auto)
@@ -1865,7 +1868,8 @@ def edit_action(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     write_spec(page, spec)
     _sync_template_fields(fc_doc, op)
     return _result(
-        doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), [], op, changed=tuple(sorted(changing)), tried=(final, tried)
+        doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), [], op, changed=tuple(sorted(changing)), tried=(final, tried),
+        rules=True,
     )
 
 
@@ -1987,7 +1991,8 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     _sync_template_fields(fc_doc, op)
     waited += wait_views(fc_doc, page, op)
     return _result(
-        doc, page, _scale_of(page) or 1.0, waited, routed, op, refused=refused, changed=tuple(a["id"] for a in keep), tried=tried
+        doc, page, _scale_of(page) or 1.0, waited, routed, op, refused=refused, changed=tuple(a["id"] for a in keep), tried=tried,
+        rules=True,
     )
 
 
@@ -2123,7 +2128,7 @@ def layout_action(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any
     _sync_template_fields(fc_doc, op)
     waited = wait_views(fc_doc, page, op)
     return {
-        **_result(doc, page, _scale_of(page) or 1.0, waited, [], op, changed=tuple(report["layout_placed"])),
+        **_result(doc, page, _scale_of(page) or 1.0, waited, [], op, changed=tuple(report["layout_placed"]), rules=True),
         **report,
     }
 
@@ -2174,7 +2179,7 @@ def _change_view(doc: reg.DocumentRec, params: dict[str, Any], action: str, op: 
         f"{'taken off' if action == 'remove_view' else 'added'}: {view}; "
         f"scale {model.fmt_scale(before)} -> {model.fmt_scale(layout.scale)}"
     )
-    result = _result(doc, page, layout.scale, waited, [note, *warnings], op)
+    result = _result(doc, page, layout.scale, waited, [note, *warnings], op, rules=True)
     failing = [f"{r['id']} ({r['type']}): {r['detail']}" for r in result["items"] if r["status"] == "error"]
     if failing:
         result["warnings"] = [*result["warnings"], "items that cannot be drawn on these views: " + "; ".join(failing)]
@@ -2231,6 +2236,48 @@ def _view_box(view: Any) -> Any:
     return Part.Compound(sheet_native.model_edges(view)).optimalBoundingBox(False, False)
 
 
+ORIGIN_NOISE_MM = 0.05  # TechDraw's centre of a view differs from the model's by a bounding-box gap, never by more
+
+
+def _view_origin(view: Any, box: Any, scale: float) -> g.Vec3:
+    """The model point that sits at the origin of the view's own coordinates. ``getGeometricCenter`` is the centre of a
+    bounding box with a gap (measured in 1.1.3: 0.0105 mm off along the axis of a shaft with a keyway) while TechDraw lays
+    its geometry out from the exact one, so a point planned from the first was that much off the vertices of the second and a
+    dimension between them measured a ``4`` as ``4,01``. The exact extents of the model in the axes of the view, against the
+    extents TechDraw drew, give the true one; where the two do not agree (several sources, a part its extents do not tell)
+    the geometric centre is kept."""
+    centre = g.vec(view.getGeometricCenter())
+    try:
+        xdir, direction = App.Vector(*g.vec(view.XDirection)), App.Vector(*g.vec(view.Direction))
+        xdir.normalize()
+        direction.normalize()
+        ydir = direction.cross(xdir)
+        rows = (xdir, ydir, direction)
+        turn = App.Matrix(
+            *[c for r in rows for c in (r.x, r.y, r.z, 0.0)], 0.0, 0.0, 0.0, 1.0
+        )
+        shapes = [s.copy() for s in (getattr(o, "Shape", None) for o in view.Source) if s is not None and not s.isNull()]
+        if not shapes:
+            return centre
+        whole = Part.Compound(shapes)
+        whole.transformShape(turn)
+        extent = whole.optimalBoundingBox(False, False)
+        fixed = list(centre)
+        for axis, lo, hi, drawn_lo, drawn_hi in (
+            (xdir, extent.XMin, extent.XMax, box.XMin / scale, box.XMax / scale),
+            (ydir, extent.YMin, extent.YMax, -box.YMax / scale, -box.YMin / scale),  # TechDraw keeps y down
+        ):
+            true_a, true_b = lo - drawn_lo, hi - drawn_hi  # where the origin is along the axis, from each end
+            now = sum(c * a for c, a in zip(centre, (axis.x, axis.y, axis.z), strict=True))
+            if abs(true_a - true_b) > ORIGIN_NOISE_MM / 5 or abs(true_a - now) > ORIGIN_NOISE_MM:
+                return centre
+            for i, a in enumerate((axis.x, axis.y, axis.z)):
+                fixed[i] += (true_a - now) * a
+        return (fixed[0], fixed[1], fixed[2])
+    except Exception:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind; the planned centre is a fine fallback
+        return centre
+
+
 def view_key(view: Any) -> str | None:
     """The name (``front`` / ``top`` / ``right``) a view of the projection group goes by: the key the sheet tagged it with
     (the anchor of a sheet without a front view is the top or the right one; a label cannot say, FreeCAD makes it unique in
@@ -2260,7 +2307,7 @@ def view_infos(page: Any) -> dict[str, sc.ViewInfo]:
             scale,
             g.vec(view.Direction),
             g.vec(view.XDirection),
-            g.vec(view.getGeometricCenter()),
+            _view_origin(view, box, scale),
             (x + box.XMin, y - box.YMax, x + box.XMax, y - box.YMin),
             vertices=tuple(
                 (x + float(v.X) * scale, y + float(v.Y) * scale)
@@ -2270,10 +2317,8 @@ def view_infos(page: Any) -> dict[str, sc.ViewInfo]:
     return infos
 
 
-def hand_marks(page: Any) -> dict[str, int]:
-    """How many dimensions and balloons of the TechDraw page that the mirror did not make (the engineer's own) sit on
-    each view, by the name the review uses (front / top / right / isometric): plain data for ``sheet_review``. A
-    dimension belongs to the view its first 2D reference points at, a balloon to its source view."""
+def view_names(page: Any) -> dict[str, str]:
+    """The name the review uses (front / top / right / isometric) for each view object of ``page``, by the object's name."""
     names: dict[str, str] = {}
     for view in part_views(page):
         key = view_key(view) if str(view.TypeId) == "TechDraw::DrawProjGroupItem" else None
@@ -2281,6 +2326,14 @@ def hand_marks(page: Any) -> dict[str, int]:
             key = "isometric"
         if key is not None:
             names[str(view.Name)] = key
+    return names
+
+
+def hand_marks(page: Any) -> dict[str, int]:
+    """How many dimensions and balloons of the TechDraw page that the mirror did not make (the engineer's own) sit on
+    each view, by the name the review uses (front / top / right / isometric): plain data for ``sheet_review``. A
+    dimension belongs to the view its first 2D reference points at, a balloon to its source view."""
+    names = view_names(page)
     found: dict[str, int] = {}
     for obj in page.Views:
         kind = str(obj.TypeId)
@@ -3232,7 +3285,10 @@ def _result(
     refused: dict[str, tuple[str, str]] | None = None,
     changed: tuple[str, ...] = (),
     tried: tuple[dict[str, Any], tuple[model.Sheet, list[sc.ItemResult], sc.Context]] | None = None,
+    rules: bool = False,
 ) -> dict[str, Any]:
+    """The sheet as the contract's ``DrawingResult``; ``rules``: the step changed the sheet's items or layout, so it also answers
+    for the few rules that need the sheet as it stands (``step_findings``)."""
     spec = spec_of(page)
     size, language = split_key(spec["template"])
     found = pages(doc.fc_doc)
@@ -3244,7 +3300,9 @@ def _result(
     warnings = [*warnings, *ctx.extras.get("iso_notes", []), *failed]
     width, depth, height = _extents(doc, spec.get("body"), op)
     rows = _item_rows(results, refused)
+    step = step_findings(doc, page, spec, (sheet, results, ctx)) if rules else []
     return {
+        "step_findings": step,
         "changed": [*changed, *(item_id for item_id in (refused or {}) if item_id not in changed)],
         "window": window,
         "sheet": spec["sheet"],
@@ -3488,6 +3546,71 @@ def _last_input(ctx: sc.Context) -> sheet_review.ReviewInput:
     return ctx.extras["review_input"]
 
 
+def read_page_dimensions(page: Any, ctx: sc.Context) -> None:
+    """Put the linear dimensions TechDraw holds on ``page`` where the rules that measure dimension lines read them: they replace
+    the shapes the composed sheet drew for the same items (``sheet_pageread``), and the ones that cannot be read are kept in
+    ``ctx.extras["page_unread"]`` for the ``native_unread`` finding."""
+    drawn = ctx.extras.setdefault("dim_shapes_drawn", list(ctx.extras.get("dim_shapes", [])))  # what the composed sheet drew: the side rules read these
+    try:
+        shapes, unread = sheet_pageread.dimension_shapes(page, view_names(page), sheet_mirror.page_position, sheet_mirror.PROP_ITEM)
+    except Exception as exc:  # noqa: BLE001 - the page is read whole or listed as unread, never skipped
+        shapes, unread = [], [("", f"the dimensions of the page: {type(exc).__name__}: {exc}")]
+    standing_in = {s.owner for s in drawn} - {s.owner for s in shapes}  # an item the composed sheet drew and the page cannot tell
+    ctx.extras["dim_shapes"] = sheet_pageread.merged(drawn, shapes)
+    ctx.extras["page_unread"] = [why for owner, why in unread if owner not in standing_in]
+    try:
+        ctx.extras["page_texts"], unread_texts = sheet_pageread.text_boxes(page)
+    except Exception as exc:  # noqa: BLE001 - listed, never skipped
+        ctx.extras["page_texts"], unread_texts = [], [f"the texts of the page: {type(exc).__name__}: {exc}"]
+    ctx.extras["page_unread"] += unread_texts
+
+
+def _review_data(
+    doc: reg.DocumentRec, page: Any, spec: dict[str, Any], drawn: tuple[model.Sheet, list[sc.ItemResult], sc.Context]
+) -> sheet_review.ReviewInput:
+    """What the review reads of a sheet just composed: its items as the review sees them, the composed context with the dimensions
+    of the TechDraw page read into it (``read_page_dimensions``) and what the engineer put on the page by hand."""
+    sheet, results, ctx = drawn
+    items: list[dict[str, Any]] = []
+    taken: set[str] = set()
+    for position, raw in enumerate(spec.get("items", []), start=1):
+        try:
+            done = sheet_items.normalise(raw, taken, position)
+        except sc.ItemError:
+            continue
+        taken.add(done["id"])
+        items.append(done)
+    ctx.extras["layout_planned"] = spec.get("layout") is not None  # the sheet was placed by the global layout (the sheet flow)
+    read_page_dimensions(page, ctx)
+    data = sheet_review.ReviewInput(items, {r.id: r for r in results}, ctx, sheet, feature_infos(doc))
+    ctx.extras["review_input"] = data
+    ctx.extras["hand_marks"] = hand_marks(page)  # what the engineer put on the TechDraw page by hand
+    return data
+
+
+def step_findings(
+    doc: reg.DocumentRec, page: Any, spec: dict[str, Any], drawn: tuple[model.Sheet, list[sc.ItemResult], sc.Context]
+) -> list[str]:
+    """The blocking findings of the few rules a step answers for (``sheet_viewchecks.STEP_CODES``) that this step brought: the
+    ones not already standing after the step before (the ids of what stood then are kept on the sheet's spec). Only those rules
+    run, on the sheet the step has just composed."""
+    import sheet_viewchecks  # noqa: PLC0415 - the rules of the views and their dimensions
+
+    data = _review_data(doc, page, spec, drawn)
+    rows = [
+        {"code": f.code, "severity": f.severity, "message": f.message, "items": [*f.items], "features": [*f.features], "key": f.key}
+        for f in sheet_viewchecks.step_check(data)
+    ]
+    sheet_checks.assign_ids(rows)
+    standing = [str(r["id"]) for r in rows if r["blocking"]]
+    fresh = spec_of(page)
+    seen = set(fresh.get("rules_seen") or ())
+    if sorted(standing) != sorted(fresh.get("rules_seen") or ()):
+        fresh["rules_seen"] = standing
+        write_spec(page, fresh)
+    return [f"{r['id']}: {r['message']}" for r in rows if r["blocking"] and r["id"] not in seen]
+
+
 def review_findings(
     doc: reg.DocumentRec,
     page: Any,
@@ -3499,19 +3622,7 @@ def review_findings(
 ) -> tuple[list[dict[str, Any]], sc.Context]:
     """The findings of one sheet as rows (``sheet_review``), with their ids, and the context they were found in."""
     sheet, results, ctx = drawn if drawn is not None else compose(doc, page, spec, number, total, op)
-    items: list[dict[str, Any]] = []
-    taken: set[str] = set()
-    for position, raw in enumerate(spec.get("items", []), start=1):
-        try:
-            done = sheet_items.normalise(raw, taken, position)
-        except sc.ItemError:
-            continue
-        taken.add(done["id"])
-        items.append(done)
-    ctx.extras["layout_planned"] = spec.get("layout") is not None  # the sheet was placed by the global layout (the sheet flow)
-    data = sheet_review.ReviewInput(items, {r.id: r for r in results}, ctx, sheet, feature_infos(doc))
-    ctx.extras["review_input"] = data
-    ctx.extras["hand_marks"] = hand_marks(page)  # what the engineer put on the TechDraw page by hand
+    data = _review_data(doc, page, spec, (sheet, results, ctx))
     findings = [
         {
             "code": f.code,
@@ -3555,6 +3666,7 @@ def review_findings(
                     "features": [],
                 }
             )
+    findings += sheet_dimtext.findings(sheet_dimtext.read(ctx.extras["units"], held), ctx)  # what the dimensions print, as a shop reads it
     foreign = sheet_symbols.foreign_symbols(page, sheet_symbols.resource_dir())
     if foreign:  # a drawing of ours that is not a FreeCAD object: it does not follow its view and the engineer cannot edit it
         keys = sorted({str(getattr(o, sheet_mirror.PROP_KEY, "") or o.Label) for o in foreign})
@@ -3575,7 +3687,7 @@ def review_findings(
                 "key": "",
             }
         )
-    unread = sheet_output.native_rows(page)
+    unread = [*sheet_output.native_rows(page), *({"text": t, "view": False} for t in ctx.extras.get("page_unread", []))]
     if unread:  # on the page, in the PDF and in the capture, but not in the composed sheet the review reads
         shown = "; ".join(sheet_output.listed(unread)[:5]) + (f" (+{len(unread) - 5})" if len(unread) > 5 else "")
         findings.append(
@@ -3584,11 +3696,33 @@ def review_findings(
                 "severity": "warning",
                 "message": ctx.say(
                     f"La hoja tiene {len(unread)} objeto(s) nativos de TechDraw que esta revisión no puede leer (sus cotas, "
-                    f"rayados y tipos de línea no se comprueban): {shown}. Se ven en la captura de la hoja y en el PDF; "
-                    "revísalos mirando la captura (con región para acercar); no los des por comprobados.",
+                    f"rayados y tipos de línea no se comprueban): {shown}. Se ven en la captura de la hoja y en el PDF: "
+                    "mira la captura (con región para acercar) y responde con lo que ves (no aplica: <por qué está bien>) "
+                    "o corrígelos; no se dan por comprobados y retienen la exportación.",
                     f"The sheet holds {len(unread)} native TechDraw object(s) this review cannot read (their dimensions, "
-                    f"hatching and line types are not checked): {shown}. They show in the sheet capture and in the PDF; "
-                    "look at them in the capture (with a region to zoom), do not take them as checked.",
+                    f"hatching and line types are not checked): {shown}. They show in the sheet capture and in the PDF: "
+                    "look at them in the capture (with a region to zoom) and answer with what you see (not_applies: <why it "
+                    "is right>) or correct them; they are not taken as checked and they hold the export.",
+                ),
+                "items": [],
+                "features": [],
+                "key": "",
+            }
+        )
+    off_weights = sheet_mirror.off_table(page)
+    if off_weights:  # a hand-added object, or a TechDraw default that slipped through: the engineer may have chosen it
+        shown = "; ".join(off_weights[:4]) + (f" (+{len(off_weights) - 4})" if len(off_weights) > 4 else "")
+        findings.append(
+            {
+                "code": "line_weight_off_table",
+                "severity": "warning",
+                "message": ctx.say(
+                    f"{len(off_weights)} objeto(s) de la hoja tienen un grosor de línea fuera de la tabla del arnés "
+                    f"(ISO 128-20 grupo 0,35; contorno y ocultas 0,35, finas 0,18, rayado 0,07 mm): {shown}. "
+                    "Si el ingeniero no lo eligió así, ponlo en el grosor de la tabla.",
+                    f"{len(off_weights)} object(s) on the sheet have a line weight outside the harness table "
+                    f"(ISO 128-20 group 0.35; outline and hidden 0.35, thin 0.18, hatching 0.07 mm): {shown}. "
+                    "Unless the engineer chose it so, set it to the table's weight.",
                 ),
                 "items": [],
                 "features": [],

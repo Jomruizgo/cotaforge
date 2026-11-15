@@ -18,6 +18,7 @@ import textwrap
 from collections.abc import Sequence
 from typing import Any
 
+import sheet_weights as sw
 from items_attach import _point_segment, _segment_distance, _segment_hits_rect
 from items_views import room_ok
 from sheet_context import (
@@ -156,11 +157,11 @@ def draw_parts_list(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     top = edges[-1]
     out: list[Entity] = []
     for index, y in enumerate(edges):
-        out.append(Line(left, y, right, y, TITLE_BLOCK, 0.35 if index in (0, 1, len(edges) - 1) else 0.25))
+        out.append(Line(left, y, right, y, TITLE_BLOCK, sw.weight(sw.TITLE_BLOCK if index in (0, 1, len(edges) - 1) else sw.TABLE_GRID)))
     x = left
     for edge in (0.0, *widths):
         x += edge
-        out.append(Line(x, bottom, x, top, TITLE_BLOCK, 0.35 if x in (left, right) else 0.25))
+        out.append(Line(x, bottom, x, top, TITLE_BLOCK, sw.weight(sw.TITLE_BLOCK if x in (left, right) else sw.TABLE_GRID)))
     for cells_lines, (y0, y1) in zip([head_lines, *wrapped], zip(edges, edges[1:], strict=False), strict=True):
         out += _cells(cells_lines, left, y0, y1, widths)
     ctx.add(out)

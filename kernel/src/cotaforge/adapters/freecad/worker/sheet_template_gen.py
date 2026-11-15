@@ -96,7 +96,7 @@ def _symbol(first_angle: bool, x0: float, y0: float) -> tuple[str, str]:
     cone = [(10, 0), (0, 2.5), (0, 7.5), (10, 10)]
     points = " ".join(f"{'M' if i == 0 else 'L'} {_f(cx(x))},{_f(y0 + y)}" for i, (x, y) in enumerate(cone))
     outlines = (
-        f'  <g id="extras_outlines" style="fill:none;stroke:#000000;stroke-width:0.5;stroke-linecap:round;stroke-linejoin:round">\n'
+        f'  <g id="extras_outlines" style="fill:none;stroke:#000000;stroke-width:0.35;stroke-linecap:round;stroke-linejoin:round">\n'
         f'    <path id="angle_trapezoid" d="{points} Z"/>\n'
         f'    <circle id="angle_inner_circle" cx="{_f(cx(17))}" cy="{_f(y0 + 5)}" r="2.5"/>\n'
         f'    <circle id="angle_outer_circle" cx="{_f(cx(17))}" cy="{_f(y0 + 5)}" r="5"/>\n'
@@ -104,7 +104,7 @@ def _symbol(first_angle: bool, x0: float, y0: float) -> tuple[str, str]:
     )
     left, right = sorted((cx(-1), cx(23)))
     lines = (
-        '  <g id="extras_centre_lines" style="fill:none;stroke:#000000;stroke-width:0.25;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:6, 0.75, 0.125, 0.75">\n'
+        '  <g id="extras_centre_lines" style="fill:none;stroke:#000000;stroke-width:0.18;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:6, 0.75, 0.125, 0.75">\n'
         f'    <path id="angle_horizontal" d="M {_f(left)},{_f(y0 + 5)} H {_f(right)}"/>\n'
         f'    <path id="angle_vertical" d="M {_f(cx(17))},{_f(y0 + 11)} V {_f(y0 - 1)}"/>\n'
         "  </g>\n"

@@ -421,6 +421,18 @@ def _sheet_summary(result: Any, brief: bool = False) -> list[str]:
     return lines
 
 
+def _step_lines(result: Any) -> list[str]:
+    """The blocking findings this step brought (a view with nothing on it or drawn twice, dimension lines crossed, a sheet left
+    mostly empty): they hold the export, so they are said where they were made, with their remedy."""
+    found = list(getattr(result, "step_findings", ()))
+    if not found:
+        return []
+    return [
+        f"this step left {len(found)} blocking finding(s) (the review lists them and the export waits for them):",
+        *[f"  BLOCKING {row}" for row in found],
+    ]
+
+
 def _item_id(value: Any) -> str:
     """An item id to remove: the id text, or the item object itself (``{"id": "h2", ...}``) as ``list`` prints it."""
     if isinstance(value, dict) and "id" in value:
@@ -596,6 +608,7 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                 *_sheet_summary(result, brief=action != "update" or edit),
                 *handed,
                 *[f"warning: {w}" for w in result.warnings],
+                *_step_lines(result),
                 (
                     f"edited in place: {', '.join(result.changed)} (pinned: nothing else moved, a later layout or compose "
                     "leaves them where they are); drawing(action=\"capture\") to look at it"

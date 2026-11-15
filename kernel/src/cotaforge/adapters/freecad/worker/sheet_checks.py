@@ -79,7 +79,7 @@ NON_BLOCKING = frozenset(
         "window_differs",
         "layout_unplaced",
         "native_fallback",
-        "native_unread",
+        "line_weight_off_table",
         "hidden_check_partial",
         "single_view_enough",
         "dowel_unmarked",
@@ -96,7 +96,7 @@ NON_BLOCKING = frozenset(
         "weld_designation_unchecked",
     }
 )
-"""Notices that never hold an export: about the harness (the FreeCAD window, TechDraw's own objects) or suggestions whose
+"""Notices that never hold an export: about the harness (the FreeCAD window, the fallback of an item to a symbol) or suggestions whose
 question is asked anyway (``single_view_enough`` is the plate case of the memory principle ``drawing-sufficient-views``,
 ``dowel_unmarked`` of ``q.callouts``) or that is a matter of style (``dimension_repeated``: the same size in two views,
 ISO 129, which a shop reads without trouble): they are listed and can be answered, but the question is what the export
