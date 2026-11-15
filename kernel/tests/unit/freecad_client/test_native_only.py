@@ -75,6 +75,19 @@ def test_the_debt_lists_only_modules_that_still_make_symbols() -> None:
     )
 
 
+VIEW_MAKERS = ("draw_section", "_draw_in_place", "draw_detail", "draw_aux")
+
+
+def test_a_section_detail_or_auxiliary_view_is_never_only_sheet_geometry() -> None:
+    """Each function that draws a derived view asks TechDraw for the view (``NativeView``): the cut, its hatch, the cutting
+    line and the letters are TechDraw's, and the sheet keeps its own drawing of them only for the headless PDF."""
+    tree = ast.parse((WORKER_DIR / "items_views.py").read_text(encoding="utf-8"))
+    functions = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    for name in VIEW_MAKERS:
+        names = {n.id for n in ast.walk(functions[name]) if isinstance(n, ast.Name)}
+        assert names & {"NativeView", "_native_section"}, f"{name} draws a view without asking TechDraw for it"
+
+
 def test_a_docstring_example_is_not_a_maker() -> None:
     lines = ["def f():", '    """Use it so::', "", "        symbol.Symbol = svg", '    """', "    obj.Symbol = svg"]
     assert _hits(chr(10).join(lines) + chr(10)) == [6]

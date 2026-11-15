@@ -315,12 +315,13 @@ def _is_dimension(obj: Any) -> bool:
 
 
 def part_views(page: Any) -> list[Any]:
-    """Every view of the page that has projected geometry (the group's items included, dimensions left out)."""
+    """Every view of the page that has projected geometry (the group's items included, dimensions left out). The sections,
+    details and auxiliary views the sheet made from its items are not among them: they are the items', not the sheet's views."""
     views: list[Any] = []
     for obj in page.Views:
         if str(obj.TypeId) == "TechDraw::DrawProjGroup":
             views.extend(obj.Views)
-        elif hasattr(obj, "getVisibleEdges"):
+        elif hasattr(obj, "getVisibleEdges") and sheet_native.PROP_DERIVED not in getattr(obj, "PropertiesList", ()):
             views.append(obj)
     return views
 
@@ -3115,12 +3116,20 @@ def _compose_pass(
         native,
         ctx.extras.get("natives"),
     )
-    # the lines TechDraw has a cosmetic edge for are asked of the view they lie on
+    # the lines TechDraw has a cosmetic edge for are asked of the view they lie on: a standard view, or a section, detail or
+    # auxiliary view an item made (TechDraw's own view object too); a view drawn some other way keeps its lines as drawn
     shown = {n: v.box for n, v in ctx.views.items() if not v.derived and n in sheet_native.VIEW_LABELS}
     if iso_view is not None:
         shown["isometric"] = iso_view.box
+    made = {
+        n.name: n.box
+        for natives in ctx.extras.get("natives", {}).values()
+        for n in natives
+        if isinstance(n, sheet_units.NativeView)
+    }
+    shown.update(made)
     ctx.extras["units"] = sheet_units.with_cosmetics(
-        ctx.extras["units"], shown, [v.box for v in ctx.views.values() if v.derived]
+        ctx.extras["units"], shown, [v.box for n, v in ctx.extras.get("sections", {}).items() if n not in made]
     )
     ctx.extras["collisions"] = _collisions(ctx)
     return sheet, results, ctx

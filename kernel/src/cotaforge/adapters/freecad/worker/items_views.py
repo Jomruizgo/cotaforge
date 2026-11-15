@@ -19,7 +19,7 @@ import sheet_section
 import sheet_seen
 from items_common import VIEW_ORDER, hole_mark, mark_once
 from items_holes import _stacks
-from sheet_clip import HATCH_ANGLE_DEG, bbox, clip_to_circle, clip_to_rect, hatch, hatch_spacing, place, relayer
+from sheet_clip import HATCH_ANGLE_DEG, bbox, clip_to_circle, hatch, hatch_spacing, place, relayer
 from sheet_context import (
     COMMON_FIELDS,
     Context,
@@ -46,7 +46,7 @@ from sheet_context import (
 )
 from sheet_draw import arrow, centre_mark, linear_dimension
 from sheet_model import AXES, CONTOUR, DIMENSIONS, HIDDEN, TEXT, Circle, Entity, Line, Text, fmt
-from sheet_units import NativeFlag
+from sheet_units import NativeFlag, NativeView
 
 LABEL_HEIGHT_MM = 5.0  # the letters of a view are bigger than the dimension text
 LABEL_ROOM_MM = 9.0  # below a view: its label
@@ -66,7 +66,6 @@ LETTERS = "ABCDEFGHJKLMNPRSTUVWXYZ"  # no I, O or Q: they read as digits
 HIDDEN_DEFAULT = ("front", "right")
 PHASE_VIEWS = 3  # after dimensions and callouts have taken their room
 PERP_TOL = 1e-3
-PARTIAL_MARGIN_MM = 4.0  # a partial (auxiliary) view reaches this far beyond the face it shows
 
 
 def v_letter(value: Any) -> str:
@@ -466,6 +465,7 @@ def _draw_in_place(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     ctx.extras.setdefault("section_items", {})[label] = item_id
     ctx.extras.setdefault("section_planes", {})[label] = (at, normal)
     ctx.extras.setdefault("in_place_views", {})[label] = parent.name
+    _native_section(ctx, item_id, info, parent, at, letter)
     axes, axis_count = sheet_section.centre_lines(ctx, info, at, normal)
     threads, thread_count = sheet_section.threads_cut(ctx, info, at, normal)
     ctx.add(axes + threads)
@@ -556,6 +556,7 @@ def draw_section(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     ctx.extras.setdefault("sections", {})[label] = info
     ctx.extras.setdefault("section_items", {})[label] = item_id
     ctx.extras.setdefault("section_planes", {})[label] = (at, normal)
+    _native_section(ctx, item_id, info, parent, at, letter)
     if ctx.assembly is not None and not {"front", "right"} & set(ctx.views):
         # the section of an assembly is its main view when no outside view shows the height: it carries the overall height
         dist = ctx.stack_distance(label, "right", None)
@@ -577,6 +578,16 @@ def draw_section(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             f"{b} {fmt(45.0 + styles[b][0])}°{'' if styles[b][1] == 1.0 else f' x{fmt(styles[b][1])}'}" for b in groups
         )
     return "ok", f"{label} in the {parent.name} view{', ' + note if note else ''}; cut faces hatched{extra}"
+
+
+def _native_section(ctx: Context, item_id: str, info: ViewInfo, parent: ViewInfo, at: Vec3, letter: str) -> None:
+    """Ask TechDraw for the section (``DrawViewSection``): the cut, its hatch and the cutting line and letter in the parent view
+    are its own. The sheet's drawing of them stays what the headless PDF is written from."""
+    if parent.derived:
+        return  # a section of a view that is itself drawn by the sheet has no TechDraw view to hang from
+    ctx.native(
+        NativeView(item_id, info.name, "section", parent.name, info.box, info.scale, info.direction, info.xdir, letter, at=at)
+    )
 
 
 def _bodies_of_cut(page_loops: list[list[Point]], owners: list[int]) -> dict[str, list[list[Point]]]:
@@ -694,6 +705,22 @@ def draw_detail(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     rect = (view_centre[0] - page_r - ROOM_MARGIN_MM, view_centre[1] - page_r - LABEL_ROOM_MM - ROOM_MARGIN_MM,
             view_centre[0] + page_r + ROOM_MARGIN_MM, view_centre[1] + page_r + ROOM_MARGIN_MM)  # fmt: skip
     claim(ctx, item_id, rect)
+    if not parent.derived:
+        ctx.native(
+            NativeView(
+                item_id,
+                label,
+                "detail",
+                parent.name,
+                (view_centre[0] - page_r, view_centre[1] - page_r, view_centre[0] + page_r, view_centre[1] + page_r),
+                k,
+                parent.direction,
+                parent.xdir,
+                letter,
+                anchor=(lx, ly),
+                radius=radius,
+            )
+        )
     # the circle in the parent view, with its letter
     pr = radius * parent.scale
     ctx.add([Circle(anchor[0], anchor[1], pr, DIMENSIONS)])
@@ -754,12 +781,13 @@ def draw_aux(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     if not xs:
         msg = f"{face_id} has no outline to look at"
         raise ItemError(msg)
-    margin = PARTIAL_MARGIN_MM / parent.scale
-    window = (min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin)
+    # TechDraw's own view looked at square to the face shows the whole part from there (it has no partial view), and the sheet
+    # draws what TechDraw draws: the box is that of the whole projection
     entities = list(projection.visible)
     if parent.name in ctx.extras.get("hidden_views", set()):
         entities += projection.hidden
-    shown = clip_to_rect(entities, window)
+    window = bbox(entities) or (min(xs), min(ys), max(xs), max(ys))
+    shown = entities
     letter = take_letter(ctx, spec.get("letter"))
     k = parent.scale
     width, height = (window[2] - window[0]) * k, (window[3] - window[1]) * k
@@ -786,6 +814,20 @@ def draw_aux(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     rect = (view_centre[0] - width / 2 - ROOM_MARGIN_MM, view_centre[1] - height / 2 - LABEL_ROOM_MM - ROOM_MARGIN_MM,
             view_centre[0] + width / 2 + ROOM_MARGIN_MM, view_centre[1] + height / 2 + ROOM_MARGIN_MM)  # fmt: skip
     claim(ctx, item_id, rect)
+    if not parent.derived:
+        ctx.native(
+            NativeView(
+                item_id,
+                letter,
+                "aux",
+                parent.name,
+                (view_centre[0] - width / 2, view_centre[1] - height / 2, view_centre[0] + width / 2, view_centre[1] + height / 2),
+                k,
+                direction,
+                xdir,
+                letter,
+            )
+        )
     # the view arrow in the parent: outside the face, pointing at it
     outward = _snap(_page_unit(parent.axis(n)))
     start = (anchor[0] + outward[0] * 4.0, anchor[1] + outward[1] * 4.0)
