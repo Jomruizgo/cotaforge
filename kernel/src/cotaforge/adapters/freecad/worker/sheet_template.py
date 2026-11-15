@@ -195,3 +195,75 @@ def editable_fields(template_svg: str) -> list[str]:
     """The names of the template's editable text fields, in document order."""
     root = ET.fromstring(template_svg)
     return [el.get(f"{FREECAD_NS}editable") for el in root.iter(f"{SVG_NS}text") if el.get(f"{FREECAD_NS}editable")]
+
+
+# --- long values ---------------------------------------------------------------------------------------------------------------
+
+# The fields whose value is often long (a material with its grade and standard, the general tolerances) have two more lines in the
+# template, ``<name>_1`` and ``<name>_2``, in a smaller size: (width of the field, size of a one-line value, size of the two lines).
+# TechDraw's template text takes a string and keeps the size the template gives it, so a value too long for its field runs over
+# the next one: it goes on the two lines instead, which belong to the field and are not settable by themselves.
+WRAPPED: dict[str, tuple[float, float, float]] = {"part_material": (78.0, 3.5, 2.8), "general_tolerances": (58.0, 3.5, 2.8)}
+
+
+def continuation_fields() -> frozenset[str]:
+    """The names of the two-line positions of the wrapped fields: the sheet writes them, nobody sets them."""
+    return frozenset(f"{name}_{n}" for name in WRAPPED for n in (1, 2))
+
+
+def _words_into(text: str, limit: float, size: float) -> list[str] | None:
+    """``text`` cut at the spaces into lines of at most ``limit`` mm at ``size``; ``None`` when a word is wider than a line."""
+    lines: list[str] = []
+    line = ""
+    for word in text.split():
+        if text_width(word, size) > limit:
+            return None
+        trial = f"{line} {word}".strip()
+        if line and text_width(trial, size) > limit:
+            lines.append(line)
+            line = word
+        else:
+            line = trial
+    if line:
+        lines.append(line)
+    return lines
+
+
+def wrap_fields(values: dict[str, str], names: list[str]) -> dict[str, str]:
+    """``values`` with every wrapped field whose text does not fit its field on one line moved to its two lines (when the
+    template has them and the text fits in two): the field is left empty and ``<name>_1``, ``<name>_2`` hold the lines. What does
+    not fit in two lines is left as it is (``overflowing`` says so)."""
+    out = dict(values)
+    for name, (limit, size, small) in WRAPPED.items():
+        first, second = f"{name}_1", f"{name}_2"
+        text = " ".join(str(values.get(name, "")).split())
+        if first not in names or second not in names or not text or text_width(text, size) <= limit:
+            continue
+        lines = _words_into(text, limit, small)
+        if lines is None or len(lines) > 2:  # noqa: PLR2004
+            continue
+        out[name], out[first], out[second] = "", lines[0], lines[1] if len(lines) > 1 else ""
+    return out
+
+
+def overflowing(template_svg: str, values: dict[str, str]) -> list[tuple[str, float, float]]:
+    """The editable fields whose value runs over the field: ``(name, width of the value, width of the field)`` in mm, at the
+    size the template gives the text (TechDraw does not shrink it). The field is the ``data-maxwidth`` of the template's text."""
+    root = ET.fromstring(template_svg)
+    found: list[tuple[str, float, float]] = []
+
+    def walk(element: ET.Element, inherited: dict[str, str]) -> None:
+        style = _style(element, inherited)
+        for child in element:
+            name = child.get(f"{FREECAD_NS}editable")
+            if child.tag == f"{SVG_NS}text" and name is not None and child.get("data-maxwidth"):
+                value = " ".join(str(values.get(name, "")).split())
+                size = _px(_style(child, style).get("font-size"), 3.5)
+                limit = float(child.get("data-maxwidth", 0))
+                if value and text_width(value, size) > limit + 0.01:
+                    found.append((name, round(text_width(value, size), 1), limit))
+            else:
+                walk(child, style)
+
+    walk(root, {})
+    return found
