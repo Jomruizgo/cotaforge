@@ -344,3 +344,16 @@ def test_the_designer_template_hands_the_part_over_and_listens_to_the_drafting_s
 
 def test_the_template_lets_both_sessions_write_the_handoff_file() -> None:
     assert "Edit(./drawings/**)" in load_settings()["permissions"]["allow"]
+
+
+def test_the_drafter_and_the_guide_open_with_what_a_drawing_is_for() -> None:
+    """The purpose comes before the rules: a rule the agent was not told at that moment is decided by it."""
+    drafting = (PLUGIN / "agents" / "drafter.md").read_text(encoding="utf-8")
+    assert drafting.index("## What a drawing is for") < drafting.index("## One session at a time")
+    from cotaforge_mcp.guide_drawing import QUALITY_LINES
+
+    assert QUALITY_LINES[0].startswith("WHAT A DRAWING IS FOR")
+    for words in ("only thing the shop", "isometric may carry no dimension", "mostly empty"):
+        assert words in drafting.lower() and words in QUALITY_LINES[0].lower(), words
+    fabricating = (PLUGIN / "agents" / "fabricator.md").read_text(encoding="utf-8")
+    assert "What is there for nothing" in fabricating
