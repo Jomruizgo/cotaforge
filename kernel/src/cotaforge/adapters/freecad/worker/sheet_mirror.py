@@ -36,6 +36,7 @@ import sheet_model as sm
 import sheet_native
 import sheet_svg
 import sheet_units as su
+import sheet_weights as sw
 from sheet_draw import native_label
 
 PROP_KEY = "CotaforgeKey"
@@ -116,9 +117,7 @@ def tag_item(obj: Any, item_id: str, sheet: str) -> None:
 
 
 def _remove(fc_doc: Any, objects: list[Any]) -> None:
-    for obj in objects:
-        if sheet_native.alive(fc_doc, obj):
-            fc_doc.removeObject(obj.Name)
+    sheet_native.remove(fc_doc, objects)
 
 
 Guides = tuple[list[float], list[float]]
@@ -281,7 +280,8 @@ def _sync_overall(fc_doc: Any, page: Any, units: list[su.Unit], report: Report) 
 
 
 def _symbols(objects: list[Any]) -> list[Any]:
-    return [o for o in objects if str(o.TypeId) == SYMBOL]
+    """The symbols of the harness's own drawing among a unit's objects (a library symbol the sheet inserted is native)."""
+    return [o for o in objects if str(o.TypeId) == SYMBOL and sheet_native.PROP_SIG not in o.PropertiesList]
 
 
 def symbol_unit(unit: su.Unit, native_ok: bool) -> su.Unit | None:
@@ -388,28 +388,51 @@ def _view_objects(page: Any) -> list[Any]:
     return out
 
 
+def _set_width(vo: Any, prop: str, width: float) -> None:
+    if hasattr(vo, prop) and abs(float(getattr(vo, prop)) - width) > 1e-6:
+        setattr(vo, prop, width)
+
+
+def _geom_hatches(page: Any) -> list[Any]:
+    return [o for o in page.Document.Objects if str(o.TypeId) == "TechDraw::DrawGeomHatch"]
+
+
 def apply_weights(page: Any) -> None:
-    """ISO 128 line weights on TechDraw's own objects (they live on the view providers, so only in the GUI): the visible
-    outline of a view is thick (0.5 mm); hidden, smooth and iso lines and every dimension line are thin -- the same
-    hierarchy the PDF has."""
+    """The line weights of ``sheet_weights`` on TechDraw's own objects (they live on the view providers, so only in the GUI):
+    the views (visible, hidden, tangent and extra widths, the hatch of a section), the dimensions, balloons and leaders. The
+    page then carries ``PROP_MARK``, which the visible CAD reads to set a file written without a window."""
+    done = False
     for obj in _view_objects(page):
         vo = getattr(obj, "ViewObject", None)
         if vo is None:
             continue
-        for prop, width in (
-            ("LineWidth", sm.THICK_MM if "Dim" not in str(obj.TypeId) else sm.THIN_MM),
-            ("HiddenWidth", sm.THIN_MM),
-            ("IsoWidth", sm.HAIR_MM),
-            ("ExtraWidth", sm.THIN_MM),
-        ):
-            if hasattr(vo, prop) and abs(float(getattr(vo, prop)) - width) > 1e-6:
-                setattr(vo, prop, width)
+        done = True
+        if hasattr(vo, "HiddenWidth"):
+            for prop, kind in sw.VIEW_PROPS.items():
+                _set_width(vo, prop, sw.weight(kind))
+            _set_width(vo, sw.SECTION_PROP, sw.weight(sw.HATCH))
+        else:
+            _set_width(vo, "LineWidth", sw.weight(sw.DIMENSION))
         if (
             "Dim" in str(obj.TypeId)
             and hasattr(vo, "Fontsize")
             and abs(float(vo.Fontsize) - sheet_native.FONT_MM) > 1e-6
         ):
             vo.Fontsize = sheet_native.FONT_MM  # the 3.5 mm of ISO 3098, as every other text of the sheet
+    for hatch in _geom_hatches(page):
+        vo = getattr(hatch, "ViewObject", None)
+        if vo is not None:
+            _set_width(vo, sw.SECTION_PROP, sw.weight(sw.HATCH))
+    if done and (sw.PROP_MARK not in page.PropertiesList or str(getattr(page, sw.PROP_MARK)) != sw.MARK_VALUE):
+        if sw.PROP_MARK not in page.PropertiesList:
+            page.addProperty("App::PropertyString", sw.PROP_MARK, sheet_native.GROUP, "The line weights the view providers carry")
+            page.setEditorMode(sw.PROP_MARK, 1)
+        setattr(page, sw.PROP_MARK, sw.MARK_VALUE)
+
+
+def weights_set(page: Any) -> bool:
+    """Whether a window has set the table on this page (``PROP_MARK``): False for a sheet the headless CAD made or saved."""
+    return sw.PROP_MARK in page.PropertiesList and str(getattr(page, sw.PROP_MARK)) == sw.MARK_VALUE
 
 
 def line_weights(page: Any) -> dict[str, float]:
@@ -420,12 +443,47 @@ def line_weights(page: Any) -> dict[str, float]:
         vo = getattr(obj, "ViewObject", None)
         if vo is None or not hasattr(vo, "LineWidth"):
             continue
-        if "Dim" in str(obj.TypeId):
+        if not hasattr(vo, "HiddenWidth"):
             found["dimension"] = float(vo.LineWidth)
-        elif hasattr(vo, "HiddenWidth"):
+        else:
             found["outline"] = float(vo.LineWidth)
             found["thin"] = float(vo.HiddenWidth)
+            found["tangent"] = float(vo.IsoWidth)
+            if hasattr(vo, sw.SECTION_PROP):
+                found["hatch"] = float(getattr(vo, sw.SECTION_PROP))
     return found
+
+
+def weight_readings(page: Any) -> list[tuple[str, str | None, float]]:
+    """``(object, kind, width)`` of every width the page's native objects carry: the view providers' (GUI only) against the
+    kind each one draws, and the ``Format`` of every cosmetic edge and centre line (the CAD without a window has these only),
+    against any width of the table."""
+    out: list[tuple[str, str | None, float]] = []
+    for obj in _view_objects(page):
+        name = str(obj.Label)
+        vo = getattr(obj, "ViewObject", None)
+        if vo is not None and hasattr(vo, "LineWidth"):
+            if hasattr(vo, "HiddenWidth"):
+                out += [(name, kind, float(getattr(vo, prop))) for prop, kind in sw.VIEW_PROPS.items() if hasattr(vo, prop) and prop != "ExtraWidth"]
+                if hasattr(vo, sw.SECTION_PROP):
+                    out.append((name, sw.HATCH, float(getattr(vo, sw.SECTION_PROP))))
+            else:
+                out.append((name, sw.DIMENSION, float(vo.LineWidth)))
+        for attr in ("CosmeticEdges", "CenterLines"):
+            try:
+                edges = list(getattr(obj, attr, None) or [])
+            except Exception:  # noqa: BLE001 - a property this FreeCAD does not have
+                continue
+            for edge in edges:
+                fmt = getattr(edge, "Format", None)
+                if isinstance(fmt, dict) and "weight" in fmt:
+                    out.append((name, None, float(fmt["weight"])))
+    return out
+
+
+def off_table(page: Any) -> list[str]:
+    """What on the page carries a width outside the table, as lines for the review (``sheet_weights.off_table``)."""
+    return sw.off_table(weight_readings(page))
 
 
 # --- the check: the window against the sheet model -----------------------------------------------------------------
@@ -456,6 +514,9 @@ def _compare_overall(page: Any, held: list[su.Unit]) -> list[str]:
     for name, info in wanted.items():
         obj = present.get(f"overall:{name}")
         if obj is None:
+            continue
+        if obj.Document.getObject(str(getattr(obj, PROP_VIEW))) is None:  # the engineer deleted the view it measured
+            problems.append(f"overall {name}: the view it measures is gone from the page")
             continue
         x, y = _label_place(page, obj, info)
         if abs(float(obj.X) - x) > POSITION_TOL_MM or abs(float(obj.Y) - y) > POSITION_TOL_MM:

@@ -861,6 +861,28 @@ def adopt(
     return doc, report
 
 
+def _weigh_sheets(fc_doc: Any) -> None:
+    """A sheet of ours saved by the headless CAD (or before the table of ``sheet_weights``) carries no line weights on
+    its view providers: the visible CAD sets them when it opens the file. Best effort: they never fail an open."""
+    if not gui.ACTIVE:
+        return
+    try:
+        import sheet_mirror  # noqa: PLC0415 - drawing code, not needed to open a part
+
+        for obj in fc_doc.Objects:
+            if (
+                str(obj.TypeId) == "TechDraw::DrawPage"
+                and "CotaforgeSpec" in obj.PropertiesList
+                and not sheet_mirror.weights_set(obj)
+            ):
+                sheet_mirror.apply_weights(obj)
+    except Exception:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind
+        import sys  # noqa: PLC0415
+        import traceback  # noqa: PLC0415
+
+        sys.stderr.write(traceback.format_exc())
+
+
 def open_document(
     params: dict[str, Any],
     doc_id_taken: Any,
@@ -950,6 +972,7 @@ def open_document(
         doc.windowless = windowless
         if not windowless:
             gui.on_new_document(fc_doc)
+            _weigh_sheets(fc_doc)
     except Exception:
         if not borrowed:
             with contextlib.suppress(Exception):

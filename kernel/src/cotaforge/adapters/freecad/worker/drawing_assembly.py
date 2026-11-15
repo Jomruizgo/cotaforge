@@ -380,6 +380,21 @@ class AssemblyRays:
         found = _kept(key, lambda: self._anchors_of(units, instances, frame, margin_mm, outward))
         return {cid: list(points) for cid, points in found.items()}
 
+    def owner_at(
+        self, frame: tuple[sc.Vec3, sc.Vec3, sc.Vec3], local: tuple[float, float], offsets: dict[str, sc.Vec3]
+    ) -> str | None:
+        units: list[_Unit] = []
+        for cid in self._owner_ids():
+            units += self._displaced(cid, offsets.get(cid))
+        centre, xdir, direction = frame
+        ydir = sc.unit(sc.cross(direction, xdir))
+        rects = [_frame_rect(u, centre, xdir, ydir, direction) for u in units]
+        reach = 2.0 * max((math.dist(u.low, u.high) for u in units), default=1.0) + 2.0 * max(
+            (math.dist(centre, u.low) for u in units), default=1.0
+        )
+        found = self._owner(units, rects, (centre, xdir, ydir, direction), local[0], local[1], reach)
+        return None if found is None else found[0]
+
     def _anchors_of(
         self, units: list[_Unit], instances: list[str], frame: tuple[sc.Vec3, sc.Vec3, sc.Vec3], margin_mm: float, outward: bool
     ) -> dict[str, list[sc.Vec3]]:

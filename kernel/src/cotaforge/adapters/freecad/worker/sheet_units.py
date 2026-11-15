@@ -67,7 +67,8 @@ class NativeDim:
     truth of a native dimension. ``text`` is the whole text when the item's callout is not the measured number
     (``Ø9 pasante`` and a counterbore, a fit) -- TechDraw's Arbitrary text --; ``None`` shows what TechDraw measures.
     ``label`` is where the text sits (page mm, y up) and so where the dimension line goes; ``tol`` is the (upper,
-    lower) deviation TechDraw prints itself with the measured value; ``leader`` puts the text on a shelf (ISO 129-1
+    lower) deviation TechDraw prints with the measured value, as ``tol_text`` (mm: left to TechDraw's own unit schema a
+    deviation of 12 µm prints as ``-12``); ``suffix`` follows the measured value (a fit symbol); ``leader`` puts the text on a shelf (ISO 129-1
     referencing, for the diameters and radii whose text is long)."""
 
     item: str
@@ -84,6 +85,8 @@ class NativeDim:
     rect: Rect | None = None  # the room the label and its line take (page mm), for the collision check
     arrows: str = "auto"  # inside | outside: TechDraw flips the arrowheads to match; auto leaves them to TechDraw
     exact: bool = False  # a theoretically exact dimension: TechDraw frames its text (``TheoreticalExact``)
+    tol_text: tuple[str, str] | None = None  # the upper and lower deviation as the sheet writes them (mm, its decimal sign)
+    suffix: str = ""  # written after the measured value (the fit symbol of a toleranced size: ``P9``)
 
 
 @dataclass(frozen=True)
@@ -125,6 +128,27 @@ class NativeCosmetic:
     style: str
 
 
+@dataclass(frozen=True)
+class NativeSymbol:
+    """A symbol of the library the harness inserts the way the engineer does (TechDraw's *Insert SVG Symbol*): a
+    ``DrawViewSymbol`` whose ``Symbol`` is the library file ``file`` and whose ``EditableTexts`` are ``texts`` (the tolerance, the
+    datum letters, the roughness: the engineer edits them in the property editor), owned by ``view`` so it follows the view
+    (``Owner``). ``at`` is where the ORIGIN of the drawing of the file lands (page mm, y up): the top-left corner of a feature
+    control frame, the middle of the base of a datum triangle, the vertex of a surface texture symbol. ``leader`` are the
+    waypoints (page mm) of the native ``DrawLeaderLine`` that joins it to the feature or the dimension it controls: the first
+    on the feature (with the arrow when ``arrow``), the last at the symbol; empty when the symbol stands on the feature itself."""
+
+    item: str
+    name: str
+    kind: str  # frame | datum | finish
+    file: str  # path inside the symbol library (``gdt_frames``)
+    texts: tuple[str, ...]
+    at: Point
+    view: str  # front | top | right | isometric: the view it belongs to
+    leader: tuple[Point, ...] = ()
+    arrow: bool = True
+
+
 COSMETIC_STYLES = {  # the layer the compositor draws on -> the kind of line TechDraw is asked for
     AXES: "centre",
     THREAD: "thin",
@@ -158,7 +182,7 @@ class NativeView:
     radius: float = 0.0
 
 
-Native = NativeDim | NativeNote | NativeFlag | NativeCosmetic | NativeWeld | NativeBalloon | NativeTable | NativeLeader | NativeView
+Native = NativeDim | NativeNote | NativeFlag | NativeCosmetic | NativeWeld | NativeBalloon | NativeTable | NativeLeader | NativeView | NativeSymbol
 
 
 @dataclass(frozen=True)
@@ -199,7 +223,7 @@ class Unit:
             return self.entities
         if any(isinstance(n, (*WHOLE, NativeView)) for n in self.natives):
             return ()  # welds, balloons, tables and the views TechDraw makes: the objects are the whole of the item
-        objects = any(isinstance(n, NativeDim | NativeNote) for n in self.natives)
+        objects = any(isinstance(n, NativeDim | NativeNote | NativeSymbol) for n in self.natives)
         gone = (NATIVE_LAYERS if objects else set()) | ({HIDDEN} if any(isinstance(n, NativeFlag) for n in self.natives) else set())
         return tuple(e for e in self.entities if getattr(e, "layer", None) not in gone and id(e) not in self.covered)
 
@@ -329,9 +353,12 @@ def signature(unit: Unit) -> str:
                 n.tol,
                 n.leader,
                 *(["exact"] if n.exact else []),  # only when set: a sheet made before keeps its objects
+                *([["tol_text", list(n.tol_text), n.suffix]] if n.tol_text else []),
             ]
         if isinstance(n, NativeFlag):
             return ["f", n.view, n.prop]
+        if isinstance(n, NativeSymbol):
+            return ["s", n.name, n.kind, n.file, list(n.texts), [round(v, 2) for v in n.at], n.view, [[round(v, 2) for v in p] for p in n.leader], n.arrow]
         if isinstance(n, MARK_TYPES):
             return marks_dump(n)
         if isinstance(n, NativeView):
@@ -364,12 +391,21 @@ def cosmetic_signature(natives: Any) -> str:
 
 
 def object_count(unit: Unit) -> int:
-    """How many native objects ``unit`` is: a dimension or a view each, a note one annotation per line."""
-    return sum(
-        1 if isinstance(n, NativeDim | NativeView) else marks_count(n) if isinstance(n, MARK_TYPES) else len(n.lines)
-        for n in unit.natives
-        if not isinstance(n, NativeFlag | NativeCosmetic)
-    )
+    """How many native objects ``unit`` is: a dimension or a view each, a note one annotation per line, a symbol the symbol and
+    its leader."""
+    total = 0
+    for n in unit.natives:
+        if isinstance(n, NativeFlag | NativeCosmetic):
+            continue
+        if isinstance(n, NativeSymbol):
+            total += 2 if n.leader else 1
+        elif isinstance(n, NativeDim | NativeView):
+            total += 1
+        elif isinstance(n, MARK_TYPES):
+            total += marks_count(n)
+        else:
+            total += len(n.lines)
+    return total
 
 
 def view_of(unit: Unit) -> NativeView | None:
@@ -509,7 +545,7 @@ def mould_marks(
     arrowhead (the opening direction, a draft exception), every other line, arc and circle (the bar at the tail of the
     arrow, the draft wedge, the hatch of a zone) a cosmetic edge of the view it stands beside, every text an annotation. The
     entities handled are returned by id so the sheet draws none of them again. ``taken`` are the ones already asked for."""
-    if unit.item_type not in MOULD_ITEMS or not views:
+    if unit.item_type not in MOULD_ITEMS:
         return [], set()
     made: list[Native] = []
     covered: set[int] = set()

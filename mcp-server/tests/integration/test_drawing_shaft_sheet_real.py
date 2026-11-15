@@ -17,9 +17,10 @@ from typing import Any
 
 import pytest
 
-from tests.integration.conftest import ORDER, Cad, Reply, running_server
+from tests.integration.conftest import ORDER, Cad, Reply, run_freecad_script, running_server
 from tests.integration.test_drawing_compose_real import compose_the_rest, in_one_order
 from tests.integration.test_drawing_pattern_real import flange
+from tests.integration.test_drawing_review_gaps_real import plate
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="the visible FreeCAD window is exercised on Windows")
 
@@ -141,3 +142,86 @@ async def test_flange_in_steps_mode(workspace: Path, tmp_path: Path) -> None:
         shot(shots, "steps_flange", await cad("drawing", action="capture"))
         print("REVIEW", await cad.ok("drawing", action="review"))
         assert re.compile(r".").search("x")
+
+
+READ_PRINTED = """
+import FreeCAD
+
+doc = FreeCAD.openDocument({path!r})
+dims = {{o.Label.split()[0]: o for o in doc.Objects if o.TypeId == "TechDraw::DrawViewDimension"}}
+width, shoulder = dims["rq_keyway_w"], dims["rq_keyway_p"]
+# the keyway width, P9 on 6: the deviations in mm with the sheet's decimal comma, the class next to the value
+assert width.ArbitraryTolerances and (width.FormatSpecOverTolerance, width.FormatSpecUnderTolerance) == ("-0,012", "-0,042"), (
+    width.FormatSpecOverTolerance, width.FormatSpecUnderTolerance)
+assert width.FormatSpec.endswith(" P9"), width.FormatSpec
+# the keyway's distance from the shoulder is the model's 4, not the 4,01 of a reference a hundredth of a mm off
+assert abs(shoulder.getRawValue() - 4.0) < 0.001, shoulder.getRawValue()
+print("PRINTED OK")
+"""
+
+
+async def test_the_shaft_prints_the_numbers_a_shop_reads_right(workspace: Path, tmp_path: Path) -> None:
+    """The keyway width prints ``6 P9`` with ``-0,012`` / ``-0,042`` (mm, not the µm TechDraw's own unit schema writes) and its
+    distance from the shoulder prints the model's ``4``, not ``4,01``; the review has nothing to say about what the sheet prints.
+    ``COTAFORGE_TEST_HEADLESS=1`` runs it without a window (the sheet is then the harness's own drawing: no TechDraw object to read)."""
+    visible = os.environ.get("COTAFORGE_TEST_HEADLESS") != "1"
+    shots = Path(os.environ.get("COTAFORGE_TEST_SHOTS") or tmp_path / "shots")
+    async with running_server(workspace, visible=visible) as (cad, _):
+        await in_one_order(cad)
+        await shaft(cad, workspace)
+        decisions = {
+            "sheet": {"title": "Eje de transmision", "template": "A3", "language": "es"},
+            "relations": [{"type": "baseline_dims", "from": "face:6", "view": "front", "side": "below"}, DIAMETERS[0], DIAMETERS[2]],
+            "fits": [DIAMETERS[1], DIAMETERS[3], DIAMETERS[4]],
+            "notes": ["Cantidad 10. Proceso: torneado, rectificado de los asientos, fresado del chavetero y roscado."],
+        }
+        await compose_the_rest(cad, decisions, keep=("req.surface_texture",))
+        shot(shots, "sheet_shaft_printed", await cad("drawing", action="capture"))
+        review = await cad.ok("drawing", action="review")
+        for code in ("dimension_tolerance_unit", "dimension_decimal_sign", "dimension_value_noise", "dimension_value_unclean"):
+            assert code not in review, review
+        saved = tmp_path / "printed.FCStd"
+        await cad.ok("doc", action="save", path=str(saved), overwrite=True)
+    if not visible:
+        return
+    script = tmp_path / "read_printed.py"
+    script.write_text(READ_PRINTED.format(path=str(saved)), encoding="utf-8")
+    run_freecad_script(script)
+
+
+READ_PLATE = """
+import FreeCAD
+
+doc = FreeCAD.openDocument({path!r})
+dims = [o for o in doc.Objects if o.TypeId == "TechDraw::DrawViewDimension" and o.Label.startswith("thick")]
+assert len(dims) == 1, [o.Label for o in doc.Objects if o.TypeId == "TechDraw::DrawViewDimension"]
+(dim,) = dims
+assert dim.ArbitraryTolerances and (dim.FormatSpecOverTolerance, dim.FormatSpecUnderTolerance) == ("0", "-0,052"), (
+    dim.FormatSpecOverTolerance, dim.FormatSpecUnderTolerance)
+assert dim.FormatSpec.endswith(" h9") and abs(dim.getRawValue() - 20.0) < 0.001, (dim.FormatSpec, dim.getRawValue())
+print("PRINTED OK")
+"""
+
+
+async def test_a_plate_thickness_with_a_fit_prints_its_deviations_in_mm(workspace: Path, tmp_path: Path) -> None:
+    """A fit on a linear size (h9 on the 20 mm thickness) prints ``20 h9`` with ``0`` over ``-0,052``: millimetres with the
+    sheet's decimal comma, where TechDraw's own unit would write ``-52``."""
+    visible = os.environ.get("COTAFORGE_TEST_HEADLESS") != "1"
+    shots = Path(os.environ.get("COTAFORGE_TEST_SHOTS") or tmp_path / "shots")
+    async with running_server(workspace, visible=visible) as (cad, _):
+        await cad.ok("memory", action="brief", drawing_review="propio", text="la prueba: el agente revisa el plano por su cuenta")
+        await plate(cad, "placa", 20, False, "Placa base")
+        await cad.ok("drawing", action="create", title="Placa base", template="A3", language="es")
+        thickness = {"type": "dim", "id": "thick", "kind": "distance", "from": {"at": [-60, 0, 0]}, "to": {"at": [-60, 0, 20]}, "along": "z", "view": "front", "side": "left", "fit": "h9"}
+        print("ADD", await cad.ok("drawing", action="add", items=[thickness, {"type": "overall"}]))
+        shot(shots, "steps_plate_fit", await cad("drawing", action="capture"))
+        review = await cad.ok("drawing", action="review")
+        for code in ("dimension_tolerance_unit", "dimension_decimal_sign", "dimension_value_noise", "dimension_value_unclean"):
+            assert code not in review, review
+        saved = tmp_path / "plate.FCStd"
+        await cad.ok("doc", action="save", path=str(saved), overwrite=True)
+    if not visible:
+        return
+    script = tmp_path / "read_plate.py"
+    script.write_text(READ_PLATE.format(path=str(saved)), encoding="utf-8")
+    run_freecad_script(script)

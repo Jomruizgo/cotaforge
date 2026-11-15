@@ -598,6 +598,8 @@ def _distance(ctx: Context, spec: dict[str, Any]) -> str:
             text=None if (res is None and not round_span) or rendered.stack is not None else rendered.text,
             orient=orient,
             tol=(res.upper, res.lower) if res is not None and rendered.stack is not None else None,
+            tol_text=rendered.stack,
+            suffix=rendered.text.removeprefix(ctx.num(value)).strip() if rendered.stack is not None else "",
             rect=taken,
             arrows=str(spec.get("arrows", "auto")),
             exact=bool(spec.get("exact")),

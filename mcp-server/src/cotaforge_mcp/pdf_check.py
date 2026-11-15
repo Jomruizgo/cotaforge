@@ -43,6 +43,7 @@ NAME_OPERANDS = {b"CS", b"cs", b"Do", b"gs", b"sh", b"ri", b"BMC"}
 STRING_OPERANDS = {b"Tj", b"'", b'"'}
 COLOUR_SETTERS = {b"SC": "stroke", b"SCN": "stroke", b"sc": "fill", b"scn": "fill"}
 PAINT = {b"S", b"s", b"f", b"F", b"f*", b"B", b"B*", b"b", b"b*"}
+FILL_PAINT = {b"f", b"F", b"f*", b"B", b"B*", b"b", b"b*"}
 CLOSE_THEN_PAINT = {b"s", b"b", b"b*"}
 DEVICE = {b"DeviceGray": 1, b"DeviceRGB": 3, b"DeviceCMYK": 4, b"CalGray": 1, b"CalRGB": 3, b"Lab": 3, b"Pattern": 0}
 
@@ -187,6 +188,9 @@ class _Ink:
     stack: list[tuple[float, float, float, float, float, float]] = field(default_factory=list)
     path: list[tuple[float, float]] = field(default_factory=list)
     boxes: list[tuple[float, float, float, float]] = field(default_factory=list)
+    fill: tuple[float, ...] = (0.0,)  # the fill colour now: gray, RGB or CMYK components
+    fill_stack: list[tuple[float, ...]] = field(default_factory=list)
+    fills: list[tuple[tuple[float, ...], tuple[float, float, float, float]]] = field(default_factory=list)  # (colour, box) of every filled path
 
     def point(self, x: float, y: float) -> tuple[float, float]:
         a, b, c, d, e, f = self.ctm
@@ -195,11 +199,13 @@ class _Ink:
     def add(self, x: float, y: float) -> None:
         self.path.append(self.point(x, y))
 
-    def paint(self) -> None:
+    def paint(self, filled: bool = False) -> None:
         if self.path:
             xs = [p[0] for p in self.path]
             ys = [p[1] for p in self.path]
             self.boxes.append((min(xs), min(ys), max(xs), max(ys)))
+            if filled:
+                self.fills.append((self.fill, (min(xs), min(ys), max(xs), max(ys))))
         self.path = []
 
     def multiply(self, m: tuple[float, ...]) -> None:
@@ -420,9 +426,14 @@ def _ink(ink: _Ink, op: bytes, operands: list[tuple[str, bytes, int]]) -> None:
         return
     if op == b"q":
         ink.stack.append(ink.ctm)
+        ink.fill_stack.append(ink.fill)
     elif op == b"Q":
         if ink.stack:
             ink.ctm = ink.stack.pop()
+        if ink.fill_stack:
+            ink.fill = ink.fill_stack.pop()
+    elif op in (b"g", b"rg", b"k", b"sc", b"scn") and v and not any(o[0] == "name" for o in operands):
+        ink.fill = tuple(v)
     elif op == b"cm" and len(v) == 6:
         ink.multiply((v[0], v[1], v[2], v[3], v[4], v[5]))
     elif op in (b"m", b"l") and len(v) == 2:
@@ -438,7 +449,7 @@ def _ink(ink: _Ink, op: bytes, operands: list[tuple[str, bytes, int]]) -> None:
         for px, py in ((x, y), (x + w, y), (x + w, y + h), (x, y + h)):
             ink.add(px, py)
     elif op in PAINT:
-        ink.paint()
+        ink.paint(op in FILL_PAINT)
     elif op == b"n":
         ink.path = []
 
@@ -545,3 +556,26 @@ def require_sound(path: Path | str, **kwargs: Any) -> PdfReport:
     if not report.ok:
         raise PdfCheckError(report)
     return report
+
+
+def filled_paths(path: Path | str) -> list[tuple[tuple[float, ...], tuple[float, float, float, float]]]:
+    """Every filled path of the first page of the PDF at ``path`` as ``(colour, box)``: the colour's components (gray, RGB or
+    CMYK, 0..1) and the box in mm on the page (origin at the lower left). The text of a sheet exported by TechDraw is made of filled
+    paths, so this is how a test proves a text is printed in black and not in the white of a dark window theme."""
+    from pypdf import PdfReader  # noqa: PLC0415
+
+    page = PdfReader(str(path)).pages[0]
+    ink = _Ink()
+    check_stream(page.get_contents().get_data(), page.get("/Resources"), ink)
+    x0, y0 = float(page.mediabox.left), float(page.mediabox.bottom)
+    return [
+        (colour, ((a - x0) * PT_MM, (b - y0) * PT_MM, (c - x0) * PT_MM, (d - y0) * PT_MM))
+        for colour, (a, b, c, d) in ink.fills
+    ]
+
+
+def is_light(colour: tuple[float, ...]) -> bool:
+    """Whether a fill colour is too light to read on white paper (white or near it)."""
+    if len(colour) == 4:  # noqa: PLR2004 - CMYK
+        return max(colour) <= 0.15  # noqa: PLR2004
+    return min(colour) >= 0.85  # noqa: PLR2004

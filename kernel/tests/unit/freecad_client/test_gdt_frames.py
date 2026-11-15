@@ -5,7 +5,8 @@ What is checked here: the files are what the generator writes; the geometry and 
 dividers, the datum cells); every text of a cell is editable; one datum cell is not three; every characteristic of ISO 1101
 has files; the function picks the file and the texts and refuses what ISO 1101 has no cell for; a library symbol is told
 from another one even after FreeCAD rewrote it; the installer stages the library. The painted result in the real FreeCAD is
-``tests/integration/freecad/test_visible_gdt_library.py``.
+``tests/integration/freecad/test_visible_gdt_library.py``. The same folder holds the datum feature symbols (ISO 5459) and the
+surface texture symbols (ISO 1302), checked at the end of this file.
 """
 
 import ast
@@ -72,7 +73,7 @@ def test_every_characteristic_of_iso_1101_has_files_and_the_module_and_the_gener
         for datums in gf.DATUM_RANGE[name]:
             for wide in (False, True):
                 assert gf.gdt_frame_file(name, datums, wide=wide) in gf.library_files()
-    assert len(gf.library_files()) == 74  # 37 frames, each with a narrow and a wide tolerance cell
+    assert len(gf.library_files()) == 121  # 37 frames, each with a narrow and a wide tolerance cell, 4 datum symbols in 10 stem lengths, 7 surface texture symbols
 
 
 def test_form_tolerances_have_no_datum_cell_orientation_and_run_out_need_one_and_position_and_profile_may_have_none() -> (
@@ -94,7 +95,14 @@ def test_form_tolerances_have_no_datum_cell_orientation_and_run_out_need_one_and
         assert list(gf.DATUM_RANGE[name]) == [0, 1, 2, 3]
 
 
-@pytest.mark.parametrize("relative", sorted(p.relative_to(LIBRARY).as_posix() for p in LIBRARY.rglob("*.svg")))
+FRAME_FILES = sorted(
+    p.relative_to(LIBRARY).as_posix()
+    for p in LIBRARY.rglob("*.svg")
+    if p.relative_to(LIBRARY).parts[0] not in ("datum", "finish")
+)
+
+
+@pytest.mark.parametrize("relative", FRAME_FILES)
 def test_geometry_and_cells_of_every_file(relative: str) -> None:
     root = _root(relative)
     wide = relative.endswith("-wide.svg")
@@ -322,3 +330,105 @@ def test_the_windows_build_stages_the_library_next_to_python() -> None:
     build = (ROOT / "packaging" / "windows" / "build.ps1").read_text(encoding="utf-8")
     assert r'Join-Path $Repo "packaging\symbols\cotaforge-gdt"' in build
     assert 'Join-Path $Stage "symbols"' in build
+
+
+# --- the datum feature symbols (ISO 5459) and the surface texture symbols (ISO 1302) ---------------------------------------------
+
+
+def _drawn(relative: str) -> list[tuple[str, str]]:
+    """The ``d`` of every path of a file with the style it is drawn in."""
+    return [(p.attrib["d"], p.attrib.get("style", "")) for p in _root(relative).iter(f"{SVG}path")]
+
+
+@pytest.mark.parametrize("direction", gf.DATUM_DIRECTIONS)
+def test_a_datum_symbol_stands_on_its_base_with_the_frame_on_the_chosen_side(direction: str) -> None:
+    root = _root(f"datum/datum-{direction}.svg")
+    paths = _drawn(f"datum/datum-{direction}.svg")
+    triangle = next(d for d, style in paths if "fill:#000000" in style)
+    corners = list(zip(*[iter(_numbers(triangle))] * 2, strict=True))
+    base_mid = ((corners[0][0] + corners[1][0]) / 2, (corners[0][1] + corners[1][1]) / 2)
+    assert base_mid == pytest.approx((0.0, 0.0))  # the origin of the drawing is the middle of the base: the point on the feature
+    apex = corners[2]
+    assert (apex[0] ** 2 + apex[1] ** 2) ** 0.5 == pytest.approx(5.543, abs=1e-3)
+    sign = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}[direction]
+    assert (apex[0] * sign[0] + apex[1] * sign[1]) > 0  # the apex points to the side the frame is on
+    box = next(d for d, style in paths if "fill:#ffffff" in style)
+    xs, ys = _numbers(box)[0::2], _numbers(box)[1::2]
+    assert (max(xs) - min(xs), max(ys) - min(ys)) == pytest.approx((7.0, 7.0))  # a square of the height of a frame
+    (text,) = root.findall(f"{SVG}text")
+    assert text.attrib[gf.EDITABLE] == "letter" and "transform" not in text.attrib  # the letter stays upright
+    centre = ((max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2)
+    assert float(text.attrib["x"]) == pytest.approx(centre[0]) and float(text.attrib["y"]) == pytest.approx(centre[1] + 1.25)
+    assert (centre[0] * sign[0] + centre[1] * sign[1]) == pytest.approx(5.5426 + 8.9596 + 3.5, abs=1e-3)
+
+
+def test_datum_symbol_gives_the_file_and_the_letter() -> None:
+    svg, texts = gf.datum_symbol("C", "left")
+    assert texts == ("C",) and svg == gf.library_files()["datum/datum-left.svg"] and gf.is_frame_symbol(svg)
+    for bad in ("I", "O", "Q", "a", "AB", ""):
+        with pytest.raises(gf.GdtFrameError):
+            gf.datum_symbol(bad, "up")
+    with pytest.raises(gf.GdtFrameError, match="unknown datum direction"):
+        gf.datum_symbol("A", "diagonal")
+
+
+@pytest.mark.parametrize("machining", gf.MACHINING)
+def test_a_surface_texture_symbol_has_its_vertex_at_the_origin_and_its_roughness_editable(machining: str) -> None:
+    relative = gf.finish_file(machining)
+    root = _root(relative)
+    marks = _drawn(relative)
+    top = (2.887, -5.0)
+    numbers = [n for d, _ in marks[:1] for n in _numbers(d)]
+    assert 0.0 in numbers and top[0] in numbers or -top[0] in numbers  # the check mark has its vertex at (0, 0) and its long leg rises 5 mm
+    bar = marks[-1][0]
+    assert _numbers(bar) == pytest.approx([2.887, -5.0, 2.887 + gf.FINISH_BAR_MM])  # the bar over the text: 18 mm from the top of the long leg
+    (text,) = root.findall(f"{SVG}text")
+    assert text.attrib[gf.EDITABLE] == "roughness" and "font-size:3.5px" in text.attrib["style"]
+    assert (next(root.iter(f"{SVG}circle"), None) is not None) == (machining == "forbidden")  # a circle in the V: removal prohibited
+    closed = marks[0][0].endswith("Z")
+    assert closed == (machining == "required")  # a closed triangle: removal required
+
+
+def test_the_general_finish_has_the_basic_symbol_in_parentheses_and_the_bare_one_has_no_bar() -> None:
+    root = _root(gf.finish_file("required", general=True))
+    assert root.find(f"{SVG}g[@id='basic']") is not None
+    assert [t.text for t in root.iter(f"{SVG}tspan")] == ["Ra 3,2", "(", ")"]
+    assert [t.attrib.get(gf.EDITABLE) for t in root.findall(f"{SVG}text")] == ["roughness", None, None]
+    bare = _root(gf.finish_file("forbidden", bare=True))
+    assert bare.findall(f"{SVG}text") == [] and len(_drawn(gf.finish_file("forbidden", bare=True))) == 1
+    with pytest.raises(gf.GdtFrameError, match="only the forbidden"):
+        gf.finish_file("required", bare=True)
+
+
+def test_finish_symbol_gives_the_file_and_refuses_a_text_longer_than_its_bar() -> None:
+    svg, texts = gf.finish_symbol("required", "Ra 12,5")
+    assert texts == ("Ra 12,5",) and svg == gf.library_files()["finish/finish-required.svg"]
+    assert gf.finish_symbol("forbidden", None)[1] == ()  # no value: the bare symbol
+    assert gf.finish_symbol("any", "Ra 3,2", general=True)[1] == ("Ra 3,2",)
+    with pytest.raises(gf.GdtFrameError, match="too long"):
+        gf.finish_symbol("required", "Ra 12,5 pulido espejo")
+    with pytest.raises(gf.GdtFrameError, match="unknown machining"):
+        gf.finish_file("polished")
+
+
+def test_the_centre_of_a_symbol_is_where_its_origin_and_box_put_it() -> None:
+    svg = gf.library_files()["datum/datum-up.svg"]
+    x, y, w, h = gf.symbol_box(svg)
+    assert (w, h) == pytest.approx((8.15, 22.652), abs=1e-3)
+    centre = gf.symbol_centre(svg, (100.0, 50.0))
+    assert centre == pytest.approx((100.0 + x + w / 2, 50.0 - (y + h / 2)))  # the page runs up, the file down
+    frame = gf.library_files()["perpendicularity/perpendicularity-2-datums.svg"]
+    assert gf.frame_width(frame) == pytest.approx(49.0)
+    assert gf.gdt_frame_choice("perpendicularity", 0.05, (), ("A", "B"))[0] == "perpendicularity/perpendicularity-2-datums.svg"
+    assert gf.gdt_frame_symbol("perpendicularity", 0.05, (), ("A", "B"))[0] == frame
+
+
+def test_the_datum_stem_comes_in_ten_lengths_each_three_millimetres_longer() -> None:
+    assert gf.DATUM_STRETCHES == GEN.DATUM_STRETCHES == 10 and gf.DATUM_STRETCH_MM == GEN.DATUM_STRETCH_MM == 3.0
+    heights = []
+    for stretch in range(gf.DATUM_STRETCHES):
+        svg = gf.datum_symbol("A", "up", stretch)[0]
+        heights.append(gf.symbol_box(svg)[3])
+    assert [round(b - a, 3) for a, b in zip(heights, heights[1:], strict=False)] == [3.0] * 9
+    with pytest.raises(gf.GdtFrameError, match="stem lengths"):
+        gf.datum_file("up", 10)

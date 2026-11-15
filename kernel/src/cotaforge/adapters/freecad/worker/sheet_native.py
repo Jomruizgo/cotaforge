@@ -24,7 +24,9 @@ from typing import Any
 import FreeCAD as App
 import gui
 import sheet_notefit
+import sheet_symbols
 import sheet_units as su
+import sheet_weights as sw
 from sheet_draw import lifted_label
 
 PROP_ITEM = "CotaforgeItem"
@@ -46,6 +48,7 @@ VIEW_LABELS = {"front": "View_front", "top": "View_top", "right": "View_right", 
 DIM_TYPES = {"diameter": "Diameter", "radius": "Radius", "angle": "Angle"}
 MATCH_TOL = 0.03  # model mm: an edge or vertex of a view is the one asked for
 MOVE_TOL_MM = 0.05
+MEASURED_SPEC = "%.2w"  # TechDraw's format of the measured value: two decimals at most, no trailing zeros, no unit
 FONT_MM = 3.5  # ISO 3098 height of the text of a dimension on an A3 / A4 sheet
 GLYPH_LIFT = 0.4  # the middle of an annotation line sits this fraction of its size above the baseline (measured)
 ANNOTATION_FONT = "osifont"
@@ -317,6 +320,12 @@ def _make_dim(
         obj.EqualTolerance = False
         obj.OverTolerance = float(dim.tol[0])
         obj.UnderTolerance = float(dim.tol[1])
+        if dim.tol_text is not None:  # the deviations in mm as the sheet writes them (TechDraw's own would be µm)
+            obj.ArbitraryTolerances = True
+            obj.FormatSpecOverTolerance = dim.tol_text[0]
+            obj.FormatSpecUnderTolerance = dim.tol_text[1]
+        if dim.suffix:
+            obj.FormatSpec = f"{MEASURED_SPEC} {dim.suffix}"
     if dim.exact:
         obj.TheoreticalExact = True
     label = _label_of(dim)
@@ -397,16 +406,66 @@ def _fit_note(fc_doc: Any, page: Any, objects: list[Any], note: su.NativeNote) -
             raise RuntimeError(msg)
 
 
+LEADER_ENUMS = {"arrow": "Filled Arrow", "none": "None"}
+
+
+def _leader_symbol(obj: Any, prop: str, wanted: str) -> None:
+    """Set the end symbol of a leader by the name TechDraw lists for it (the list is the software's: no index is assumed)."""
+    names = [str(n) for n in obj.getEnumerationsOfProperty(prop)]
+    pick = next((n for n in names if n.replace(" ", "").casefold() == wanted.replace(" ", "").casefold()), None)
+    if pick is not None:
+        setattr(obj, prop, pick)
+
+
+def _make_leader(fc_doc: Any, page: Any, frame: Frame, sym: su.NativeSymbol, key: str, sheet: str) -> Any:
+    """The native ``DrawLeaderLine`` of a symbol: owned by the view (it moves with it), its first waypoint on the feature with the
+    arrow, its last at the symbol. TechDraw puts the waypoints down-positive, relative to the leader's own place."""
+    start = sym.leader[0]
+    obj = fc_doc.addObject("TechDraw::DrawLeaderLine", _object_name(page, key, f"{sym.name}_leader"))
+    page.addView(obj)
+    obj.LeaderParent = frame.view
+    obj.AutoHorizontal = False  # the last segment goes where the sheet put the symbol, not horizontal
+    obj.Scalable = False
+    obj.X = start[0] - frame.x
+    obj.Y = start[1] - frame.y
+    obj.WayPoints = [App.Vector(p[0] - start[0], -(p[1] - start[1]), 0) for p in sym.leader]
+    _leader_symbol(obj, "StartSymbol", LEADER_ENUMS["arrow" if sym.arrow else "none"])
+    _leader_symbol(obj, "EndSymbol", LEADER_ENUMS["none"])
+    obj.Label = f"{key} {sym.name} leader"
+    tag(obj, key, sym.item, sheet)
+    return obj
+
+
+def _make_symbol(fc_doc: Any, page: Any, frame: Frame | None, sym: su.NativeSymbol, key: str, sheet: str) -> list[Any]:
+    obj = sheet_symbols.make_library_symbol(
+        fc_doc,
+        page,
+        sym.file,
+        list(sym.texts),
+        _object_name(page, key, sym.name),
+        None if frame is None else frame.view,
+        sym.at,
+        (0.0, 0.0) if frame is None else (frame.x, frame.y),
+    )
+    obj.Label = f"{key} {sym.name}"
+    tag(obj, key, sym.item, sheet)
+    made = [obj]
+    if sym.leader and frame is not None:
+        made.append(_make_leader(fc_doc, page, frame, sym, key, sheet))
+    return made
+
+
 def build(fc_doc: Any, page: Any, unit: su.Unit, sheet: str) -> Built:
     """Make the native objects of ``unit`` on ``page``; on any failure everything made is removed again and the reason
     is returned (the caller then draws the unit as a symbol)."""
     result = Built()
     dims = [n for n in unit.natives if isinstance(n, su.NativeDim)]
     notes = [n for n in unit.natives if isinstance(n, su.NativeNote)]
+    symbols = [n for n in unit.natives if isinstance(n, su.NativeSymbol)]
     frames: dict[str, Frame] = {}
     try:
-        for dim in dims:
-            if dim.view not in frames:
+        for dim in [*dims, *symbols]:
+            if dim.view and dim.view not in frames:
                 view = view_object(page, dim.view)
                 if view is None:
                     msg = f"the sheet has no {dim.view} view"
@@ -438,11 +497,13 @@ def build(fc_doc: Any, page: Any, unit: su.Unit, sheet: str) -> Built:
             made_lines = _make_note(fc_doc, page, note, unit.key, sheet)
             line_objects.append((note, made_lines))
             result.objects.extend(made_lines)
+        for sym in symbols:
+            result.objects.extend(_make_symbol(fc_doc, page, frames.get(sym.view), sym, unit.key, sheet))
         if marks:
             import sheet_native_marks  # noqa: PLC0415 - it imports this module
 
             result.objects.extend(sheet_native_marks.make(fc_doc, page, frames, marks, unit.key, sheet, marks[0].item))
-        if dims or notes or marks:
+        if dims or notes or symbols or marks:
             fc_doc.recompute()
         for note, made_lines in line_objects:
             if note.fit:
@@ -469,8 +530,9 @@ def made(unit: su.Unit, objects: list[Any]) -> bool:
 
 
 def held(objects: list[Any]) -> list[Any]:
-    """The native objects among a unit's objects (the symbol the unit may also have is not one)."""
-    return [o for o in objects if str(o.TypeId) != SYMBOL]
+    """The native objects among a unit's objects: the ones the sheet signed. A symbol of the library the sheet inserted is one; the
+    symbol of the harness's own drawing a unit may also have (``sheet_mirror``) is not."""
+    return [o for o in objects if str(o.TypeId) != SYMBOL or PROP_SIG in o.PropertiesList]
 
 
 def sync(
@@ -577,6 +639,11 @@ def compare_unit(page: Any, unit: su.Unit, objects: list[Any]) -> list[str]:
                 problems.append(
                     f"{unit.key}: {obj.Label} has text {str(obj.FormatSpec)!r} edited by hand (the sheet says {dim.text!r})"
                 )
+            if dim.tol_text is not None and (
+                not bool(obj.ArbitraryTolerances)
+                or (str(obj.FormatSpecOverTolerance), str(obj.FormatSpecUnderTolerance)) != dim.tol_text
+            ):
+                problems.append(f"{unit.key}: {obj.Label} has its deviations edited by hand (the sheet says {' / '.join(dim.tol_text)})")
             if (
                 abs(float(obj.X) - (_label_of(dim)[0] - x)) > MOVE_TOL_MM
                 or abs(float(obj.Y) - (_label_of(dim)[1] - y)) > MOVE_TOL_MM
@@ -587,6 +654,19 @@ def compare_unit(page: Any, unit: su.Unit, objects: list[Any]) -> list[str]:
         if [str(t) for t in obj.Text] != [line]:
             problems.append(f"{unit.key}: {obj.Label} has text edited by hand (the sheet says {line!r})")
     return problems
+
+
+def orphaned(unit: su.Unit, objects: list[Any]) -> list[Any]:
+    """The symbols and leaders of ``unit`` whose view is gone: the engineer deleted the view they stood on, and TechDraw leaves them
+    on the page with no view to follow (their place is relative to it, so they fall to the corner of the page)."""
+    if not any(isinstance(n, su.NativeSymbol) and n.view for n in unit.natives):
+        return []
+    found: list[Any] = []
+    for obj in held(objects):
+        prop = "LeaderParent" if "Leader" in str(obj.TypeId) else "Owner" if str(obj.TypeId) == SYMBOL else ""
+        if prop and getattr(obj, prop) is None:
+            found.append(obj)
+    return found
 
 
 signature = su.signature
@@ -822,7 +902,12 @@ def sync_views(
 
 PROP_COSMETIC = "CotaforgeCosmetic"  # on a view: the cosmetic edges the sheet made, {unit key: [signature, [geometry...]]}
 ISO_STYLE = {"centre": 4, "thin": 1, "parting": 8, "thick": 1}  # ISO 128-20 line numbers (TechDraw's own list): 04 long dash dot, 01, 08
-ISO_WIDTH_MM = {"centre": 0.25, "thin": 0.25, "parting": 0.5, "thick": 0.5}  # the 0.5 mm group: wide 0.5, narrow 0.25 (as the PDF)
+ISO_WIDTH_MM = {  # the table of ``sheet_weights`` (as the PDF the headless CAD writes)
+    "centre": sw.weight(sw.CENTRE),
+    "thin": sw.weight(sw.THREAD),
+    "parting": sw.weight(sw.VISIBLE),
+    "thick": sw.weight(sw.SECTION_LINE),
+}
 BLACK = (0.0, 0.0, 0.0, 1.0)
 EDGE_TOL = 1e-4
 
@@ -923,6 +1008,15 @@ def _make_cosmetic(frame: Frame, n: su.NativeCosmetic) -> Geometry:
     return geometry
 
 
+def _reweigh(view: Any, natives: list[su.NativeCosmetic], specs: list[Any]) -> None:
+    """Put the weights of the table on the cosmetic edges the sheet made earlier (a file saved before the table changed)."""
+    for n, (kind, values) in zip(natives, specs, strict=False):
+        found = _find(view, (kind, tuple(values)))
+        fmt = dict(found.Format) if found is not None else {}
+        if fmt and abs(float(fmt.get("weight", 0.0)) - ISO_WIDTH_MM[n.style]) > 1e-6:
+            found.Format = {**fmt, "weight": ISO_WIDTH_MM[n.style]}
+
+
 def sync_cosmetics(page: Any, units: list[su.Unit], made: list[str] | None = None) -> dict[str, list[str]]:
     """Make the cosmetic edges of the views agree with what the units ask: a unit whose edges on a view already carry the
     signature (and still exist) is left alone, the rest are made again; a unit that is gone takes its edges with it. The edges
@@ -957,6 +1051,7 @@ def sync_cosmetics(page: Any, units: list[su.Unit], made: list[str] | None = Non
             signature = su.cosmetic_signature(natives)
             old = stored.get(key)
             if old is not None and old[0] == signature and all(_find(view, (k, tuple(v))) is not None for k, v in old[1]):
+                _reweigh(view, natives, old[1])
                 continue
             if old is not None:
                 _drop(view, old[1])
