@@ -23,6 +23,7 @@ With only this drawing in hand:
 - **What is missing?** A dimension, tolerance, material, treatment, finish, thread, note, view or section without which I cannot make or inspect (`kind: missing`).
 - **What is ambiguous or can be misread?** Two possible readings, a dimension repeated or contradicting itself, a callout that does not tell holes of different function apart, a line I cannot tell is hidden or visible (`kind: ambiguous`).
 - **What is hard or costly as drawn?** A tolerance finer than the function needs, a dimension from a reference I cannot measure, a shape that forces another operation (`kind: costly`).
+- **What is there for nothing, or hard to read?** A view you never look at for anything (only the isometric may carry no dimension), the same view twice, a dimension across another or a text on a line, a sheet mostly empty or crammed in a corner (`kind: other`).
 - Anything else of legibility (line weights, illegible text, an assembly with no positions or list): `kind: other`.
 
 Also check what the checklist looks at: necessary views and none superfluous, hidden lines or section, form dimensions (size and position), one dimension per feature and direction, dimensions from the function's references, declared general tolerance, hatch only on cut material, designated threads, manufacturing data in the title block.

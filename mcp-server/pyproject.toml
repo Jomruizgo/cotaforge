@@ -40,6 +40,7 @@ addopts = "-q"
 asyncio_mode = "auto"
 markers = [
     "freecad: needs the FreeCAD root",
+    "expected_findings(*codes): the real test builds a sheet with these defects on purpose (the review it runs at the end lists them)",
 ]
 
 [tool.ruff]
