@@ -545,7 +545,7 @@ def mould_marks(
     arrowhead (the opening direction, a draft exception), every other line, arc and circle (the bar at the tail of the
     arrow, the draft wedge, the hatch of a zone) a cosmetic edge of the view it stands beside, every text an annotation. The
     entities handled are returned by id so the sheet draws none of them again. ``taken`` are the ones already asked for."""
-    if unit.item_type not in MOULD_ITEMS or not views:
+    if unit.item_type not in MOULD_ITEMS:
         return [], set()
     made: list[Native] = []
     covered: set[int] = set()

@@ -22,9 +22,9 @@ def _unit(item_type: str, entities: tuple, natives: tuple = ()) -> su.Unit:
 
 def test_a_weld_is_a_leader_and_a_symbol_and_one_more_leader_per_extra_arrow() -> None:
     weld = sm.NativeWeld("w1", "front", ((120.0, 130.0), (140.0, 130.0), (160.0, 130.0)), (150.0, 175.0), 1.0, 14.0, "fillet", "arrow", "a3", "", "a3 4×", "fillet a3")
-    assert sm.count(weld) == 4  # the leader, the symbol, two more leaders
+    assert sm.count(weld) == 5  # the leader of the reference line, the symbol, an arrow leader for each of the three joints
     unit = _unit("weld", (Line(0, 0, 1, 1, DIMENSIONS),), (weld,))
-    assert su.object_count(unit) == 4
+    assert su.object_count(unit) == 5
     assert unit.residue == ()  # the objects are the whole of the item: no entity stays as a drawing
 
 
@@ -39,7 +39,14 @@ def test_the_aws_tiles_cover_every_weld_the_item_draws() -> None:
     for kind in ("fillet", "v", "square"):
         assert set(sm.AWS_TILES[kind]) == {"arrow", "other"}
         assert all(path.startswith("Welding/AWS/") and path.endswith(".svg") for path in sm.AWS_TILES[kind].values())
-    assert sm.TILE_ROW == {"arrow": 0, "other": -1}  # FreeCAD: 0 for the arrow side, -1 for the other side
+    assert sm.TILE_ROW == {"arrow": -1, "other": 0}  # FreeCAD 1.1.3 paints row -1 below the reference line (the arrow side in AWS) and row 0 above it
+
+
+def test_the_arrow_side_is_the_file_that_hangs_below_the_line_and_the_other_side_the_one_that_stands_on_it() -> None:
+    for kind, tiles in sm.AWS_TILES.items():
+        assert tiles["arrow"].endswith("Down.svg") and tiles["other"].endswith("Up.svg"), kind  # Down: below the line, its leg on it
+        assert tiles["arrow"] != tiles["other"]
+    assert sm.TILE_ROW["arrow"] < sm.TILE_ROW["other"]  # the lower row is the arrow side
 
 
 def test_the_aws_tiles_are_files_of_freecads_library_or_the_library_is_not_here() -> None:
@@ -101,7 +108,6 @@ def test_a_mark_inside_a_view_the_sheet_drew_itself_is_left_to_the_sheet() -> No
 def test_other_items_are_not_touched() -> None:
     line = Line(110.0, 110.0, 120.0, 110.0, DIMENSIONS)
     assert su.mould_marks(_unit("note", (line,)), VIEWS, [], set()) == ([], set())
-    assert su.mould_marks(_unit("pull_direction", (line,)), {}, [], set()) == ([], set())  # no TechDraw view at all (an hlr sheet)
 
 
 def test_two_labels_with_the_same_words_at_one_height_are_not_taken_for_each_other() -> None:

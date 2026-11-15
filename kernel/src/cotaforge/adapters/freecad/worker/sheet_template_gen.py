@@ -246,7 +246,11 @@ def build(size: str, language: str = "es", angle: str = "first") -> str:
         + field("document_type", 1, 21.5, 78, 3.5, "start")
         + field("scale", 160, -3.6, 38, 3.5, "middle", "scale")
         + field("general_tolerances", 81, -3.6, 58, 3.5, "start")
+        + field("general_tolerances_1", 81, -6.3, 58, 2.8, "start")  # the two lines of a value too long for one (sheet_template.WRAPPED)
+        + field("general_tolerances_2", 81, -2.6, 58, 2.8, "start")
         + field("part_material", 1, -3.6, 78, 3.5, "start")
+        + field("part_material_1", 1, -6.3, 78, 2.8, "start")
+        + field("part_material_2", 1, -2.6, 78, 2.8, "start")
         + "  </g>\n"
     )
 
