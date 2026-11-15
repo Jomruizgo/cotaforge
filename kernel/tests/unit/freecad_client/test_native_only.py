@@ -6,7 +6,8 @@ behind when its view is deleted. Only ``sheet_symbols`` (the files of FreeCAD's 
 worker module that makes a ``DrawViewSymbol`` or sets the ``Symbol`` of one fails here.
 
 ``STILL_DRAWN_BY_HARNESS`` is the debt of the migration, by module: each entry is a module that still makes harness symbols
-and the items it makes them for. The list only shrinks; a new entry is refused by review.
+and the items it makes them for. The list only shrinks; a new entry is refused by review. The items that left it are in
+``sheet_symbols.MIGRATED_ITEMS``: a loose symbol for one of them is a blocking finding of the review, not a debt.
 """
 
 import ast
@@ -23,9 +24,9 @@ import sheet_symbols  # noqa: E402
 ALLOWED = {"sheet_symbols.py"}
 STILL_DRAWN_BY_HARNESS: dict[str, str] = {
     "sheet_mirror.py": (
-        "the units with no native form yet: datum and GD&T symbols, finish symbols, the datum_dims table, detail and "
-        "auxiliary views, sections drawn as sheet geometry, welds, mould symbols (ISO 10135), parts list and balloons, and "
-        "every view of an hlr sheet"
+        "the units with no native form yet: detail and auxiliary views, sections drawn as sheet geometry, welds, mould "
+        "symbols (ISO 10135), parts list and balloons, the scale text under the isometric view, and every view of an hlr "
+        "sheet (datums, GD&T frames, finish symbols and the hole table are native: ``MIGRATED_ITEMS``)"
     ),
 }
 MAKES_A_SYMBOL = re.compile(r"addObject\(\s*(?:SYMBOL|[\"']TechDraw::DrawViewSymbol[\"'])|\.Symbol\s*=[^=]")
@@ -123,3 +124,15 @@ def test_the_gdt_map_names_files_of_freecads_library_or_says_it_has_none() -> No
     missing = sorted(f for f in named if not (folder / f).is_file())
     assert not missing, f"not in FreeCAD's symbol library: {missing}"
     assert sheet_symbols.GDT_LIBRARY["straightness"] == {"frame": None, "symbol": None}  # a gap, said as one
+
+
+def test_the_items_that_are_native_are_no_longer_in_the_debt_and_make_no_symbol_in_their_modules() -> None:
+    debt = " ".join(STILL_DRAWN_BY_HARNESS.values())
+    for word in ("datum and GD&T", "finish symbols,", "datum_dims table"):
+        assert word not in debt, f"{word!r} is native now: it does not belong in the debt"
+    assert sheet_symbols.MIGRATED_ITEMS == {"datum", "gdt", "finish", "datum_dims"}
+    for module in ("items_gdt.py", "items_finish.py", "items_datum.py", "items_attach.py"):
+        text = (WORKER_DIR / module).read_text(encoding="utf-8")
+        assert not _hits(text), f"{module} makes a DrawViewSymbol of its own: {_hits(text)}"
+        assert "sheet_svg" not in text, f"{module} writes SVG: a symbol comes from the library file (sheet_symbols)"
+    assert "STILL_DRAWN_BY_HARNESS" not in (WORKER_DIR / "sheet_symbols.py").read_text(encoding="utf-8")

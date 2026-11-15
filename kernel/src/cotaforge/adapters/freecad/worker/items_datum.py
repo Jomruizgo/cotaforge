@@ -41,7 +41,7 @@ from sheet_context import (
 )
 from sheet_draw import exact_box, linear_dimension, table
 from sheet_model import AXES, CENTRE_OVERSHOOT_MM, TEXT, Line, Text, text_width
-from sheet_units import NativeDim, Ref2
+from sheet_units import NativeDim, NativeNote, NativeTable, Ref2
 
 GAP_MM = 1.0
 END_MM = 2.0
@@ -615,6 +615,7 @@ def _table(
     placed = sorted(((h, view.project(h.centre)) for h in holes), key=lambda hp: (-round(hp[1][1], 1), hp[1][0]))
     rows: list[list[str]] = []
     labels: list[Any] = []
+    numbers: list[NativeNote] = []
     for number, (hole, p) in enumerate(placed, start=1):
         rows.append(
             [
@@ -626,6 +627,7 @@ def _table(
         )
         r = hole.diameter / 2 * view.scale
         labels.append(Text(p[0] + r + 1.0, p[1] + r + 1.0, str(number), 3.0, TEXT, "left"))
+        numbers.append(NativeNote(str(spec["id"]), f"l{number}", (str(number),), (p[0] + r + 1.0, p[1] + r + 1.0 + 3.0), 3.0))
     header = ["N", "X", "Y", ctx.say("Descripción", "Description")]
     widths = [9.0, 18.0, 18.0, max(30.0, max(text_width(r[3], 3.0) for r in rows) + 3.0)]
     title = ctx.say("TABLA DE AGUJEROS", "HOLE TABLE")
@@ -646,6 +648,12 @@ def _table(
             (entities, rect), room = higher, True
     ctx.reserve(rect)
     ctx.add([*labels, *entities])
+    ctx.native(
+        *numbers,  # the number of each hole on the view: TechDraw annotations
+        NativeTable(  # and the table: a spreadsheet the engineer edits, shown by a DrawViewSpreadsheet
+            str(spec["id"]), "t", (tuple(header), *(tuple(r) for r in rows)), tuple(widths), (rect[0], rect[3]), title
+        ),
+    )
     text = f"table of {len(rows)} hole(s) with x and y from the datum edges (mm), numbered on the {view.name} view"
     if not room:
         return "warning", f"{text}; it overlaps other things at the bottom right: place it with at_mm=[x, y] (top left)"

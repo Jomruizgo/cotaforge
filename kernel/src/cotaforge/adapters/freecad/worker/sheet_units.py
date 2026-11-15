@@ -24,6 +24,7 @@ from sheet_model import (
     PARTING,
     TEXT,
     THREAD,
+    TITLE_BLOCK,
     ZONE,
     Arc,
     Circle,
@@ -123,6 +124,43 @@ class NativeCosmetic:
     style: str
 
 
+@dataclass(frozen=True)
+class NativeSymbol:
+    """A symbol of the library the harness inserts the way the engineer does (TechDraw's *Insert SVG Symbol*): a
+    ``DrawViewSymbol`` whose ``Symbol`` is the library file ``file`` and whose ``EditableTexts`` are ``texts`` (the tolerance, the
+    datum letters, the roughness: the engineer edits them in the property editor), owned by ``view`` so it follows the view
+    (``Owner``). ``at`` is where the ORIGIN of the drawing of the file lands (page mm, y up): the top-left corner of a feature
+    control frame, the middle of the base of a datum triangle, the vertex of a surface texture symbol. ``leader`` are the
+    waypoints (page mm) of the native ``DrawLeaderLine`` that joins it to the feature or the dimension it controls: the first
+    on the feature (with the arrow when ``arrow``), the last at the symbol; empty when the symbol stands on the feature itself."""
+
+    item: str
+    name: str
+    kind: str  # frame | datum | finish
+    file: str  # path inside the symbol library (``gdt_frames``)
+    texts: tuple[str, ...]
+    at: Point
+    view: str  # front | top | right | isometric: the view it belongs to
+    leader: tuple[Point, ...] = ()
+    arrow: bool = True
+
+
+@dataclass(frozen=True)
+class NativeTable:
+    """A table as TechDraw has it: a ``Spreadsheet::Sheet`` of ``rows`` (the first is the header) shown by a
+    ``DrawViewSpreadsheet`` with its top-left corner at ``at`` (page mm, y up); the engineer edits the cells in the spreadsheet.
+    ``widths`` are the column widths and ``row_height`` the height of a row, in page mm."""
+
+    item: str
+    name: str
+    rows: tuple[tuple[str, ...], ...]
+    widths: tuple[float, ...]
+    at: Point
+    title: str = ""
+    row_height: float = 6.0
+    text_size: float = 3.5
+
+
 COSMETIC_STYLES = {  # the layer the compositor draws on -> the kind of line TechDraw is asked for
     AXES: "centre",
     THREAD: "thin",
@@ -132,7 +170,7 @@ COSMETIC_STYLES = {  # the layer the compositor draws on -> the kind of line Tec
 }
 
 
-Native = NativeDim | NativeNote | NativeFlag | NativeCosmetic
+Native = NativeDim | NativeNote | NativeFlag | NativeCosmetic | NativeSymbol | NativeTable
 
 
 @dataclass(frozen=True)
@@ -171,8 +209,10 @@ class Unit:
         marks of a hole callout); without, everything."""
         if not self.natives:
             return self.entities
-        objects = any(isinstance(n, NativeDim | NativeNote) for n in self.natives)
+        objects = any(isinstance(n, NativeDim | NativeNote | NativeSymbol | NativeTable) for n in self.natives)
         gone = (NATIVE_LAYERS if objects else set()) | ({HIDDEN} if any(isinstance(n, NativeFlag) for n in self.natives) else set())
+        if any(isinstance(n, NativeTable) for n in self.natives):
+            gone = gone | {TITLE_BLOCK}
         return tuple(e for e in self.entities if getattr(e, "layer", None) not in gone and id(e) not in self.covered)
 
 
@@ -308,6 +348,10 @@ def signature(unit: Unit) -> str:
             ]
         if isinstance(n, NativeFlag):
             return ["f", n.view, n.prop]
+        if isinstance(n, NativeSymbol):
+            return ["s", n.name, n.kind, n.file, list(n.texts), [round(v, 2) for v in n.at], n.view, [[round(v, 2) for v in p] for p in n.leader], n.arrow]
+        if isinstance(n, NativeTable):
+            return ["t", n.name, [list(r) for r in n.rows], [round(v, 2) for v in n.widths], [round(v, 2) for v in n.at], n.title, n.row_height, n.text_size]
         return ["n", n.name, list(n.lines), [round(v, 2) for v in n.at], n.size, n.step]
 
     return json.dumps(
@@ -323,12 +367,19 @@ def cosmetic_signature(natives: Any) -> str:
 
 
 def object_count(unit: Unit) -> int:
-    """How many native objects ``unit`` is: a dimension each, a note one annotation per line."""
-    return sum(
-        1 if isinstance(n, NativeDim) else len(n.lines)
-        for n in unit.natives
-        if not isinstance(n, NativeFlag | NativeCosmetic)
-    )
+    """How many native objects ``unit`` is: a dimension each, a note one annotation per line, a symbol the symbol and its
+    leader, a table its view (the spreadsheet it shows is not a view of the page)."""
+    total = 0
+    for n in unit.natives:
+        if isinstance(n, NativeFlag | NativeCosmetic):
+            continue
+        if isinstance(n, NativeSymbol):
+            total += 2 if n.leader else 1
+        elif isinstance(n, NativeDim | NativeTable):
+            total += 1
+        else:
+            total += len(n.lines)
+    return total
 
 
 def measured_problem(obj: Any, dim: NativeDim) -> str | None:

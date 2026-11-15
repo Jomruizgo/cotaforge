@@ -33,6 +33,18 @@ SLIDE_TRIES = 5  # distances tried at each place along the trace before the next
 TRACE_MARGIN_MM = 2.0  # a label touches a plane at least this far from the end of its trace
 
 
+class Placed(list):  # type: ignore[type-arg]
+    """The entities of a label together with where it was put (``tip``, ``anchor``, ``rect``, ``origin``, ``side``): what the
+    native TechDraw object that stands for the label needs. ``place_label`` hands back the very list ``build`` made."""
+
+    tip: Point
+    anchor: Point
+    rect: Rect
+    origin: Point
+    side: str
+    leader: bool
+
+
 @dataclass
 class Attach:
     """The place a label attaches to: ``tip`` on the feature (page mm), ``normal`` the unit direction away from the

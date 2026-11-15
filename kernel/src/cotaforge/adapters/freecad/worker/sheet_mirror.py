@@ -117,9 +117,7 @@ def tag_item(obj: Any, item_id: str, sheet: str) -> None:
 
 
 def _remove(fc_doc: Any, objects: list[Any]) -> None:
-    for obj in objects:
-        if fc_doc.getObject(obj.Name) is not None:
-            fc_doc.removeObject(obj.Name)
+    sheet_native.remove(fc_doc, objects)
 
 
 Guides = tuple[list[float], list[float]]
@@ -282,7 +280,8 @@ def _sync_overall(fc_doc: Any, page: Any, units: list[su.Unit], report: Report) 
 
 
 def _symbols(objects: list[Any]) -> list[Any]:
-    return [o for o in objects if str(o.TypeId) == SYMBOL]
+    """The symbols of the harness's own drawing among a unit's objects (a library symbol the sheet inserted is native)."""
+    return [o for o in objects if str(o.TypeId) == SYMBOL and sheet_native.PROP_SIG not in o.PropertiesList]
 
 
 def symbol_unit(unit: su.Unit, native_ok: bool) -> su.Unit | None:
@@ -390,8 +389,9 @@ def apply_weights(page: Any) -> None:
         vo = getattr(obj, "ViewObject", None)
         if vo is None:
             continue
+        thin = "Dim" in str(obj.TypeId) or "Leader" in str(obj.TypeId)  # a leader is a thin line, as a dimension line is
         for prop, width in (
-            ("LineWidth", sm.THICK_MM if "Dim" not in str(obj.TypeId) else sm.THIN_MM),
+            ("LineWidth", sm.THIN_MM if thin else sm.THICK_MM),
             ("HiddenWidth", sm.THIN_MM),
             ("IsoWidth", sm.HAIR_MM),
             ("ExtraWidth", sm.THIN_MM),

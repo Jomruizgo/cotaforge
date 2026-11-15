@@ -24,6 +24,7 @@ from typing import Any
 import FreeCAD as App
 import gui
 import sheet_notefit
+import sheet_symbols
 import sheet_units as su
 from sheet_draw import lifted_label
 
@@ -381,16 +382,100 @@ def _fit_note(fc_doc: Any, page: Any, objects: list[Any], note: su.NativeNote) -
             raise RuntimeError(msg)
 
 
+PX_MM = 25.4 / 96.0  # the unit a spreadsheet's column widths, row heights and text sizes are in (a CSS pixel), in mm
+LEADER_ENUMS = {"arrow": "Filled Arrow", "none": "None"}
+
+
+def _leader_symbol(obj: Any, prop: str, wanted: str) -> None:
+    """Set the end symbol of a leader by the name TechDraw lists for it (the list is the software's: no index is assumed)."""
+    names = [str(n) for n in obj.getEnumerationsOfProperty(prop)]
+    pick = next((n for n in names if n.replace(" ", "").casefold() == wanted.replace(" ", "").casefold()), None)
+    if pick is not None:
+        setattr(obj, prop, pick)
+
+
+def _make_leader(fc_doc: Any, page: Any, frame: Frame, sym: su.NativeSymbol, key: str, sheet: str) -> Any:
+    """The native ``DrawLeaderLine`` of a symbol: owned by the view (it moves with it), its first waypoint on the feature with the
+    arrow, its last at the symbol. TechDraw puts the waypoints down-positive, relative to the leader's own place."""
+    start = sym.leader[0]
+    obj = fc_doc.addObject("TechDraw::DrawLeaderLine", _object_name(page, key, f"{sym.name}_leader"))
+    page.addView(obj)
+    obj.LeaderParent = frame.view
+    obj.AutoHorizontal = False  # the last segment goes where the sheet put the symbol, not horizontal
+    obj.Scalable = False
+    obj.X = start[0] - frame.x
+    obj.Y = start[1] - frame.y
+    obj.WayPoints = [App.Vector(p[0] - start[0], -(p[1] - start[1]), 0) for p in sym.leader]
+    _leader_symbol(obj, "StartSymbol", LEADER_ENUMS["arrow" if sym.arrow else "none"])
+    _leader_symbol(obj, "EndSymbol", LEADER_ENUMS["none"])
+    obj.Label = f"{key} {sym.name} leader"
+    tag(obj, key, sym.item, sheet)
+    return obj
+
+
+def _make_symbol(fc_doc: Any, page: Any, frame: Frame | None, sym: su.NativeSymbol, key: str, sheet: str) -> list[Any]:
+    obj = sheet_symbols.make_library_symbol(
+        fc_doc,
+        page,
+        sym.file,
+        list(sym.texts),
+        _object_name(page, key, sym.name),
+        None if frame is None else frame.view,
+        sym.at,
+        (0.0, 0.0) if frame is None else (frame.x, frame.y),
+    )
+    obj.Label = f"{key} {sym.name}"
+    tag(obj, key, sym.item, sheet)
+    made = [obj]
+    if sym.leader and frame is not None:
+        made.append(_make_leader(fc_doc, page, frame, sym, key, sheet))
+    return made
+
+
+def _make_table(fc_doc: Any, page: Any, table: su.NativeTable, key: str, sheet: str) -> Any:
+    """A ``Spreadsheet::Sheet`` and the ``DrawViewSpreadsheet`` that shows it: the engineer edits the cells in the spreadsheet."""
+    columns = len(table.widths)
+    rows = [*([(table.title, *([""] * (columns - 1)))] if table.title else []), *table.rows]
+    sheet_obj = fc_doc.addObject("Spreadsheet::Sheet", _object_name(page, key, f"{table.name}_data"))
+    letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    for r, row in enumerate(rows, start=1):
+        for c, text in enumerate(row[:columns]):
+            if text:
+                sheet_obj.set(f"{letters[c]}{r}", "'" + str(text))  # a leading quote: the cell holds that text, not a formula
+        sheet_obj.setRowHeight(str(r), int(round(table.row_height / PX_MM)))
+    for c, width in enumerate(table.widths):
+        sheet_obj.setColumnWidth(letters[c], int(round(width / PX_MM)))
+    if table.title:
+        sheet_obj.mergeCells(f"A1:{letters[columns - 1]}1")
+    fc_doc.recompute()
+    obj = fc_doc.addObject("TechDraw::DrawViewSpreadsheet", _object_name(page, key, table.name))
+    page.addView(obj)
+    obj.Source = sheet_obj
+    obj.CellStart = "A1"
+    obj.CellEnd = f"{letters[columns - 1]}{len(rows)}"
+    obj.ScaleType = "Custom"
+    obj.Scale = 1.0
+    obj.TextSize = table.text_size / PX_MM
+    obj.LineWidth = 0.25
+    obj.X = table.at[0] + sum(table.widths) / 2
+    obj.Y = table.at[1] - len(rows) * table.row_height / 2
+    obj.Label = f"{key} {table.name}"
+    tag(obj, key, table.item, sheet)
+    return obj
+
+
 def build(fc_doc: Any, page: Any, unit: su.Unit, sheet: str) -> Built:
     """Make the native objects of ``unit`` on ``page``; on any failure everything made is removed again and the reason
     is returned (the caller then draws the unit as a symbol)."""
     result = Built()
     dims = [n for n in unit.natives if isinstance(n, su.NativeDim)]
     notes = [n for n in unit.natives if isinstance(n, su.NativeNote)]
+    symbols = [n for n in unit.natives if isinstance(n, su.NativeSymbol)]
+    tables = [n for n in unit.natives if isinstance(n, su.NativeTable)]
     frames: dict[str, Frame] = {}
     try:
-        for dim in dims:
-            if dim.view not in frames:
+        for dim in [*dims, *symbols]:
+            if dim.view and dim.view not in frames:
                 view = view_object(page, dim.view)
                 if view is None:
                     msg = f"the sheet has no {dim.view} view"
@@ -413,7 +498,11 @@ def build(fc_doc: Any, page: Any, unit: su.Unit, sheet: str) -> Built:
             made_lines = _make_note(fc_doc, page, note, unit.key, sheet)
             line_objects.append((note, made_lines))
             result.objects.extend(made_lines)
-        if dims or notes:
+        for sym in symbols:
+            result.objects.extend(_make_symbol(fc_doc, page, frames.get(sym.view), sym, unit.key, sheet))
+        for table in tables:
+            result.objects.append(_make_table(fc_doc, page, table, unit.key, sheet))
+        if dims or notes or symbols or tables:
             fc_doc.recompute()
         for note, made_lines in line_objects:
             _fit_note(fc_doc, page, made_lines, note)
@@ -439,8 +528,9 @@ def made(unit: su.Unit, objects: list[Any]) -> bool:
 
 
 def held(objects: list[Any]) -> list[Any]:
-    """The native objects among a unit's objects (the symbol the unit may also have is not one)."""
-    return [o for o in objects if str(o.TypeId) != SYMBOL]
+    """The native objects among a unit's objects: the ones the sheet signed. A symbol of the library the sheet inserted is one; the
+    symbol of the harness's own drawing a unit may also have (``sheet_mirror``) is not."""
+    return [o for o in objects if str(o.TypeId) != SYMBOL or PROP_SIG in o.PropertiesList]
 
 
 def sync(
@@ -546,6 +636,19 @@ def compare_unit(page: Any, unit: su.Unit, objects: list[Any]) -> list[str]:
     return problems
 
 
+def orphaned(unit: su.Unit, objects: list[Any]) -> list[Any]:
+    """The symbols and leaders of ``unit`` whose view is gone: the engineer deleted the view they stood on, and TechDraw leaves them
+    on the page with no view to follow (their place is relative to it, so they fall to the corner of the page)."""
+    if not any(isinstance(n, su.NativeSymbol) and n.view for n in unit.natives):
+        return []
+    found: list[Any] = []
+    for obj in held(objects):
+        prop = "LeaderParent" if "Leader" in str(obj.TypeId) else "Owner" if str(obj.TypeId) == SYMBOL else ""
+        if prop and getattr(obj, prop) is None:
+            found.append(obj)
+    return found
+
+
 signature = su.signature
 object_count = su.object_count
 measured_problem = su.measured_problem
@@ -557,7 +660,12 @@ def remove(fc_doc: Any, objects: list[Any]) -> None:
     other points; a sheet that is rebuilt starts clean."""
     for obj in objects:
         if fc_doc.getObject(obj.Name) is not None:
+            source = getattr(obj, "Source", None) if str(obj.TypeId) == "TechDraw::DrawViewSpreadsheet" else None
+            data = list(source) if isinstance(source, list | tuple) else ([source] if source is not None else [])
             fc_doc.removeObject(obj.Name)
+            for sheet_obj in data:  # the spreadsheet of a table goes with the table the sheet made
+                if fc_doc.getObject(sheet_obj.Name) is not None:
+                    fc_doc.removeObject(sheet_obj.Name)
 
 
 # --- cosmetic edges: the lines a unit draws ON a view (centre lines and marks, thread arcs, the parting line) ------------
