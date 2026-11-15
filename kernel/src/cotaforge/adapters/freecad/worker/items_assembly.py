@@ -34,6 +34,7 @@ from sheet_context import (
     v_str,
 )
 from sheet_layout import FRAME_MARGIN_MM, TITLE_BLOCK_TOP_MM, TITLE_BLOCK_WIDTH_MM
+from sheet_marks import NativeBalloon, NativeTable
 from sheet_model import DIMENSIONS, TEXT, TITLE_BLOCK, Circle, Entity, Line, Solid, Text, text_width
 from sheet_units import TEXT_SLACK
 
@@ -163,6 +164,7 @@ def draw_parts_list(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     for cells_lines, (y0, y1) in zip([head_lines, *wrapped], zip(edges, edges[1:], strict=False), strict=True):
         out += _cells(cells_lines, left, y0, y1, widths)
     ctx.add(out)
+    ctx.native(_native_table(spec, header, [cells for _, cells in rows], widths, right, bottom, welded))
     rect: Rect = (left, bottom, right, top)
     ctx.reserve(rect)
     ctx.extras["parts_list"] = {
@@ -176,6 +178,35 @@ def draw_parts_list(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     if top > ctx.area[3]:
         return "warning", f"{note}; the list is taller than the free area of the sheet: use A3 or fewer positions"
     return "ok", note
+
+
+NATIVE_ROW_MM = 6.0
+NATIVE_TEXT_MM = 3.0
+NATIVE_TEXT_MIN_MM = 1.8
+
+
+def _native_table(
+    spec: dict[str, Any], header: Sequence[str], rows: list[list[str]], widths: tuple[float, ...], right: float, bottom: float, welded: bool
+) -> NativeTable:
+    """The list as TechDraw's own ``DrawViewSpreadsheet`` (ISO 7573 order: the header at the bottom, the positions upward, like
+    the sheet's own table). A spreadsheet cell holds one line, so a text longer than its column is not wrapped: the text of the
+    whole table is set as small as the longest text asks (never below ``NATIVE_TEXT_MIN_MM``)."""
+    ordered = (*reversed([tuple(r) for r in rows]), tuple(header))
+    size = NATIVE_TEXT_MM
+    for column, width in enumerate(widths):
+        longest = max(text_width(r[column], 1.0) for r in ordered)
+        if longest > 0:
+            size = min(size, (width - 2 * CELL_PAD_MM) / (longest * TEXT_SLACK))
+    return NativeTable(
+        str(spec["id"]),
+        "cut_list" if welded else "parts_list",
+        ordered,
+        tuple(widths),
+        tuple(NATIVE_ROW_MM for _ in ordered),
+        right,
+        bottom,
+        max(NATIVE_TEXT_MIN_MM, round(size, 2)),
+    )
 
 
 FIT_MIN_MM = 16.0  # the narrowest a text column gets
@@ -254,6 +285,7 @@ LEADER_CLEAR_MM = 1.2
 DOT_CLEAR_MM = 2.0
 MARGIN_PAGE_MM = 2.5  # the same instance all round the dot, on the sheet
 BALLOON_VIEWS = ("front", "top", "right", "isometric", "exploded")
+NATIVE_VIEWS = ("front", "top", "right", "isometric")  # the views that are TechDraw's own (a balloon hangs on one)
 SIDES = ("above", "below", "left", "right")
 
 BALLOON_CHECKS = {"view": v_enum(*BALLOON_VIEWS), "side": v_enum(*SIDES)}
@@ -438,6 +470,8 @@ def draw_balloons(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     entities: list[Entity] = []
     for number, centre in placed.items():
         entities += _balloon(centre, dots[number], str(number))
+        if name in NATIVE_VIEWS and not view.derived:  # TechDraw's own balloon on its view (the entities are the headless sheet)
+            ctx.native(NativeBalloon(str(spec["id"]), name, str(number), centre, dots[number]))
     ctx.add(entities)
     book = ctx.extras.setdefault("balloons", {"drawn": set(), "hidden": {}, "view": {}})
     book["drawn"] |= set(placed)
