@@ -145,7 +145,7 @@ def view_object(page: Any, name: str) -> Any | None:
 
 def derived_views(page: Any) -> list[Any]:
     """The sections, details and auxiliary views the sheet made on ``page`` (TechDraw's own view objects)."""
-    return [obj for obj in page.Views if PROP_DERIVED in obj.PropertiesList]
+    return [obj for obj in page.Views if PROP_DERIVED in getattr(obj, "PropertiesList", ())]
 
 
 def view_names(page: Any) -> list[str]:
