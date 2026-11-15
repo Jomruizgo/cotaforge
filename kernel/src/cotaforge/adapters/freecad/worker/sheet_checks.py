@@ -80,6 +80,7 @@ NON_BLOCKING = frozenset(
         "layout_unplaced",
         "native_fallback",
         "native_unread",
+        "line_weight_off_table",
         "hidden_check_partial",
         "single_view_enough",
         "dowel_unmarked",
