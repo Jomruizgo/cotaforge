@@ -55,7 +55,7 @@ from cotaforge.language import say
 from cotaforge.memory import MemoryEntry
 from pydantic import ValidationError
 
-from cotaforge_mcp import design_memory, drawing_look, measured_alerts, recovery
+from cotaforge_mcp import design_memory, drawing_look, drawing_revisions, measured_alerts, recovery
 from cotaforge_mcp import drawing_requirements as reqs
 from cotaforge_mcp.reply import ToolError
 from cotaforge_mcp.session import Session
@@ -290,6 +290,8 @@ def sheet_requirements(session: Session, sheet: DrawingSheetInfo) -> list[reqs.R
         {reqs.MEASURED_ROW: tuple(firing)},
         sheet.measures,
         sheet.components,
+        sheet.items,
+        _brief(session).lang,
     )
 
 
@@ -633,16 +635,47 @@ def sheet_info(session: Session, sheet: str | None, review: bool = False) -> Dra
 # --- the gate -----------------------------------------------------------------------------------------------------------
 
 
-def require_finished(session: Session, sheet: str | None, action: str) -> str | None:
+def revise_released(
+    session: Session, info: DrawingSheetInfo, by: str | None = None, reason: str | None = None
+) -> DrawingSheetInfo:
+    """A sheet whose PDF went out before and whose dimensions changed since: its revision row, marker and revision field are
+    put on it before the new PDF is written (``drawing_revisions``). What was done is kept in ``session.revision_notes`` for
+    the reply of the export."""
+    session.revision_notes = []
+    if drawing_revisions.RELEASE_ID not in info.answers:
+        return info  # nothing was ever released: a first issue carries no revision
+    full = info if info.facts else sheet_info(session, info.sheet, review=True)
+    if full is None:
+        return info
+    fresh, done = drawing_revisions.revise(
+        session, full, lambda: sheet_info(session, info.sheet, review=True), _brief(session).lang, by, reason
+    )
+    session.revision_notes = done
+    return fresh
+
+
+def record_release(session: Session, sheet: str | None) -> None:
+    """The sheet's PDF was written: keep what it stated, so the next export of it can tell what changed."""
+    info = sheet_info(session, sheet, review=True)
+    if info is not None and info.facts:
+        drawing_revisions.record_release(session, info)
+
+
+def require_finished(
+    session: Session, sheet: str | None, action: str, by: str | None = None, reason: str | None = None
+) -> str | None:
     """The sheet an export writes (``None``: the CAD will say there is none) after the gate: refuse the export of the
     sheet while the project's review is not done (see the module docstring); the refusal lists what is missing and what
-    to do next. There is no draft PDF: the draft is the TechDraw sheet in the document."""
+    to do next. There is no draft PDF: the draft is the TechDraw sheet in the document. A sheet released before and changed
+    since gets its revision row first (``by``: who asked for the change, ``reason``: why)."""
     if "describe_drawing" not in session.capabilities.tools:
         return sheet
     mode = mode_of(session)
     info = sheet_info(session, sheet, review=mode != "none")
     if info is None:
         return sheet  # export says it better
+    if action == "pdf":
+        info = revise_released(session, info, by, reason)
     if mode == "none":
         drawing_look.require(session, info, action)  # in every mode: nobody sends out a sheet nobody looked at
         return info.sheet

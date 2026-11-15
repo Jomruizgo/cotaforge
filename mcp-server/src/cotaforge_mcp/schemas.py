@@ -224,6 +224,11 @@ class ExportArgs(Strict):
     flat: str | None = Field(default=None, description="dxf: step id of an unfold: export its flat pattern")
     overwrite: bool = Field(default=False, description="replace the file when it already exists (default refuses)")
     sheet: str | None = Field(default=None, description="pdf/dxf: THE sheet to write, one file (needed with several)")
+    revision_by: str | None = Field(
+        default=None,
+        description="pdf of a sheet released before and changed since: who asked for the change (revision row; default the engineer)",
+    )
+    revision_reason: str | None = Field(default=None, description="pdf, same: why it changed (added to the revision row if it fits)")
 
 
 class CheckArgs(Strict):

@@ -40,8 +40,10 @@ from sheet_context import (
     v_bool,
     v_enum,
     v_ids,
+    v_num,
     v_point2,
     v_ref,
+    v_str,
     v_view_or_section,
 )
 from sheet_draw import angle_dimension, exact_box, linear_dimension
@@ -63,6 +65,8 @@ CHECKS = {
     "along": v_enum("x", "y", "z"),
     "arrows": v_enum("auto", "inside", "outside"),
     "exact": v_bool,
+    "stage": v_str(24),
+    "size_mm": v_num(0.01, 5000.0),
     "elbow_mm": v_point2,  # where the global layout ended the leader (the vector from its tip): written by it, not asked for
     "face": v_ids("face"),
     "faces": v_ids("face"),
@@ -488,6 +492,15 @@ def check(spec: dict[str, Any]) -> dict[str, Any]:
         msg = "exact (theoretically exact, boxed) is for a distance dimension: the location of a toleranced feature"
         raise ItemError(msg)
     sheet_tol.check_combination(out)
+    if "size_mm" in out and "stage" not in out:
+        msg = "size_mm is the size of a process stage: it needs stage (the process, like 'turned' or 'for wire cut')"
+        raise ItemError(msg)
+    if "stage" in out and kind not in ("distance", "diameter"):
+        msg = f"a process stage labels a size (a distance or a diameter), not a {kind}"
+        raise ItemError(msg)
+    if "size_mm" in out and "fit" in out and "/" in out["fit"]:
+        msg = "a stage size takes a fit of one class (H7) or a tol, not a two-class fit"
+        raise ItemError(msg)
     if ("fit" in out or "tol" in out) and kind == "chamfer":
         msg = "a chamfer takes no fit or tolerance here: its general tolerance is the chamfer height of ISO 2768"
         raise ItemError(msg)
@@ -502,7 +515,19 @@ def _toleranced(
 ) -> tuple[sheet_tol.Rendered, str]:
     """(the text of a dimension, what to add to its result): the value with its tolerance, or -- when it has none --
     the general tolerance the sheet's ISO 2768 class gives a dimension of this ``general`` kind (``linear``, ``radius``
-    or ``angle``)."""
+    or ``angle``). A dimension of a process stage (``stage``) prints the stage's own size (``size_mm``, else the model's) and
+    the process after it (``Ø45 g6 ground``), its tolerance inline."""
+    stage = spec.get("stage")
+    if stage:
+        nominal = float(spec.get("size_mm", value))
+        res = sheet_tol.resolve(spec, nominal)
+        base = (
+            sheet_tol.Rendered(f"{prefix}{ctx.num(nominal)}{unit}")
+            if res is None
+            else sheet_tol.render(ctx, nominal, res, prefix, unit)
+        )
+        measured = f"; the model measures {ctx.num(value)}" if "size_mm" in spec else ""
+        return sheet_tol.Rendered(f"{base.text} {stage}"), f"; process stage {stage}{measured}"
     res = sheet_tol.resolve(spec, value)
     if res is None:
         return sheet_tol.Rendered(f"{prefix}{ctx.num(value)}{unit}"), sheet_tol.general_note(ctx, general, value)
@@ -595,7 +620,9 @@ def _distance(ctx: Context, spec: dict[str, Any]) -> str:
             refs=(Ref2("point", centres[0]), Ref2("point", centres[1])),
             label=label,
             expected=value,
-            text=None if (res is None and not round_span) or rendered.stack is not None else rendered.text,
+            text=None
+            if (res is None and not round_span and not spec.get("stage")) or rendered.stack is not None
+            else rendered.text,
             orient=orient,
             tol=(res.upper, res.lower) if res is not None and rendered.stack is not None else None,
             tol_text=rendered.stack,
@@ -700,7 +727,9 @@ def _diameter(ctx: Context, spec: dict[str, Any]) -> str:
         round_part is not None and abs(round_part[1] - 2 * face.radius) < 0.01
     ):  # the outer diameter ``overall`` gives too
         ctx.record_dimension(("dia", round(2 * face.radius, 2), OVERALL), att.view.name)
-    if att.view.derived and att.circle is None and att.kind == "surface":
+    if (att.view.derived or spec.get("stage")) and att.circle is None and att.kind == "surface":
+        # a section's diameters stand outside the view, one stacked beyond the other; so do the stages of one diameter (turned,
+        # wire cut, ground): three texts do not fit on the step itself
         return _section_diameter(ctx, spec, att, face.radius, rendered.text, extra)
     if not threads and turned_across(ctx, att) and not any(spec.get(k) is not None for k in ("side", "offset_mm", "elbow_mm")):
         return _turned_diameter(ctx, att, face.radius, rendered.text, extra)

@@ -961,7 +961,16 @@ def export(session: Session, args: ExportArgs) -> Reply:
         if needed == "export_drawing" and not outline:
             # a drawing sheet (pdf, or the dxf of the sheet): only a finished one is written, ONE sheet to ONE file. The
             # DXF of a face cut or of a sheet-metal flat pattern is not a drawing and does not pass here.
-            sheet = drawing_gate.require_finished(session, args.sheet, args.action)
+            try:
+                sheet = drawing_gate.require_finished(
+                    session, args.sheet, args.action, args.revision_by, args.revision_reason
+                )
+            except ToolError as exc:  # a revision row put on the sheet by this try is a change somebody must look at
+                notes = getattr(session, "revision_notes", []) if args.action == "pdf" else []
+                if notes:
+                    exc.message += "\n" + "\n".join(notes)
+                    exc.args = (exc.message,)
+                raise
         target = session.settings.resolve(args.path or f"{session.doc_name or 'part'}{extension}")
         if target.exists() and not args.overwrite:
             raise ToolError(
@@ -978,6 +987,9 @@ def export(session: Session, args: ExportArgs) -> Reply:
         elif args.action in ("pdf", "dxf"):
             done = _export_sheet(session, args, needed is not None, target, sheet)
             wrote = _renderer_note(args.action, done)
+            if args.action == "pdf":
+                drawing_gate.record_release(session, sheet)  # the next export of this sheet is compared with what it stated now
+                wrote += "".join(f"\n{line}" for line in getattr(session, "revision_notes", []))
         elif args.action == "step":
             session.adapter.export_step(ExportRequest(operation_id="export", path=str(target)))
         elif args.action == "parasolid":

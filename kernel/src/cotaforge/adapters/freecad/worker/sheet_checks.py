@@ -17,6 +17,7 @@ Everything comes from the model's real geometry (the holes, the faces the worker
 the sheet really draws; when a fact is not known, the check is skipped, never guessed.
 """
 
+import json
 import math
 import re
 from dataclasses import dataclass, field
@@ -94,6 +95,7 @@ NON_BLOCKING = frozenset(
         "hatch_same_as_neighbour",
         "hatch_pattern_differs",
         "weld_designation_unchecked",
+        "revision_marker_missing",  # a released row is never rewritten: a marker with no room must not hold the export for ever
     }
 )
 """Notices that never hold an export: about the harness (the FreeCAD window, the fallback of an item to a symbol) or suggestions whose
@@ -825,6 +827,55 @@ def _threads(data: Any) -> list[Any]:
     return out
 
 
+def _stage_feature(spec: dict[str, Any]) -> str:
+    """What a stage dimension is a size of: its cylindrical face, or the two references it spans."""
+    if spec.get("kind") == "diameter":
+        return "face:" + ",".join(str(f) for f in spec.get("face", []))
+    return json.dumps([spec.get("from"), spec.get("to")], sort_keys=True)
+
+
+def _stage_sizes(data: Any) -> list[Any]:
+    """A feature with the size of an intermediate process stage on the sheet (``stage`` and ``size_mm``) has its FINAL size on
+    it too (``stage`` without ``size_mm``: the model's value, the one that stands out): the operator of the last process reads
+    nothing otherwise. Read from the sheet alone; the route the intent file declares is the requirement row's."""
+    ctx = data.ctx
+    staged = [s for s in sheet_review._of(data, "dim") if s.get("stage")]
+    final = {_stage_feature(s) for s in staged if "size_mm" not in s}
+    out: list[Any] = []
+    for feature in dict.fromkeys(_stage_feature(s) for s in staged if "size_mm" in s):
+        if feature in final:
+            continue
+        ids = tuple(str(s["id"]) for s in staged if "size_mm" in s and _stage_feature(s) == feature)
+        text = ctx.say(
+            f"Tamaños intermedios de proceso ({', '.join(ids)}) sin la cota final del mismo rasgo: añade un dim con stage y sin size_mm "
+            "(el valor del modelo, la que destaca).",
+            f"Intermediate process sizes ({', '.join(ids)}) with no final size of the same feature: add a dim with stage and no "
+            "size_mm (the model's value, the one that stands out).",
+        )
+        out.append(_finding("stage_no_final", "warning", text, ids[0], ids))
+    return out
+
+
+def _revision_marks(data: Any) -> list[Any]:
+    """A revision row that names the dimensions it changed (``at``) has FreeCAD's revision marker beside each of them: a row
+    whose marker found no free place, or whose dimension is not on the sheet, points at nothing."""
+    ctx = data.ctx
+    out: list[Any] = []
+    natives = ctx.extras.get("natives", {})
+    for spec in sheet_review._of(data, "revision"):
+        wanted = len(spec.get("at", []))
+        made = sum(1 for n in natives.get(spec["id"], []) if type(n).__name__ == "NativeRevisionMark")
+        if wanted and made < wanted:
+            text = ctx.say(
+                f"La revisión {spec['index']} marca {wanted} cota(s) y solo {made} marcador(es) tienen sitio o cota en la hoja: "
+                "mueve la cota o su texto para dejar sitio, o quita el campo at del renglón.",
+                f"Revision {spec['index']} marks {wanted} dimension(s) and only {made} marker(s) found a place or a dimension on the "
+                "sheet: make room beside the dimension, or take the at field off the row.",
+            )
+            out.append(_finding("revision_marker_missing", "warning", text, str(spec["id"]), (str(spec["id"]),)))
+    return out
+
+
 def checks(data: Any) -> list[Any]:
     """Every automatic finding of the finished-drawing list."""
     found: list[Any] = []
@@ -842,6 +893,8 @@ def checks(data: Any) -> list[Any]:
         _hidden_density,
         _hidden_features,
         _threads,
+        _stage_sizes,
+        _revision_marks,
     ):
         found += check(data)
     return found

@@ -14,6 +14,7 @@ The guard in code: ``tests/unit/freecad_client/test_native_only.py`` fails when 
 """
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -85,10 +86,22 @@ def library_file(resource_dir: str, relative: str) -> str:
     return files[relative]
 
 
+_PATH_DATA = re.compile(r"""\sd=(["'])(.*?)\1""", re.S)
+
+
+def _drawing(text: str) -> tuple[str, ...]:
+    """What a symbol draws: the path data of its SVG, whatever the writer that saved it did to quotes and spaces. FreeCAD writes the
+    file again when an editable text of a library symbol is set (``EditableTexts``: the letter of the revision triangle), so
+    the text of the symbol is no longer the library's byte for byte, but what it draws is."""
+    return tuple(" ".join(m.group(2).split()) for m in _PATH_DATA.finditer(text))
+
+
 def is_library_text(resource_dir: str, text: str) -> bool:
-    """Whether ``text`` is a library file as it is (a symbol whose text the harness drew, or changed, is not)."""
+    """Whether ``text`` is a library file as it is, or the same drawing with its editable texts changed (a symbol whose drawing the
+    harness drew, or changed, is not)."""
     wanted = text.strip()
-    return any(wanted == own.strip() for own in library(resource_dir).values())
+    drawing = _drawing(text)
+    return any(wanted == own.strip() or (drawing and drawing == _drawing(own)) for own in library(resource_dir).values())
 
 
 def make(

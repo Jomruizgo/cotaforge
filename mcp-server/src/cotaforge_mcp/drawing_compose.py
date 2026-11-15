@@ -22,7 +22,7 @@ from cotaforge.contract import AdapterError, AnnotateDrawingRequest, DrawingRequ
 from cotaforge.language import say
 from pydantic import ValidationError
 
-from cotaforge_mcp import design_memory, drawing_gate, drawing_weld_questions
+from cotaforge_mcp import design_memory, drawing_gate, drawing_weld_questions, process_stages
 from cotaforge_mcp import drawing_requirements as reqs
 from cotaforge_mcp.reply import Reply, ToolError, ok
 from cotaforge_mcp.schemas import DrawingArgs
@@ -73,6 +73,7 @@ ROW_KEYS: dict[str, tuple[str, ...]] = {
     "req.dimensions": ("relations", "fits", "tol"),
     "req.functional_dimensions": ("relations", "tol"),
     "req.keyway": ("fits", "tol"),
+    "req.process_stages": ("relations", "answers"),  # one dim per stage of the declared route (``stage``, ``size_mm``)
     "req.turned_part": ("relations", "fits", "answers"),  # the diameters and the lengths from the datum face (baseline_dims)
     "req.surface_texture": ("finish",),
     "req.geometric_tolerance": ("gdt",),
@@ -448,6 +449,13 @@ def plan(session: Session, args: DrawingArgs, make_request: Any) -> Reply:
         lines.append("decisions it needs: none open")
     if survey.held:
         lines.append(f"held by the model, no decision closes them: {', '.join(survey.held)} (fix the model; the review lists them)")
+    if not process_stages.declared(reqs.find_intent(session.settings.workspace, session.doc_name).text(("process",))):
+        lines.append(
+            "process route: the intent file declares none. Ask the engineer whether a feature passes several processes (turned, "
+            "wire cut, ground...): if it does, the route goes in the process section of the intent file ('Outside diameter: "
+            "turned -> ground') and the sheet carries one dimension per stage (dim stage=, size_mm=); propose the "
+            "stock of each stage, he confirms the numbers"
+        )
     lines.append(
         "next: show this plan to the engineer and wait for his go-ahead (he is the one who knows what the part is for); "
         'then drawing(action="compose", decisions={...}); cad_guide(topic="drawing:compose") has the shape'

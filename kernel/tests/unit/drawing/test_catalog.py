@@ -9,7 +9,7 @@ from cotaforge.drawing import catalog
 
 SRC = Path(__file__).resolve().parents[3] / "src" / "cotaforge"
 WORKER = SRC / "adapters" / "freecad" / "worker"
-DEBT_CEILING = 21  # rules with no check; lower it when one gets its check, never raise it
+DEBT_CEILING = 20  # rules with no check; lower it when one gets its check, never raise it
 
 FINDING = re.compile(r"(?<![A-Za-z])(?:_finding|Finding)\(\s*(f?)\"([a-z_0-9{}]+)\"(?:\s*if [^,]+ else \"([a-z_0-9]+)\")?")  # noqa: E501
 
