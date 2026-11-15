@@ -151,17 +151,14 @@ def collect(doc: reg.DocumentRec, bodies: list[reg.BodyRec]) -> sck.PartFacts:
                     continue  # a hole: hole_infos has it
                 # one boss per CYLINDER: two seats of one diameter on a shaft share the key (axis, radius) and are two cylinders
                 by_face = {m[0]: m for m in members}
-                for cylinder in flats_mod.separate_cylinders([(m[0], *face_ends.get(m[0], (0.0, 0.0))) for m in members]):
-                    parts = [by_face[i] for i in cylinder]
-                    if sum(arc for _, _, arc, _ in parts) < FULL_TURN:
-                        continue
-                    face_id, face, _, _ = parts[0]
-                    surf = face.Surface
+                stretches = [(m[0], *face_ends.get(m[0], (0.0, 0.0)), m[2]) for m in members]
+                for face_id, lo, hi in flats_mod.whole_cylinders(stretches, FULL_TURN):
+                    surf = by_face[face_id][1].Surface
                     axis = g.unit(g.vec(surf.Axis))
                     centre = g.vec(surf.Center)
-                    middle = g.vec(face.CenterOfMass)
-                    foot = g.add(centre, g.scale(axis, g.dot(g.sub(middle, centre), axis)))  # on the axis, mid-height
-                    facts.bosses.append(sck.Boss(face_id, radius, foot, axis, max(length for _, _, _, length in parts)))
+                    canon = g.unit(key[0])  # ``lo`` and ``hi`` are measured along it
+                    foot = g.add(centre, g.scale(canon, (lo + hi) / 2 - g.dot(centre, canon)))  # on the axis, halfway along the cylinder
+                    facts.bosses.append(sck.Boss(face_id, radius, foot, axis, hi - lo))
                 continue
             facts.rounds.extend(sck.RoundFace(face_id, radius, concave) for face_id, _, _, _ in members if face_id not in keyway_ends)
     return facts

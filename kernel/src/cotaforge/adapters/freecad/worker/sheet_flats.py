@@ -199,3 +199,18 @@ def separate_cylinders(spans: list[tuple[str, float, float]]) -> list[list[str]]
         else:
             clusters.append((lo, hi, [face_id]))
     return [ids for _, _, ids in clusters]
+
+
+def whole_cylinders(members: list[tuple[str, float, float, float]], full_turn: float) -> list[tuple[str, float, float]]:
+    """``(first face id, lo, hi)`` of each cylinder that goes all the way round among the faces that share one axis and one radius:
+    ``members`` are ``(face id, lo, hi, arc)`` (the stretch of each face along the axis and the angle it turns). The stretch is
+    the cylinder's own, from its first face to its last: the middle of a boss and its length come from it, not from the centre of
+    mass of one of its faces (a keyway moves that off the middle)."""
+    by_face = {m[0]: m for m in members}
+    out: list[tuple[str, float, float]] = []
+    for cylinder in separate_cylinders([(m[0], m[1], m[2]) for m in members]):
+        parts = [by_face[i] for i in cylinder]
+        if sum(arc for _, _, _, arc in parts) < full_turn:
+            continue
+        out.append((parts[0][0], min(lo for _, lo, _, _ in parts), max(hi for _, _, hi, _ in parts)))
+    return out
