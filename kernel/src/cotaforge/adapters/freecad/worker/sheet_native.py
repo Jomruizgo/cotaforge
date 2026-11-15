@@ -349,7 +349,7 @@ def _make_note(fc_doc: Any, page: Any, note: su.NativeNote, key: str, sheet: str
     # same X. The window pulls an object whose X is within a few mm of another one onto it (measured in 1.1.3), which
     # moved lines of different widths by up to 2 mm
     longest = max((_text_width(line, note.size) for line in note.lines), default=0.0)
-    block = max(NOTE_BLOCK_MM, longest * NOTE_BLOCK_FACTOR + NOTE_BLOCK_PAD_MM)
+    block = max(NOTE_BLOCK_MM, longest * NOTE_BLOCK_FACTOR + NOTE_BLOCK_PAD_MM) if note.fit else longest * 1.5 + 6.0  # a loose label: the room its words take, with a margin so TechDraw does not wrap them
     for index, line in enumerate(note.lines):
         obj = fc_doc.addObject("TechDraw::DrawViewAnnotation", _object_name(page, key, f"{note.name}{index + 1}"))
         page.addView(obj)
@@ -398,7 +398,6 @@ def _fit_note(fc_doc: Any, page: Any, objects: list[Any], note: su.NativeNote) -
             raise RuntimeError(msg)
 
 
-PX_MM = 25.4 / 96.0  # the unit a spreadsheet's column widths, row heights and text sizes are in (a CSS pixel), in mm
 LEADER_ENUMS = {"arrow": "Filled Arrow", "none": "None"}
 
 
@@ -448,38 +447,6 @@ def _make_symbol(fc_doc: Any, page: Any, frame: Frame | None, sym: su.NativeSymb
     return made
 
 
-def _make_table(fc_doc: Any, page: Any, table: su.NativeTable, key: str, sheet: str) -> Any:
-    """A ``Spreadsheet::Sheet`` and the ``DrawViewSpreadsheet`` that shows it: the engineer edits the cells in the spreadsheet."""
-    columns = len(table.widths)
-    rows = [*([(table.title, *([""] * (columns - 1)))] if table.title else []), *table.rows]
-    sheet_obj = fc_doc.addObject("Spreadsheet::Sheet", _object_name(page, key, f"{table.name}_data"))
-    letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    for r, row in enumerate(rows, start=1):
-        for c, text in enumerate(row[:columns]):
-            if text:
-                sheet_obj.set(f"{letters[c]}{r}", "'" + str(text))  # a leading quote: the cell holds that text, not a formula
-        sheet_obj.setRowHeight(str(r), int(round(table.row_height / PX_MM)))
-    for c, width in enumerate(table.widths):
-        sheet_obj.setColumnWidth(letters[c], int(round(width / PX_MM)))
-    if table.title:
-        sheet_obj.mergeCells(f"A1:{letters[columns - 1]}1")
-    fc_doc.recompute()
-    obj = fc_doc.addObject("TechDraw::DrawViewSpreadsheet", _object_name(page, key, table.name))
-    page.addView(obj)
-    obj.Source = sheet_obj
-    obj.CellStart = "A1"
-    obj.CellEnd = f"{letters[columns - 1]}{len(rows)}"
-    obj.ScaleType = "Custom"
-    obj.Scale = 1.0
-    obj.TextSize = table.text_size / PX_MM
-    obj.LineWidth = 0.25
-    obj.X = table.at[0] + sum(table.widths) / 2
-    obj.Y = table.at[1] - len(rows) * table.row_height / 2
-    obj.Label = f"{key} {table.name}"
-    tag(obj, key, table.item, sheet)
-    return obj
-
-
 def build(fc_doc: Any, page: Any, unit: su.Unit, sheet: str) -> Built:
     """Make the native objects of ``unit`` on ``page``; on any failure everything made is removed again and the reason
     is returned (the caller then draws the unit as a symbol)."""
@@ -487,7 +454,6 @@ def build(fc_doc: Any, page: Any, unit: su.Unit, sheet: str) -> Built:
     dims = [n for n in unit.natives if isinstance(n, su.NativeDim)]
     notes = [n for n in unit.natives if isinstance(n, su.NativeNote)]
     symbols = [n for n in unit.natives if isinstance(n, su.NativeSymbol)]
-    tables = [n for n in unit.natives if isinstance(n, su.NativeTable)]
     frames: dict[str, Frame] = {}
     try:
         for dim in [*dims, *symbols]:
@@ -502,6 +468,15 @@ def build(fc_doc: Any, page: Any, unit: su.Unit, sheet: str) -> Built:
                     msg = f"the {dim.view} view is not drawn (a section stands in its place)"
                     raise LookupError(msg)
                 frames[dim.view] = Frame(page, view)
+        marks = [n for n in unit.natives if isinstance(n, su.MARK_TYPES)]  # welds, balloons, tables, leaders (``sheet_native_marks``)
+        for mark in marks:
+            name = getattr(mark, "view", None)
+            if name is not None and name not in frames:
+                view = view_object(page, name)
+                if view is None or not bool(getattr(view, "Visibility", True)):
+                    msg = f"the sheet has no drawn {name} view for {unit.key}"
+                    raise LookupError(msg)
+                frames[name] = Frame(page, view)
         if _cosmetic_points(frames, dims):
             fc_doc.recompute()
             for frame in frames.values():
@@ -516,12 +491,15 @@ def build(fc_doc: Any, page: Any, unit: su.Unit, sheet: str) -> Built:
             result.objects.extend(made_lines)
         for sym in symbols:
             result.objects.extend(_make_symbol(fc_doc, page, frames.get(sym.view), sym, unit.key, sheet))
-        for table in tables:
-            result.objects.append(_make_table(fc_doc, page, table, unit.key, sheet))
-        if dims or notes or symbols or tables:
+        if marks:
+            import sheet_native_marks  # noqa: PLC0415 - it imports this module
+
+            result.objects.extend(sheet_native_marks.make(fc_doc, page, frames, marks, unit.key, sheet, marks[0].item))
+        if dims or notes or symbols or marks:
             fc_doc.recompute()
         for note, made_lines in line_objects:
-            _fit_note(fc_doc, page, made_lines, note)
+            if note.fit:
+                _fit_note(fc_doc, page, made_lines, note)
         for obj, dim in zip(result.objects[: len(dims)], dims, strict=True):
             _style(obj, dim)
             problem = measured_problem(obj, dim)
@@ -687,14 +665,11 @@ def remove(fc_doc: Any, objects: list[Any]) -> None:
     """Delete native objects. The cosmetic vertices they may have made stay in their views (they paint nothing): TechDraw
     numbers the vertices of a view by their order (measured in 1.1.3), so taking one out sends the later dimensions to
     other points; a sheet that is rebuilt starts clean."""
-    for obj in objects:
+    import sheet_native_marks  # noqa: PLC0415 - it imports this module
+
+    for obj in sorted(objects, key=lambda o: alive(fc_doc, o) and str(o.TypeId) == sheet_native_marks.LEADER_TYPE):  # a weld symbol goes before its leader
         if alive(fc_doc, obj):
-            source = getattr(obj, "Source", None) if str(obj.TypeId) == "TechDraw::DrawViewSpreadsheet" else None
-            data = list(source) if isinstance(source, list | tuple) else ([source] if source is not None else [])
-            fc_doc.removeObject(obj.Name)
-            for sheet_obj in data:  # the spreadsheet of a table goes with the table the sheet made
-                if fc_doc.getObject(sheet_obj.Name) is not None:
-                    fc_doc.removeObject(sheet_obj.Name)
+            sheet_native_marks.remove_extras(fc_doc, obj)  # also the tiles of a weld symbol and the cells a table shows
 
 
 def alive(fc_doc: Any, obj: Any) -> bool:

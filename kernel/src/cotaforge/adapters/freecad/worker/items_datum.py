@@ -41,7 +41,8 @@ from sheet_context import (
 )
 from sheet_draw import exact_box, linear_dimension, table
 from sheet_model import AXES, CENTRE_OVERSHOOT_MM, TEXT, Line, Text, text_width
-from sheet_units import NativeDim, NativeNote, NativeTable, Ref2
+from sheet_marks import NativeTable
+from sheet_units import NativeDim, NativeNote, Ref2
 
 GAP_MM = 1.0
 END_MM = 2.0
@@ -650,8 +651,16 @@ def _table(
     ctx.add([*labels, *entities])
     ctx.native(
         *numbers,  # the number of each hole on the view: TechDraw annotations
+        NativeNote(str(spec["id"]), "title", (title,), (rect[0] + 1.0, rect[3] - 6.0 + 1.8 + 4.0), 4.0),
         NativeTable(  # and the table: a spreadsheet the engineer edits, shown by a DrawViewSpreadsheet
-            str(spec["id"]), "t", (tuple(header), *(tuple(r) for r in rows)), tuple(widths), (rect[0], rect[3]), title
+            str(spec["id"]),
+            "hole_table",
+            (tuple(header), *(tuple(r) for r in rows)),
+            tuple(widths),
+            tuple(6.0 for _ in range(len(rows) + 1)),
+            rect[2],
+            rect[1],
+            3.5,
         ),
     )
     text = f"table of {len(rows)} hole(s) with x and y from the datum edges (mm), numbered on the {view.name} view"

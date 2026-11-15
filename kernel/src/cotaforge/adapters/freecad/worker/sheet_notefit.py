@@ -34,14 +34,20 @@ def pick_block(
 ) -> tuple[float, float, float] | None:
     """``(left, width, height)`` of the widest text item whose centre is within 1 mm of ``y_mm`` and within 8 mm of ``x_mm``
     (the estimate of where the font puts it). With ``text`` the item must SAY it (``plain``), and it is looked for 60 mm either
-    side: no item that says it is painted yet means ``None``, never another text that happens to stand there."""
+    side, the nearest one to ``x_mm`` of those: no item that says it is painted yet means ``None``, never another text that
+    happens to stand there."""
     wanted = plain(text) if text is not None else None
     reach = 8.0 if wanted is None else 60.0
     best: TextBox | None = None
     for box in boxes:
         if wanted is not None and plain(box.text) != wanted:
             continue
-        if abs(box.cx - x_mm) <= reach and abs(box.cy - y_mm) <= 1.0 and (best is None or box.width > best.width):
+        if abs(box.cx - x_mm) > reach or abs(box.cy - y_mm) > 1.0:
+            continue
+        # the widest one near the estimate; when the line is known by what it says, the NEAREST one (two labels with the same
+        # words at one height -- the parting line is labelled in each view -- must not be taken for each other)
+        closer = best is not None and wanted is not None and abs(box.cx - x_mm) < abs(best.cx - x_mm)
+        if best is None or closer or (wanted is None and box.width > best.width):
             best = box
     return None if best is None else (best.left, best.width, best.height)
 

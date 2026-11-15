@@ -15,6 +15,9 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sheet_clip import arc_points
+from sheet_marks import MARK_TYPES, WHOLE, NativeBalloon, NativeLeader, NativeTable, NativeWeld
+from sheet_marks import count as marks_count
+from sheet_marks import dump as marks_dump
 from sheet_model import (
     AXES,
     DIMENSIONS,
@@ -23,7 +26,6 @@ from sheet_model import (
     PARTING,
     TEXT,
     THREAD,
-    TITLE_BLOCK,
     ZONE,
     Arc,
     Circle,
@@ -94,6 +96,7 @@ class NativeNote:
     at: Point
     size: float = 3.5
     step: float = 5.0  # between the baselines of two lines
+    fit: bool = True  # the window is asked where the line was painted and it is moved to the left edge asked (a short label is not)
 
 
 @dataclass(frozen=True)
@@ -143,22 +146,6 @@ class NativeSymbol:
     arrow: bool = True
 
 
-@dataclass(frozen=True)
-class NativeTable:
-    """A table as TechDraw has it: a ``Spreadsheet::Sheet`` of ``rows`` (the first is the header) shown by a
-    ``DrawViewSpreadsheet`` with its top-left corner at ``at`` (page mm, y up); the engineer edits the cells in the spreadsheet.
-    ``widths`` are the column widths and ``row_height`` the height of a row, in page mm."""
-
-    item: str
-    name: str
-    rows: tuple[tuple[str, ...], ...]
-    widths: tuple[float, ...]
-    at: Point
-    title: str = ""
-    row_height: float = 6.0
-    text_size: float = 3.5
-
-
 COSMETIC_STYLES = {  # the layer the compositor draws on -> the kind of line TechDraw is asked for
     AXES: "centre",
     THREAD: "thin",
@@ -192,7 +179,7 @@ class NativeView:
     radius: float = 0.0
 
 
-Native = NativeDim | NativeNote | NativeFlag | NativeCosmetic | NativeView | NativeSymbol | NativeTable
+Native = NativeDim | NativeNote | NativeFlag | NativeCosmetic | NativeWeld | NativeBalloon | NativeTable | NativeLeader | NativeView | NativeSymbol
 
 
 @dataclass(frozen=True)
@@ -231,12 +218,10 @@ class Unit:
         marks of a hole callout); without, everything."""
         if not self.natives:
             return self.entities
-        if any(isinstance(n, NativeView) for n in self.natives):
-            return ()  # TechDraw draws the whole view: the cut, its hatch, the cutting line and the letters
-        objects = any(isinstance(n, NativeDim | NativeNote | NativeSymbol | NativeTable) for n in self.natives)
+        if any(isinstance(n, (*WHOLE, NativeView)) for n in self.natives):
+            return ()  # welds, balloons, tables and the views TechDraw makes: the objects are the whole of the item
+        objects = any(isinstance(n, NativeDim | NativeNote | NativeSymbol) for n in self.natives)
         gone = (NATIVE_LAYERS if objects else set()) | ({HIDDEN} if any(isinstance(n, NativeFlag) for n in self.natives) else set())
-        if any(isinstance(n, NativeTable) for n in self.natives):
-            gone = gone | {TITLE_BLOCK}
         return tuple(e for e in self.entities if getattr(e, "layer", None) not in gone and id(e) not in self.covered)
 
 
@@ -370,8 +355,8 @@ def signature(unit: Unit) -> str:
             return ["f", n.view, n.prop]
         if isinstance(n, NativeSymbol):
             return ["s", n.name, n.kind, n.file, list(n.texts), [round(v, 2) for v in n.at], n.view, [[round(v, 2) for v in p] for p in n.leader], n.arrow]
-        if isinstance(n, NativeTable):
-            return ["t", n.name, [list(r) for r in n.rows], [round(v, 2) for v in n.widths], [round(v, 2) for v in n.at], n.title, n.row_height, n.text_size]
+        if isinstance(n, MARK_TYPES):
+            return marks_dump(n)
         if isinstance(n, NativeView):
             return [
                 "v",
@@ -387,7 +372,7 @@ def signature(unit: Unit) -> str:
                 None if n.anchor is None else [round(v, 3) for v in n.anchor],
                 round(n.radius, 3),
             ]
-        return ["n", n.name, list(n.lines), [round(v, 2) for v in n.at], n.size, n.step]
+        return ["n", n.name, list(n.lines), [round(v, 2) for v in n.at], n.size, n.step, *([] if n.fit else ["loose"])]
 
     return json.dumps(
         [dump(n) for n in unit.natives if not isinstance(n, NativeCosmetic)], separators=(",", ":"), default=str
@@ -403,15 +388,17 @@ def cosmetic_signature(natives: Any) -> str:
 
 def object_count(unit: Unit) -> int:
     """How many native objects ``unit`` is: a dimension or a view each, a note one annotation per line, a symbol the symbol and
-    its leader, a table its view (the spreadsheet it shows is not a view of the page)."""
+    its leader."""
     total = 0
     for n in unit.natives:
         if isinstance(n, NativeFlag | NativeCosmetic):
             continue
         if isinstance(n, NativeSymbol):
             total += 2 if n.leader else 1
-        elif isinstance(n, NativeDim | NativeTable | NativeView):
+        elif isinstance(n, NativeDim | NativeView):
             total += 1
+        elif isinstance(n, MARK_TYPES):
+            total += marks_count(n)
         else:
             total += len(n.lines)
     return total
@@ -522,5 +509,73 @@ def with_cosmetics(units: list[Unit], views: dict[str, Rect], derived: list[Rect
                         seen.add(key)
                         made.append(n)
                 covered.add(id(e))
+        marks, marked = mould_marks(unit, views, derived, covered)
+        made = [*made, *marks]
+        covered |= marked
         out.append(replace(unit, natives=(*unit.natives, *made), covered=frozenset(covered)) if made else unit)
     return out
+
+
+# --- the marks of a moulded part (ISO 10135): leaders, notes and cosmetic lines (pure) ----------------------------------------
+
+MOULD_ITEMS = frozenset({"parting_line", "pull_direction", "mould_zone", "no_draft"})
+SHAFT_TOL_MM = 0.05  # the shaft of an arrow ends on the tip of its head
+
+
+def _nearest_view(points: list[Point], views: dict[str, Rect]) -> str | None:
+    """The TechDraw view whose box the ``points`` are nearest to (the one a mark stands beside), ``None`` when there is none."""
+    best: tuple[float, str] | None = None
+    for name, box in views.items():
+        for p in points:
+            dx = max(box[0] - p[0], 0.0, p[0] - box[2])
+            dy = max(box[1] - p[1], 0.0, p[1] - box[3])
+            if best is None or dx * dx + dy * dy < best[0]:
+                best = (dx * dx + dy * dy, name)
+    return None if best is None else best[1]
+
+
+def mould_marks(
+    unit: Unit, views: dict[str, Rect], derived: list[Rect], taken: set[int]
+) -> tuple[list[Native], set[int]]:
+    """What of a moulded-part item is made of TechDraw's own objects: an arrow with its shaft is a leader line with an
+    arrowhead (the opening direction, a draft exception), every other line, arc and circle (the bar at the tail of the
+    arrow, the draft wedge, the hatch of a zone) a cosmetic edge of the view it stands beside, every text an annotation. The
+    entities handled are returned by id so the sheet draws none of them again. ``taken`` are the ones already asked for."""
+    if unit.item_type not in MOULD_ITEMS or not views:
+        return [], set()
+    made: list[Native] = []
+    covered: set[int] = set()
+    shafts: dict[int, Line] = {}
+    for solid in unit.entities:
+        if not isinstance(solid, Solid) or len(solid.points) != 3 or getattr(solid, "layer", None) != DIMENSIONS:  # noqa: PLR2004
+            continue
+        tip = solid.points[0]
+        for e in unit.entities:
+            if not isinstance(e, Line) or id(e) in shafts or getattr(e, "layer", None) != DIMENSIONS:
+                continue
+            for end, tail in (((e.x1, e.y1), (e.x2, e.y2)), ((e.x2, e.y2), (e.x1, e.y1))):
+                if math.dist(end, tip) <= SHAFT_TOL_MM:
+                    view = _nearest_view([tip, tail], views)
+                    if view is not None and not any(_inside(tip, box) for box in derived):
+                        made.append(NativeLeader(unit.key, view, (tip, tail)))
+                        covered |= {id(solid), id(e)}
+                        shafts[id(e)] = e
+                    break
+            if id(solid) in covered:
+                break
+    for e in unit.entities:
+        if id(e) in covered or id(e) in taken or isinstance(e, Text | Solid):
+            continue
+        parts = _segments(e)
+        view = _nearest_view([_anchor(k, v) for k, v in parts], views) if parts else None
+        if view is None or any(_inside(_anchor(k, v), box) for k, v in parts for box in derived):
+            continue
+        made += [NativeCosmetic(unit.key, view, k, v, "thin") for k, v in parts]
+        covered.add(id(e))
+    texts = [e for e in unit.entities if isinstance(e, Text)]
+    for number, e in enumerate(texts, start=1):
+        width = text_width(e.text, e.height)
+        left = e.x - (width / 2 if e.anchor == "center" else width if e.anchor == "right" else 0.0)
+        made.append(NativeNote(unit.key, f"m{number}", (e.text,), (left, e.y + e.height), e.height, e.height * 1.4, False))
+        covered.add(id(e))
+    return made, covered

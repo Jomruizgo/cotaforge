@@ -7,7 +7,10 @@ maker: where the mould parts, the direction it opens and the draft, where the ga
 the faces that take no draft. The harness draws those five indications. The text of the standard was not at hand when this was
 written: no clause is quoted, and the SHAPE of each symbol below is the harness's reading of the convention, to be checked
 against the standard by whoever has it (``drawing_requirements`` says the same about every standard it names). Each symbol is
-made of the sheet's own lines, as the weld symbol of ISO 2553 is (``items_weld``).
+made of lines, arrows and texts the headless sheet (PDF, DXF) draws; on the page of the CAD they are FreeCAD's own objects
+(``sheet_units.mould_marks``): the parting line and the lines of a symbol cosmetic edges of the view they stand beside, an arrow
+with its shaft a leader line with an arrowhead, a text an annotation. FreeCAD has no draft wedge or zone symbol of its own: they
+are cosmetic lines too.
 
 * ``parting_line``: the line where the two mould halves meet, in its OWN line type (thick, one long dash and two short ones:
   layer ``PARTICION``). In a view across the pull direction it is the straight line at the level of the parting plane; in the view

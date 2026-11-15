@@ -168,7 +168,8 @@ print(json.dumps({s.Name: [[s.getContents(c) for c in ("A1", "A2", "B3", "C3", "
     )
     ((name, [header]),) = cells.items()
     header = [cell.lstrip("'") for cell in header]  # a cell holds its text behind a quote
-    assert header[0] == "TABLA DE AGUJEROS" and header[1] == "N" and header[2] == "35" and header[4].endswith("pasante"), cells
+    assert header[:3] == ["N", "1", "65"] and header[4].endswith("pasante"), cells  # the header, hole 1, the x of hole 2
+    assert any(r["type"] == "DrawViewAnnotation" for r in rows["tab"])  # its title and the numbers of the holes are annotations
     # nothing of the harness's own drawing is on the page for these items, and the window shows what the sheet says
     review = visible.describe_drawing(DescribeDrawingRequest(operation_id="r", review=True)).sheets[0]
     assert not [f for f in review.findings if f.code in ("foreign_symbol", "native_fallback", "window_differs")], [

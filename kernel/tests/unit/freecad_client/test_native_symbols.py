@@ -20,6 +20,7 @@ if str(WORKER_DIR) not in sys.path:
 import gdt_frames as gf  # noqa: E402
 import items_gdt  # noqa: E402
 import sheet_model as model  # noqa: E402
+import sheet_marks as marks  # noqa: E402
 import sheet_symbols  # noqa: E402
 import sheet_units as su  # noqa: E402
 
@@ -42,7 +43,7 @@ def symbols_of(ctx: object, item: str) -> list[su.NativeSymbol]:
 def test_a_symbol_and_its_leader_are_two_objects_and_a_symbol_on_the_feature_is_one() -> None:
     frame = su.NativeSymbol("g", "f", "frame", "flatness/flatness-0-datums.svg", ("0,05",), (10.0, 20.0), "front", ((50.0, 30.0), (10.0, 13.5)))
     datum = su.NativeSymbol("d", "s", "datum", "datum/datum-down.svg", ("A",), (50.0, 30.0), "front")
-    table = su.NativeTable("t", "t", (("N", "X"), ("1", "10")), (9.0, 18.0), (100.0, 100.0), "TABLA")
+    table = marks.NativeTable("t", "t", (("N", "X"), ("1", "10")), (9.0, 18.0), (6.0, 6.0), 127.0, 88.0)
     assert su.object_count(su.Unit("g", "g", su.KIND_ITEM, (), natives=(frame,))) == 2
     assert su.object_count(su.Unit("d", "d", su.KIND_ITEM, (), natives=(datum,))) == 1
     assert su.object_count(su.Unit("t", "t", su.KIND_ITEM, (), natives=(table,))) == 1  # the spreadsheet it shows is not a view of the page
@@ -62,7 +63,7 @@ def test_the_native_symbols_and_tables_take_the_drawing_of_their_item_with_them(
     symbol = su.NativeSymbol("d", "s", "datum", "datum/datum-down.svg", ("A",), (50.0, 30.0), "front")
     assert su.Unit("d", "d", su.KIND_ITEM, entities, natives=(symbol,)).residue == ()  # nothing of it is left to draw as a symbol of ours
     ruled = (model.Line(0.0, 0.0, 5.0, 0.0, model.TITLE_BLOCK), model.Text(1.0, 1.0, "N", 3.5, model.TITLE_BLOCK, "left"))
-    table = su.NativeTable("t", "t", (("N",),), (9.0,), (0.0, 10.0))
+    table = marks.NativeTable("t", "t", (("N",),), (9.0,), (6.0,), 9.0, 0.0)
     assert su.Unit("t", "t", su.KIND_ITEM, ruled, natives=(table,)).residue == ()
     assert su.Unit("t", "t", su.KIND_ITEM, ruled).residue == ruled  # without the native it is still all there
 
@@ -201,13 +202,14 @@ def test_the_hole_table_is_a_spreadsheet_with_a_title_a_header_and_a_row_per_hol
     ctx = items_context()
     (r,) = draw_items(ctx, {"type": "datum_dims", "id": "tab", "mode": "table"})
     assert r.status == "ok", r.detail
-    tables = [n for n in natives_of(ctx, "tab") if isinstance(n, su.NativeTable)]
-    (table,) = tables
-    assert table.title == "TABLA DE AGUJEROS" and table.rows[0][0] == "N" and len(table.rows) == 5  # the header and four holes
-    assert [row[0] for row in table.rows[1:]] == ["1", "2", "3", "4"] and all(row[3] == "Ø6,6 pasante" for row in table.rows[1:])
+    (table,) = [n for n in natives_of(ctx, "tab") if isinstance(n, marks.NativeTable)]
+    (title,) = [n for n in natives_of(ctx, "tab") if isinstance(n, su.NativeNote) and n.name == "title"]
+    assert title.lines == ("TABLA DE AGUJEROS",) and table.cells[0][0] == "N" and len(table.cells) == 5  # the title above, the header and four holes
+    assert [row[0] for row in table.cells[1:]] == ["1", "2", "3", "4"] and all(row[3] == "Ø6,6 pasante" for row in table.cells[1:])
     rule = [e for e in ctx.sheet.entities if isinstance(e, model.Line) and e.layer == model.TITLE_BLOCK]
-    assert min(e.x1 for e in rule) == pytest.approx(table.at[0]) and max(e.x2 for e in rule) == pytest.approx(table.at[0] + sum(table.widths))
-    numbers = [n for n in natives_of(ctx, "tab") if isinstance(n, su.NativeNote)]
+    assert max(e.x2 for e in rule) == pytest.approx(table.right)  # its right edge is where the sheet draws it
+    assert min(e.y1 for e in rule) == pytest.approx(table.bottom) and len(table.heights) == len(table.cells)
+    numbers = [n for n in natives_of(ctx, "tab") if isinstance(n, su.NativeNote) and n.name != "title"]
     assert [n.lines[0] for n in numbers] == ["1", "2", "3", "4"]  # the number of each hole beside it, as TechDraw annotations
 
 
