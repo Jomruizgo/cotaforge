@@ -45,6 +45,7 @@ class Attach:
     circle: tuple[Point, float] | None = None  # a cylinder seen along its axis: any direction away from it will do
     trace: tuple[Point, Point] | None = None  # a plane seen edge-on: its segment on the page (the label may slide)
     band: tuple[Point, Point] | None = None  # a cylinder seen across its axis: the two ends of its silhouette line
+    other: "Attach | None" = None  # the same cylinder's other silhouette line: where a label may stand when this side has no room
 
     def tip_towards(self, direction: tuple[float, float]) -> Point:
         """The point the label touches when it leaves along ``direction``: on the circle's edge, else the fixed tip."""
@@ -177,32 +178,40 @@ def _attach_face(ctx: Context, face_id: str, wanted: str | None, side: str | Non
     side_line = unit(cross(view.direction, axis))
     across = _unit2(view.axis(side_line))
     sign = _side_sign(across, side, away)
-    direction = (across[0] * sign, across[1] * sign)
-    # the surface is not always there: a flat or a groove may have taken the middle of the face (its centre of mass is
-    # then in the air). Where the silhouette line of that side really exists is where a label may touch it.
-    band = None
-    found = ctx.geometry.cylinder_span(face_id, scale(side_line, sign))
     named = [t for t in ctx.threads if t.cylinder == face_id]
-    if found is not None and named:  # a threaded shaft: the callout points at the thread, not the plain part
-        spans = []
-        for t in named:
-            start = dot(sub(t.start, face.axis_point), axis)
-            spans.append(tuple(sorted((start, start + t.length * dot(t.direction, axis)))))
-        narrowed = (max(found[0], min(a for a, _ in spans)), min(found[1], max(b for _, b in spans)))
-        if narrowed[1] - narrowed[0] > 1e-6:
-            found = narrowed
-    if found is not None:
-        low, high = found
-        centre = view.project(_on_axis(face.axis_point, axis, (low + high) / 2))
-        ends = [view.project(_on_axis(face.axis_point, axis, s)) for s in (low, high)]
-        band = tuple((p[0] + direction[0] * radius, p[1] + direction[1] * radius) for p in ends)
-    return Attach(
-        view,
-        (centre[0] + direction[0] * radius, centre[1] + direction[1] * radius),
-        direction,
-        "surface",
-        band=band,  # type: ignore[arg-type]
-    )
+
+    def silhouette(turn: float, middle: Point) -> Attach:
+        """The attach on the silhouette line ``turn`` (+1 or -1) takes: the surface is not always there (a flat or a groove may
+        have taken the middle of the face, its centre of mass is then in the air); where that line really exists is where a
+        label may touch it."""
+        direction = (across[0] * turn, across[1] * turn)
+        band = None
+        found = ctx.geometry.cylinder_span(face_id, scale(side_line, turn))
+        if found is not None and named:  # a threaded shaft: the callout points at the thread, not the plain part
+            spans = []
+            for t in named:
+                start = dot(sub(t.start, face.axis_point), axis)
+                spans.append(tuple(sorted((start, start + t.length * dot(t.direction, axis)))))
+            narrowed = (max(found[0], min(a for a, _ in spans)), min(found[1], max(b for _, b in spans)))
+            if narrowed[1] - narrowed[0] > 1e-6:
+                found = narrowed
+        if found is not None:
+            low, high = found
+            middle = view.project(_on_axis(face.axis_point, axis, (low + high) / 2))
+            ends = [view.project(_on_axis(face.axis_point, axis, s)) for s in (low, high)]
+            band = tuple((p[0] + direction[0] * radius, p[1] + direction[1] * radius) for p in ends)
+        return Attach(
+            view,
+            (middle[0] + direction[0] * radius, middle[1] + direction[1] * radius),
+            direction,
+            "surface",
+            band=band,  # type: ignore[arg-type]
+        )
+
+    att = silhouette(sign, centre)
+    if side is None:  # nobody asked for a side: the other silhouette line is the label's second choice
+        att.other = silhouette(-sign, centre)
+    return att
 
 
 def _on_axis(origin: Vec3, axis: Vec3, distance: float) -> Vec3:
@@ -248,29 +257,46 @@ def place_label(
     first: tuple[list[Entity], Rect] | None = None
     inside_first: tuple[list[Entity], Rect] | None = None
     home = att.tip
-    # a leader that crosses nothing first; then one that may cross the LINE of a dimension (never its text); a label
-    # that slides along the plane it points at (``Attach.tips``) before it goes farther out
-    for crossing, strict in ((False, True), (True, True), (False, False), (True, False)) if not explicit else ((False, False),):
-        for direction, tip, step in _candidates(att, explicit):
-            att.tip = tip
-            distance = start + step * NUDGE_MM
-            anchor = (tip[0] + direction[0] * distance, tip[1] + direction[1] * distance)
-            entities, rect = build(anchor, direction)
-            fits = ctx.inside(rect)
-            if first is None:
-                first = (entities, rect)
-            if fits and inside_first is None:
-                inside_first = (entities, rect)
-            if (
-                fits
-                and ctx.free(rect)
-                and clear_of_views(ctx, rect)
-                and _leader_free(ctx, att, tip, anchor, crossing)
-                and not (strict and _on_dimension_lines(ctx, entities, rect))
-            ):
-                ctx.reserve(rect)
-                ctx.extras.setdefault("segments", []).append((tip, anchor))
-                return entities, True
+
+    def search() -> list[Entity] | None:
+        nonlocal first, inside_first
+        # a leader that crosses nothing first; then one that may cross the LINE of a dimension (never its text); a label
+        # that slides along the plane it points at (``Attach.tips``) before it goes farther out
+        for crossing, strict in ((False, True), (True, True), (False, False), (True, False)) if not explicit else ((False, False),):
+            for direction, tip, step in _candidates(att, explicit):
+                att.tip = tip
+                distance = start + step * NUDGE_MM
+                anchor = (tip[0] + direction[0] * distance, tip[1] + direction[1] * distance)
+                entities, rect = build(anchor, direction)
+                fits = ctx.inside(rect)
+                if first is None:
+                    first = (entities, rect)
+                if fits and inside_first is None:
+                    inside_first = (entities, rect)
+                if (
+                    fits
+                    and ctx.free(rect)
+                    and clear_of_views(ctx, rect)
+                    and _leader_free(ctx, att, tip, anchor, crossing)
+                    and not (strict and _on_dimension_lines(ctx, entities, rect))
+                ):
+                    ctx.reserve(rect)
+                    ctx.extras.setdefault("segments", []).append((tip, anchor))
+                    return entities
+        return None
+
+    found = search()
+    if found is None and att.other is not None and not explicit:
+        # a turned surface has two silhouette lines and nobody asked for one: the label stands on the other when this side has no
+        # room (a finish symbol under a shaft step lands on the text of the length dimension below it; above it nothing is)
+        near = (home, att.normal, att.band)
+        far = att.other
+        att.tip, att.normal, att.band = far.tip, far.normal, far.band
+        found = search()
+        if found is None:
+            att.tip, att.normal, att.band = near
+    if found is not None:
+        return found, True
     att.tip = home
     assert first is not None
     kept = inside_first or first

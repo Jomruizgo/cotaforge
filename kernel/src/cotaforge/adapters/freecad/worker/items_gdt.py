@@ -29,6 +29,7 @@ from sheet_context import (
     v_ids,
     v_num,
     v_point2,
+    v_view_or_section,
     v_str,
 )
 from sheet_draw import arrow
@@ -159,7 +160,7 @@ DATUM_CHECKS = {
     "letter": v_letter,
     "face": v_one_face,
     "on": v_str(24),
-    "view": COMMON_FIELDS["view"],
+    "view": v_view_or_section,  # a standard view or a section view (A-A)
     "side": COMMON_FIELDS["side"],
     "offset_mm": COMMON_FIELDS["offset_mm"],
     "tip_at": v_point2,  # where the global layout left the triangle on the face (page mm): written by it, not asked for
@@ -280,7 +281,7 @@ GDT_CHECKS = {
     "datums": v_datums,
     "face": v_one_face,
     "on": v_str(24),
-    "view": COMMON_FIELDS["view"],
+    "view": v_view_or_section,  # a standard view or a section view (A-A)
     "side": COMMON_FIELDS["side"],
     "offset_mm": COMMON_FIELDS["offset_mm"],
 }

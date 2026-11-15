@@ -48,7 +48,8 @@ from sheet_context import (
     v_point2,
     v_point3,
 )
-from sheet_draw import angle_dimension
+from sheet_collide import segment_hits_rect
+from sheet_draw import angle_dimension, leader
 from sheet_model import AXES, Circle, Line
 from sheet_units import NativeCosmetic, NativeDim, Ref2
 
@@ -105,7 +106,35 @@ def _pitch_circle(ctx: Context, view: Any, pattern: sheet_pattern.Pattern) -> No
         ctx.add([Circle(c[0], c[1], pattern.radius * view.scale, AXES)])
 
 
-def _tip_angle(ctx: Context, view: Any, c: Point, radius: float, angles: list[float], clear: float) -> float:
+def _other_boxes(ctx: Context, view: Any) -> list[tuple[float, float, float, float]]:
+    """The rectangles of every other view of the sheet (sections and extra views too): what the text of a leader must stay off."""
+    named = {**ctx.views, **ctx.extras.get("sections", {}), **ctx.extras.get("views_extra", {})}
+    boxes = [v.box for v in named.values() if v is not view and v.box != view.box]
+    # a section asked for at a place (``at_mm``) is drawn after this callout (the views take the room the callouts left): its room
+    # is not known yet, so the callout keeps off the area around that place, about as tall as this view
+    height = view.box[3] - view.box[1]
+    for spec in ctx.extras.get("items", []):
+        if spec.get("type") == "section" and spec.get("at_mm") is not None and str(spec.get("letter", "")) + "-" + str(spec.get("letter", "")) not in ctx.extras.get("sections", {}):
+            x, y = float(spec["at_mm"][0]), float(spec["at_mm"][1])
+            boxes.append((x - 0.4 * height, y - 0.5 * height, x + 0.4 * height, y + 0.5 * height))
+    return boxes
+
+
+def _text_room(ctx: Context, view: Any, tip: Point, u: Point, text: str) -> bool:
+    """Whether a leader from ``tip`` along ``u`` ends, past the edge of its view, where its text lies on no other view, on nothing
+    already placed and inside the frame (and the leader itself crosses no other view on the way)."""
+    elbow_at = _ray_exit(view.box, tip, u) + CALLOUT_GAP_MM
+    elbow = (tip[0] + u[0] * elbow_at, tip[1] + u[1] * elbow_at)
+    _, rect = leader(tip, elbow, [text], "right" if u[0] >= 0 else "left")
+    others = _other_boxes(ctx, view)
+    if any(rect[0] < b[2] and b[0] < rect[2] and rect[1] < b[3] and b[1] < rect[3] for b in others):
+        return False
+    if any(segment_hits_rect((tip[0], tip[1], elbow[0], elbow[1]), b) for b in others):
+        return False
+    return bool(ctx.inside(rect) and ctx.free(rect))
+
+
+def _tip_angle(ctx: Context, view: Any, c: Point, radius: float, angles: list[float], clear: float, text: str = "") -> float:
     """The page angle (degrees) the leader of the diameter leaves the circle at: in a gap between two holes (its middle, or a
     quarter of the way in when the leader still passes ``clear`` mm from the hole; for a lone hole, a quarter turn from it), where
     the leader to the outside of the view crosses the fewest lines of the part (a hole of the part in its way is two more), then
@@ -122,14 +151,15 @@ def _tip_angle(ctx: Context, view: Any, c: Point, radius: float, angles: list[fl
                     candidates.append((start + gap * fraction) % 360.0)
     outline = view_segments(ctx, view)
 
-    def cost(a: float) -> tuple[int, bool, float, float]:
+    def cost(a: float) -> tuple[int, int, bool, float, float]:
         aside = math.radians(a + RAY_SKEW_DEG)  # a ray that hits a vertex of the outline touches two segments: counted slightly off it
         u = (math.cos(aside), math.sin(aside))
         tip = (c[0] + u[0] * radius, c[1] + u[1] * radius)
         reach = _ray_exit(view.box, tip, u) + CALLOUT_GAP_MM  # to where the elbow stands, past the outline
         cuts = _count_crossings((tip[0], tip[1], tip[0] + u[0] * reach, tip[1] + u[1] * reach), outline)
         along_a_centre_line = sheet_pattern.on_centre_line(a)  # never along a centre line of the part
-        return cuts, along_a_centre_line, round(min(abs(((a - d) + 180.0) % 360.0 - 180.0) for d in LEADER_DIAGONALS), 1), round(a, 1)
+        shut = 0 if not text or _text_room(ctx, view, tip, u, text) else 1  # its text would land on another view (a section beside this one)
+        return shut, cuts, along_a_centre_line, round(min(abs(((a - d) + 180.0) % 360.0 - 180.0) for d in LEADER_DIAGONALS), 1), round(a, 1)
 
     return min(candidates, key=cost)
 
@@ -141,10 +171,10 @@ def _diameter(ctx: Context, spec: dict[str, Any], pattern: sheet_pattern.Pattern
     _pitch_circle(ctx, view, pattern)
     angles = [sheet_pattern.view_angle(view, pattern.centre, holes[i].centre) for i in pattern.reps]
     widest = max(h.diameter for h in holes.values() if h.index in pattern.indexes) / 2 * view.scale
-    theta = math.radians(_tip_angle(ctx, view, c, radius, angles, widest + 6.0))
+    text = f"Ø{ctx.num(round(pattern.diameter, 2))}"
+    theta = math.radians(_tip_angle(ctx, view, c, radius, angles, widest + 6.0, text))
     u = (math.cos(theta), math.sin(theta))
     tip: Point = (c[0] + u[0] * radius, c[1] + u[1] * radius)
-    text = f"Ø{ctx.num(round(pattern.diameter, 2))}"
     diagonal = outward_diagonal(view, tip, spec.get("side"))
     ctx.add(place_leader(ctx, view, tip, diagonal, [text], None, asked(spec), along=u))
     native_callout(ctx, view.name, view.scale, c, pattern.diameter, [text])  # FreeCAD measures the pitch circle (a cosmetic circle)

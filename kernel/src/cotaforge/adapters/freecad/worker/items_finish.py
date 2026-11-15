@@ -12,7 +12,7 @@ from typing import Any
 
 from items_attach import attach_face, clear_of_views, place_label
 from items_common import asked
-from sheet_context import COMMON_FIELDS, Context, ItemError, ItemType, Point, check_fields, v_bool, v_enum, v_ids, v_num
+from sheet_context import COMMON_FIELDS, Context, ItemError, ItemType, Point, check_fields, v_bool, v_enum, v_ids, v_num, v_view_or_section
 from sheet_draw import arrow
 from sheet_model import DIMENSIONS, Circle, Entity, Line, Polyline, Text, text_width
 
@@ -40,7 +40,7 @@ CHECKS = {
     "machining": v_enum(*MACHINING),
     "face": _one_face,
     "general": v_bool,
-    "view": COMMON_FIELDS["view"],
+    "view": v_view_or_section,  # a standard view or a section view (A-A)
     "side": COMMON_FIELDS["side"],
     "offset_mm": COMMON_FIELDS["offset_mm"],
 }
