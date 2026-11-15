@@ -261,7 +261,7 @@ print(json.dumps(rows))
         assert [f for f in review.findings if f.code == "native_orphaned" and f.blocking], (left, review.findings)
 
 
-# --- a milled block (flatness, parallelism, datums) and a cover (coaxiality), in both modes ------------------------------
+# --- a milled block (flatness, parallelism, datums) and a cover (coaxiality) ---------------------------------------------
 
 
 def _faces(adapter: FreeCADAdapter, feature: Any) -> list[Any]:
@@ -329,14 +329,13 @@ def _annotate(adapter: FreeCADAdapter, items: tuple[dict[str, Any], ...]) -> dic
     return status
 
 
-@pytest.mark.parametrize("projection", ["techdraw", "hlr"])
 def test_a_milled_block_has_flatness_parallelism_and_datums_as_native_objects(
-    visible: FreeCADAdapter, tmp_path: Path, projection: str  # noqa: F811
+    visible: FreeCADAdapter, tmp_path: Path  # noqa: F811
 ) -> None:
     shots = Path(os.environ.get("COTAFORGE_TEST_SHOTS") or tmp_path)
     doc, (base, _) = _build_block(visible)
     faces = _faces(visible, base)
-    visible.create_drawing(DrawingRequest(operation_id="dr", template="A3", title="Bloque", material="EN AW-6082 T6", projection=projection))
+    visible.create_drawing(DrawingRequest(operation_id="dr", template="A3", title="Bloque", material="EN AW-6082 T6"))
     status = _annotate(
         visible,
         (
@@ -352,25 +351,21 @@ def test_a_milled_block_has_flatness_parallelism_and_datums_as_native_objects(
     kinds = {
         row[1] for row in _state(visible, doc, "sheet_objects") if row[3] in ("dA", "dB", "gFlat", "gPar")
     }
-    _state(visible, doc, "sheet_png", path=str(shots / f"gdt_block_{projection}.png"))
-    if projection == "techdraw":
-        assert not [f for f in foreign if f.severity == "warning"], [(f.severity, f.items, f.message) for f in foreign]  # the scale text under the isometric view is the only loose one
-        assert {"DrawViewSymbol", "DrawLeaderLine"} <= kinds, kinds
-        assert _state(visible, doc, "sheet_compare") == []
-    else:  # an hlr sheet has no TechDraw view for a symbol to belong to yet: the items are drawn, as loose symbols, and said so
-        assert {"DrawViewSymbol"} <= kinds and all(f.severity == "info" for f in foreign), (kinds, foreign)
+    _state(visible, doc, "sheet_png", path=str(shots / "gdt_block.png"))
+    assert not [f for f in foreign if f.severity == "warning"], [(f.severity, f.items, f.message) for f in foreign]
+    assert {"DrawViewSymbol", "DrawLeaderLine"} <= kinds, kinds
+    assert _state(visible, doc, "sheet_compare") == []
 
 
-@pytest.mark.parametrize("projection", ["techdraw", "hlr"])
 def test_a_cover_has_coaxiality_between_two_hubs_as_native_objects(
-    visible: FreeCADAdapter, tmp_path: Path, projection: str  # noqa: F811
+    visible: FreeCADAdapter, tmp_path: Path  # noqa: F811
 ) -> None:
     shots = Path(os.environ.get("COTAFORGE_TEST_SHOTS") or tmp_path)
     doc, (lower, upper) = _build_cover(visible)
     hub = next(f for f in _faces(visible, lower) if f.surface.value == "cylinder")
     tip = next(f for f in _faces(visible, upper) if f.surface.value == "cylinder")
     visible.create_drawing(
-        DrawingRequest(operation_id="dr", template="A3", title="Tapa", material="C45", projection=projection, views=("front", "top", "isometric") if projection == "techdraw" else None)
+        DrawingRequest(operation_id="dr", template="A3", title="Tapa", material="C45", views=("front", "top", "isometric"))
     )
     status = _annotate(
         visible,
@@ -385,10 +380,7 @@ def test_a_cover_has_coaxiality_between_two_hubs_as_native_objects(
     review = visible.describe_drawing(DescribeDrawingRequest(operation_id="r", review=True)).sheets[0]
     foreign = [f for f in review.findings if f.code == "foreign_symbol"]
     rows = [row for row in _state(visible, doc, "sheet_objects") if row[3] in ("dB", "coax")]
-    _state(visible, doc, "sheet_png", path=str(shots / f"gdt_cover_{projection}.png"))
-    if projection == "techdraw":
-        assert not [f for f in foreign if f.severity == "warning"], [(f.severity, f.items, f.message) for f in foreign]  # the scale text under the isometric view is the only loose one
-        assert {row[3] for row in rows if row[1] == "DrawViewSymbol"} == {"dB", "coax"}, rows
-        assert _state(visible, doc, "sheet_compare") == []
-    else:
-        assert all(f.severity == "info" for f in foreign), foreign
+    _state(visible, doc, "sheet_png", path=str(shots / "gdt_cover.png"))
+    assert not [f for f in foreign if f.severity == "warning"], [(f.severity, f.items, f.message) for f in foreign]
+    assert {row[3] for row in rows if row[1] == "DrawViewSymbol"} == {"dB", "coax"}, rows
+    assert _state(visible, doc, "sheet_compare") == []

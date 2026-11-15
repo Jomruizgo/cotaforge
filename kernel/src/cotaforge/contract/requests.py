@@ -645,15 +645,10 @@ class DrawingRequest(Request):
     chance. ``None`` leaves a rebuilt sheet as it was (no symmetry on a new one)."""
     unset: tuple[str, ...] = ()
     """On a rebuild: the settings the caller did not state (``template``, ``angle``, ``language``, ``scale``,
-    ``projection``, ``body``), which stay as the sheet has them instead of taking the default."""
+    ``body``), which stay as the sheet has them instead of taking the default."""
     iso_colour: bool = False
     """The isometric view is shaded in colour (the holes show how they are made). Filled by the adapter from the
     convention in force, not by the caller; the other views stay line drawings."""
-    projection: Literal["techdraw", "hlr"] = "techdraw"
-    """How the front / top / right / isometric views are made. techdraw (FreeCAD's own default): TechDraw view
-    objects (slow on a big assembly). hlr: our own hidden-line projection (TechDraw.projectEx, the one the derived
-    views use); the PDF / PNG / DXF are the same sheet and the views in the FreeCAD window are drawings of that
-    projection (symbols, not TechDraw view objects). A choice of the engineer: never made silently."""
 
 
 class AnnotateDrawingRequest(Request):

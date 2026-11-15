@@ -31,7 +31,10 @@ from sheet_draw import lifted_label
 PROP_ITEM = "CotaforgeItem"
 PROP_SHEET = "CotaforgeSheet"
 PROP_SIG = "CotaforgeSig"
-PROP_VIEWKEY = "CotaforgeViewKey"  # on a view: front / top / right / isometric
+PROP_VIEWKEY = "CotaforgeViewKey"  # on a view: front / top / right / isometric, or the name of a section, detail or aux view
+PROP_DERIVED = "CotaforgeDerived"  # on a view the sheet made from an item: section | detail | aux
+PROP_PARENT = "CotaforgeParent"  # on that view: the name of the view object it hangs from
+PROP_SLOFF = "CotaforgeSectionLineOff"  # on a parent view: the sheet switched TechDraw's own section line off (it switches it on again)
 NOTE_BLOCK_MM = 175.0  # the width of the text block of every note line (more when a line is longer)
 NOTE_BLOCK_FACTOR = 1.15
 NOTE_BLOCK_PAD_MM = 4.0
@@ -135,7 +138,20 @@ def view_object(page: Any, name: str) -> Any | None:
             and str(obj.Label) == VIEW_LABELS["isometric"]
         ):
             return obj
+    for obj in derived_views(page):
+        if str(getattr(obj, PROP_VIEWKEY, "")) == name:
+            return obj
     return None
+
+
+def derived_views(page: Any) -> list[Any]:
+    """The sections, details and auxiliary views the sheet made on ``page`` (TechDraw's own view objects)."""
+    return [obj for obj in page.Views if PROP_DERIVED in getattr(obj, "PropertiesList", ())]
+
+
+def view_names(page: Any) -> list[str]:
+    """The names of the views of ``page`` that carry cosmetic edges and dimensions: the standard ones and the derived ones."""
+    return [*VIEW_LABELS, *[str(getattr(obj, PROP_VIEWKEY, "")) for obj in derived_views(page)]]
 
 
 def _scan(getter: Any) -> list[Any]:
@@ -534,21 +550,31 @@ def held(objects: list[Any]) -> list[Any]:
 
 
 def sync(
-    fc_doc: Any, page: Any, units: list[su.Unit], sheet: str, have: dict[str, list[Any]], report: Any
+    fc_doc: Any,
+    page: Any,
+    units: list[su.Unit],
+    sheet: str,
+    have: dict[str, list[Any]],
+    report: Any,
+    redo: set[str] | frozenset[str] = frozenset(),
 ) -> dict[str, list[str]]:
     """Make the native objects of ``units`` agree with what the sheet asks: a unit whose objects already carry its
     signature is left alone (adding one item touches one unit), the rest are made again. Returns, for the units whose
     objects could not be made, the reasons (those units stay symbols)."""
     failed: dict[str, list[str]] = {}
     for unit in units:
-        if object_count(unit) == 0:  # only view properties (hidden lines): no objects to make
+        count = object_count(unit) - (1 if su.view_of(unit) is not None else 0)  # a view is made by ``sync_views``
+        if count == 0:  # only view properties (hidden lines) and cosmetic edges: no objects to make
             continue
-        objects = held(have.get(unit.key, []))
+        objects = [o for o in held(have.get(unit.key, [])) if alive(fc_doc, o) and PROP_DERIVED not in o.PropertiesList]
         wanted = signature(unit)
+        dim_views = {n.view for n in unit.natives if isinstance(n, su.NativeDim)}
         if (
             objects
-            and len(objects) == object_count(unit)
+            and len(objects) == count
             and all(str(getattr(o, PROP_SIG, "")) == wanted for o in objects)
+            and not dim_views & set(redo)  # the view it measures was made again: its references were to the old object
+            and all(view_object(page, name) is not None for name in dim_views)
         ):
             report.unchanged.append(unit.key)
             continue
@@ -610,6 +636,9 @@ def compare_unit(page: Any, unit: su.Unit, objects: list[Any]) -> list[str]:
         return problems
     dims = [n for n in unit.natives if isinstance(n, su.NativeDim)]
     notes = [n for n in unit.natives if isinstance(n, su.NativeNote)]
+    nv = su.view_of(unit)
+    if nv is not None:
+        problems += [p for obj in mine if PROP_DERIVED in obj.PropertiesList for p in view_problems(page, unit, nv, obj)]
     for obj in mine:
         if str(getattr(obj, PROP_SIG, "")) != wanted:
             problems.append(f"{unit.key}: {obj.Label} is not what the sheet asks for (out of date)")
@@ -659,7 +688,7 @@ def remove(fc_doc: Any, objects: list[Any]) -> None:
     numbers the vertices of a view by their order (measured in 1.1.3), so taking one out sends the later dimensions to
     other points; a sheet that is rebuilt starts clean."""
     for obj in objects:
-        if fc_doc.getObject(obj.Name) is not None:
+        if alive(fc_doc, obj):
             source = getattr(obj, "Source", None) if str(obj.TypeId) == "TechDraw::DrawViewSpreadsheet" else None
             data = list(source) if isinstance(source, list | tuple) else ([source] if source is not None else [])
             fc_doc.removeObject(obj.Name)
@@ -668,11 +697,224 @@ def remove(fc_doc: Any, objects: list[Any]) -> None:
                     fc_doc.removeObject(sheet_obj.Name)
 
 
+def alive(fc_doc: Any, obj: Any) -> bool:
+    """Whether ``obj`` is still in the document: removing a view takes its dimensions with it, and the name of an object that is
+    gone is not a string any more."""
+    name = getattr(obj, "Name", None)
+    return isinstance(name, str) and fc_doc.getObject(name) is not None
+
+
+# --- the views of the items: sections, details and auxiliary views ----------------------------------------------------------
+
+DRAW_TYPES = {"section": "TechDraw::DrawViewSection", "detail": "TechDraw::DrawViewDetail", "aux": "TechDraw::DrawViewPart"}
+PLACE_TOL_MM = 0.5  # how far the drawing of a view may sit from where the sheet puts it before the check says so
+SIZE_TOL = 0.02  # and how much bigger or smaller (a fraction): TechDraw draws the same cut, the same edges
+HATCH_FILE = ("Mod", "TechDraw", "PAT", "FCPAT.pat")  # TechDraw's own pattern library: lines, not an SVG tile (a PDF with a pattern fill is damaged)
+HATCH_NAME = "Diagonal4"  # 45 degree thin lines
+
+
+def _vector(values: Any) -> Any:
+    return App.Vector(float(values[0]), float(values[1]), float(values[2]))
+
+
+def _extent(view: Any) -> tuple[float, float, float, float] | None:
+    """The box of the edges TechDraw drew in ``view``, in the view's own coordinates (scaled, y DOWN), or ``None`` when it drew none."""
+    xs: list[float] = []
+    ys: list[float] = []
+    for edge in model_edges(view):
+        box = edge.BoundBox
+        xs += [box.XMin, box.XMax]
+        ys += [box.YMin, box.YMax]
+    return (min(xs), min(ys), max(xs), max(ys)) if xs else None
+
+
+def _page_box(page: Any, view: Any) -> tuple[float, float, float, float] | None:
+    """The page rectangle (mm, y up) of what TechDraw drew in ``view``."""
+    extent = _extent(view)
+    if extent is None:
+        return None
+    x, y = page_position(page, view)
+    return x + extent[0], y - extent[3], x + extent[2], y - extent[1]
+
+
+def _hatch_file() -> str:
+    import os  # noqa: PLC0415
+
+    return os.path.join(str(App.getResourceDir()), *HATCH_FILE)
+
+
+def _make_view(fc_doc: Any, page: Any, unit: su.Unit, nv: su.NativeView, sheet: str) -> Any:
+    """The TechDraw view object ``nv`` asks for, hung from its parent view, drawn at the scale and in the frame the sheet gave
+    it. Not placed yet: ``_place`` puts it where the sheet draws it, once TechDraw has computed what it shows."""
+    parent = view_object(page, nv.parent)
+    if parent is None:
+        msg = f"the sheet has no {nv.parent} view for the {nv.kind} view {nv.name} to hang from"
+        raise LookupError(msg)
+    obj = fc_doc.addObject(DRAW_TYPES[nv.kind], _object_name(page, unit.key, ""))
+    page.addView(obj)
+    if nv.kind == "section":
+        _hide_section_line(parent)
+    if nv.kind != "aux":
+        obj.BaseView = parent
+    obj.Source = list(parent.Source)
+    obj.ScaleType = "Custom"
+    obj.Scale = float(nv.scale)
+    if nv.kind == "section":
+        assert nv.at is not None  # a section has its plane
+        obj.SectionNormal = _vector(nv.direction)  # the viewer's side of the plane is the one cut away
+        obj.SectionOrigin = _vector(nv.at)
+        obj.XDirection = _vector(nv.xdir)
+        obj.SectionSymbol = nv.letter
+        obj.CutSurfaceDisplay = "PatHatch"
+        obj.FileGeomPattern = _hatch_file()
+        obj.NameGeomPattern = HATCH_NAME
+    elif nv.kind == "detail":
+        assert nv.anchor is not None  # a detail has its circle
+        obj.AnchorPoint = App.Vector(float(nv.anchor[0]), float(nv.anchor[1]), 0.0)
+        obj.Radius = float(nv.radius)
+        obj.Reference = nv.letter
+    else:
+        obj.Direction = _vector(nv.direction)
+        obj.XDirection = _vector(nv.xdir)
+    obj.Label = nv.name
+    obj.Caption = nv.name  # TechDraw's own text under the view (A-A)
+    obj.X = (nv.box[0] + nv.box[2]) / 2
+    obj.Y = (nv.box[1] + nv.box[3]) / 2
+    tag(obj, unit.key, nv.item, sheet)
+    tag_view(obj, f"view:{nv.name}", sheet)
+    obj.addProperty("App::PropertyString", PROP_DERIVED, GROUP, "The kind of view the sheet made from an item")
+    obj.setEditorMode(PROP_DERIVED, 1)
+    setattr(obj, PROP_DERIVED, nv.kind)
+    obj.addProperty("App::PropertyString", PROP_PARENT, GROUP, "The view this one hangs from")
+    obj.setEditorMode(PROP_PARENT, 1)
+    setattr(obj, PROP_PARENT, str(parent.Name))
+    return obj
+
+
+def _hide_section_line(parent: Any) -> None:
+    """Switch off TechDraw's own section line on ``parent``: FreeCAD 1.1.3 exports a page with one as a damaged PDF (a stroke
+    with no colour: measured on a view made by hand), so the cutting-plane line is made of cosmetic edges and annotations. It
+    is a property of the view provider: there is none without a window, and the engineer who opens the file there has it on."""
+    vo = getattr(parent, "ViewObject", None)
+    if parent is None or vo is None or not hasattr(vo, "ShowSectionLine") or not bool(vo.ShowSectionLine):
+        return
+    vo.ShowSectionLine = False
+    if PROP_SLOFF not in parent.PropertiesList:
+        parent.addProperty("App::PropertyBool", PROP_SLOFF, GROUP, "The sheet switched TechDraw's section line off")
+        parent.setEditorMode(PROP_SLOFF, 1)
+    setattr(parent, PROP_SLOFF, True)
+
+
+def _restore_section_lines(page: Any) -> None:
+    """Switch TechDraw's section line on again on the views the sheet switched it off on and no section hangs from now."""
+    hanging = {str(getattr(o, PROP_PARENT, "")) for o in derived_views(page) if str(getattr(o, PROP_DERIVED, "")) == "section"}
+    for view in [*page.Views, *[i for g in page.Views if str(g.TypeId) == "TechDraw::DrawProjGroup" for i in g.Views]]:
+        if PROP_SLOFF in view.PropertiesList and view.Name not in hanging:
+            vo = getattr(view, "ViewObject", None)
+            if vo is not None and hasattr(vo, "ShowSectionLine"):
+                vo.ShowSectionLine = True
+            view.removeProperty(PROP_SLOFF)
+
+
+def _place(page: Any, obj: Any, nv: su.NativeView) -> None:
+    """Put the drawing of ``obj`` where the sheet draws the view: TechDraw centres a view on its own bounding box (a section
+    on the cut, an auxiliary view on the whole part), so the object is moved until that box is centred on the sheet's. A
+    detail is centred on its circle. Then its position is an expression of its parent's (``Front.X + 120 mm``): move the
+    parent and the view goes with it; to move the view by itself, clear the expression of X and Y."""
+    target = ((nv.box[0] + nv.box[2]) / 2, (nv.box[1] + nv.box[3]) / 2)
+    if nv.kind != "detail":
+        extent = _extent(obj)
+        if extent is None:
+            msg = "TechDraw drew nothing in it"
+            raise RuntimeError(msg)
+        obj.X = target[0] - (extent[0] + extent[2]) / 2
+        obj.Y = target[1] + (extent[1] + extent[3]) / 2
+    parent = view_object(page, nv.parent)
+    px, py = page_position(page, parent)
+    group = next(
+        (g for g in page.Views if str(g.TypeId) == "TechDraw::DrawProjGroup" and parent.Name in [i.Name for i in g.Views]), None
+    )
+    base_x = f"{parent.Name}.X" if group is None else f"{group.Name}.X + {parent.Name}.X"
+    base_y = f"{parent.Name}.Y" if group is None else f"{group.Name}.Y + {parent.Name}.Y"
+    obj.setExpression("X", f"{base_x} + {float(obj.X) - px:.4f} mm")
+    obj.setExpression("Y", f"{base_y} + {float(obj.Y) - py:.4f} mm")
+
+
+def view_problems(page: Any, unit: su.Unit, nv: su.NativeView, obj: Any) -> list[str]:
+    """What differs between the view TechDraw drew and the box the sheet gave it: the drawing is not where the sheet draws
+    it (moved by hand) or is not the size of the sheet's."""
+    box = _page_box(page, obj)
+    if box is None:
+        return [f"{unit.key}: TechDraw's {nv.kind} view {nv.name} shows nothing"]
+    problems: list[str] = []
+    want = nv.box
+    shift = ((box[0] + box[2]) / 2 - (want[0] + want[2]) / 2, (box[1] + box[3]) / 2 - (want[1] + want[3]) / 2)
+    if nv.kind == "detail":
+        return problems
+    if abs(shift[0]) > PLACE_TOL_MM or abs(shift[1]) > PLACE_TOL_MM:
+        problems.append(
+            f"{unit.key}: the {nv.kind} view {nv.name} is {shift[0]:+.1f}, {shift[1]:+.1f} mm from where the sheet puts it (moved by hand)"
+        )
+    for have, expected, axis in ((box[2] - box[0], want[2] - want[0], "wide"), (box[3] - box[1], want[3] - want[1], "high")):
+        if abs(have - expected) > max(PLACE_TOL_MM, SIZE_TOL * expected):
+            problems.append(
+                f"{unit.key}: TechDraw draws the {nv.kind} view {nv.name} {have:.1f} mm {axis} and the sheet {expected:.1f} mm"
+            )
+    return problems
+
+
+def sync_views(
+    fc_doc: Any, page: Any, units: list[su.Unit], sheet: str, have: dict[str, list[Any]], report: Any, wait: Any
+) -> tuple[dict[str, list[str]], set[str]]:
+    """Make the section, detail and auxiliary views of ``units`` agree with what the sheet asks (``NativeView``): a view that
+    already carries the signature is left alone, the rest are made again. ``wait`` returns once TechDraw has computed the views
+    (they are measured next). Returns the units whose view could not be made (they stay the sheet's own drawing, and say why)
+    and the names of the views made new: the dimensions on them are made again, their references were to the old object."""
+    failed: dict[str, list[str]] = {}
+    fresh: set[str] = set()
+    for obj in derived_views(page):  # the engineer took the parent away: the view that hung from it has nothing to show
+        if fc_doc.getObject(str(getattr(obj, PROP_PARENT, ""))) is None and str(getattr(obj, PROP_PARENT, "")):
+            remove(fc_doc, [obj])
+    for unit in units:
+        nv = su.view_of(unit)
+        if nv is None:
+            continue
+        objects = [o for o in held(have.get(unit.key, [])) if alive(fc_doc, o) and PROP_DERIVED in o.PropertiesList]
+        wanted = signature(unit)
+        if len(objects) == 1 and str(getattr(objects[0], PROP_SIG, "")) == wanted:
+            report.unchanged.append(unit.key)
+            if nv.kind == "section":
+                _hide_section_line(view_object(page, nv.parent))
+            continue
+        remove(fc_doc, objects)
+        made = None
+        try:
+            made = _make_view(fc_doc, page, unit, nv, sheet)
+            fc_doc.recompute()
+            wait()
+            _place(page, made, nv)
+            fc_doc.recompute()
+            wait()
+            if _extent(made) is None:
+                msg = "TechDraw drew nothing in it"
+                raise RuntimeError(msg)  # noqa: TRY301
+            _set_sig(made, wanted)
+        except Exception as exc:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind
+            if made is not None:
+                remove(fc_doc, [made])
+            failed[unit.key] = [f"{type(exc).__name__}: {exc}"]
+            continue
+        fresh.add(nv.name)
+        (report.updated if objects else report.created).append(unit.key)
+    _restore_section_lines(page)
+    return failed, fresh
+
+
 # --- cosmetic edges: the lines a unit draws ON a view (centre lines and marks, thread arcs, the parting line) ------------
 
 PROP_COSMETIC = "CotaforgeCosmetic"  # on a view: the cosmetic edges the sheet made, {unit key: [signature, [geometry...]]}
-ISO_STYLE = {"centre": 4, "thin": 1, "parting": 8}  # ISO 128-20 line numbers (TechDraw's own list): 04 long dash dot, 01, 08
-ISO_WIDTH_MM = {"centre": 0.25, "thin": 0.25, "parting": 0.5}  # the 0.5 mm group: wide 0.5, narrow 0.25 (as the PDF)
+ISO_STYLE = {"centre": 4, "thin": 1, "parting": 8, "thick": 1}  # ISO 128-20 line numbers (TechDraw's own list): 04 long dash dot, 01, 08
+ISO_WIDTH_MM = {"centre": 0.25, "thin": 0.25, "parting": 0.5, "thick": 0.5}  # the 0.5 mm group: wide 0.5, narrow 0.25 (as the PDF)
 BLACK = (0.0, 0.0, 0.0, 1.0)
 EDGE_TOL = 1e-4
 
@@ -789,7 +1031,7 @@ def sync_cosmetics(page: Any, units: list[su.Unit], made: list[str] | None = Non
         if made is not None and key not in made:
             made.append(key)
 
-    for name in VIEW_LABELS:
+    for name in view_names(page):
         view = view_object(page, name)
         if view is None:
             continue
@@ -906,7 +1148,7 @@ def cosmetic_paths(page: Any, key: str) -> list[list[tuple[float, float]]]:
     """The cosmetic edges the sheet made for unit ``key`` as polylines in page mm (y up), for painting them when the engineer
     is pointed at the item: a line is its two ends, a circle or an arc the full circle."""
     paths: list[list[tuple[float, float]]] = []
-    for name in VIEW_LABELS:
+    for name in view_names(page):
         view = view_object(page, name)
         entry = _stored(view).get(key) if view is not None else None
         if entry is None:

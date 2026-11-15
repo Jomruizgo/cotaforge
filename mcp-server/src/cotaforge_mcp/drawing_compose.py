@@ -83,7 +83,7 @@ ROW_KEYS: dict[str, tuple[str, ...]] = {
 }
 """The decision that answers each row of the table of requirements; any other row is closed by a note or by ``answers``."""
 LOCATION_KEYS = ("datums", "relations", "sheet")
-WHOLE_SHEET_STATED = ("template", "angle", "scale", "views", "isometric", "body", "projection", "symmetry")
+WHOLE_SHEET_STATED = ("template", "angle", "scale", "views", "isometric", "body", "symmetry")
 """What a ``compose`` states (in its call or in ``decisions.sheet``) that changes the whole sheet: the paper, the angle, the
 scale, the views, the body, the symmetry of the part. The title block and the rest of ``sheet`` are local (``update``)."""
 WHOLE_SHEET_DECISIONS = ("relations", "datums")
@@ -321,7 +321,7 @@ def _create_args(args: DrawingArgs, sheet: dict[str, Any]) -> DrawingArgs:
         if name
         in (
             "template", "angle", "scale", "title", "author", "date", "material", "language", "drawing_number", "revision",
-            "general_tolerances", "company", "title_block", "symmetry", "views", "isometric", "body", "projection", "fresh",
+            "general_tolerances", "company", "title_block", "symmetry", "views", "isometric", "body", "fresh",
         )  # fmt: skip
     }
     return DrawingArgs(action="create", sheet=args.sheet, **{**fields, **sheet})

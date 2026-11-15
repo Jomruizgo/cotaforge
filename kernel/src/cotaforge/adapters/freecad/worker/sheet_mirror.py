@@ -17,7 +17,6 @@ What the page holds:
   frames, datum and finish symbols, tables, the section hatch, thread arcs -- is a ``DrawViewSymbol`` whose SVG is that
   item's own drawing (``sheet_svg.fragment``), centred where the drawing sits on the page. TechDraw has dimension and
   leader objects, but they place their own lines and text, so the window would show something other than the PDF;
-* an ``hlr`` sheet has no view objects: its views are symbols of our projection too, so the window is never blank.
 
 Each object carries the key of the unit it mirrors (``CotaforgeKey``); a unit whose object already holds exactly the SVG
 and the position the sheet gives it is left alone, so adding one item to a sheet of thirty touches one object (and an
@@ -336,15 +335,22 @@ def sync(fc_doc: Any, page: Any, units: list[su.Unit], page_h: float, sheet: str
         if key not in wanted:
             _remove(fc_doc, have.pop(key))
             report.removed.append(key)
-    # the cosmetic edges first: a dimension may measure one (the pitch circle of a bolt pattern), so its view must have it
+    # the views of the items first (a section, a detail): the cosmetic edges and the dimensions are made on them
+    views_failed, views_new = sheet_native.sync_views(
+        fc_doc, page, [u for u in units if su.view_of(u) is not None], sheet, have, report, lambda: _wait_computed(fc_doc, page)
+    )
+    units_native = [u for u in units if u.natives and u.key not in views_failed]
+    # the cosmetic edges next: a dimension may measure one (the pitch circle of a bolt pattern), so its view must have it
     drawn: list[str] = []
-    report.fallbacks = sheet_native.sync_cosmetics(page, [u for u in units if u.natives], drawn)
-    if drawn:
+    report.fallbacks = {**views_failed, **sheet_native.sync_cosmetics(page, units_native, drawn)}
+    if drawn or views_new:
         fc_doc.recompute()
         _wait_computed(fc_doc, page)  # the dimensions measure the edges of the views AS they are now: in the CAD window TechDraw
         # finishes a view in the background, and a dimension made against the list it had before points at other edges
     report.fallbacks.update(
-        sheet_native.sync(fc_doc, page, [u for u in units if u.natives and u.key not in report.fallbacks], sheet, have, report)
+        sheet_native.sync(
+            fc_doc, page, [u for u in units if u.natives and u.key not in report.fallbacks], sheet, have, report, views_new
+        )
     )
     sheet_native.sync_flags(page, [u for u in units if u.natives and u.key not in report.fallbacks])
     report.updated += [k for k in drawn if k not in report.touched()]  # the edges of a view are made or taken off
@@ -501,7 +507,7 @@ def page_crosses(page: Any, page_h: float) -> list[tuple[float, float]]:
 def _cosmetic_crosses(page: Any) -> list[tuple[float, float]]:
     """The centre marks that live on the views as cosmetic edges (``sheet_native.sync_cosmetics``), in page mm."""
     lines: list[tuple[float, float, float, float]] = []
-    for name in sheet_native.VIEW_LABELS:
+    for name in sheet_native.view_names(page):
         view = sheet_native.view_object(page, name)
         if view is None:
             continue

@@ -100,7 +100,7 @@ def check_the_views_are_named_whatever_made_them() -> None:
     assert refs.view_role("TechDraw::DrawViewPart", "View_front", "x") == "front"  # the native sheet's own names
     assert refs.view_role("TechDraw::DrawViewSection", "SectionA", "Section A-A") == "Section A-A"
     assert refs.view_role("TechDraw::DrawViewDimension", "Dim", "Dim") is None
-    assert refs.parse_key("view:front") == ("view", "front") and refs.parse_key("threads") == ("extra", "threads")
+    assert refs.parse_key("threads") == ("extra", "threads")
     assert refs.parse_key("d3") == ("item", "d3")
 
 
