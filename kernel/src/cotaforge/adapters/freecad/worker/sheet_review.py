@@ -231,9 +231,9 @@ def _end_view_of_coaxial_part(data: ReviewInput) -> list[Finding]:
 
 def _coaxial_text(ctx: Context, name: str) -> str:
     how = ctx.say(
-        f"quítala (drawing action=remove_view, view={name}) y deja el corte en la vista principal "
+        f"quítala (drawing action=remove_view, views=[{name}]) y deja el corte en la vista principal "
         '(item section holes="axis" in_place=true), que da cada Ø y cada altura',
-        f"drop it (drawing action=remove_view, view={name}) and leave the section in the main view "
+        f"drop it (drawing action=remove_view, views=[{name}]) and leave the section in the main view "
         '(item section holes="axis" in_place=true), which gives every Ø and every height',
     )
     return ctx.say(
@@ -259,8 +259,8 @@ def _view_without_job(ctx: Context, name: str, is_section: bool, owner: str) -> 
         )
     else:
         how = ctx.say(
-            f"quítala (drawing action=remove_view, view={name}) y las demás se reparten el espacio",
-            f"drop it (drawing action=remove_view, view={name}) and the others share the room",
+            f"quítala (drawing action=remove_view, views=[{name}]) y las demás se reparten el espacio",
+            f"drop it (drawing action=remove_view, views=[{name}]) and the others share the room",
         )
     coaxial = _coaxial_axis(ctx)
     if coaxial is not None and view is not None and not view.derived and view.looks_along(coaxial):
@@ -290,9 +290,11 @@ def _view_without_job(ctx: Context, name: str, is_section: bool, owner: str) -> 
     else:
         text = ctx.say(
             f"La vista {name} no lleva ninguna cota, llamada de agujero ni globo: acótala (dim, overall, hole_dim) o {how}. "
-            "Si debe quedarse así, responde con la razón (no aplica: <por qué>).",
+            "Solo se queda sin nada si el ingeniero lo ordena con su razón (by=, reason=): ni «aplica» ni «no aplica» del "
+            "agente la cierran, la vista se arregla o se quita.",
             f"The {name} view carries no dimension, hole callout or balloon: dimension it (dim, overall, hole_dim) or {how}. "
-            "If it must stay as it is, answer with the reason (not_applies: <why>).",
+            "It stays with nothing only if the engineer orders it with his reason (by=, reason=): neither 'applies' nor "
+            "'not_applies' from the agent closes it, the view is fixed or dropped.",
         )
     return Finding("view_adds_nothing", "warning", text, (name,))
 
@@ -1133,9 +1135,9 @@ def _weldment_views(data: ReviewInput) -> list[Finding]:
             continue
         text = ctx.say(
             f"La vista {repeat} dibuja lo mismo que la vista {kept} (cada cuerpo ocupa el mismo rectángulo): no añade nada. "
-            f"Quítala (drawing action=remove_view, view={repeat}) y las demás se reparten el espacio.",
+            f"Quítala (drawing action=remove_view, views=[{repeat}]) y las demás se reparten el espacio.",
             f"The {repeat} view draws the same as the {kept} view (every body fills the same rectangle): it adds nothing. "
-            f"Drop it (drawing action=remove_view, view={repeat}) and the others share the room.",
+            f"Drop it (drawing action=remove_view, views=[{repeat}]) and the others share the room.",
         )
         out.append(Finding("view_redundant", "warning", text, (repeat,), key=repeat))
     return out

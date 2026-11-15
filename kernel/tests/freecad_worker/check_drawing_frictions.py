@@ -127,7 +127,7 @@ def check_a_hole_on_the_axis_of_a_symmetric_part_is_located_by_the_part_not_by_a
     call("create_drawing", op("d", template="A3", views=["front", "right", "iso"], scale=1.0, symmetry=True))  # intent
     sheet, results, ctx = _composed()
     loc = next(r for r in results if r.id == "loc")
-    assert loc.status == "ok" and "symmetry" in loc.detail, loc
+    assert loc.status == "ok" and "on the axis of the part" in loc.detail, loc
     assert ctx.extras["loc_axes"] == {0: {"x", "y"}}, ctx.extras["loc_axes"]
     shown = {e.text for e in sheet.of_layer(model.DIMENSIONS) if isinstance(e, model.Text)}
     # the overall size of both views (the end view adds its 60) and no number from the edge of the box to the centre

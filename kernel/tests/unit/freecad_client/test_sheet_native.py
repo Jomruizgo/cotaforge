@@ -227,6 +227,8 @@ def test_a_view_with_no_dimension_is_flagged_whatever_it_shows() -> None:
     found = _views_review({"d1": "dim"}, {"front": {"d1"}, "top": {"d1"}})
     assert [(f.code, f.severity, f.items) for f in found] == [("view_adds_nothing", "warning", ("right",))]
     assert "no lleva ninguna cota" in found[0].message and "remove_view" in found[0].message
+    assert "views=[right]" in found[0].message and "view=right" not in found[0].message  # the argument the tool takes: views=[...]
+    assert "ni «aplica» ni «no aplica» del agente" in found[0].message  # no word of the agent closes it
 
 
 def test_a_dimension_a_hole_callout_or_a_balloon_gives_a_view_its_job() -> None:

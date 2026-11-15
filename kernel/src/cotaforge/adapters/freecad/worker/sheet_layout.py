@@ -282,6 +282,8 @@ def plan(
     iso_dims: tuple[float, float, float] | None = None,
     own_iso_scale: bool = True,
     notes: tuple[float, float] | None = None,
+    need_right_mm: float = 0.0,
+    need_spacing_mm: float = 0.0,
     _comfort_checked: bool = False,
 ) -> Layout:
     """The layout of a part ``w`` (x) by ``d`` (y) by ``h`` (z) mm on a page; ``scale`` is the ratio asked for
@@ -295,7 +297,11 @@ def plan(
     sheet's scale is chosen, or asked for, and the isometric view does not fit beside the main views at that scale, it takes
     the largest standard scale that does (at most one step smaller; none for an assembly sheet or ``own_iso_scale=False``);
     ``Layout.iso_scale`` is 0 when it has the sheet's. ``notes`` = (width, height) of the numbered notes block: it stands in a
-    free corner, so the views must leave the room for it (``fits_round_notes``); omitted, the views take the whole area."""
+    free corner, so the views must leave the room for it (``fits_round_notes``); omitted, the views take the whole area.
+    ``need_right_mm`` / ``need_spacing_mm`` are the part of the room beside the views and between them that dimensions
+    stand in (the opposite side of a view that the default location of the holes uses): unlike the room of the callouts,
+    which is a comfort, no scale gives it up."""
+    right_mm, spacing_mm = max(right_mm, need_right_mm), max(spacing_mm, SPACING_MM + need_spacing_mm)
     if scale is None and not _comfort_checked and (right_mm or spacing_mm != SPACING_MM):
         # the room for the callouts is a comfort: a scale smaller than the sheet would have without it is not worth it
         args = (w, d, h, page_w, page_h, None, reserve, isometric, has_top, has_right)
@@ -304,7 +310,7 @@ def plan(
             "own_iso_scale": own_iso_scale, "notes": notes,
         }  # fmt: skip
         roomy = plan(*args, **keep, right_mm=right_mm, spacing_mm=spacing_mm, _comfort_checked=True)
-        tight = plan(*args, **keep, _comfort_checked=True)
+        tight = plan(*args, **keep, right_mm=need_right_mm, spacing_mm=SPACING_MM + need_spacing_mm, _comfort_checked=True)
         return roomy if roomy.scale >= tight.scale else tight
     left, top, right, bottom = drawing_area(page_w, page_h)
     area_w, area_h = right - left, bottom - top
@@ -402,17 +408,24 @@ def auto_paper(
     *,
     third: bool = False,
     iso_dims: tuple[float, float, float] | None = None,
+    need_right_mm: float = 0.0,
+    need_spacing_mm: float = 0.0,
 ) -> tuple[str, float]:
     """The paper and the standard scale (ISO 5455) a sheet gets when nobody chose a paper, so the views fill it instead of
     floating on a sheet too big for them or shrinking on one too small (ISO 5457: the smallest paper on which the drawing is
     legible): the smallest of A4 and A3 on which the automatic layout reaches full size or an enlargement; else the smallest
     paper that reaches the legibility floor (``LEGIBLE_SCALE``, 1:5, with its largest side drawn at least ``LEGIBLE_EXTENT_MM``),
     at the largest scale it fits there: never a bigger paper only to draw at a bigger scale; else (a part of several metres) the paper with the largest scale, the smaller one
-    on a tie. ``w`` / ``d`` / ``h`` are the sizes of the views as ``plan`` takes them."""
+    on a tie. ``w`` / ``d`` / ``h`` are the sizes of the views as ``plan`` takes them; ``need_right_mm`` / ``need_spacing_mm`` the
+    room the dimensions that stand on the far side of the views take (see ``plan``): a paper that only holds the views at a
+    scale the dimensions then spoil is not the smallest one that does."""
     scales = {
-        name: plan(w, d, h, *PAGES_MM[name], None, None, isometric, has_top, has_right, third=third, iso_dims=iso_dims).scale
+        name: plan(
+            w, d, h, *PAGES_MM[name], None, None, isometric, has_top, has_right, third=third, iso_dims=iso_dims,
+            need_right_mm=need_right_mm, need_spacing_mm=need_spacing_mm,
+        ).scale
         for name in AUTO_PAPERS
-    }
+    }  # fmt: skip
     for name in AUTO_PAPERS[:FULL_SIZE_PAPERS]:
         if scales[name] >= 1.0 - 1e-9:
             return name, scales[name]
