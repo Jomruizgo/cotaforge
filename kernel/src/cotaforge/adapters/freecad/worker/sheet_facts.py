@@ -107,6 +107,7 @@ def collect(doc: reg.DocumentRec, bodies: list[reg.BodyRec]) -> sck.PartFacts:
         spans: dict[tuple[Any, ...], list[float]] = {}  # where along its axis each cylinder lies: lo, hi, and a point
         flats: list[keyway.Flat] = []
         half_circles: list[keyway.Round] = []  # the partial cylinders: the rounded ends a keyway may have
+        face_ends: dict[str, tuple[float, float]] = {}  # the stretch of each cylinder face along its axis
         for face_id, index in body.live_faces():
             if index >= len(faces):
                 continue
@@ -131,6 +132,7 @@ def collect(doc: reg.DocumentRec, bodies: list[reg.BodyRec]) -> sck.PartFacts:
             ends = sorted((base + v0 * sign, base + v1 * sign))
             span = spans.setdefault(key, [ends[0], ends[1], *centre])
             span[0], span[1] = min(span[0], ends[0]), max(span[1], ends[1])
+            face_ends[face_id] = (ends[0], ends[1])
         cylinders = [
             keyway.Cylinder(key[0], (span[2], span[3], span[4]), key[2], key[3], span[0], span[1])
             for key, span in spans.items()
@@ -147,13 +149,19 @@ def collect(doc: reg.DocumentRec, bodies: list[reg.BodyRec]) -> sck.PartFacts:
             if sum(arc for _, _, arc, _ in members) >= FULL_TURN:
                 if concave:
                     continue  # a hole: hole_infos has it
-                face_id, face, _, _ = members[0]
-                surf = face.Surface
-                axis = g.unit(g.vec(surf.Axis))
-                centre = g.vec(surf.Center)
-                middle = g.vec(face.CenterOfMass)
-                foot = g.add(centre, g.scale(axis, g.dot(g.sub(middle, centre), axis)))  # on the axis, mid-height
-                facts.bosses.append(sck.Boss(face_id, radius, foot, axis, max(length for _, _, _, length in members)))
+                # one boss per CYLINDER: two seats of one diameter on a shaft share the key (axis, radius) and are two cylinders
+                by_face = {m[0]: m for m in members}
+                for cylinder in flats_mod.separate_cylinders([(m[0], *face_ends.get(m[0], (0.0, 0.0))) for m in members]):
+                    parts = [by_face[i] for i in cylinder]
+                    if sum(arc for _, _, arc, _ in parts) < FULL_TURN:
+                        continue
+                    face_id, face, _, _ = parts[0]
+                    surf = face.Surface
+                    axis = g.unit(g.vec(surf.Axis))
+                    centre = g.vec(surf.Center)
+                    middle = g.vec(face.CenterOfMass)
+                    foot = g.add(centre, g.scale(axis, g.dot(g.sub(middle, centre), axis)))  # on the axis, mid-height
+                    facts.bosses.append(sck.Boss(face_id, radius, foot, axis, max(length for _, _, _, length in parts)))
                 continue
             facts.rounds.extend(sck.RoundFace(face_id, radius, concave) for face_id, _, _, _ in members if face_id not in keyway_ends)
     return facts

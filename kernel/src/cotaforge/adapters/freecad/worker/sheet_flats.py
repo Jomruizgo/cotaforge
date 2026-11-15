@@ -180,3 +180,22 @@ def missing(ctx: Context, entities: list[Any]) -> list[tuple[ViewInfo, FlatFace]
             if got is not None and not all(_joined(drawn, d) for d in got[0]):
                 out.append((view, flat))
     return out
+
+
+SAME_CYLINDER_MM = 0.05  # two cylinder faces whose stretches along the axis overlap by more than this are halves of one cylinder
+
+
+def separate_cylinders(spans: list[tuple[str, float, float]]) -> list[list[str]]:
+    """The faces of the cylinders that share one axis and one radius, grouped by cylinder: ``spans`` are ``(face id, lo, hi)`` (the
+    stretch of each face along the axis). The halves of one cylinder (a seam splits it) cover the same stretch, so they overlap;
+    two seats of the same diameter with a different step between them (a shaft's two bearing seats) are two cylinders and do not.
+    Grouping by axis and radius alone would make one of them."""
+    clusters: list[tuple[float, float, list[str]]] = []
+    for face_id, lo, hi in sorted(spans, key=lambda s: (s[1], s[2])):
+        for i, (c_lo, c_hi, ids) in enumerate(clusters):
+            if lo < c_hi - SAME_CYLINDER_MM and c_lo < hi - SAME_CYLINDER_MM:
+                clusters[i] = (min(c_lo, lo), max(c_hi, hi), [*ids, face_id])
+                break
+        else:
+            clusters.append((lo, hi, [face_id]))
+    return [ids for _, _, ids in clusters]
