@@ -321,3 +321,15 @@ def test_a_dimension_the_engineer_put_on_the_page_by_hand_gives_the_view_its_job
     assert [f.items for f in review._unused_views(data)] == [("front",), ("top",)]
     ctx.extras["hand_marks"] = {"top": 1}  # plain data the worker read from the TechDraw page
     assert [f.items for f in review._unused_views(data)] == [("front",)]
+
+
+def test_a_notes_block_is_widened_until_its_x_is_not_a_few_mm_from_another_object() -> None:
+    """The window pulls an object whose X is within a few mm of another one onto it: a dimension centred 3 mm from the X of the
+    notes moved every line of them 3.3 mm and the fit could not put them back (a plate with the default location, A4 1:2)."""
+    import sheet_notefit as fit  # noqa: PLC0415
+
+    left, block = 27.0, 175.0  # the notes' X is 114.5
+    widened = fit.block_clear_of_others([111.2, 114.5], left, block)  # one 3.3 mm off, one on the very X
+    assert widened > block and abs(left + widened / 2 - 111.2) >= fit.NOTE_SNAP_MM
+    assert fit.block_clear_of_others([114.5], left, block) == block  # the same X is no risk
+    assert fit.block_clear_of_others([], left, block) == block

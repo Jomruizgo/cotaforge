@@ -1308,8 +1308,6 @@ def _auto_paper(
     lay_w, lay_d, lay_h = (
         sheet_turned.layout_sizes(turned["length"], turned["diameter"]) if turned else (width, depth, height)
     )
-    third = str(params.get("angle") or "first") == "third"
-    room = _dimension_room(doc, spec, shown, third, op)
     return sheet_layout.auto_paper(  # the arguments ``_build`` gives the layout of the same sheet
         lay_w if anchor == "front" else across,
         lay_d if anchor == "front" else 0.0,
@@ -1317,10 +1315,8 @@ def _auto_paper(
         "iso" in shown,
         "top" in shown and anchor == "front",
         "right" in shown and anchor == "front",
-        third=third,
+        third=str(params.get("angle") or "first") == "third",
         iso_dims=(lay_w, lay_d, lay_h),
-        need_right_mm=room.get("need_right_mm", 0.0),
-        need_spacing_mm=room.get("need_spacing_mm", 0.0),
     )
 
 

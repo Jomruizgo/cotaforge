@@ -317,7 +317,6 @@ ROWS: tuple[Row, ...] = (
             "hole_partly_located",
             "pattern_not_polar",
             "hole_no_reference",
-            "hole_group_no_locator",
             "hole_no_callout",
             "feature_no_dimension",
             "feature_not_located",
@@ -403,7 +402,7 @@ ROWS: tuple[Row, ...] = (
         proposal=("los datos del archivo de intención, en el orden de montaje", "the datums of the intent file, in the order of assembly"),
         triggers=("gdt_items",),
         needs=(_n("datum_items", "un dato definido en la hoja", "a datum defined on the sheet"),),
-        codes=("datum_undefined", "gdt_not_located", "gdt_as_note", "gdt_location_not_exact", "gdt_axis_not_oriented", "measurement_unstated"),
+        codes=("datum_undefined", "gdt_not_located", "gdt_as_note", "gdt_location_not_exact", "gdt_axis_not_oriented"),
         measured=("gdt_items",),
     ),
     Row(

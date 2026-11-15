@@ -408,24 +408,17 @@ def auto_paper(
     *,
     third: bool = False,
     iso_dims: tuple[float, float, float] | None = None,
-    need_right_mm: float = 0.0,
-    need_spacing_mm: float = 0.0,
 ) -> tuple[str, float]:
     """The paper and the standard scale (ISO 5455) a sheet gets when nobody chose a paper, so the views fill it instead of
     floating on a sheet too big for them or shrinking on one too small (ISO 5457: the smallest paper on which the drawing is
     legible): the smallest of A4 and A3 on which the automatic layout reaches full size or an enlargement; else the smallest
     paper that reaches the legibility floor (``LEGIBLE_SCALE``, 1:5, with its largest side drawn at least ``LEGIBLE_EXTENT_MM``),
     at the largest scale it fits there: never a bigger paper only to draw at a bigger scale; else (a part of several metres) the paper with the largest scale, the smaller one
-    on a tie. ``w`` / ``d`` / ``h`` are the sizes of the views as ``plan`` takes them; ``need_right_mm`` / ``need_spacing_mm`` the
-    room the dimensions that stand on the far side of the views take (see ``plan``): a paper that only holds the views at a
-    scale the dimensions then spoil is not the smallest one that does."""
+    on a tie. ``w`` / ``d`` / ``h`` are the sizes of the views as ``plan`` takes them."""
     scales = {
-        name: plan(
-            w, d, h, *PAGES_MM[name], None, None, isometric, has_top, has_right, third=third, iso_dims=iso_dims,
-            need_right_mm=need_right_mm, need_spacing_mm=need_spacing_mm,
-        ).scale
+        name: plan(w, d, h, *PAGES_MM[name], None, None, isometric, has_top, has_right, third=third, iso_dims=iso_dims).scale
         for name in AUTO_PAPERS
-    }  # fmt: skip
+    }
     for name in AUTO_PAPERS[:FULL_SIZE_PAPERS]:
         if scales[name] >= 1.0 - 1e-9:
             return name, scales[name]

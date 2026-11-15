@@ -110,11 +110,14 @@ def test_a_view_that_carries_nothing_stays_a_finding_when_the_agent_answers_appl
     assert dr.finding_closed(finding("hole_not_located", answer=claimed))  # any other measured finding keeps its rule
 
 
-def test_the_new_location_findings_are_measured_and_belong_to_their_rows() -> None:
+def test_the_new_location_findings_are_in_the_catalog_not_in_a_row() -> None:
+    from cotaforge.drawing import catalog  # noqa: PLC0415
+
     assert "hole_group_no_locator" in dr.MEASURED_FINDINGS
-    by_row = {r.id: r.codes for r in dr.ROWS}
-    assert "hole_group_no_locator" in by_row["req.dimensions"] and "measurement_unstated" in by_row["req.geometric_tolerance"]
     assert "measurement_unstated" not in dr.MEASURED_FINDINGS  # a judgement: the shop may have the tool, the agent answers
+    by_check = {c: r.id for r in catalog.load().rules for c in r.checks}
+    assert by_check["hole_group_no_locator"] == "hole_group.spacing_from_first"
+    assert by_check["measurement_unstated"] == "dimensions.for_the_instrument"
 
 
 # --- the chamfer of a shaft -------------------------------------------------------------------------------------------------
