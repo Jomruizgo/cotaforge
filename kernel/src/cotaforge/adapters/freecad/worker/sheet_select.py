@@ -31,6 +31,7 @@ import Part
 import provenance as prov
 import registry as reg
 import sheet_mirror
+import sheet_native
 import sheet_refs
 import view_match as vm
 from protocol import WorkerError, invalid_request
@@ -778,7 +779,9 @@ def _point_at(sheets: Sheets, infos: list[PageInfo], what: str, plan: Plan) -> N
                 paint.recolor.append(obj)
             else:
                 plan.notes.append(f"{name}: its {str(obj.TypeId).split('::')[-1]} cannot be coloured")
-        if not objects:
+        edges = sheet_native.cosmetic_paths(info.page, name)  # its centre lines and thread arcs are the views' own edges
+        paint.paths.extend(edges)
+        if not objects and not edges:
             plan.notes.append(
                 f"{name}: the item has nothing on the sheet now (it failed to draw, or it is a title block field)"
             )

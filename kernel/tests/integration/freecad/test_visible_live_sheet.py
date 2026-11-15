@@ -178,7 +178,7 @@ def test_each_item_shows_in_the_sheet_window_as_it_is_added(visible: FreeCADAdap
         ),
     ]
     previous = _digest(first)
-    expected: set[str] = {"loc"}  # the default location of the holes is on the page from the start
+    expected: set[str] = set()  # the default location and view_lines are the views' own cosmetic edges: no object
     for number, (key, item) in enumerate(steps, start=1):
         result = visible.annotate_drawing(
             AnnotateDrawingRequest(operation_id=f"a{number}", action="add", items=(item,))
@@ -189,11 +189,11 @@ def test_each_item_shows_in_the_sheet_window_as_it_is_added(visible: FreeCADAdap
         _state(visible, doc, "sheet_png", path=str(shot))
         objects = _state(visible, doc, "sheet_objects")
         if key != "rv":  # a revision is a row of the title block: TechDraw's own template text
-            expected.add(key)
-            if key == "tbl":
-                expected.discard("loc")  # the table locates every hole: nothing is left for the default one
-            assert {row[3] for row in objects} - {"threads"} == expected, (key, objects)
-            assert "new" in result.window, result.window  # (the default location may be redrawn by what is added)
+            if key != "view_lines":
+                expected.add(key)
+            # loc: its dimensions, once datums locate the holes; the rest of it and threads are the views' edges
+            assert {row[3] for row in objects} - {"threads", "loc"} == expected, (key, objects)
+            assert result.window != "unchanged", result.window  # (the default location may be redrawn by what is added)
         digest = _digest(shot)
         assert digest != previous, f"the window did not change after adding {key}"
         previous = digest

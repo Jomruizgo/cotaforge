@@ -99,6 +99,8 @@ def native_rows(page: Any) -> list[dict[str, Any]]:
         for attr, name in COSMETIC_LISTS:
             try:
                 count = len(list(getattr(obj, attr, None) or []))
+                if attr == "CosmeticEdges":
+                    count -= sheet_native.own_cosmetic_count(obj)  # the sheet made those: they are its own lines
             except Exception:  # noqa: BLE001 - not every object has the list
                 count = 0
             if count:

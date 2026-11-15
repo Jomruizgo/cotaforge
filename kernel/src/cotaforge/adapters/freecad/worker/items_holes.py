@@ -240,6 +240,9 @@ def _native_callout(
     )
 
 
+native_callout = _native_callout  # the pitch circle of a pattern is called out the same way
+
+
 def _section_target(ctx: Context, spec: dict[str, Any]) -> Any:
     """The section view the item names (``view="A-A"``), ``None`` for a standard view or none."""
     name = spec.get("view")

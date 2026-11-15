@@ -57,6 +57,52 @@ def check_note(spec: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+TITLE_BLOCK_NOTES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("part_material", re.compile(r"^\s*(?:material|mat\.)\s*[:=\-–]\s*(?P<value>\S.*)$", re.I | re.S)),
+    (
+        "general_tolerances",
+        re.compile(
+            r"^\s*(?:tolerancias?\s+generales?|general\s+tolerances?)\s*[:=\-–]?\s*(?P<value>\S.*)$", re.I | re.S
+        ),
+    ),
+    ("scale", re.compile(r"^\s*(?:escala|scale)\s*[:=]\s*(?P<value>\d+\s*[:/]\s*\d+)\s*$", re.I)),
+)
+"""A datum the title block has a field for never goes into the notes: the note that states it is the field."""
+
+
+def route_title_block_notes(
+    requested: list[Any], field_names: set[str], fields: dict[str, str], assembly: bool = False, current: dict[str, str] | None = None
+) -> tuple[list[Any], list[str]]:
+    """Take out of ``requested`` the free notes that state a datum the title block has a field for (the material, the general
+    tolerances, the scale) and put the datum in that field (``fields``, the sheet's own texts): the engineer reads and edits it
+    where a drawing has it and the notes block does not repeat it. A note on a view or at a place stays a note, and so does one
+    that says something else than what the title block already says (``current``: what each field shows now): the review then
+    reports the difference for the engineer to settle; nothing declared is overwritten. Returns the items left and what was
+    moved, for the agent."""
+    shown = current or {}
+    kept: list[Any] = []
+    moved: list[str] = []
+    for raw in requested:
+        free = isinstance(raw, dict) and raw.get("type") == "note" and "at_mm" not in raw and "view" not in raw
+        text = str(raw.get("text", "")) if free else ""
+        hit = next(((f, m) for f, p in TITLE_BLOCK_NOTES if f in field_names and (m := p.match(text))), None)
+        if hit is None or (hit[0] == "part_material" and assembly):
+            kept.append(raw)
+            continue
+        field, found = hit
+        if field == "scale":
+            moved.append("the scale is written by the sheet in the title block: that note was not added")
+            continue
+        value = " ".join(found.group("value").split())
+        there = " ".join(str(shown.get(field, "")).split())
+        if there and there.casefold() != value.casefold():
+            kept.append(raw)  # it contradicts the title block: it stays, and the review says so
+            continue
+        fields[field] = value
+        moved.append(f"{field} ({value}) is in its field of the title block, so it is not a note")
+    return kept, moved
+
+
 def note_text(ctx: Context, spec: dict[str, Any]) -> str:
     """What a note says: its text, or -- for the notes the sheet writes itself -- the thickness of a part drawn in ONE view
     (measured on the model, along the way that view looks)."""
