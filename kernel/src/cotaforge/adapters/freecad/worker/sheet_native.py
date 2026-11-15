@@ -487,7 +487,7 @@ def sync(
     objects could not be made, the reasons (those units stay symbols)."""
     failed: dict[str, list[str]] = {}
     for unit in units:
-        count = object_count(unit) - (1 if su.view_of(unit) is not None else 0)  # a view is made by ``sync_views``
+        count = object_count(unit) - su.view_object_count(unit)  # a view is made by ``sync_views``
         if count == 0:  # only view properties (hidden lines) and cosmetic edges: no objects to make
             continue
         objects = [o for o in held(have.get(unit.key, [])) if alive(fc_doc, o) and PROP_DERIVED not in o.PropertiesList]
@@ -651,13 +651,98 @@ def _hatch_file() -> str:
     return os.path.join(str(App.getResourceDir()), *HATCH_FILE)
 
 
-def _make_view(fc_doc: Any, page: Any, unit: su.Unit, nv: su.NativeView, sheet: str) -> Any:
+PROP_ROLE = "CotaforgeRole"  # on the objects of a section made of several: "<index of its part>:<section | whole | base>"
+ROLE_SECTION, ROLE_WHOLE, ROLE_BASE = "section", "whole", "base"
+BASE_NAME = "{} base {}"  # the label of the hidden view a cut piece hangs from
+
+
+def _tag_part(obj: Any, unit: su.Unit, nv: su.NativeView, sheet: str, parent: Any, index: int, role: str, key: str) -> None:
+    """The properties every object of a section made of several carries, as ``_make_view`` gives them to the one it makes."""
+    tag(obj, unit.key, nv.item, sheet)
+    tag_view(obj, f"view:{key}", sheet)
+    for name, doc, value in (
+        (PROP_DERIVED, "The kind of view the sheet made from an item", nv.kind),
+        (PROP_PARENT, "The view this one hangs from", str(parent.Name)),
+        (PROP_ROLE, "Which piece of its section this object is", f"{index}:{role}"),
+    ):
+        obj.addProperty("App::PropertyString", name, GROUP, doc)
+        obj.setEditorMode(name, 1)
+        setattr(obj, name, value)
+
+
+def _make_parts(fc_doc: Any, page: Any, unit: su.Unit, nv: su.NativeView, sheet: str, parent: Any) -> list[Any]:
+    """A section of several TechDraw objects over one plane. A ``DrawViewSection`` cuts everything its base view shows (its own
+    ``Source`` is ignored when it has a base view: measured in FreeCAD 1.1.3) and has one hatch, so each cut piece is a section
+    over a hidden ``DrawViewPart`` of just its bodies, and the parts the plane does not cut are a ``DrawViewPart`` of their own,
+    seen the same way. The first cut piece carries the section's name (the dimensions, centre lines and the caption are on it)."""
+    assert nv.at is not None  # a section has its plane
+    _hide_section_line(parent)
+    made: list[Any] = []
+    first = True
+    for index, part in enumerate(nv.parts):
+        sources = [fc_doc.getObject(name) for name in part.sources]
+        if any(s is None for s in sources):
+            msg = f"the document has no object for {', '.join(n for n, s in zip(part.sources, sources, strict=True) if s is None)}"
+            raise LookupError(msg)
+        key = nv.name if first and part.role == "cut" else f"{nv.name}:{index + 1}"
+        if part.role == "cut":
+            base = fc_doc.addObject("TechDraw::DrawViewPart", _object_name(page, unit.key, f"base{index + 1}"))
+            page.addView(base)
+            base.Source = sources
+            base.Direction = parent.Direction
+            base.XDirection = parent.XDirection
+            base.ScaleType = "Custom"
+            base.Scale = float(nv.scale)
+            base.Label = BASE_NAME.format(nv.name, index + 1)
+            base.Visibility = False  # the base of a section is not drawn: it only says which bodies the plane cuts
+            _tag_part(base, unit, nv, sheet, parent, index, ROLE_BASE, f"{nv.name}:base{index + 1}")
+            obj = fc_doc.addObject("TechDraw::DrawViewSection", _object_name(page, unit.key, "" if first else f"s{index + 1}"))
+            page.addView(obj)
+            obj.BaseView = base
+            obj.Source = sources
+            obj.ScaleType = "Custom"
+            obj.Scale = float(nv.scale)
+            obj.SectionNormal = _vector(nv.direction)
+            obj.SectionOrigin = _vector(nv.at)
+            obj.XDirection = _vector(nv.xdir)
+            obj.SectionSymbol = nv.letter
+            obj.CutSurfaceDisplay = "PatHatch"
+            obj.FileGeomPattern = _hatch_file()
+            obj.NameGeomPattern = HATCH_NAME
+            obj.HatchRotation = float(part.turn)  # the angle of this piece's hatch: the one the engineer changes in the property editor
+            obj.HatchScale = float(part.spacing)
+            obj.Label = nv.name if first else f"{nv.name} ({index + 1})"
+            obj.Caption = su.caption_of(nv.kind, nv.name) if first else ""  # one caption under the whole section
+            made += [base, obj]
+            role = ROLE_SECTION
+        else:
+            obj = fc_doc.addObject("TechDraw::DrawViewPart", _object_name(page, unit.key, f"whole{index + 1}"))
+            page.addView(obj)
+            obj.Source = sources
+            obj.Direction = _vector(nv.direction)
+            obj.XDirection = _vector(nv.xdir)
+            obj.ScaleType = "Custom"
+            obj.Scale = float(nv.scale)
+            obj.Label = f"{nv.name} whole"
+            obj.Caption = ""
+            made.append(obj)
+            role = ROLE_WHOLE
+        obj.X = (part.box[0] + part.box[2]) / 2
+        obj.Y = (part.box[1] + part.box[3]) / 2
+        _tag_part(obj, unit, nv, sheet, parent, index, role, key)
+        first = False
+    return made
+
+
+def _make_view(fc_doc: Any, page: Any, unit: su.Unit, nv: su.NativeView, sheet: str) -> list[Any]:
     """The TechDraw view object ``nv`` asks for, hung from its parent view, drawn at the scale and in the frame the sheet gave
     it. Not placed yet: ``_place`` puts it where the sheet draws it, once TechDraw has computed what it shows."""
     parent = view_object(page, nv.parent)
     if parent is None:
         msg = f"the sheet has no {nv.parent} view for the {nv.kind} view {nv.name} to hang from"
         raise LookupError(msg)
+    if nv.parts:
+        return _make_parts(fc_doc, page, unit, nv, sheet, parent)
     obj = fc_doc.addObject(DRAW_TYPES[nv.kind], _object_name(page, unit.key, ""))
     page.addView(obj)
     if nv.kind == "section":
@@ -696,7 +781,7 @@ def _make_view(fc_doc: Any, page: Any, unit: su.Unit, nv: su.NativeView, sheet: 
     obj.addProperty("App::PropertyString", PROP_PARENT, GROUP, "The view this one hangs from")
     obj.setEditorMode(PROP_PARENT, 1)
     setattr(obj, PROP_PARENT, str(parent.Name))
-    return obj
+    return [obj]
 
 
 def _hide_section_line(parent: Any) -> None:
@@ -724,12 +809,14 @@ def _restore_section_lines(page: Any) -> None:
             view.removeProperty(PROP_SLOFF)
 
 
-def _place(page: Any, obj: Any, nv: su.NativeView) -> None:
+def _place(page: Any, obj: Any, nv: su.NativeView, box: tuple[float, float, float, float] | None = None, anchor: Any = None) -> None:
     """Put the drawing of ``obj`` where the sheet draws the view: TechDraw centres a view on its own bounding box (a section
     on the cut, an auxiliary view on the whole part), so the object is moved until that box is centred on the sheet's. A
     detail is centred on its circle. Then its position is an expression of its parent's (``Front.X + 120 mm``): move the
-    parent and the view goes with it; to move the view by itself, clear the expression of X and Y."""
-    target = ((nv.box[0] + nv.box[2]) / 2, (nv.box[1] + nv.box[3]) / 2)
+    parent and the view goes with it; to move the view by itself, clear the expression of X and Y. A piece of a section made of
+    several (``box``: where the sheet draws it) is bound to the first one (``anchor``) instead: the pieces move together."""
+    want = box if box is not None else nv.box
+    target = ((want[0] + want[2]) / 2, (want[1] + want[3]) / 2)
     if nv.kind != "detail":
         extent = _extent(obj)
         if extent is None:
@@ -737,7 +824,7 @@ def _place(page: Any, obj: Any, nv: su.NativeView) -> None:
             raise RuntimeError(msg)
         obj.X = target[0] - (extent[0] + extent[2]) / 2
         obj.Y = target[1] + (extent[1] + extent[3]) / 2
-    parent = view_object(page, nv.parent)
+    parent = anchor if anchor is not None else view_object(page, nv.parent)
     px, py = page_position(page, parent)
     group = next(
         (g for g in page.Views if str(g.TypeId) == "TechDraw::DrawProjGroup" and parent.Name in [i.Name for i in g.Views]), None
@@ -751,13 +838,16 @@ def _place(page: Any, obj: Any, nv: su.NativeView) -> None:
 def view_problems(page: Any, unit: su.Unit, nv: su.NativeView, obj: Any) -> list[str]:
     """What differs between the view TechDraw drew and the box the sheet gave it: the drawing is not where the sheet draws
     it (moved by hand) or is not the size of the sheet's."""
+    role = str(getattr(obj, PROP_ROLE, ""))
+    if role.endswith(ROLE_BASE):
+        return []  # the hidden base of a cut piece draws nothing
     box = _page_box(page, obj)
     if box is None:
         return [f"{unit.key}: TechDraw's {nv.kind} view {nv.name} shows nothing"]
     problems: list[str] = []
     if su.tight_section_caption(nv.kind, nv.name, str(getattr(obj, "Caption", "") or "")):
         problems.append(f"{unit.key}: the caption of section {nv.name} has a bare hyphen: in osifont it is drawn over the first letter ({su.caption_of(nv.kind, nv.name)} reads right)")
-    want = nv.box
+    want = nv.parts[int(role.split(":")[0])].box if role and nv.parts else nv.box
     shift = ((box[0] + box[2]) / 2 - (want[0] + want[2]) / 2, (box[1] + box[3]) / 2 - (want[1] + want[3]) / 2)
     if nv.kind == "detail":
         return problems
@@ -771,6 +861,32 @@ def view_problems(page: Any, unit: su.Unit, nv: su.NativeView, obj: Any) -> list
                 f"{unit.key}: TechDraw draws the {nv.kind} view {nv.name} {have:.1f} mm {axis} and the sheet {expected:.1f} mm"
             )
     return problems
+
+
+def _bases_last(objects: list[Any]) -> list[Any]:
+    """The objects of a section in the order they are taken out: the sections and the whole parts before the hidden bases they hang from."""
+    return sorted(objects, key=lambda o: str(getattr(o, PROP_ROLE, "")).endswith(ROLE_BASE))
+
+
+DRAWN_WAIT_S = 90.0
+DRAWN_POLL_S = 0.25
+
+
+def _await_drawn(fc_doc: Any, views: list[Any], wait: Any, needed: bool) -> None:
+    """Wait until TechDraw has drawn something in every view: a section of an assembly takes a few seconds in the background and
+    reads as untouched meanwhile, so ``wait`` alone can return before it has any edge."""
+    import time  # noqa: PLC0415
+
+    if not needed:
+        return
+    start = time.monotonic()
+    while time.monotonic() - start < DRAWN_WAIT_S:
+        if all(_extent(v) is not None for v in views):
+            return
+        gui.pump()
+        fc_doc.recompute()
+        wait()
+        time.sleep(DRAWN_POLL_S)
 
 
 def sync_views(
@@ -791,27 +907,38 @@ def sync_views(
             continue
         objects = [o for o in held(have.get(unit.key, [])) if alive(fc_doc, o) and PROP_DERIVED in o.PropertiesList]
         wanted = signature(unit)
-        if len(objects) == 1 and str(getattr(objects[0], PROP_SIG, "")) == wanted:
+        if len(objects) == nv.objects and all(str(getattr(o, PROP_SIG, "")) == wanted for o in objects):
             report.unchanged.append(unit.key)
             if nv.kind == "section":
                 _hide_section_line(view_object(page, nv.parent))
             continue
-        remove(fc_doc, objects)
-        made = None
+        remove(fc_doc, _bases_last(objects))
+        made: list[Any] = []
         try:
             made = _make_view(fc_doc, page, unit, nv, sheet)
+            drawn = [o for o in made if not str(getattr(o, PROP_ROLE, "")).endswith(ROLE_BASE)]  # the first is the one the others go by
             fc_doc.recompute()
             wait()
-            _place(page, made, nv)
+            _await_drawn(fc_doc, drawn, wait, nv.kind != "detail")
+            for obj in drawn:
+                role = str(getattr(obj, PROP_ROLE, ""))
+                _place(
+                    page,
+                    obj,
+                    nv,
+                    nv.parts[int(role.split(":")[0])].box if role and nv.parts else None,
+                    None if obj is drawn[0] else drawn[0],
+                )
             fc_doc.recompute()
             wait()
-            if _extent(made) is None:
+            if any(_extent(o) is None for o in drawn) and nv.kind != "detail":
                 msg = "TechDraw drew nothing in it"
                 raise RuntimeError(msg)  # noqa: TRY301
-            _set_sig(made, wanted)
+            for obj in made:
+                _set_sig(obj, wanted)
         except Exception as exc:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind
-            if made is not None:
-                remove(fc_doc, [made])
+            if made:
+                remove(fc_doc, _bases_last(made))
             failed[unit.key] = [f"{type(exc).__name__}: {exc}"]
             continue
         fresh.add(nv.name)

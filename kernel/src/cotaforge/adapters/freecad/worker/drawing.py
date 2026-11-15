@@ -34,7 +34,7 @@ import re
 import tempfile
 import time
 import traceback
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import date
 from typing import Any
@@ -2627,43 +2627,136 @@ class LiveGeometry(drawing_assembly.AssemblyRays, drawing_assembly.WeldJoints, s
         return None
 
     def projection(
-        self, centre: sc.Vec3, xdir: sc.Vec3, direction: sc.Vec3, cut: tuple[sc.Vec3, sc.Vec3] | None = None
+        self,
+        centre: sc.Vec3,
+        xdir: sc.Vec3,
+        direction: sc.Vec3,
+        cut: tuple[sc.Vec3, sc.Vec3] | None = None,
+        whole: frozenset[int] = frozenset(),
     ) -> sc.Projection:
-        key = (centre, xdir, direction, cut)
+        key = (centre, xdir, direction, cut, whole)
         if key not in self._projections:
             with _stage("projecting the part for a derived view", self.op):
-                # the solid parts are NOT left whole here yet: TechDraw's own section (the one in the window) cuts every body, and a
-                # sheet whose drawing differs from TechDraw's falls back to symbols (``native_fallback``). ``sheet_project.project`` can leave
-                # them whole (``whole=``); until the native view can too, the review says which solid parts the section cuts.
-                whole: frozenset[int] = frozenset()
                 self._projections[key] = sheet_project.project(self._shapes, centre, xdir, direction, cut, whole)
         return self._projections[key]
 
-    def solid_parts(self) -> dict[int, tuple[str, str, bool]]:
-        """The solid parts of an assembly (shafts, bolts, screws, nuts, washers, pins, keys, rivets, balls, ribs): ``{index of its
-        shape: (component, designation, a part of revolution with nothing inside)}``. A section does not cut them (they are drawn
-        whole, as if the plane passed behind them, ISO 128-34): ``sheet_solid`` says which parts those are."""
-        cache = self.__dict__.get("_solid_parts")
+    def subset_projection(
+        self, indexes: Sequence[int], centre: sc.Vec3, xdir: sc.Vec3, direction: sc.Vec3, cut: tuple[sc.Vec3, sc.Vec3] | None = None
+    ) -> sc.Projection:
+        """What one TechDraw object of a section shows: only the shapes at ``indexes``, cut by the plane (a piece with a hatch of its
+        own) or, with no ``cut``, whole (the parts the plane does not cut)."""
+        key = ("subset", tuple(indexes), centre, xdir, direction, cut)
+        if key not in self._projections:
+            shapes = [self._shapes[i] for i in indexes]
+            with _stage("projecting a piece of the section", self.op):
+                self._projections[key] = (
+                    sheet_project.project(shapes, centre, xdir, direction, cut)
+                    if cut is not None
+                    else sheet_project.project_placed(shapes, centre, xdir, direction)
+                )
+        return self._projections[key]
+
+    def _components(self) -> list[tuple[Any, str, str]] | None:
+        """``(component, designation, file name)`` of every shape, when the shapes are the components of an assembly, in order."""
+        comps = list(self.doc.components.values()) if self.doc.kind == "assembly" else []
+        if not comps or len(self._shapes) != len(comps) or self.doc.live_bodies():
+            return None
+        info = drawing_assembly.assembly_info(self.doc, "en")
+        names = {inst: grp.name for grp in (info.groups if info is not None else []) for inst in grp.instances}
+        return [(comp, names.get(comp.id, ""), str(comp.part_doc)) for comp in comps]
+
+    def source_names(self) -> list[str] | None:
+        rows = self._components()
+        if rows is None:
+            return None
+        names = [str(comp.fc_part) for comp, _, _ in rows]
+        return names if all(self.doc.fc_doc.getObject(n) is not None for n in names) else None
+
+    def _traits(self, shape: Any, short: bool) -> tuple[bool, bool, tuple[float, float, float] | None, tuple[float, float, float] | None]:
+        """What the shape of one component says: ``(a part of revolution with nothing inside, as long as a shaft against its
+        width, the sizes of a plain rectangular block or None, the direction of its long axis or None)``. A washer or a nut
+        (``short``) has its axis along its shortest size."""
+        try:
+            single = LiveGeometry(self.doc, [shape], self.op)
+            round_found = single.round_extent()
+            facts = single.axial_features() if round_found is not None else None
+            box = _exact_box(shape)
+            sizes = (float(box.XLength), float(box.YLength), float(box.ZLength))
+            volume = float(shape.Volume)
+        except Exception:  # noqa: BLE001 - a shape the tests cannot read is none of these
+            return False, False, None, None
+        if round_found is not None:
+            axis, diameter = round_found
+            along = sizes[max(range(3), key=lambda i: abs(axis[i]))]
+            return (
+                facts is not None and bool(facts[0]) and not bool(facts[1]),
+                along >= sheet_solid.SHAFT_SLENDER * diameter,
+                None,
+                (float(axis[0]), float(axis[1]), float(axis[2])),
+            )
+        pick = min if short else max
+        index = pick(range(3), key=lambda i: sizes[i])
+        unit_axis = tuple(1.0 if i == index else 0.0 for i in range(3))
+        planar = all(g.surface_kind(f) == "plane" for f in shape.Faces)
+        block = sizes if planar and volume >= sheet_solid.BLOCK_FILL * sizes[0] * sizes[1] * sizes[2] else None
+        return False, False, block, (unit_axis[0], unit_axis[1], unit_axis[2])
+
+    def solid_facts(self) -> dict[int, sheet_solid.SolidFact]:
+        """What each solid part of an assembly (shafts, bolts, screws, nuts, washers, pins, keys, rivets, balls, ribs) is, by the
+        index of its shape. A section does not cut them lengthwise (they are drawn whole, as if the plane passed behind them,
+        ISO 128-34): ``sheet_solid`` says which parts those are, from their designation, the standard they name or, last, their
+        shape."""
+        cache = self.__dict__.get("_solid_facts")
         if cache is not None:
             return dict(cache)
-        found: dict[int, tuple[str, str, bool]] = {}
-        comps = list(self.doc.components.values()) if self.doc.kind == "assembly" else []
-        if comps and len(self._shapes) == len(comps) and not self.doc.live_bodies():  # the shapes are the components', in order
-            info = drawing_assembly.assembly_info(self.doc, "en")
-            names = {inst: grp.name for grp in (info.groups if info is not None else []) for inst in grp.instances}
-            for index, (comp, shape) in enumerate(zip(comps, self._shapes, strict=True)):
-                name = f"{names.get(comp.id, '')} {comp.part_doc}".strip()
-                round_solid = False
-                if len(comps) <= drawing_assembly.MAX_BODIES_MEASURED:
-                    try:
-                        facts = LiveGeometry(self.doc, [shape], self.op).axial_features()
-                    except Exception:  # noqa: BLE001 - a shape the test cannot read is not a round solid
-                        facts = None
-                    round_solid = facts is not None and facts[0] and not facts[1]
-                if sheet_solid.solid_kind(name, round_solid) is not None:
-                    found[index] = (comp.id, name, round_solid)
-        self.__dict__["_solid_parts"] = found
+        found: dict[int, sheet_solid.SolidFact] = {}
+        rows = self._components()
+        if rows is not None:
+            boxes = [_exact_box(s) for s in self._shapes]
+            span = max(max(b.XLength, b.YLength, b.ZLength) for b in boxes)
+            measured = len(rows) <= drawing_assembly.MAX_BODIES_MEASURED
+            for index, (comp, designation, file_name) in enumerate(rows):
+                texts = [t for t in (designation, file_name) if t]
+                if sheet_solid.named_cut(texts):
+                    continue  # a housing, a cover, a hub: no shape test is needed
+                kind_hint = sheet_solid.solid_kind(texts)
+                round_solid, slender, block, axis = (
+                    self._traits(self._shapes[index], kind_hint in ("washer", "nut")) if measured else (False, False, None, None)
+                )
+                got = sheet_solid.classify(texts, round_solid and slender, block, span)
+                if got is not None:
+                    found[index] = sheet_solid.SolidFact(comp.id, designation or file_name, got[0], got[1], round_solid, axis)
+        self.__dict__["_solid_facts"] = found
         return dict(found)
+
+    def solid_parts(self) -> dict[int, tuple[str, str, bool]]:
+        """``solid_facts`` as ``{index of its shape: (component, designation, a part of revolution with nothing inside)}``."""
+        return {i: (f.comp, f.name, f.round_solid) for i, f in self.solid_facts().items()}
+
+    def whole_parts(self, at: sc.Vec3, normal: sc.Vec3, named: Sequence[str] | None = None) -> frozenset[int]:
+        rows = self._components()
+        if rows is None:
+            return frozenset()
+        if named is None:
+            return frozenset(
+                i
+                for i, fact in self.solid_facts().items()
+                if sheet_solid.lengthwise(fact.axis, normal) and sheet_project.crosses(self._shapes[i], at, normal)
+            )
+        labels = {f.id: str(f.label or "") for f in self.doc.features}  # the id the engineer gave the insert_component op
+        wanted = {sheet_solid.plain(str(n)).strip() for n in named} - {""}
+        picked: set[int] = set()
+        known: set[str] = set()
+        for index, (comp, designation, file_name) in enumerate(rows):
+            keys = {sheet_solid.plain(t).strip() for t in (comp.id, designation, file_name, labels.get(comp.created_by, ""))} - {""}
+            if keys & wanted:
+                picked.add(index)  # a designation names every instance that carries it
+                known |= keys & wanted
+        if wanted - known:
+            ids = ", ".join(sorted({labels.get(comp.created_by) or comp.id for comp, _, _ in rows}))
+            msg = f"whole names no component called {', '.join(sorted(wanted - known))}: use a component id or its designation ({ids})"
+            raise sc.ItemError(msg)
+        return frozenset(i for i in picked if sheet_project.crosses(self._shapes[i], at, normal))
 
     def view_projection(self, centre: sc.Vec3, xdir: sc.Vec3, direction: sc.Vec3) -> sc.Projection:
         poses = tuple(shape.hashCode() for shape in self._shapes)  # the same shapes seen the same way: one projection

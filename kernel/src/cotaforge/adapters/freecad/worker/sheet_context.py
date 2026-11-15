@@ -12,7 +12,7 @@ model point at the view's centre (``getGeometricCenter``); the view is placed on
 
 import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -356,10 +356,16 @@ class Geometry:
 
     # --- derived views (P4: section, detail, auxiliary, hidden lines) ---
     def projection(
-        self, centre: Vec3, xdir: Vec3, direction: Vec3, cut: tuple[Vec3, Vec3] | None = None
+        self,
+        centre: Vec3,
+        xdir: Vec3,
+        direction: Vec3,
+        cut: tuple[Vec3, Vec3] | None = None,
+        whole: frozenset[int] = frozenset(),
     ) -> "Projection":
         """The part looked at from ``direction`` (towards the viewer), x axis ``xdir``, origin at ``centre``, scale 1;
-        with ``cut`` = (point, normal) cut by that plane first (the viewer's side removed)."""
+        with ``cut`` = (point, normal) cut by that plane first (the viewer's side removed). ``whole``: the indexes of the shapes
+        of an assembly the plane does not cut (``whole_parts``): they are drawn whole and leave no cut face."""
         msg = "projections are not available"
         raise ItemError(msg)
 
@@ -367,6 +373,28 @@ class Geometry:
         """The solid parts of an assembly a section does not cut (shafts, bolts, keys...): ``{index of its shape: (component,
         designation, a part of revolution with nothing inside)}``; none for a part."""
         return {}
+
+    def solid_facts(self) -> dict[int, Any]:
+        """What each solid part of an assembly is (``sheet_solid.SolidFact``: kind, what says so, its axis), by the index of its
+        shape; none for a part."""
+        return {}
+
+    def whole_parts(self, at: Vec3, normal: Vec3, named: Sequence[str] | None = None) -> frozenset[int]:
+        """The indexes of the shapes a section with the plane through ``at`` with this ``normal`` leaves whole: the solid parts the plane runs along
+        (shafts, bolts, keys...), or, when the engineer names them (``named``: component ids or designations), exactly those."""
+        return frozenset()
+
+    def source_names(self) -> list[str] | None:
+        """The names of the FreeCAD objects the shapes come from, in order (what a TechDraw view takes as its source), or ``None``
+        when the shapes are not each one object."""
+        return None
+
+    def subset_projection(
+        self, indexes: Sequence[int], centre: Vec3, xdir: Vec3, direction: Vec3, cut: tuple[Vec3, Vec3] | None = None
+    ) -> "Projection":
+        """``projection`` of only the shapes at ``indexes`` (what one TechDraw object of a section shows)."""
+        msg = "projections are not available"
+        raise ItemError(msg)
 
     def view_projection(self, centre: Vec3, xdir: Vec3, direction: Vec3) -> "Projection":
         """The visible edges of the whole part for a standard view (kept between calls where that is costly); by default

@@ -17,6 +17,7 @@ import sheet_flats
 import sheet_hatch
 import sheet_section
 import sheet_seen
+import sheet_solid
 from items_common import VIEW_ORDER, hole_mark, mark_once
 from items_holes import _stacks
 from sheet_clip import HATCH_ANGLE_DEG, bbox, clip_to_circle, hatch, hatch_spacing, place, relayer
@@ -46,7 +47,7 @@ from sheet_context import (
 )
 from sheet_draw import ARROW_HALF_WIDTH_MM, ARROW_LENGTH_MM, arrow, centre_mark, linear_dimension
 from sheet_model import AXES, CONTOUR, DIMENSIONS, HIDDEN, TEXT, Circle, Entity, Line, Text, fmt
-from sheet_units import NativeCosmetic, NativeFlag, NativeNote, NativeView
+from sheet_units import NativeCosmetic, NativeFlag, NativeNote, NativePart, NativeView
 
 LABEL_HEIGHT_MM = 5.0  # the letters of a view are bigger than the dimension text
 LABEL_ROOM_MM = 9.0  # below a view: its label
@@ -311,7 +312,17 @@ SECTION_CHECKS = {
     "hatch": lambda value: v_hatch(value),
     "in_place": v_bool,
     "removed": v_bool,
+    "whole": lambda value: v_whole(value),
 }
+
+
+def v_whole(value: Any) -> list[str]:
+    """``["shaft", "key"]``: the components (ids or designations) the section leaves whole, as if the plane passed behind them. It
+    replaces what the harness decides from the part types, names and shapes; ``[]`` cuts every body."""
+    if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
+        msg = 'must be a list of component ids or designations, like ["shaft", "key_1"] ([] cuts every body)'
+        raise ItemError(msg)
+    return [str(v) for v in value]
 
 
 def v_hatch(value: Any) -> dict[str, tuple[float, float]]:
@@ -461,7 +472,8 @@ def _draw_in_place(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     parent, at, normal = _in_place_axis(ctx, spec)
     letter = take_letter(ctx, spec.get("letter"))
     label = f"{letter}-{letter}"
-    projection = ctx.geometry.projection(parent.centre, parent.xdir, parent.direction, (at, normal))
+    whole = ctx.geometry.whole_parts(at, normal, spec.get("whole"))
+    projection = _cut_projection(ctx, parent.centre, parent.xdir, parent.direction, at, normal, whole)
     k = parent.scale
     local = _local_box(projection.visible)
     ox, oy = parent.x, parent.y
@@ -489,13 +501,14 @@ def _draw_in_place(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     ctx.extras.setdefault("section_items", {})[label] = item_id
     ctx.extras.setdefault("section_planes", {})[label] = (at, normal)
     ctx.extras.setdefault("in_place_views", {})[label] = parent.name
-    _native_section(ctx, item_id, info, parent, at, letter)
+    _native_section(ctx, item_id, info, parent, at, letter, parts=_native_parts(ctx, info, at, normal, whole, styles))
     axes, axis_count = sheet_section.centre_lines(ctx, info, at, normal)
     threads, thread_count = sheet_section.threads_cut(ctx, info, at, normal)
     ctx.add(axes + threads)
     extra = f", {axis_count} centre line(s)" if axis_count else ""
     if thread_count:
         extra += f", thread lines of {thread_count} threaded bore(s)"
+    extra += _whole_note(ctx, label, whole)
     return "ok", f"{label} in place of the {parent.name} view, through the axis of the part, no cutting line or letters (the plane is the part's axis); cut faces hatched{extra}"
 
 
@@ -529,7 +542,8 @@ def draw_section(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
 
     # the cut view: looking along the normal, page-up as close to the parent's up as the cut allows
     xdir, direction = _frame_for(scale(normal, -1.0), parent.ydir, (WORLD_Z, WORLD_Y))
-    projection = ctx.geometry.projection(parent.centre, xdir, direction, (at, normal))
+    whole = ctx.geometry.whole_parts(at, normal, spec.get("whole"))
+    projection = _cut_projection(ctx, parent.centre, xdir, direction, at, normal, whole)
     k = parent.scale
     local = _local_box(projection.visible)
     width, height = (local[2] - local[0]) * k, (local[3] - local[1]) * k
@@ -586,7 +600,9 @@ def draw_section(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     ctx.extras.setdefault("sections", {})[label] = info
     ctx.extras.setdefault("section_items", {})[label] = item_id
     ctx.extras.setdefault("section_planes", {})[label] = (at, normal)
-    _native_section(ctx, item_id, info, parent, at, letter, (cut_ends[0], cut_ends[1], gaze_page, thick))
+    _native_section(
+        ctx, item_id, info, parent, at, letter, (cut_ends[0], cut_ends[1], gaze_page, thick), _native_parts(ctx, info, at, normal, whole, styles)
+    )
     if ctx.assembly is not None and not {"front", "right"} & set(ctx.views):
         # the section of an assembly is its main view when no outside view shows the height: it carries the overall height
         dist = ctx.stack_distance(label, "right", None)
@@ -603,6 +619,7 @@ def draw_section(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         extra += f", {axis_count} centre line(s)"
     if thread_count:
         extra += f", thread lines of {thread_count} threaded bore(s)"
+    extra += _whole_note(ctx, label, whole)
     if len(groups) > 1:
         extra += "; hatched by body: " + ", ".join(
             f"{b} {fmt(45.0 + styles[b][0])}°{'' if styles[b][1] == 1.0 else f' x{fmt(styles[b][1])}'}" for b in groups
@@ -611,14 +628,21 @@ def draw_section(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
 
 
 def _native_section(
-    ctx: Context, item_id: str, info: ViewInfo, parent: ViewInfo, at: Vec3, letter: str, cut: tuple[Point, Point, Point] | None = None
+    ctx: Context,
+    item_id: str,
+    info: ViewInfo,
+    parent: ViewInfo,
+    at: Vec3,
+    letter: str,
+    cut: tuple[Point, Point, Point, float] | None = None,
+    parts: tuple[NativePart, ...] = (),
 ) -> None:
     """Ask TechDraw for the section (``DrawViewSection``): the cut, its hatch and the cutting line and letter in the parent view
     are its own. The sheet's drawing of them stays what the headless PDF is written from."""
     if parent.derived:
         return  # a section of a view that is itself drawn by the sheet has no TechDraw view to hang from
     ctx.native(
-        NativeView(item_id, info.name, "section", parent.name, info.box, info.scale, info.direction, info.xdir, letter, at=at)
+        NativeView(item_id, info.name, "section", parent.name, info.box, info.scale, info.direction, info.xdir, letter, at=at, parts=parts)
     )
     if cut is None:
         return
@@ -639,6 +663,67 @@ def _native_section(
         ctx.native(NativeCosmetic(item_id, parent.name, "line", (p[0], p[1], q[0], q[1]), style))
     for number, (end, _) in enumerate(ends, start=1):
         _native_arrow(ctx, item_id, parent.name, end, gaze, letter, str(number))
+
+
+def _cut_projection(ctx: Context, centre: Vec3, xdir: Vec3, direction: Vec3, at: Vec3, normal: Vec3, whole: frozenset[int]) -> Any:
+    """The section's projection: the plane cuts every body but the ones in ``whole`` (the solid parts it runs along)."""
+    if whole:
+        return ctx.geometry.projection(centre, xdir, direction, (at, normal), whole)
+    return ctx.geometry.projection(centre, xdir, direction, (at, normal))
+
+
+def _piece_box(info: ViewInfo, projection: Any) -> Rect:
+    """The page rectangle of what ``projection`` (a piece of a section) draws in the view ``info``."""
+    local = _local_box(projection.visible)
+    k = info.scale
+    return info.x + k * local[0], info.y + k * local[1], info.x + k * local[2], info.y + k * local[3]
+
+
+def _native_parts(
+    ctx: Context,
+    info: ViewInfo,
+    at: Vec3,
+    normal: Vec3,
+    whole: frozenset[int],
+    styles: dict[str, tuple[float, float]],
+) -> tuple[NativePart, ...]:
+    """What TechDraw is asked for when the section is not one object: a cut piece for each hatch (touching bodies never share one,
+    and a ``DrawViewSection`` has one hatch rotation) and a view of the parts the plane does not cut, all from the same plane and
+    placed where the sheet draws them. Empty (one section of the parent's sources) when every body is cut and has one hatch."""
+    names = ctx.geometry.source_names()
+    if names is None:
+        return ()
+    classes = sheet_solid.hatch_classes(styles)
+    if not whole and len(classes) <= 1:
+        return ()
+    cut_of = [[int(body.split()[-1]) - 1 for body in cls] for cls in classes]  # the shapes of each hatch class ("body 3" is shape 2)
+    seen = {i for owners in cut_of for i in owners}
+    rest = [i for i in range(len(names)) if i not in seen and i not in whole]  # bodies behind the plane: lines, no hatch
+    if rest and cut_of:
+        cut_of[0] = sorted({*cut_of[0], *rest})
+    plane = (at, normal)
+    parts: list[NativePart] = []
+    for body_class, indexes in zip(classes, cut_of, strict=True):
+        projection = ctx.geometry.subset_projection(sorted(indexes), info.centre, info.xdir, info.direction, plane)
+        turn, spacing = styles[body_class[0]]
+        parts.append(NativePart("cut", tuple(names[i] for i in sorted(indexes)), _piece_box(info, projection), turn, spacing))
+    if whole:
+        projection = ctx.geometry.subset_projection(sorted(whole), info.centre, info.xdir, info.direction, None)
+        parts.append(NativePart("whole", tuple(names[i] for i in sorted(whole)), _piece_box(info, projection)))
+    return tuple(parts)
+
+
+def _whole_note(ctx: Context, label: str, whole: frozenset[int]) -> str:
+    """What the section leaves whole, for its result line, and which of those parts are held whole by their shape alone (a guess
+    the review asks the engineer about)."""
+    if not whole:
+        return ""
+    facts = ctx.geometry.solid_facts()
+    named = [facts[i].name if i in facts else f"shape {i + 1}" for i in sorted(whole)]
+    guessed = [(f.name, f.kind) for i, f in facts.items() if i in whole and f.basis == "shape"]
+    if guessed:
+        ctx.extras.setdefault("whole_by_shape", {})[label] = guessed
+    return "; whole, not cut (ISO 128-34): " + ", ".join(named)
 
 
 def _record_cuts(ctx: Context, label: str, owners: list[int]) -> None:

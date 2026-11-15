@@ -8,6 +8,8 @@
   the section carries every diameter and length, the side view adds only the outline again);
 * ``assembly_solid_cut``: a section of an assembly that cut a solid part lengthwise (a shaft, bolt, screw, nut, washer, pin, key, rivet,
   ball, rib): those are drawn whole, as if the plane passed behind them (ISO 128-34);
+* ``assembly_whole_guess``: a part a section left whole by its shape alone (nothing in its designation or the standard it names says
+  it is a shaft, pin or key): a question to the engineer, never a guess;
 * ``centre_line_gap``: two centre lines of one axis with a gap between them where a cylinder of the part stands (one continuous
   centre line per axis: the reader takes a gap for a part that is not there).
 
@@ -214,8 +216,27 @@ def _solid_cuts(data: ReviewInput) -> list[Finding]:
     return out
 
 
+def _whole_guesses(data: ReviewInput) -> list[Finding]:
+    """A section that left a part whole because of its SHAPE alone (nothing in its designation or the standard it names says it is a
+    shaft, a pin or a key): the harness does not guess what a part is, it asks the engineer."""
+    ctx = data.ctx
+    out: list[Finding] = []
+    for label, guessed in ctx.extras.get("whole_by_shape", {}).items():
+        names = ", ".join(f"{name} ({kind})" for name, kind in guessed)
+        text = ctx.say(
+            f"La sección {label} deja enteras estas piezas solo por su forma, nada en su designación lo dice: {names}. ¿Son macizas "
+            "(eje, pasador, chaveta) y el plano pasa por detrás de ellas? Si alguna es un cubo, una tapa o un casquillo, di cuál: "
+            "se vuelve a dibujar con section whole=[...] sin ella, cortada y rayada. Si lo son, ponles su designación (doc set_title).",
+            f"Section {label} leaves these parts whole by their shape alone, nothing in their designation says so: {names}. Are they "
+            "solid (a shaft, a pin, a key) with the plane passing behind them? If one is a hub, a cover or a bushing, say which: the "
+            "section is drawn again with whole=[...] without it, cut and hatched. If they are, give them their designation (doc set_title).",
+        )
+        out.append(Finding("assembly_whole_guess", "warning", text, (), key=label))
+    return out
+
+
 def check(data: ReviewInput) -> list[Finding]:
     found: list[Any] = []
-    for one in (_off_part, _centre, _side_view_repeats_section, _solid_cuts):
+    for one in (_off_part, _centre, _side_view_repeats_section, _solid_cuts, _whole_guesses):
         found += one(data)
     return found

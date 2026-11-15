@@ -119,19 +119,32 @@ def _removal_box(point: sc.Vec3, normal: sc.Vec3, size: float) -> Any:
     return box
 
 
+def crosses(shape: Any, point: sc.Vec3, normal: sc.Vec3) -> bool:
+    """Whether the plane through ``point`` with ``normal`` passes through the box of ``shape`` (a box corner on each side)."""
+    box = shape.BoundBox
+    sides = [
+        sc.dot(sc.sub((x, y, z), point), normal)
+        for x in (box.XMin, box.XMax)
+        for y in (box.YMin, box.YMax)
+        for z in (box.ZMin, box.ZMax)
+    ]
+    return min(sides) <= ON_PLANE_MM and max(sides) >= -ON_PLANE_MM
+
+
 def cut_shapes_indexed(
     shapes: list[Any], point: sc.Vec3, normal: sc.Vec3, whole: frozenset[int] = frozenset()
 ) -> tuple[list[int], list[Any]]:
     """The parts of ``shapes`` on the far side of the plane through ``point`` with the given ``normal`` (the viewer looks
     along ``normal``, so what lies on the side he looks from is removed), with the index of the shape each came from. The
-    shapes in ``whole`` are not cut: they are kept as they are, drawn whole as if the plane passed behind them."""
+    shapes in ``whole`` that the plane crosses are not cut: they are kept as they are, drawn whole as if the plane passed behind
+    them (one the plane does not reach is cut like any other: what lies on the viewer's side goes)."""
     extent = max(s.BoundBox.DiagonalLength for s in shapes)
     reach = 4.0 * extent + 100.0
     box = _removal_box(point, normal, reach)
     owners: list[int] = []
     cut = []
     for index, shape in enumerate(shapes):
-        part = shape if index in whole else shape.cut(box)
+        part = shape if index in whole and crosses(shape, point, normal) else shape.cut(box)
         if not part.isNull() and part.Edges:
             owners.append(index)
             cut.append(part)

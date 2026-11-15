@@ -232,7 +232,8 @@ ITEM_LINES = (
     "Ø (dim kind=diameter; a bore's hole_dim gives one Ø per step) and the heights direct from the seating face, never "
     "chained; review says view_adds_nothing for an end view of such a part), at_mm? (centre of the cut view on the sheet), hatch? "
     '({"body 2": {"turn": 90, "spacing": 1.5}}: the angle, as a turn from the standard hatch, and the spacing, as a factor, of a '
-    "body of the cut; the pattern is the material's and cannot be set). It draws the "
+    "body of the cut; the pattern is the material's and cannot be set), whole? (assembly: the components left uncut, ISO 128-34; "
+    'the harness picks shafts, bolts, keys, pins by name, standard or shape; whole=["Eje"] or [] overrides). It draws the '
     'cutting-plane line in the parent (thick ends, thin chain, arrows and letters, ISO 128-40), the cut view as "A-A" '
     "with the cut faces hatched at 45 degrees (layer SOMBREADO), no hidden lines, and takes the first free place: "
     "in the "

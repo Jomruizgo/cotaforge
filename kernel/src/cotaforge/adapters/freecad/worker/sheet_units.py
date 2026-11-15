@@ -135,6 +135,26 @@ COSMETIC_STYLES = {  # the layer the compositor draws on -> the kind of line Tec
 
 
 @dataclass(frozen=True)
+class NativePart:
+    """One piece of a section TechDraw makes in several (``NativeView.parts``). ``role`` is ``cut`` (the bodies named in ``sources``
+    are cut by the plane and hatched at ``turn`` degrees from the standard hatch and ``spacing`` times its spacing: one
+    ``DrawViewSection`` over a hidden ``DrawViewPart`` that holds just those bodies, because a section cuts everything its base view
+    shows) or ``whole`` (the bodies are not cut: a ``DrawViewPart`` of them seen the same way). ``sources`` are the names of
+    FreeCAD objects (the components' parts); ``box`` is the page rectangle (mm, y up) of what the sheet draws of them."""
+
+    role: str  # cut | whole
+    sources: tuple[str, ...]
+    box: Rect
+    turn: float = 0.0
+    spacing: float = 1.0
+
+    @property
+    def objects(self) -> int:
+        """The FreeCAD objects it takes: a cut piece is its base and its section."""
+        return 2 if self.role == "cut" else 1
+
+
+@dataclass(frozen=True)
 class NativeView:
     """A view TechDraw makes of the part: a ``DrawViewSection`` (the cut, its hatch, the cutting line and letter in the parent
     view), a ``DrawViewDetail`` (a circle of the parent enlarged) or, for an auxiliary view, a ``DrawViewPart`` looked at square
@@ -142,7 +162,12 @@ class NativeView:
     at ``scale``. ``direction`` is the model vector towards the viewer and ``xdir`` the model vector along the page's x; a section
     cuts at the plane through ``at`` and a detail is the circle of ``radius`` model mm at ``anchor`` (the parent's own
     coordinates: model mm from the parent's origin, y up). ``parent`` is the view it hangs from; ``name`` is what the other
-    items call it (``A-A``). Every dimension of the view is a ``NativeDim`` whose ``view`` is that name."""
+    items call it (``A-A``). Every dimension of the view is a ``NativeDim`` whose ``view`` is that name.
+
+    ``parts``: a section of an assembly whose shafts, bolts and keys stay whole (ISO 128-34) or whose touching bodies have
+    hatches of their own. A ``DrawViewSection`` cuts every body of its base view and has one hatch, so the section is several
+    TechDraw objects over the same plane: a cut piece for each hatch and a view of the whole parts, each moved to where the
+    sheet draws it and the later ones bound to the first by expression. None: one section of the parent's own sources."""
 
     item: str
     name: str
@@ -156,6 +181,12 @@ class NativeView:
     at: tuple[float, float, float] | None = None
     anchor: Point | None = None
     radius: float = 0.0
+    parts: tuple[NativePart, ...] = ()
+
+    @property
+    def objects(self) -> int:
+        """How many FreeCAD objects the view is."""
+        return sum(p.objects for p in self.parts) if self.parts else 1
 
 
 Native = NativeDim | NativeNote | NativeFlag | NativeCosmetic | NativeWeld | NativeBalloon | NativeTable | NativeLeader | NativeView
@@ -348,6 +379,11 @@ def signature(unit: Unit) -> str:
                 None if n.at is None else [round(v, 3) for v in n.at],
                 None if n.anchor is None else [round(v, 3) for v in n.anchor],
                 round(n.radius, 3),
+                *(
+                    [[[p.role, list(p.sources), [round(v, 2) for v in p.box], round(p.turn, 2), round(p.spacing, 3)] for p in n.parts]]
+                    if n.parts
+                    else []
+                ),  # only when there are parts: a sheet made before keeps its view
             ]
         return ["n", n.name, list(n.lines), [round(v, 2) for v in n.at], n.size, n.step, *([] if n.fit else ["loose"])]
 
@@ -366,10 +402,16 @@ def cosmetic_signature(natives: Any) -> str:
 def object_count(unit: Unit) -> int:
     """How many native objects ``unit`` is: a dimension or a view each, a note one annotation per line."""
     return sum(
-        1 if isinstance(n, NativeDim | NativeView) else marks_count(n) if isinstance(n, MARK_TYPES) else len(n.lines)
+        1 if isinstance(n, NativeDim) else n.objects if isinstance(n, NativeView) else marks_count(n) if isinstance(n, MARK_TYPES) else len(n.lines)
         for n in unit.natives
         if not isinstance(n, NativeFlag | NativeCosmetic)
     )
+
+
+def view_object_count(unit: Unit) -> int:
+    """How many of ``object_count`` are the unit's view (``sync_views`` makes them) and not dimensions, notes or marks."""
+    found = view_of(unit)
+    return 0 if found is None else found.objects
 
 
 def view_of(unit: Unit) -> NativeView | None:
