@@ -309,7 +309,7 @@ async def test_5_a_correction_saved_in_one_session_is_in_the_index_of_the_next(s
         assert first.instructions is not None and "Memory (" not in first.instructions  # empty memory: silent
         saved = await cad.ok("memory", action="save", entry=CORRECTION)
         assert saved.startswith("saved: no-chaflan-en-agujero in project memory") and "status: proposed" in saved
-        await cad.ok("memory", action="approve", id="no-chaflan-en-agujero", by="Ana", text="Ana: apruebala")
+        await cad.ok("memory", action="approve", id="no-chaflan-en-agujero", by="Ana", text=space.says("apruebala"))
         assert "no-chaflan-en-agujero" in await cad.ok("memory", action="index")
     assert (space.workspace / "memory" / "no-chaflan-en-agujero.md").is_file()
 

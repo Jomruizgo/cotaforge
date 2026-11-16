@@ -3,6 +3,7 @@ in one session and seen by a new server process, and the provenance refusal. Eve
 
 import os
 import sys
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,7 +12,8 @@ import mcp.types as types
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from tests.conftest import process_entry
+from cotaforge_mcp import engineer_orders
+from tests.conftest import Engineer, process_entry
 
 ENTRY = {
     "id": "ajuste-ejes",
@@ -38,8 +40,17 @@ async def running_server(workspace: Path, home: Path) -> AsyncIterator[tuple[Cli
         yield session, await session.initialize()
 
 
-async def call(session: ClientSession, **arguments: object) -> tuple[bool, str]:
-    result = await session.call_tool("memory", dict(arguments))
+async def call(session: ClientSession, engineer: Engineer | None = None, **arguments: object) -> tuple[bool, str]:
+    """One ``memory`` call. ``engineer``: the person at Claude Code, who confirms an order at its dialog (the
+    call then carries the id Claude Code gives it)."""
+    meta = None
+    if engineer is not None:
+        call_id = f"toolu_{uuid.uuid4().hex}"
+        refusal = engineer.before("memory", dict(arguments), call_id)
+        if refusal is not None:
+            return True, refusal
+        meta = {engineer_orders.META_CALL_ID: call_id}
+    result = await session.call_tool("memory", dict(arguments), meta=meta)
     text = "\n".join(c.text for c in result.content if isinstance(c, types.TextContent))
     return bool(result.isError), text
 
@@ -69,7 +80,10 @@ async def test_memory_over_stdio_and_the_index_reaches_the_next_server(tmp_path:
         statement = {"source": "user_statement", "reference": "his words", "by": "Ana", "date": "2026-10-27"}
         is_error, text = await call(session, action="save", entry={**ENTRY, "provenance": statement}, scope="user")
         assert not is_error and "note: the project entry with the same id wins" in text
-        is_error, text = await call(session, action="approve", id="ajuste-ejes", by="Ana", text="Ana: apruebala")
+        unconfirmed = await call(session, action="approve", id="ajuste-ejes", by="Ana", text="apruebala")
+        assert unconfirmed[0] and "order_not_confirmed" in unconfirmed[1]  # no dialog, no order
+        engineer = Engineer(home, workspace)
+        is_error, text = await call(session, engineer, action="approve", id="ajuste-ejes", by="Ana", text=engineer.says("apruebala"))
         assert not is_error and text.startswith("approved: ajuste-ejes")
 
         unproven = process_entry()

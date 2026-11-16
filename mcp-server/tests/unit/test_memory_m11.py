@@ -225,7 +225,7 @@ def test_saving_a_replacement_stays_proposed_and_the_base_entry_stays_in_force(s
     saved = call.ok("memory", action="save", entry=practice("mis-vistas", "fixtures", related=[], replaces=BASE_ID))
     assert f"base entry {BASE_ID} stays in force until the engineer approves this replacement" in saved
     assert BASE_ID in {e.id for e in design_memory.active_entries(call.session.settings)}
-    call.ok("memory", action="approve", id="mis-vistas", by="Ana", text="Ana: sí, reemplaza la de la base")
+    call.ok("memory", action="approve", id="mis-vistas", by="Ana", text=call.says("sí, reemplaza la de la base"))
     assert BASE_ID not in {e.id for e in design_memory.active_entries(call.session.settings)}
 
 

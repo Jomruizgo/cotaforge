@@ -10,8 +10,10 @@ Every call is recorded in ``Space.trace`` and printed as a section of the report
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import uuid
 from collections.abc import AsyncIterator, Generator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -23,6 +25,9 @@ import pytest
 from cotaforge.adapters.freecad import find_freecad_root
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+from cotaforge_mcp import engineer_orders
+from tests.conftest import Engineer
 
 ENV_FREECAD_ROOT = "COTAFORGE_FREECAD_ROOT"
 ARGS_WIDTH = 140
@@ -64,14 +69,24 @@ class Reply:
 class Cad:
     """The tools of the server as awaitable calls; ``ok`` / ``err`` assert the outcome and return the text."""
 
-    def __init__(self, session: ClientSession, trace: list[str]) -> None:
+    def __init__(self, session: ClientSession, trace: list[str], engineer: Engineer | None = None) -> None:
         self.session = session
         self.trace = trace
+        self.engineer = engineer
 
     async def __call__(self, tool: str, **arguments: Any) -> Reply:
         shown = ", ".join(f"{key}={value!r}" for key, value in arguments.items())
         self.trace.append(f"> {tool}({_short(shown, ARGS_WIDTH)})")
-        reply = Reply(await self.session.call_tool(tool, arguments))
+        meta = None
+        refusal = None
+        if self.engineer is not None:  # what Claude Code does before the call: the hook, and his answer to its dialog
+            call_id = f"toolu_{uuid.uuid4().hex}"
+            refusal = self.engineer.before(tool, arguments, call_id)
+            meta = {engineer_orders.META_CALL_ID: call_id}
+        if refusal is not None:
+            reply = Reply(types.CallToolResult(content=[types.TextContent(type="text", text=refusal)], isError=True))
+        else:
+            reply = Reply(await self.session.call_tool(tool, arguments, meta=meta))
         self.trace.append(f"  {'ERROR' if reply.is_error else 'ok'}: {_short(reply.text, REPLY_WIDTH)}")
         return reply
 
@@ -93,6 +108,7 @@ class Space:
     workspace: Path
     home: Path
     trace: list[str] = field(default_factory=list)
+    _engineer: Engineer | None = None
 
     @property
     def mcp_json(self) -> dict[str, Any]:
@@ -104,7 +120,46 @@ class Space:
 
     def environment(self) -> dict[str, str]:
         """What the child processes inherit: this process' environment with every profile folder redirected."""
-        return {**os.environ, "COTAFORGE_HOME": str(self.home), "COTAFORGE_BASE_MEMORY": "0", "HOME": str(self.home), "USERPROFILE": str(self.home)}
+        return {
+            **os.environ,
+            "COTAFORGE_HOME": str(self.home),
+            "COTAFORGE_BASE_MEMORY": "0",
+            "HOME": str(self.home),
+            "USERPROFILE": str(self.home),
+            "CLAUDE_PROJECT_DIR": str(self.workspace),
+        }
+
+    def says(self, text: str) -> str:
+        """The engineer types ``text`` and will accept the dialog that shows it. Returns the text, to carry it in
+        an order."""
+        return self.engineer.says(text)
+
+    @property
+    def engineer(self) -> Engineer:
+        """The person at Claude Code. The ``PreToolUse`` hook that ``cotaforge init`` wrote into the design space is
+        run the way Claude Code runs it: its command through a shell, the call as JSON on standard input."""
+        if self._engineer is None:
+            space = self
+
+            class AtTheSpace(Engineer):
+                def hook(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+                    entries = space.settings["hooks"]["PreToolUse"]
+                    (entry,) = [e for e in entries if e["matcher"] == engineer_orders.MATCHER]
+                    (handler,) = entry["hooks"]
+                    done = subprocess.run(  # noqa: S603 - the command init generated
+                        [shutil.which("bash") or "sh", "-c", handler["command"]],  # Claude Code runs hooks in sh (Git Bash on Windows)
+                        input=json.dumps(payload).encode("utf-8"),
+                        env=space.environment(),
+                        cwd=space.workspace,
+                        capture_output=True,
+                        timeout=60,
+                        check=False,
+                    )
+                    assert done.returncode == 0, (done.stdout, done.stderr)
+                    return json.loads(done.stdout.decode("utf-8")) if done.stdout.strip() else None
+
+            self._engineer = AtTheSpace(self.home, self.workspace)
+        return self._engineer
 
     def server_parameters(self) -> StdioServerParameters:
         """The server exactly as the generated ``.mcp.json`` declares it."""
@@ -118,7 +173,7 @@ class Space:
         self.trace.append("-- server started from .mcp.json")
         async with stdio_client(self.server_parameters()) as (read, write), ClientSession(read, write) as session:
             init = await session.initialize()
-            yield Cad(session, self.trace), init
+            yield Cad(session, self.trace, self.engineer), init
         self.trace.append("-- server stopped")
 
 

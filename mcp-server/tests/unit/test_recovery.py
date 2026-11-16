@@ -275,6 +275,22 @@ def test_a_crash_takes_the_review_with_the_unsaved_sheet_and_the_next_open_puts_
     assert "UNSAVED" in call.ok("doc", action="status")  # they are in the sheet again, not saved yet
 
 
+def test_a_report_recorded_in_pieces_is_put_back_whole_and_in_order(make: MakeSession, tmp_path: Path) -> None:
+    call, cad = crashing(make)
+    plate(call)
+    call.ok("doc", action="save", path="plate.fake")
+    call.ok("drawing", action="create", template="A4", title="Plate")
+    call.ok("drawing", action="review_report", by="fabricator", items=[{"text": "old report"}])  # replaced below
+    call.ok("drawing", action="review_report", by="fabricator", items=[{"text": "one"}, {"text": "two"}])
+    call.ok("drawing", action="review_report", by="fabricator", items=[{"text": "three"}], append=True)
+    call.ok("drawing", action="review_report", by="fabricator", items=[{"text": "four"}], append=True)
+    call.err("run_native", code=TECHDRAW_CRASH, id="td", intent="line style 0")
+    assert cad.drawings["Drawing"]["reports"] == {}  # gone with the CAD
+    call.err("doc", action="status")  # relaunch: the journal is read
+    held = cad.drawings["Drawing"]["reports"]["fabricator"]
+    assert [(r.id, r.text) for r in held["remarks"]] == [("fab1.1", "one"), ("fab1.2", "two"), ("fab1.3", "three"), ("fab1.4", "four")]  # the pieces, not just the last
+
+
 def test_nothing_is_put_back_that_the_sheet_already_has(make: MakeSession, tmp_path: Path) -> None:
     call, _ = crashing(make)
     plate(call)

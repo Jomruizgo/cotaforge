@@ -1670,7 +1670,9 @@ def _request_row(spec: dict[str, Any]) -> dict[str, Any] | None:
 
 def review_report_action(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     """Store a reviewer's report in the sheet spec (the last one of each reviewer is kept). Its remarks get the ids
-    ``fab<n>.<i>`` / ``eng<n>.<i>``, which ``answer`` accepts. Does not change the sheet."""
+    ``fab<n>.<i>`` / ``eng<n>.<i>``, which ``answer`` accepts. With ``append`` the remarks are added to the reviewer's
+    current report instead (same number, the ids go on, the time and the sheet's change counter are those of this
+    call); with no report yet it starts one. Does not change the sheet."""
     op = params.get("operation_id")
     who = str(params.get("by") or "")
     who = OLD_REVIEWERS.get(who, who)
@@ -1679,22 +1681,27 @@ def review_report_action(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[s
     page = _need_page(doc.fc_doc, params.get("sheet"), op)
     spec = spec_of(page)
     spec.pop("legacy", None)
-    number = int(spec.get("report_n", 0)) + 1
+    held = spec.get("reports", {}).get(who) if params.get("append") else None
+    kept = list(held.get("remarks", [])) if held else []
+    if held:
+        number = int(held["n"])
+    else:
+        number = int(spec.get("report_n", 0)) + 1
+        spec["report_n"] = number
     prefix = f"{REPORT_PREFIX[who]}{number}"
-    remarks = []
-    for position, raw in enumerate(params.get("remarks") or (), start=1):
+    added = []
+    for position, raw in enumerate(params.get("remarks") or (), start=len(kept) + 1):
         remark = {k: " ".join(str(raw.get(k, "")).split()) for k in ("kind", "where", "text", "fix")}
         remark["kind"] = remark["kind"] or "other"
-        remarks.append({"id": f"{prefix}.{position}", **remark})
-    spec["report_n"] = number
+        added.append({"id": f"{prefix}.{position}", **remark})
     spec.setdefault("reports", {})[who] = {
         "n": number,
         "at": float(params.get("at") or 0.0),
         "edits": int(spec.get("edits", 0)),
-        "remarks": remarks,
+        "remarks": [*kept, *added],
     }
     write_spec(page, spec)
-    return {"sheet": spec["sheet"], "changed": [r["id"] for r in remarks]}
+    return {"sheet": spec["sheet"], "changed": [r["id"] for r in added]}
 
 
 def request_review_action(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:

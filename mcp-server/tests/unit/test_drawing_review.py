@@ -64,7 +64,9 @@ def session_in(settings: Settings, mode: str, wait: int | None = None) -> tuple[
 
 
 def report(call: Caller, by: str, *items: dict[str, str]) -> str:
-    return call.ok("drawing", action="review_report", sheet="Drawing", by=by, items=list(items))
+    said = " / ".join(item["text"] for item in items) or "sin observaciones"
+    words = {"reason": call.says(said)} if by == "engineer" else {}  # his report carries what he typed
+    return call.ok("drawing", action="review_report", sheet="Drawing", by=by, items=list(items), **words)
 
 
 # --- the setting ----------------------------------------------------------------------------------------------------------
@@ -82,10 +84,10 @@ def test_the_setting_is_kept_in_the_brief_next_to_the_sector_and_needs_the_engin
     refused = call.err("memory", action="brief", drawing_review="own")
     assert "engineer's decision" in refused and "text" in refused
     assert "drawing review own" in call.ok(
-        "memory", action="brief", drawing_review="own", text="Ana: revisa tú el plano"
+        "memory", action="brief", drawing_review="own", text=call.says("revisa tú el plano")
     )
     data = yaml.safe_load((settings.workspace / "brief.yaml").read_text(encoding="utf-8"))
-    assert data["drawing_review"] == "own" and data["drawing_review_said"] == "Ana: revisa tú el plano"
+    assert data["drawing_review"] == "own" and data["drawing_review_said"] == "revisa tú el plano"
     assert data["sector"] == "chapa y soldadura"  # a new setting does not lose the old ones
     call.ok("memory", action="brief", sector="mecanizado")
     assert design_memory.load_brief(settings).drawing_review == "own"  # nor does a later sector
@@ -329,6 +331,60 @@ def test_the_engineer_chose_himself_so_the_gate_waits_for_his_report_with_no_tim
     assert "eng1.1" in call.err("export", action="pdf")
     call.ok("drawing", action="answer", id="eng1.1", text="applies: añadí la nota de material en el bloque de notas")
     assert "exported pdf" in call.ok("export", action="pdf")
+
+
+def long_remarks(count: int) -> list[dict[str, str]]:
+    """Remarks of about 230 characters in the dialog: nine of them do not fit in one (it takes 1500), five do."""
+    return [
+        {"kind": "missing", "where": f"vista {n}", "text": f"Punto {n}: " + "falta el detalle de la cota o de la nota, " * 4 + f"fin{n}"}
+        for n in range(1, count + 1)
+    ]
+
+
+def test_a_long_report_of_the_engineer_is_recorded_in_pieces_with_continuous_ids_and_the_gate_sees_all(
+    settings: Settings, clock: Clock
+) -> None:
+    call, fake = session_in(settings, "engineer")
+    everything = long_remarks(9)
+    refused = call.err("drawing", action="review_report", sheet="Drawing", by="engineer", items=everything, reason=call.says("sus nueve observaciones"))
+    assert "too long" in refused and "append=true" in refused and "Split it" not in refused
+    assert not [r for r in fake.annotated if r.action == "review_report"]  # nothing was recorded
+    first = call.ok("drawing", action="review_report", sheet="Drawing", by="engineer", items=everything[:5], reason=call.says("las cinco primeras"))
+    assert "5 remark(s)" in first and "eng1.5" in first and "this call added" not in first
+    clock.minutes(1)
+    last = call.ok("drawing", action="review_report", sheet="Drawing", by="engineer", items=everything[5:], append=True, reason=call.says("las cuatro últimas"))
+    assert "engineer report 1" in last and "9 remark(s)" in last and "this call added 4" in last
+    assert "eng1.1" in last and "eng1.9" in last
+    held = fake.drawings["Drawing"]["reports"]["engineer"]
+    assert [r.id for r in held["remarks"]] == [f"eng1.{n}" for n in range(1, 10)]  # the ids go on
+    assert [r.text for r in held["remarks"]] == [r["text"] for r in everything]
+    assert held["n"] == 1 and held["at"] == clock.now  # the time is the last piece's
+    blocked = call.err("export", action="pdf")
+    assert "engineer report 1" in blocked and "9 remark(s)" in blocked and "eng1.1" in blocked and "eng1.9" in blocked
+    for n in range(1, 10):
+        call.ok("drawing", action="answer", id=f"eng1.{n}", text="applies: añadí el detalle que faltaba en la hoja")
+    assert "exported pdf" in call.ok("export", action="pdf")
+    again = call.ok("drawing", action="review_report", sheet="Drawing", by="engineer", items=everything[:1], reason=call.says("una sola"))
+    assert "engineer report 2" in again and "eng2.1" in again  # a call without append still replaces, as it always did
+    assert [r.id for r in fake.drawings["Drawing"]["reports"]["engineer"]["remarks"]] == ["eng2.1"]
+
+
+def test_an_append_with_no_report_yet_starts_one_and_never_holds_more_than_a_report_takes(
+    settings: Settings, clock: Clock
+) -> None:
+    call, fake = session_in(settings, "fabricator")
+    text = call.ok("drawing", action="review_report", sheet="Drawing", by="fabricator", items=[REMARK], append=True)
+    assert "fab1.1" in text and "this call added" not in text
+    ok = [{"text": f"punto {n}"} for n in range(29)]
+    call.ok("drawing", action="review_report", sheet="Drawing", by="fabricator", items=ok, append=True)  # 30 in all: the limit
+    over = call.err("drawing", action="review_report", sheet="Drawing", by="fabricator", items=[REMARK], append=True)
+    assert "at most 30" in over and "nothing was changed" in over
+    assert len(fake.drawings["Drawing"]["reports"]["fabricator"]["remarks"]) == 30
+
+
+def test_append_belongs_to_a_report_only(settings: Settings) -> None:
+    call, _ = session_in(settings, "fabricator")
+    assert "append belongs to review_report" in call.err("drawing", action="list", append=True)
 
 
 def test_the_engineer_chose_the_manufacturer_and_the_reply_says_to_launch_it(settings: Settings, clock: Clock) -> None:

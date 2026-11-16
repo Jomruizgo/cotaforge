@@ -36,7 +36,7 @@ def stored(settings: Settings, scope: Scope, entry_id: str = FIXTURE_FACT["id"])
 
 
 def approve(call: Caller, **extra: Any) -> str:
-    return call.ok("memory", action="approve", id=FIXTURE_FACT["id"], by="Ana", text="Ana: sí", **extra)
+    return call.ok("memory", action="approve", id=FIXTURE_FACT["id"], by="Ana", text=call.says("sí"), **extra)
 
 
 def extrude_plate(call: Caller) -> str:
@@ -67,11 +67,11 @@ def test_a_user_declaration_is_proposed_too(call: Caller, settings: Settings) ->
 
 def test_approving_a_user_entry_needs_his_answer_to_the_question(call: Caller, settings: Settings) -> None:
     call.ok("memory", action="save", entry=FIXTURE_FACT, scope="user")
-    refused = call.err("memory", action="approve", id=FIXTURE_FACT["id"], by="Ana", text="Ana: sí")
+    refused = call.err("memory", action="approve", id=FIXTURE_FACT["id"], by="Ana", text=call.says("sí"))
     assert "user_scope_needs_answer" in refused and QUESTION in refused and "scope=project" in refused
     assert stored(settings, Scope.user).status is EntryStatus.proposed
     done = approve(call, scope="user")
-    assert done.startswith("approved: izaje-del-dispositivo in user memory by Ana (Ana: sí)")
+    assert done.startswith("approved: izaje-del-dispositivo in user memory by Ana (sí)")
     assert stored(settings, Scope.user).status is EntryStatus.active
     assert "[user]" in call.ok("memory", action="search", text="izaje")
 
@@ -90,7 +90,7 @@ def test_only_this_project_moves_it_to_the_project_memory_and_activates_it(call:
 
 def test_scope_user_only_approves_what_was_saved_in_the_user_memory(call: Caller) -> None:
     call.ok("memory", action="save", entry=FIXTURE_FACT)
-    refused = call.err("memory", action="approve", id=FIXTURE_FACT["id"], by="Ana", text="Ana: sí", scope="user")
+    refused = call.err("memory", action="approve", id=FIXTURE_FACT["id"], by="Ana", text=call.says("sí"), scope="user")
     assert "invalid_input" in refused and "scope=user approves only" in refused
     assert "approved: izaje-del-dispositivo in project memory" in approve(call, scope="project")
 

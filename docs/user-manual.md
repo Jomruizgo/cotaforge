@@ -579,6 +579,9 @@ Answers live in the sheet, inside the `.FCStd`, and survive save and reopen. Rea
 
 **"Approved by" in the title block is yours.** Only you fill it, with `drawing(action="approve", sheet="Plano", by="Ana", reason="Ana: approve it")`. The agent calls it only when you order it, quoting your words. Any later change to the sheet empties it again. Approving does not skip the review.
 
+**You confirm your own orders, in Claude Code's permission dialog.** When the agent is about to record an order of yours (approving, dismissing something the harness measured, your review report, who reviews, composing the sheet again, the project's sector and processes), Claude Code shows you the phrase and everything it closes, whole (an order too long to show is refused and the agent splits it), and you accept or reject; without your confirmation the server does not record it.
+The dialog appears only right after you write. If you leave at that moment it waits for you, like any of Claude Code's own permission dialogs (it has no timeout). If you have typed nothing for more than 2 minutes (`order_presence_min` in `brief.yaml`, in minutes; at most 10, a larger or invalid value counts as 10 or 2) you are not asked: the order waits, the agent goes on with the rest and asks you when you are back. With nobody to answer (`claude -p`, `bypassPermissions` mode) none is recorded. A folder prepared with an earlier version is prepared again with `cotaforge init <folder>`.
+
 **Not verified in a real Claude Code session:** that the background timer wakes the agent and that the agent launches the `fabricator` by itself. The clock, the gates and the reports are tested with the real server and FreeCAD.
 
 The agent's guide for this is `cad_guide` with `topic="drawing:done"`.

@@ -109,7 +109,7 @@ async def face_with_normal(cad: Cad, normal: str) -> str:
 async def test_a_plate_lists_its_rows_and_every_hole_is_located_for_the_caliper_whatever_the_symmetry(workspace: Path, tmp_path: Path) -> None:
     out = transcript(tmp_path)
     async with running_server(workspace) as (cad, _):
-        await cad.ok("memory", action="brief", drawing_review="propio", text="la prueba: el agente revisa el plano por su cuenta")
+        await cad.ok("memory", action="brief", drawing_review="propio", text=cad.says("el agente revisa el plano por su cuenta"))
         write_intent(workspace, "placa", PLATE_INTENT)
         await make_plate(cad)
         created = await cad.ok("drawing", action="create", views=["top"], title="Placa")
@@ -157,7 +157,7 @@ async def test_a_plate_lists_its_rows_and_every_hole_is_located_for_the_caliper_
 async def test_a_bolt_pattern_dimensioned_centre_to_centre_is_located(workspace: Path, tmp_path: Path) -> None:
     out = transcript(tmp_path)
     async with running_server(workspace) as (cad, _):
-        await cad.ok("memory", action="brief", drawing_review="propio", text="la prueba: el agente revisa el plano por su cuenta")
+        await cad.ok("memory", action="brief", drawing_review="propio", text=cad.says("el agente revisa el plano por su cuenta"))
         await make_plate(cad)
         await cad.ok("drawing", action="create", views=["top"], title="Placa")
         left, front = await face_with_normal(cad, "-1, 0, 0"), await face_with_normal(cad, "0, -1, 0")
@@ -186,7 +186,7 @@ async def test_a_bolt_pattern_dimensioned_centre_to_centre_is_located(workspace:
 async def test_a_threaded_fitted_shaft_activates_measured_rows_that_only_the_engineer_can_dismiss(workspace: Path, tmp_path: Path) -> None:
     out = transcript(tmp_path)
     async with running_server(workspace) as (cad, _):
-        await cad.ok("memory", action="brief", drawing_review="propio", text="la prueba: el agente revisa el plano por su cuenta")
+        await cad.ok("memory", action="brief", drawing_review="propio", text=cad.says("el agente revisa el plano por su cuenta"))
         write_intent(workspace, "eje", SHAFT_INTENT)
         await make_shaft(cad)
         created = await cad.ok("drawing", action="create", title="Eje", views=["front", "right"])
@@ -215,7 +215,7 @@ async def test_a_threaded_fitted_shaft_activates_measured_rows_that_only_the_eng
         assert "measured_not_dismissable" in measured and "threaded holes" in measured
         no = await cad.err("drawing", action="answer", id="req.thread", text="no aplica: el eje no lleva rosca de verdad")
         assert "measured_not_dismissable" in no
-        await cad.ok("drawing", action="remove", items=["rq_callouts"], reason="Ana: las llamadas van en una hoja aparte", by="Ana")
+        await cad.ok("drawing", action="remove", items=["rq_callouts"], reason=cad.says("las llamadas van en una hoja aparte"), by="Ana")
         review = await cad.ok("drawing", action="review")
         out.say("review after the engineer's order (shaft)", review)
         assert "answered: DOES NOT APPLY" in review and "(ordered by Ana)" in review
@@ -224,13 +224,13 @@ async def test_a_threaded_fitted_shaft_activates_measured_rows_that_only_the_eng
 
         assert "measured_not_dismissable" in await cad.err("drawing", action="answer", id="req.keyway", text="no aplica: el chavetero lo ejecuta el montador")
         await cad.ok(
-            "drawing", action="answer", id="req.keyway", text="no aplica: el chavetero lo ejecuta el montador", by="Ana", reason="Ana: el chavetero lo hace el montador"
+            "drawing", action="answer", id="req.keyway", text="no aplica: el chavetero lo ejecuta el montador", by="Ana", reason=cad.says("el chavetero lo hace el montador")
         )
         pending, _, _ = await pending_points(cad)
         out.say("what is still open", f"findings {pending}; rows {await pending_rows(cad)}")
         entry = "machining-inner-radius-and-cavity-depth"  # the keyway has sharp corners: a measured alert, open for the export
         await cad.ok("memory", action="get", id=entry)
-        await cad.ok("memory", action="answer", id=entry, by="Ana", text="does not apply: Ana: el chavetero se fresa con esquinas vivas")
+        await cad.ok("memory", action="answer", id=entry, by="Ana", text="does not apply: " + cad.says("el chavetero se fresa con esquinas vivas"))
         await finish_drawing(cad)
         exported = await cad.ok("export", action="pdf", path="eje.pdf")
         out.say("export (shaft)", exported)

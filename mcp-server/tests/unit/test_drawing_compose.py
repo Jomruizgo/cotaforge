@@ -31,7 +31,7 @@ def na_all(call: Caller, keep: tuple[str, ...] = ()) -> dict[str, str]:
 
 def composed(call: Caller, decisions: dict[str, Any], **more: Any) -> str:
     """A compose by the engineer's order: the rows it answers "no aplica" are measured ones."""
-    return call.ok("drawing", action="compose", decisions=decisions, by="Ana", reason="Ana: no aplica a esta pieza", **more)
+    return call.ok("drawing", action="compose", decisions=decisions, by="Ana", reason=call.says("no aplica a esta pieza"), **more)
 
 
 GDT = {"char": "perpendicularity", "value": 0.02, "datums": ["A"], "face": "face:3"}
@@ -215,7 +215,7 @@ def test_the_compose_records_what_it_decided_of_the_whole_sheet(settings: Settin
 def test_a_second_compose_that_changes_nothing_of_the_whole_sheet_is_refused_and_points_to_the_local_actions(settings: Settings) -> None:
     call, fake, everything = composed_once(settings)
     before = len(fake.annotated)
-    refused = call.err("drawing", action="compose", decisions={**everything, "notes": ["dos"]}, by="Ana", reason="Ana: no aplica")
+    refused = call.err("drawing", action="compose", decisions={**everything, "notes": ["dos"]}, by="Ana", reason=call.says("no aplica"))
     assert "already composed" in refused and "nothing was changed" in refused and 'action="update"' in refused
     assert len(fake.annotated) == before and len(fake.created) == 1  # not a call to the CAD
     assert items_of(fake)["dc_notes1"]["text"] == "uno"
@@ -226,7 +226,7 @@ def test_a_second_compose_for_a_change_that_affects_the_whole_sheet_is_allowed(s
     text = composed(call, {**everything, "notes": ["dos"], "sheet": {"template": "A3"}})
     assert "composed sheet" in text and items_of(fake)["dc_notes1"]["text"] == "dos"
     assert fake.drawings["Drawing"]["composed"]["signature"]["template"] == "A3"
-    call.err("drawing", action="compose", decisions={**everything, "notes": ["tres"], "sheet": {"template": "A3"}}, by="Ana", reason="Ana: no aplica")
+    call.err("drawing", action="compose", decisions={**everything, "notes": ["tres"], "sheet": {"template": "A3"}}, by="Ana", reason=call.says("no aplica"))
 
 
 def test_a_second_compose_with_another_dimension_scheme_is_allowed(settings: Settings) -> None:

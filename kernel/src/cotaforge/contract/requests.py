@@ -670,7 +670,9 @@ class AnnotateDrawingRequest(Request):
     ``review_report`` stores a reviewer's report in the sheet (``by``: fabricator | engineer; ``remarks``: the points,
     possibly none; ``at``: epoch seconds, the server's clock); ``request_review`` stores when the engineer was asked
     to review the sheet (``at``); ``review_choice`` stores who he chose to review it (``by``: engineer | fabricator).
-    None of them changes the sheet and none is made old by a later change of it.
+    A report that is long is recorded in pieces: the first replaces the reviewer's report, each next one has
+    ``append`` and adds its ``remarks`` to it (ids continue). None of them changes the sheet and none is made old by
+    a later change of it.
 
     ``layout`` places the annotations of the whole sheet at once (``drawing_flow: sheet``): the dimensions and leaders
     that asked for no place are given a side and an offset (or an elbow) by the global layout planner, which sees every
@@ -708,6 +710,9 @@ class AnnotateDrawingRequest(Request):
     """``record`` only: what the order that composed the sheet decided (the signature of the decisions that affect the
     whole sheet)."""
     remarks: tuple[dict[str, Any], ...] = ()
+    append: bool = False
+    """``review_report`` only: add ``remarks`` to the reviewer's current report (their ids continue, ``at`` is this
+    call's) instead of replacing it; with no report yet it starts one."""
     at: float | None = None
     ids: tuple[str, ...] = ()
     view: Literal["front", "top", "right", "iso", "isometric"] | None = None
@@ -789,7 +794,7 @@ class AnnotateDrawingRequest(Request):
                 msg = f"review_report needs by ({' | '.join(drawing_items.REPORT_AUTHORS)}) and at"
                 raise ValueError(msg)
             if any((self.id, self.verdict, self.text, self.memory)):
-                msg = "review_report takes only sheet, by, remarks and at"
+                msg = "review_report takes only sheet, by, remarks, append and at"
                 raise ValueError(msg)
             found = drawing_items.remark_problems(self.remarks)
             if found:
@@ -813,6 +818,9 @@ class AnnotateDrawingRequest(Request):
             raise ValueError(msg)
         if self.remarks and self.action != "review_report":
             msg = f"{self.action} takes no remarks"
+            raise ValueError(msg)
+        if self.append and self.action != "review_report":
+            msg = f"{self.action} takes no append"
             raise ValueError(msg)
         if self.at is not None and self.action not in ("review_report", "request_review"):
             msg = f"{self.action} takes no at"
