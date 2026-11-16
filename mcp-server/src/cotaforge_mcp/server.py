@@ -15,7 +15,7 @@ from cotaforge.contract import Adapter, ProgressNotice
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 
-from cotaforge_mcp import __version__, conduct
+from cotaforge_mcp import __version__, conduct, engineer_orders
 from cotaforge_mcp.config import ConfigError, Settings, make_adapter
 from cotaforge_mcp.guide import server_instructions
 from cotaforge_mcp.progress import TOTAL, Reporter, position, starting_message
@@ -90,6 +90,17 @@ async def wait_for_cad(session: Session, context: Any, token: str | int | None) 
     return last, None
 
 
+def call_id_of(meta: Any) -> str | None:
+    """The id Claude Code gives a tool call, sent with the request (``_meta``); ``None`` from a client that sends none."""
+    if meta is None:
+        return None
+    try:
+        value = meta.model_dump().get(engineer_orders.META_CALL_ID)
+    except Exception:  # noqa: BLE001 - a request without it is simply not one Claude Code confirmed
+        return None
+    return value if isinstance(value, str) else None
+
+
 def build_server(session: Session, notice: str = "") -> Server:
     """The low-level server over ``session``, which need not be connected: the instructions and the tool list come
     from what the adapter declares (no CAD process) and are fixed here, once. Tool schemas are written by hand from the
@@ -110,6 +121,7 @@ def build_server(session: Session, notice: str = "") -> Server:
     async def handle(name: str, arguments: dict[str, Any] | None) -> types.CallToolResult:
         context = server.request_context
         token = context.meta.progressToken if context.meta is not None else None
+        call_id = call_id_of(context.meta)
         sent = 0.0
         tool = TOOLS_BY_NAME.get(name)
         if tool is not None and tool.needs_cad and session.connecting:
@@ -125,14 +137,14 @@ def build_server(session: Session, notice: str = "") -> Server:
         gave_up = threading.Event()
         try:
             if token is None:  # the client did not ask for progress: nothing is sent
-                run = functools.partial(call_tool, session, name, arguments, None, gave_up)
+                run = functools.partial(call_tool, session, name, arguments, None, gave_up, call_id)
                 return to_result(await anyio.to_thread.run_sync(run, abandon_on_cancel=True))
             # The tool runs in a thread and its progress arrives from threads (the adapter's heartbeat and its reader);
             # the portal hands each message to this event loop, which owns the stream to the client.
             async with anyio.from_thread.BlockingPortal() as portal:
                 sender = ProgressSender(context, token, portal)
                 try:
-                    run = functools.partial(call_tool, session, name, arguments, Reporter(sender, sent), gave_up)
+                    run = functools.partial(call_tool, session, name, arguments, Reporter(sender, sent), gave_up, call_id)
                     reply = await anyio.to_thread.run_sync(run, abandon_on_cancel=True)
                 finally:
                     sender.close()

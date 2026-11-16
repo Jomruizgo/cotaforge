@@ -32,7 +32,7 @@ STATEMENT = {
 
 
 def approve(call: Caller, entry_id: str, **extra: Any) -> str:
-    return call.ok("memory", action="approve", id=entry_id, by="Ana", text="Ana: apruebala", **extra)
+    return call.ok("memory", action="approve", id=entry_id, by="Ana", text=call.says("apruebala"), **extra)
 
 
 def test_the_tool_is_listed_and_not_gated_by_the_cad(session: object) -> None:

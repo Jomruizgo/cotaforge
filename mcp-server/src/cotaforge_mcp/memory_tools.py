@@ -34,7 +34,7 @@ from cotaforge.memory import (
 )
 from pydantic import ValidationError
 
-from cotaforge_mcp import design_memory, rules
+from cotaforge_mcp import design_memory, engineer_orders, rules
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.reply import Reply, ToolError, ok
 from cotaforge_mcp.schemas import MemoryArgs
@@ -432,6 +432,7 @@ def _approve(session: "Session", store: MemoryStore, args: MemoryArgs) -> Reply:
             code="not_proposed",
             field_name="id",
         )
+    engineer_orders.confirmed(f"the approval of memory entry {args.id}")
     said = f"by {args.by.strip()} ({' '.join(args.text.split())})"
     scope = item.scope
     if scope is Scope.user:
@@ -593,6 +594,8 @@ def _brief(session: "Session", args: MemoryArgs) -> Reply:
                 usage='memory(action="brief", drawing_review="own", text="Ana: I review the drawing myself, no fabricator")',
             )
         said = args.text if mode is not None else None
+        if args.sector is not None or args.processes is not None or mode not in (None, design_memory.DEFAULT_DRAWING_REVIEW):
+            engineer_orders.confirmed("the sector, the processes and who reviews the drawings (the project brief)")
         brief = design_memory.save_brief(settings, args.sector, args.processes, mode, wait_min, said, args.language, args.drawing_flow)
         verb = "brief updated"
     else:

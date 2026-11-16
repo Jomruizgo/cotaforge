@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import ORDER, ROW_LINE, pending_points, running_server
+from tests.integration.conftest import ROW_LINE, order, pending_points, running_server
 from tests.integration.test_drawing_finished_real import (
     CLEARANCE,
     DOWELS,
@@ -49,7 +49,7 @@ async def test_a_clean_plate_sheet_has_its_positions_and_closes_with_few_points(
         await make_plate(cad, dowel_fit="H7")  # the callout asks for H7: the holes declare it
         await cad.ok("doc", action="set_material", material="AISI 1045")  # the material is in the title block, never in a note
         await cad.ok(
-            "memory", action="brief", drawing_review="propio", text="Ana: el agente revisa el plano por su cuenta"
+            "memory", action="brief", drawing_review="propio", text=cad.says("el agente revisa el plano por su cuenta")
         )
         created = await cad.ok(
             "drawing", action="create", views=["top", "iso"], title="Placa 19", author="Taller Sur"
@@ -100,10 +100,10 @@ async def test_a_clean_plate_sheet_has_its_positions_and_closes_with_few_points(
         rows = ROW_LINE.findall(asked)  # the requirement rows the sheet still asks: only the ones the engineer's plate leaves open
         assert sorted(rows) == sorted(ROWS_LEFT), rows
         for row in rows:  # a measured one closes only on the engineer's order
-            await cad.ok("drawing", action="answer", id=row, text=ROWS_LEFT[row], **ORDER)
+            await cad.ok("drawing", action="answer", id=row, text=ROWS_LEFT[row], **order(cad))
         done = await cad.ok("drawing", action="review")
         assert "export of this sheet is open" in done, done
-        await cad.ok("drawing", action="approve", sheet="Drawing", by="Engineer", reason="the engineer: approve it")
+        await cad.ok("drawing", action="approve", sheet="Drawing", by="Engineer", reason=cad.says("I approve this drawing"))
         pdf = await cad.ok("export", action="pdf", path="placa19.pdf")
         dxf = await cad.ok("export", action="dxf", path="placa19.dxf")
         lines += ["=== export", pdf, dxf]

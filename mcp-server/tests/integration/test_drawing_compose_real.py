@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from tests.integration.conftest import ORDER, Cad, Reply, running_server
+from tests.integration.conftest import Cad, Reply, order, running_server
 from tests.integration.test_drawing_finished_real import make_plate
 from tests.integration.test_drawing_review_gaps_real import build_assembly, plate
 from tests.integration.test_drawing_weldment_real import WELD
@@ -36,7 +36,7 @@ def shot(shots: Path, name: str, reply: Reply) -> None:
 
 async def in_one_order(cad: Cad) -> None:
     await cad.ok("memory", action="brief", drawing_flow="sheet")
-    await cad.ok("memory", action="brief", drawing_review="propio", text="la prueba: el agente revisa el plano por su cuenta")
+    await cad.ok("memory", action="brief", drawing_review="propio", text=cad.says("el agente revisa el plano por su cuenta"))
 
 
 async def compose_the_rest(cad: Cad, decisions: dict[str, Any], keep: tuple[str, ...] = (), **sheet: Any) -> str:
@@ -46,7 +46,7 @@ async def compose_the_rest(cad: Cad, decisions: dict[str, Any], keep: tuple[str,
     print("PLAN", plan)
     asked = plan.split("decisions it needs")[-1]
     answers = {row: "no aplica: la prueba decide el resto" for row in ROW.findall(asked) if row not in keep}
-    return await cad.ok("drawing", action="compose", decisions={**decisions, "answers": answers}, **ORDER)
+    return await cad.ok("drawing", action="compose", decisions={**decisions, "answers": answers}, **order(cad))
 
 
 async def test_a_plate_is_composed_in_one_order(workspace: Path, tmp_path: Path) -> None:

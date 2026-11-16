@@ -12,29 +12,59 @@ import sys
 import threading
 import time
 import types
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from cotaforge_mcp import channel_tools, drawing_window
+from cotaforge_mcp import channel_tools, drawing_window, engineer_orders
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.reply import Reply, ToolError
 from cotaforge_mcp.schemas import TOOLS_BY_NAME, ChannelArgs, input_schema, visible_tools
-from tests.conftest import BareFake, Caller, DrawingFake, MakeSession
+from tests.conftest import BareFake, Caller, DrawingFake, Engineer, MakeSession
 
 NAME = "soporte"
 
 
+ENGINEERS: dict[Path, Engineer] = {}
+
+
+def engineer(workspace: Path) -> Engineer:
+    """The person at the Claude Code session that runs the channel in ``workspace``."""
+    if workspace not in ENGINEERS:
+        ENGINEERS[workspace] = Engineer(workspace.parent / f"{workspace.name}-home", workspace)
+    return ENGINEERS[workspace]
+
+
+def said(workspace: Path, text: str) -> str:
+    """The engineer types ``text`` in that session and will confirm it at the dialog; returns it."""
+    return engineer(workspace).says(text)
+
+
+def through_claude_code(workspace: Path, arguments: dict[str, object]) -> Reply:
+    """One ``channel`` call the way it reaches the server: the hook first (the engineer confirms an order of
+    his at the dialog), then the server's own gate, then the tool."""
+    person = engineer(workspace)
+    call_id = f"toolu_{uuid.uuid4().hex}"
+    refusal = person.before("channel", arguments, call_id)
+    if refusal is not None:
+        raise ToolError(refusal, code="rejected")
+    settings = Settings(adapter="fake", workspace=workspace, home=person.home)
+    order = engineer_orders.admit(settings, "channel", arguments, call_id)
+    with engineer_orders.confirming(order):
+        return channel_tools.run(workspace, ChannelArgs.model_validate(arguments))
+
+
 def call(workspace: Path, **arguments: object) -> str:
-    reply: Reply = channel_tools.run(workspace, ChannelArgs.model_validate(arguments))
+    reply: Reply = through_claude_code(workspace, arguments)
     assert not reply.is_error
     return reply.text
 
 
 def refused(workspace: Path, **arguments: object) -> ToolError:
     with pytest.raises(ToolError) as caught:
-        channel_tools.run(workspace, ChannelArgs.model_validate(arguments))
+        through_claude_code(workspace, arguments)
     return caught.value
 
 
@@ -96,14 +126,14 @@ def test_the_dibujante_never_answers_its_own_question_and_only_relays_the_engine
     ask(tmp_path)
     error = refused(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="designer", text="H7")
     assert error.code == "not_allowed" and "never answers its own question" in error.message
-    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text="H7, sí")
+    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text=said(tmp_path, "H7, sí"))
     last = log(tmp_path)[-1]
     assert (last["by"], last["via"]) == ("engineer", "drafter")
 
 
 def test_a_reply_from_the_design_session_is_the_designers_not_the_engineers(tmp_path: Path) -> None:
     ask(tmp_path)
-    error = refused(tmp_path, action="reply", role="designer", name=NAME, q=1, by="engineer", text="H7")
+    error = refused(tmp_path, action="reply", role="designer", name=NAME, q=1, by="engineer", text=said(tmp_path, "H7"))
     assert error.code == "not_allowed" and "drawing session" in error.message
 
 
@@ -176,7 +206,7 @@ def test_a_wait_does_not_return_what_its_own_session_wrote(tmp_path: Path) -> No
 
 def test_the_engineers_answer_given_in_the_drawing_session_reaches_the_designer_with_a_reminder(tmp_path: Path) -> None:
     ask(tmp_path)
-    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text="No, es libre")
+    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text=said(tmp_path, "No, es libre"))
     text, _ = wait(tmp_path, "designer", since=1)
     assert "RESPUESTA a 1 del ingeniero" in text and "No, es libre" in text
     assert "not a decision yet" in text and "assumptions-and-decisions.md" in text
@@ -341,9 +371,9 @@ def status_of(workspace: Path, q: int) -> str:
 def test_a_question_goes_from_open_to_answered_to_decided(tmp_path: Path) -> None:
     ask(tmp_path)
     assert status_of(tmp_path, 1) == "open"
-    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text="H7")
+    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text=said(tmp_path, "H7"))
     assert status_of(tmp_path, 1) == "answered"
-    call(tmp_path, action="decide", role="designer", name=NAME, q=1, by="engineer", text="H7, confirmado")
+    call(tmp_path, action="decide", role="designer", name=NAME, q=1, by="engineer", text=said(tmp_path, "H7, confirmado"))
     assert status_of(tmp_path, 1) == "decided"
     last = log(tmp_path)[-1]
     assert (last["kind"], last["by"], last["via"]) == ("decide", "engineer", "designer")
@@ -351,7 +381,7 @@ def test_a_question_goes_from_open_to_answered_to_decided(tmp_path: Path) -> Non
 
 def test_the_designer_disputes_the_engineers_answer_and_the_drafter_holds_the_point(tmp_path: Path) -> None:
     ask(tmp_path)
-    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text="Sin ajuste")
+    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text=said(tmp_path, "Sin ajuste"))
     call(tmp_path, action="dispute", role="designer", name=NAME, q=1, text="recibe un pasador: H7 (ISO 286)")
     assert status_of(tmp_path, 1) == "disputed"
     heard, _ = wait(tmp_path, "drafter", since=2)
@@ -361,10 +391,9 @@ def test_the_designer_disputes_the_engineers_answer_and_the_drafter_holds_the_po
 
 def test_a_disputed_question_is_decided_only_with_the_objection_on_record(tmp_path: Path) -> None:
     ask(tmp_path)
-    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text="Sin ajuste")
+    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text=said(tmp_path, "Sin ajuste"))
     call(tmp_path, action="dispute", role="designer", name=NAME, q=1, text="recibe un pasador: H7")
-    error = refused(
-        tmp_path, action="decide", role="designer", name=NAME, q=1, by="engineer", text="Sin ajuste, insiste"
+    error = refused(tmp_path, action="decide", role="designer", name=NAME, q=1, by="engineer", text=said(tmp_path, "Sin ajuste, insiste")
     )
     assert error.field_name == "objection" and status_of(tmp_path, 1) == "disputed"
     call(
@@ -373,7 +402,7 @@ def test_a_disputed_question_is_decided_only_with_the_objection_on_record(tmp_pa
         role="designer",
         name=NAME,
         q=1,
-        text="Sin ajuste, insiste",
+        text=said(tmp_path, "Sin ajuste, insiste"),
         objection="el diseñador recomendó H7: recibe un pasador",
     )
     assert status_of(tmp_path, 1) == "decided"
@@ -385,7 +414,7 @@ def test_a_disputed_question_is_decided_only_with_the_objection_on_record(tmp_pa
 
 def test_the_drafter_can_object_too_and_a_decided_question_takes_no_more_answers(tmp_path: Path) -> None:
     ask(tmp_path)
-    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text="Cotas en cadena")
+    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text=said(tmp_path, "Cotas en cadena"))
     call(tmp_path, action="dispute", role="drafter", name=NAME, q=1, text="una cadena acumula tolerancia")
     call(
         tmp_path,
@@ -393,12 +422,12 @@ def test_the_drafter_can_object_too_and_a_decided_question_takes_no_more_answers
         role="drafter",
         name=NAME,
         q=1,
-        text="Cotas en cadena",
+        text=said(tmp_path, "Cotas en cadena"),
         objection="acumula tolerancia",
     )
     assert refused(tmp_path, action="reply", role="designer", name=NAME, q=1, by="designer", text="x").code == "decided"
     assert refused(tmp_path, action="dispute", role="designer", name=NAME, q=1, text="x").code == "decided"
-    assert refused(tmp_path, action="decide", role="drafter", name=NAME, q=1, text="otra vez").code == "decided"
+    assert refused(tmp_path, action="decide", role="drafter", name=NAME, q=1, text=said(tmp_path, "otra vez")).code == "decided"
 
 
 def test_a_decision_is_the_engineers_and_the_designer_is_told_when_he_answered(tmp_path: Path) -> None:
@@ -406,7 +435,7 @@ def test_a_decision_is_the_engineers_and_the_designer_is_told_when_he_answered(t
     assert (
         refused(tmp_path, action="decide", role="designer", name=NAME, q=1, by="designer", text="x").field_name == "by"
     )
-    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text="Libre")
+    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text=said(tmp_path, "Libre"))
     heard, _ = wait(tmp_path, "designer", since=1)
     assert "not a decision yet" in heard and "check it against" in heard and 'action="dispute"' in heard
 
@@ -414,7 +443,7 @@ def test_a_decision_is_the_engineers_and_the_designer_is_told_when_he_answered(t
 def test_done_names_the_questions_still_not_decided(tmp_path: Path) -> None:
     ask(tmp_path)
     ask(tmp_path, "otra")
-    call(tmp_path, action="decide", role="drafter", name=NAME, q=1, text="libre")
+    call(tmp_path, action="decide", role="drafter", name=NAME, q=1, text=said(tmp_path, "libre"))
     assert "question(s) 2" in call(tmp_path, action="done", role="drafter", name=NAME)
 
 
@@ -688,7 +717,7 @@ def running_window(tmp: Path, machine: Machine, idle_s: float | None = 120.0, an
 def finished(workspace: Path, settled: bool = True) -> None:
     ask(workspace)
     if settled:
-        call(workspace, action="decide", role="drafter", name=NAME, q=1, text="libre")
+        call(workspace, action="decide", role="drafter", name=NAME, q=1, text=said(workspace, "libre"))
     call(workspace, action="done", role="drafter", name=NAME)
 
 

@@ -22,7 +22,7 @@ from cotaforge.contract import AdapterError, AnnotateDrawingRequest, DrawingRequ
 from cotaforge.language import say
 from pydantic import ValidationError
 
-from cotaforge_mcp import design_memory, drawing_gate, drawing_weld_questions, process_stages
+from cotaforge_mcp import design_memory, drawing_gate, drawing_weld_questions, engineer_orders, process_stages
 from cotaforge_mcp import drawing_requirements as reqs
 from cotaforge_mcp.reply import Reply, ToolError, ok
 from cotaforge_mcp.schemas import DrawingArgs
@@ -533,6 +533,8 @@ def _refuse_repeat(info: Any, scope: dict[str, Any], args: DrawingArgs) -> dict[
             code="invalid_input",
             field_name="recompose",
         )
+    if args.recompose:
+        engineer_orders.confirmed("recompose (composing the whole sheet again)")
     if "signature" not in (info.composed or {}) or args.recompose or any(recorded.get(k) != v for k, v in scope.items()):
         return recorded
     raise ToolError(

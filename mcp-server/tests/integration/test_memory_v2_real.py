@@ -210,7 +210,7 @@ async def test_the_acceptance_walkthrough(workspace: Path) -> None:
             action="approve",
             id="agujero-de-paso-con-holgura",
             by="Ana",
-            text="Ana: apruébalo como regla del proyecto",
+            text=cad.says("apruébalo como regla del proyecto"),
         )
         pushed = await t.step(
             "op", name="insert_component", params={"part": "soporte", "placement": {"origin": [400, 0, 0]}}
