@@ -6,8 +6,12 @@ ticket the server checks, and that the work goes on when he is away. The enginee
 
 import io
 import json
+import os
+import shlex
+import shutil
 import subprocess
 import sys
+import time
 import types
 from pathlib import Path
 from typing import Any
@@ -120,7 +124,7 @@ def test_the_order_says_his_phrase_and_what_it_closes() -> None:
     )
     assert engineer_orders.question(order, "en").startswith('Is this your order? Phrase: "la rosca la hace el cliente". Closes: req.thread')
     report = engineer_orders.order_of("drawing", ORDERS[2][1])
-    assert report is not None and "1 observaciones: falta el número" in report.closes("es") and "la hoja Plano" in report.closes("es")
+    assert report is not None and "1 observaciones: missing: falta el número" in report.closes("es") and "la hoja Plano" in report.closes("es")
     assert "(ninguna)" in engineer_orders.question(report, "es")
 
 
@@ -167,6 +171,44 @@ def test_the_hook_loads_without_the_servers_libraries() -> None:
     assert done.stdout.strip() == "[]"
 
 
+# --- the hook: he sees everything he confirms -------------------------------------------------------------------------
+
+
+def shown_for(engineer: Engineer, tool: str, arguments: dict[str, Any]) -> str:
+    verdict, text = decision(hook(engineer, tool, arguments))
+    assert verdict == "ask", text
+    return text
+
+
+def test_the_dialog_shows_every_remark_of_his_report_whole(engineer: Engineer) -> None:
+    items = [{"kind": "missing", "text": f"punto {n} " + "largo " * 20 + f"fin{n}"} for n in range(1, 10)]  # 9 remarks of 130 characters
+    shown = shown_for(engineer, "drawing", {"action": "review_report", "sheet": "Plano", "by": "engineer", "items": items})
+    for n in range(1, 10):
+        assert f"fin{n}" in shown, f"remark {n} was cut or left out"
+    assert "9 observaciones" in shown
+
+
+def test_the_dialog_shows_an_answer_and_the_words_whole(engineer: Engineer) -> None:
+    said = "no aplica: " + "porque el cliente rosca la pieza y " * 12 + "fin-de-la-respuesta"  # about 430 characters
+    arguments = {"action": "answer", "id": "req.thread", "text": said, "by": "Ana", "reason": "dijo " + "muchas cosas " * 10 + "fin-de-sus-palabras"}
+    shown = shown_for(engineer, "drawing", arguments)
+    assert "fin-de-la-respuesta" in shown and "fin-de-sus-palabras" in shown
+
+
+def test_an_order_too_long_to_show_whole_is_refused_so_the_agent_splits_it(engineer: Engineer, settings: Settings) -> None:
+    items = [{"kind": "missing", "text": f"punto {n} " + "largo " * 20} for n in range(1, 20)]
+    verdict, reason = decision(hook(engineer, "drawing", {"action": "review_report", "sheet": "Plano", "by": "engineer", "items": items}))
+    assert verdict == "deny" and "NOT RECORDED" in reason and "too long" in reason and "Split it" in reason
+    assert tickets(settings) == [] and engineer_orders.pending(settings.home, str(settings.workspace)) == []  # nothing to wait for: it must be split
+
+
+def test_an_order_too_long_is_refused_whether_or_not_he_is_there(engineer: Engineer) -> None:
+    for minutes in (0, 60):
+        engineer.leaves(minutes=minutes)
+        verdict, reason = decision(hook(engineer, "memory", {**APPROVE, "text": "apruébala " * 200}))
+        assert verdict == "deny" and "Split it" in reason
+
+
 # --- the hook: nobody is there to ask ---------------------------------------------------------------------------------------
 
 
@@ -183,9 +225,9 @@ def test_when_the_engineer_is_away_the_order_is_denied_at_once_and_kept_for_him(
 
 
 def test_he_counts_as_present_for_the_minutes_the_brief_says(engineer: Engineer, settings: Settings) -> None:
-    engineer.leaves(minutes=9)
-    assert decision(hook(engineer, "memory", APPROVE))[0] == "ask"  # 10 minutes by default
-    engineer.leaves(minutes=11)
+    engineer.leaves(minutes=1.5)
+    assert decision(hook(engineer, "memory", APPROVE))[0] == "ask"  # 2 minutes by default: a dialog has no timeout
+    engineer.leaves(minutes=2.5)
     assert decision(hook(engineer, "memory", APPROVE))[0] == "deny"
     (settings.workspace / "brief.yaml").write_text("order_presence_min: 30\n", encoding="utf-8")
     assert decision(hook(engineer, "memory", APPROVE))[0] == "ask"
@@ -240,6 +282,79 @@ def test_a_call_claude_code_gave_no_id_is_denied(engineer: Engineer, settings: S
     assert decision(engineer_orders.decide(payload, engineer.environ()))[0] == "deny" and tickets(settings) == []
     payload["tool_use_id"] = "../../outside"
     assert decision(engineer_orders.decide(payload, engineer.environ()))[0] == "deny" and tickets(settings) == []
+
+
+def age(path: Path, days: float) -> None:
+    """Make what ``path`` holds ``days`` older: the time inside its entries and the time of the file."""
+    entries = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    for entry in entries:
+        entry["at"] -= days * 86400
+    path.write_text("".join(json.dumps(entry) + "\n" for entry in entries), encoding="utf-8")
+    old = time.time() - days * 86400
+    os.utime(path, (old, old))
+
+
+def test_an_order_that_waits_expires_like_a_ticket(engineer: Engineer, settings: Settings) -> None:
+    engineer.leaves(minutes=30)
+    hook(engineer, "memory", APPROVE)
+    path = engineer_orders.pending_path(settings.home, str(settings.workspace))
+    age(path, days=engineer_orders.KEEP_DAYS - 1)
+    assert len(engineer_orders.pending(settings.home, str(settings.workspace))) == 1  # still within its week
+    age(path, days=2)
+    assert engineer_orders.pending(settings.home, str(settings.workspace)) == []
+    assert engineer.back("ya volví") is None  # an old point is not handed to the agent as if it were new
+
+
+def test_the_orders_of_a_space_nobody_came_back_to_are_swept(engineer: Engineer, settings: Settings) -> None:
+    folder = engineer_orders.orders_dir(settings.home) / "pending"
+    folder.mkdir(parents=True)
+    forgotten = folder / "0123456789abcdef01234567.jsonl"
+    forgotten.write_text(json.dumps({"key": "k", "at": time.time(), "question": "?"}) + "\n", encoding="utf-8")
+    age(forgotten, days=engineer_orders.KEEP_DAYS + 1)
+    engineer.leaves(minutes=30)
+    hook(engineer, "memory", APPROVE)  # another order waits: the old file goes
+    assert not forgotten.exists()
+    assert len(engineer_orders.pending(settings.home, str(settings.workspace))) == 1  # the live one stays
+
+
+# --- the command that starts the hook ------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("tool", "arguments", "kind"), ORDERS)
+def test_every_kind_of_order_has_a_marker_the_prefilter_looks_for(tool: str, arguments: dict[str, Any], kind: str) -> None:
+    """The shell prefilter lists the markers of ``order_of``; a kind of order without one would never reach the hook."""
+    text = json.dumps({"tool_name": f"mcp__cad__{tool}", "tool_input": arguments}, separators=(",", ":"), ensure_ascii=False)
+    assert any(marker in text for marker in engineer_orders.ORDER_MARKERS), kind
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="the hook command is for sh and Git Bash")
+def test_the_prefilter_starts_the_hook_only_for_a_call_that_may_carry_an_order(tmp_path: Path) -> None:
+    started = tmp_path / "started"
+    command = cli.prefilter(f"cat > {shlex.quote(started.as_posix())}")
+
+    def run(tool: str, arguments: dict[str, Any]) -> str:
+        line = json.dumps({"hook_event_name": "PreToolUse", "tool_name": f"mcp__cad__{tool}", "tool_input": arguments}, separators=(",", ":"), ensure_ascii=False)
+        done = subprocess.run(["sh", "-c", command], input=line.encode("utf-8"), capture_output=True, timeout=60, check=False)  # noqa: S603, S607
+        assert done.returncode == 0 and done.stdout == b"", done
+        return line
+
+    plain = [  # the calls of the agent's own work, by far the most of them
+        ("drawing", {"action": "add", "items": [{"type": "note", "text": "x"}]}),
+        ("drawing", {"action": "export"}),
+        ("drawing", {"action": "answer", "id": "q.callouts", "text": "no aplica: un solo tipo de agujero"}),
+        ("memory", {"action": "save", "entry": ENTRY}),
+        ("memory", {"action": "brief"}),
+        ("memory", {"action": "answer", "id": "x", "text": "applies: here"}),
+        ("channel", {"action": "ask", "role": "drafter", "name": "soporte", "text": "¿Ajuste?"}),
+    ]
+    for tool, arguments in plain:
+        assert engineer_orders.order_of(tool, arguments) is None
+        run(tool, arguments)
+        assert not started.exists(), (tool, arguments)
+    for tool, arguments, _kind in ORDERS:
+        line = run(tool, arguments)
+        assert started.read_text(encoding="utf-8") == line + "\n"  # handed on unchanged
+        started.unlink()
 
 
 # --- when he writes again -------------------------------------------------------------------------------------------------
@@ -378,9 +493,10 @@ def test_init_writes_the_orders_hook_on_its_two_events_once(tmp_path: Path) -> N
     settings = json.loads((folder / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
     (before,) = orders_hooks(settings, "PreToolUse")
     assert before["matcher"] == "mcp__cad__(drawing|memory|channel)"
-    assert before["hooks"] == [{"type": "command", "command": "/usr/bin/python3 -m cotaforge_mcp.engineer_orders", "timeout": 10}]
+    assert before["hooks"] == [{"type": "command", "command": cli.prefilter("/usr/bin/python3 -m cotaforge_mcp.engineer_orders"), "timeout": 10}]
     (prompt,) = orders_hooks(settings, "UserPromptSubmit")
-    assert "matcher" not in prompt and prompt["hooks"] == before["hooks"]
+    assert "matcher" not in prompt  # a message starts one turn: it needs no look first
+    assert prompt["hooks"] == [{"type": "command", "command": "/usr/bin/python3 -m cotaforge_mcp.engineer_orders", "timeout": 10}]
     assert len(settings["hooks"]["PreToolUse"]) == 2  # with the run_native hook
 
 
@@ -400,7 +516,7 @@ def test_a_caller_that_gives_only_the_run_native_hook_gets_the_orders_hook_of_th
     command = cli.hook_command("/opt/my tools/python", windows=False, save_methods=("SaveAs3",))
     settings = cli.build_settings({}, {}, [], command)
     (before,) = orders_hooks(settings, "PreToolUse")
-    assert before["hooks"][0]["command"] == "'/opt/my tools/python' -m cotaforge_mcp.engineer_orders"
+    assert before["hooks"][0]["command"] == cli.prefilter("'/opt/my tools/python' -m cotaforge_mcp.engineer_orders")
 
 
 def test_nothing_in_the_template_answers_the_dialog_for_him() -> None:

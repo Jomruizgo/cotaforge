@@ -9,9 +9,9 @@ types into a tool argument proves nothing, so the person is asked, by Claude Cod
   ``cotaforge init``) before every ``drawing``, ``memory`` and ``channel`` call. A call without an order passes
   untouched (the hook prints nothing). For one with an order the hook answers ``ask``: Claude Code shows the engineer
   its permission dialog with the exact phrase and what it closes, in the project language, and only he can answer it.
-  Measured on Claude Code 2.1.325: the dialog appears in the ``default`` and ``auto`` modes even though the design
-  space allows every ``mcp__cad`` tool; rejected, the call never reaches the server; with nobody to answer
-  (``claude -p``) Claude Code denies the call.
+  Measured on Claude Code 2.1.325: the dialog appears in the ``default``, ``acceptEdits`` and ``auto`` modes even
+  though the design space allows every ``mcp__cad`` tool; rejected, the call never reaches the server; with nobody to
+  answer (``claude -p``) Claude Code denies the call.
 * The signal the server checks is a ticket for that one call: when it asks, the hook writes
   ``<home>/orders/tickets/<tool_use_id>.json`` with a digest of the tool and its input. Claude Code gives the same id to
   the server with the call (``_meta["claudecode/toolUseId"]``), and the server accepts the order only if that ticket
@@ -19,9 +19,13 @@ types into a tool argument proves nothing, so the person is asked, by Claude Cod
   chooses neither the id of its call nor the ``_meta`` of the request, so no argument it types makes a ticket.
 * Never a turn waiting on a dialog nobody answers: the hook asks only while the engineer is at the screen, which is
   when the last message he typed in the session (the transcript's last ``turnOrigin: human``) is at most
-  ``order_presence_min`` minutes old (``brief.yaml``; 10 by default). Otherwise it denies at once, the order is not
+  ``order_presence_min`` minutes old (``brief.yaml``; 2 by default). Otherwise it denies at once, the order is not
   recorded, and the point is kept in ``<home>/orders/pending/`` until his next message, when the ``UserPromptSubmit``
   side of this same hook hands the list to the agent to ask him in one short message.
+  Claude Code gives a permission dialog no timeout: if he types and leaves at that very moment, the dialog waits for
+  him, like any of its own. That is why the window is short.
+* Everything he confirms is shown to him, whole: what the call carries and the digest covers is what the dialog says.
+  An order too long for the dialog (``MAX_DIALOG`` characters) is refused with the reason, so the agent splits it.
 * A permission mode in which no person answers a dialog (``bypassPermissions``, ``dontAsk``, anything unknown) and
   ``plan`` are denied at once as well, with the reason.
 
@@ -32,8 +36,9 @@ What this cannot do: a file is not a signature. An agent the engineer lets run s
 space whose hook it first removed, could watch for its own call id and write the ticket itself; that is a forgery it
 has to commit, no longer a sentence it types into a tool argument.
 
-The hook runs before every call of three tools, so this module loads next to nothing: what only an order needs
-(paths, digests, the brief, the transcript) is imported where it is used.
+The hook runs before every call of three tools, so the command that starts it first looks at the call's JSON in the
+shell (``ORDER_MARKERS``) and starts Python only for a call that may carry an order; and this module loads next to
+nothing: what only an order needs (paths, digests, the brief, the transcript) is imported where it is used.
 """
 
 from __future__ import annotations
@@ -63,23 +68,30 @@ TOOL_PREFIX = f"mcp__{SERVER_NAME}__"
 ORDER_TOOLS = ("drawing", "memory", "channel")
 MATCHER = f"{TOOL_PREFIX}({'|'.join(ORDER_TOOLS)})"
 """The ``PreToolUse`` matcher of the hook: the three tools that can carry an order."""
+ORDER_MARKERS = ('"by"', '"review_choice"', '"decide"', '"sector"', '"processes"', '"drawing_review"')
+"""What a call's JSON must contain, as a token, to carry an order: the keys and values ``order_of`` reads. A call with
+none of them carries no order, and the command ``cotaforge init`` writes (``prefilter`` in the CLI) does not even start
+Python for it. A test checks that every kind of order contains one, so this list cannot fall behind ``order_of``."""
 PRE_TOOL_EVENT = "PreToolUse"
 PROMPT_EVENT = "UserPromptSubmit"
 META_CALL_ID = "claudecode/toolUseId"
 """The key of a tool call's ``_meta`` in which Claude Code gives the server the id of the call (measured, 2.1.325)."""
 
 ASKING_MODES = frozenset({"default", "acceptEdits", "auto"})
-"""The permission modes in which Claude Code shows a hook's ``ask`` to the person (``default`` and ``auto`` measured)."""
+"""The permission modes in which Claude Code shows a hook's ``ask`` to the person: ``default``, ``acceptEdits`` and
+``auto``, each measured on Claude Code 2.1.325."""
 PRESENCE_KEY = "order_presence_min"
-PRESENCE_MIN_DEFAULT = 10.0
+PRESENCE_MIN_DEFAULT = 2.0
 """Minutes since the engineer's last typed message within which he counts as being at the screen."""
 KEEP_DAYS = 7
+"""How long a ticket, or an order that waits for the engineer, is kept."""
 CALL_ID = r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}"
 HUMAN_TURN = "human"
 TASK_NOTIFICATION = "<task-notification>"
 DEFAULT_REVIEW_TOKENS = ("", "engineer_or_fabricator", "ingeniero_o_fabricante")
 ENGINEER_TOKENS = ("engineer", "ingeniero")
-MAX_SHOWN = 300
+MAX_DIALOG = 1500
+"""The most characters the dialog shows; a longer order is refused, never cut (he must see all he confirms)."""
 
 CODE = "order_not_confirmed"
 
@@ -104,9 +116,18 @@ def _text(value: object) -> str:
     return " ".join(value.split()) if isinstance(value, str) else ""
 
 
-def _short(value: object, limit: int = MAX_SHOWN) -> str:
-    text = _text(value) if isinstance(value, str) else _text(json.dumps(value, ensure_ascii=False, default=str))
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+def _short(value: object) -> str:
+    """A value as the dialog shows it: all of it, on one line."""
+    return _text(value) if isinstance(value, str) else _text(json.dumps(value, ensure_ascii=False, default=str))
+
+
+def _remark(item: object) -> str:
+    """One remark of his report, whole: its kind, its text and anything else it carries."""
+    if not isinstance(item, dict):
+        return _short(item)
+    rest = {k: v for k, v in item.items() if k not in ("kind", "text")}
+    head = ": ".join(part for part in (_short(item.get("kind") or ""), _short(item.get("text") or "")) if part)
+    return head + (f" ({_short(rest)})" if rest else "")
 
 
 def _is_engineer(value: object) -> bool:
@@ -135,7 +156,7 @@ def _drawing(args: Mapping[str, Any]) -> Order | None:
         if not _is_engineer(by):
             return None  # the manufacturer agent's own report
         items = args.get("items") if isinstance(args.get("items"), list) else []
-        points = "; ".join(_short(item.get("text") if isinstance(item, dict) else item, 120) for item in items[:8])
+        points = "; ".join(_remark(item) for item in items)
         listed_es = f"{len(items)} observaciones: {points}" if items else "sin observaciones"
         listed_en = f"{len(items)} remarks: {points}" if items else "no remarks"
         return Order("review_report", reason, f"tu informe de revisión{on_es}, {listed_es}", f"your review report{on_en}, {listed_en}")
@@ -385,9 +406,9 @@ def question(order: Order, language: str) -> str:
     return f"¿Es orden tuya? Frase: {phrase}. Cierra: {order.closes(language)}."
 
 
-def _forget_old(folder: Path, now: float) -> None:
+def _forget_old(folder: Path, now: float, pattern: str = "*.json") -> None:
     try:
-        files = list(folder.glob("*.json"))
+        files = list(folder.glob(pattern))
     except OSError:
         return
     for file in files:
@@ -398,7 +419,9 @@ def _forget_old(folder: Path, now: float) -> None:
             continue
 
 
-def _read_pending(path: Path) -> list[dict[str, Any]]:
+def _read_pending(path: Path, now: float | None = None) -> list[dict[str, Any]]:
+    """The orders waiting in ``path``, without the ones older than ``KEEP_DAYS`` (they expire like a ticket does)."""
+    oldest = (time.time() if now is None else now) - KEEP_DAYS * 86400
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -409,8 +432,12 @@ def _read_pending(path: Path) -> list[dict[str, Any]]:
             entry = json.loads(line)
         except ValueError:
             continue
-        if isinstance(entry, dict):
-            found.append(entry)
+        if not isinstance(entry, dict):
+            continue
+        stamp = entry.get("at")
+        if isinstance(stamp, (int, float)) and not isinstance(stamp, bool) and stamp < oldest:
+            continue
+        found.append(entry)
     return found
 
 
@@ -451,6 +478,13 @@ def decide(payload: object, environ: Mapping[str, str], now: float | None = None
     brief = _brief(workspace)
     language = language_of(brief)
     asked = question(order, language)
+    if len(asked) > MAX_DIALOG:
+        return _answer(
+            "deny",
+            f"NOT RECORDED: this {order.kind} order is too long to show him whole ({len(asked)} characters; the dialog "
+            f"takes {MAX_DIALOG}) and he must see all of what he confirms. Split it into smaller calls (fewer points "
+            "or shorter text in each) and repeat them; every call is put to him on its own.",
+        )
     mode = payload.get("permission_mode")
     if mode not in ASKING_MODES:
         return _answer(
@@ -461,12 +495,13 @@ def decide(payload: object, environ: Mapping[str, str], now: float | None = None
         )
     key = digest(tool, arguments)
     waiting = pending_path(home, workspace)
-    others = [entry for entry in _read_pending(waiting) if entry.get("key") != key]
+    others = [entry for entry in _read_pending(waiting, now) if entry.get("key") != key]
     typed = last_typed(payload.get("transcript_path"))
     minutes = presence_minutes(brief)
     if typed is None or now - typed > minutes * 60:
         try:
             _write_pending(waiting, [*others, {"key": key, "at": now, "tool": tool, "kind": order.kind, "question": asked}])
+            _forget_old(waiting.parent, now, "*.jsonl")  # a design space nobody came back to
         except OSError:
             pass  # the point stays open on the sheet all the same
         away = "the engineer is away: it waits for him" if language == "en" else "el ingeniero no está: queda pendiente para cuando vuelva"

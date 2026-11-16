@@ -402,14 +402,27 @@ def upsert_hook(settings: dict[str, Any], command: str) -> None:
     entries.append({"matcher": RUN_NATIVE_MATCHER, "hooks": [handler]})
 
 
+def prefilter(command: str) -> str:
+    """``command`` run only for a tool call whose JSON may carry an order (``engineer_orders.ORDER_MARKERS``): the shell
+    reads the call (one line, as Claude Code writes it) and looks for the markers itself, so a call that carries none
+    costs no Python start. What matches is handed on to ``command`` unchanged. POSIX ``sh`` and Git Bash only."""
+    patterns = "|".join(f"*{shlex.quote(marker)}*" for marker in engineer_orders.ORDER_MARKERS)
+    return f"IFS= read -r _call; case \"$_call\" in {patterns}) printf '%s\\n' \"$_call\" | {command};; esac"
+
+
 def upsert_orders_hooks(settings: dict[str, Any], command: str) -> None:
     """Put the hook of the engineer's orders (``engineer_orders``) in the settings, on the two events it answers:
     before a ``drawing``, ``memory`` or ``channel`` call (it asks him to confirm an order) and when a message starts
     a turn (it hands over what waited for him). A previous one of ours is replaced; every other hook is left alone.
     Without it no order of his is recorded."""
     hooks = settings.setdefault("hooks", {})
-    handler = {"type": "command", "command": command, "timeout": HOOK_TIMEOUT_SECONDS}
     for event, matcher in ((engineer_orders.PRE_TOOL_EVENT, engineer_orders.MATCHER), (engineer_orders.PROMPT_EVENT, None)):
+        # a message that starts a turn happens once per message: only a tool call needs the cheap look first
+        handler = {
+            "type": "command",
+            "command": prefilter(command) if event == engineer_orders.PRE_TOOL_EVENT else command,
+            "timeout": HOOK_TIMEOUT_SECONDS,
+        }
         entries = hooks.setdefault(event, []) if isinstance(hooks, dict) else None
         if not isinstance(entries, list):
             msg = _say(
