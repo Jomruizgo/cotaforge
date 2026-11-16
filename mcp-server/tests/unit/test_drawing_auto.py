@@ -130,7 +130,9 @@ def test_removing_what_the_model_measured_needs_the_engineers_order_too(settings
     call.ok("drawing", action="create")
     text = call.err("drawing", action="remove", items=["rq_callouts"], reason="no hacen falta las llamadas")
     assert "measured_not_dismissable" in text and "rq_callouts" in items_of(fake)
-    call.ok("drawing", action="remove", items=["rq_callouts"], reason="Ana lo ordena: las llamadas van en otra hoja", by="Ana")
+    invented = call.err("drawing", action="remove", items=["rq_callouts"], reason="las llamadas sobran en esta hoja", by="Ana")
+    assert "rejected" in invented and "rq_callouts" in items_of(fake)  # his name on an order he never gave: he rejects it
+    call.ok("drawing", action="remove", items=["rq_callouts"], reason=call.says("las llamadas van en otra hoja"), by="Ana")
     assert "rq_callouts" not in items_of(fake)
     assert fake.drawings["Drawing"]["answers"]["req.thread"].ordered_by == "Ana"
 

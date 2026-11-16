@@ -40,6 +40,7 @@ from typing import Any
 from cotaforge import paths
 from cotaforge.language import say
 
+from cotaforge_mcp import engineer_orders
 from cotaforge_mcp.design_memory import workspace_language
 from cotaforge_mcp.drawing_window import (
     AGENT_RE,
@@ -403,7 +404,7 @@ def _ask(workspace: Path, args: ChannelArgs, name: str) -> Reply:
     return ok(
         f"question {event['q']} recorded (n={event['n']}). Keep drawing what does not depend on it, then "
         f'channel(action="wait", role="drafter", name="{name}", since={event["n"]}) for the reply; if the engineer '
-        f'answers in this session first, record his words with channel(action="reply", by="engineer", q={event["q"]}).'
+        f'answers in this session first, record his words with channel(action="reply", by="engineer", q={event["q"]}): Claude Code asks him to confirm it.'
     )
 
 
@@ -428,6 +429,8 @@ def _reply(workspace: Path, args: ChannelArgs, name: str) -> Reply:
             code="not_allowed",
             field_name="by",
         )
+    if args.by == "engineer":
+        engineer_orders.confirmed(f"the engineer's reply to question {args.q}")
     fields = {"kind": "reply", "via": role, "by": args.by, "q": args.q, "text": text}
     event = _append(workspace, name, fields, _about(args, name))
     return ok(f"reply to {event['q']} recorded (n={event['n']}); the question is answered, not decided.")
@@ -452,6 +455,7 @@ def _decide(workspace: Path, args: ChannelArgs, name: str) -> Reply:
         raise ToolError(
             "decide needs q and is always the engineer's decision (by=engineer)", code="invalid_input", field_name="by"
         )
+    engineer_orders.confirmed(f"the engineer's decision on question {args.q}")
     fields = {
         "kind": "decide",
         "via": role,

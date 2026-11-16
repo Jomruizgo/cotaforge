@@ -202,6 +202,7 @@ class DrawingArgs(Strict):
     fresh: bool = Field(default=False, description="create: start over")
     symmetry: bool | None = None  # create, update: only when the design intent declares the part symmetric
     items: list[Any] | None = Field(default=None, description="add: items; remove: ids; review_report: remarks")
+    append: bool = Field(default=False, description="review_report: add items to the report, not replace it")
     region: list[float] | None = Field(default=None, description="capture: zoom x0,y0,x1,y1 mm")
     id: str | None = None  # answer / approve / review_*: see cad_guide(topic="drawing:done")
     text: str | None = None
@@ -547,7 +548,7 @@ TOOLS: tuple[ToolDef, ...] = (
         "answer|approve|request_review|review_choice|review_report, "
         "sheet?, items?, template?, angle?, title?, author?, date?, material?, scale?, language?, drawing_number?, "
         "revision?, general_tolerances?, company?, title_block?, body?, isometric?, views?, symmetry?, "
-        "region?, id?, text?, by?, reason?)",
+        "region?, id?, text?, by?, reason?, append?)",
         'drawing(action="add", items=[{"type":"hole_dim","all":true}])',
         _drawing_actions,
         lambda session: bool(_drawing_actions(session)),

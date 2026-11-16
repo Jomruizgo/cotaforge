@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -19,6 +20,9 @@ from cotaforge.adapters.freecad import find_freecad_root
 from cotaforge.adapters.freecad.rpc import _binaries
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+from cotaforge_mcp import engineer_orders
+from tests.conftest import Engineer
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -64,13 +68,21 @@ ANSWERED = re.compile(r"^  - ([a-z_]+(?:[:#]\S*)?): (?:APPLIES|DOES NOT APPLY)",
 
 
 class Cad:
-    def __init__(self, session: ClientSession, looks: bool = True) -> None:
+    def __init__(self, session: ClientSession, looks: bool = True, engineer: Engineer | None = None) -> None:
         self.session = session
+        self.engineer = engineer
+        """The person at Claude Code: he confirms each order of his at its permission dialog (the real hook runs)."""
         self.built = False  # a sheet was built (created or composed) in this test: its review runs when the test ends
         self.allowed: set[str] = set()
         self.looks = looks
         """Look at the sheet before an export of it, like the agent does (export waits for a capture taken after the last
         change of the sheet): the tests of the export are about something else; the ones about the look pass ``looks=False``."""
+
+    def says(self, text: str) -> str:
+        """The engineer types ``text`` and will accept the dialog that shows it. Returns the text, to carry it in
+        the order (an order he does not confirm is never recorded)."""
+        assert self.engineer is not None
+        return self.engineer.says(text)
 
     def allow(self, *codes: str) -> None:
         """This test builds a defect on purpose: these codes may stand on its sheets."""
@@ -104,7 +116,15 @@ class Cad:
         ):
             sheet = {"sheet": arguments["sheet"]} if arguments.get("sheet") else {}
             await self.session.call_tool("drawing", {"action": "capture", **sheet})
-        return Reply(await self.session.call_tool(tool, arguments))
+        meta = None
+        if self.engineer is not None:  # what Claude Code does before the call: the hook, and his answer to its dialog
+            call_id = f"toolu_{uuid.uuid4().hex}"
+            refusal = self.engineer.before(tool, arguments, call_id)
+            if refusal is not None:
+                said = types.TextContent(type="text", text=refusal)
+                return Reply(types.CallToolResult(content=[said], isError=True))
+            meta = {engineer_orders.META_CALL_ID: call_id}
+        return Reply(await self.session.call_tool(tool, arguments, meta=meta))
 
     async def ok(self, tool: str, **arguments: Any) -> str:
         reply = await self(tool, **arguments)
@@ -128,10 +148,11 @@ async def running_server(
         "COTAFORGE_VISIBLE": "1" if visible else "0",
         "COTAFORGE_FREECAD_ISOLATED": "1",  # a FreeCAD profile of its own: never the engineer's recent files or recovery data
     }
+    env.setdefault(engineer_orders.ENV_HOME, str(workspace.parent / "home"))  # never the real data folder
     params = StdioServerParameters(command=sys.executable, args=["-m", "cotaforge_mcp"], env=env)
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
         init = await session.initialize()
-        cad = Cad(session)
+        cad = Cad(session, engineer=Engineer(Path(env[engineer_orders.ENV_HOME]), workspace))
         yield cad, init
         if cad.built:  # no test sheet without a review: reached only when the test body ended without an error
             await cad.assert_sheet_clean()
@@ -139,9 +160,16 @@ async def running_server(
 
 FINDING_LINE = re.compile(r"^  (?:warning|info|BLOCKS EXPORT)(?: \(does not block export\))? (\S+?)(?: \[[^\]]*\])?(?: \(row [^)]*\))?: ", re.M)
 ROW_LINE = re.compile(r"^  \[(?:MISSING|NEEDS AN ANSWER)\] (req\.\S+) ", re.M)
-ORDER = {"by": "la prueba", "reason": "la prueba trata de otra cosa que este punto; el ingeniero lo ordena así"}
-"""What an engineer who orders a point closed says: a test about something else than the finished drawing plays him, so
-the measured points (which an agent may not dismiss on its own word) close like the rest."""
+ORDER_WORDS = "esta prueba trata de otra cosa: ordeno cerrar este punto"
+
+
+def order(cad: Cad) -> dict[str, str]:
+    """The order of an engineer who closes a point: a test about something else than the finished drawing plays him.
+    He says it and confirms it at Claude Code's dialog (the server records no order he did not confirm), so the
+    measured points (which an agent may not dismiss on its own word) close like the rest."""
+    return {"by": "Ana", "reason": cad.says(ORDER_WORDS)}
+
+
 QUESTION_LINE = re.compile(r"^  (q\.\S+): ", re.M)
 MEMORY_LINE = re.compile(r"^  (\S+) — recognize: ", re.M)
 
@@ -166,7 +194,7 @@ async def finish_drawing(
     that is about something else than the finished drawing (the export of a sheet is refused until this is done): the
     project reviews its drawings itself (``propio``, the engineer's words quoted), so the points are the agent's own.
     Memory entries are read first, as the server requires. Returns how many points it answered."""
-    await cad.ok("memory", action="brief", drawing_review="propio", text="la prueba trata de otra cosa que la revisión")
+    await cad.ok("memory", action="brief", drawing_review="propio", text=cad.says("esta prueba trata de otra cosa que la revisión"))
     arguments = {"sheet": sheet} if sheet else {}
     total = 0
     for _ in range(4):  # answering opens the next points (the memory entries of the drawing ops, the rows that follow)
@@ -177,7 +205,7 @@ async def finish_drawing(
         for entry in memory:
             await cad.ok("memory", action="get", id=entry)
         for point in [*findings, *questions, *memory, *rows]:
-            await cad.ok("drawing", action="answer", id=point, text=reason, **ORDER, **arguments)
+            await cad.ok("drawing", action="answer", id=point, text=reason, **order(cad), **arguments)
         total += len(findings) + len(questions) + len(memory) + len(rows)
     return total
 
@@ -214,7 +242,7 @@ async def close_findings(
     rows = await pending_rows(cad, sheet)
     arguments = {"sheet": sheet} if sheet else {}
     for point in [*findings, *rows]:
-        await cad.ok("drawing", action="answer", id=point, text=reason, **ORDER, **arguments)
+        await cad.ok("drawing", action="answer", id=point, text=reason, **order(cad), **arguments)
     return len(findings) + len(rows)
 
 

@@ -13,6 +13,7 @@ from cotaforge_mcp import (
     bearing_seats,
     channel_tools,
     design_memory,
+    engineer_orders,
     feature_tools,
     guide,
     inspect_tools,
@@ -281,13 +282,15 @@ def call_tool(
     arguments: dict[str, Any] | None,
     progress: Reporter | None = None,
     cancelled: threading.Event | None = None,
+    call_id: str | None = None,
 ) -> Reply:
-    """Run one tool. Whatever the engineer changed by hand since the last call heads the reply, once, whatever the
+    """Run one tool. ``call_id``: the id Claude Code gave this call (an engineer's order is admitted only with the
+    ticket of that id: ``engineer_orders``). Whatever the engineer changed by hand since the last call heads the reply, once, whatever the
     tool and whether it worked (``hand_edits``). ``cancelled`` is set by the server when the client gave the call up:
     the call still runs to its end (the CAD cannot interrupt what it is doing), but nobody is left to read its reply, so
     what a reply would carry (the hand edits) stays for the next one."""
     session.mem.measured = None  # what a call measured on the model is good for that call only
-    reply = _call_tool(session, name, arguments, progress, cancelled)
+    reply = _call_tool(session, name, arguments, progress, cancelled, call_id)
     session.mem.measured = None
     if cancelled is not None and cancelled.is_set():
         return reply
@@ -313,6 +316,7 @@ def _call_tool(
     arguments: dict[str, Any] | None,
     progress: Reporter | None,
     cancelled: threading.Event | None = None,
+    call_id: str | None = None,
 ) -> Reply:
     tool = TOOLS_BY_NAME.get(name)
     if tool is None or not tool.visible(session):
@@ -339,10 +343,12 @@ def _call_tool(
                 code="not_supported",
                 field_name="action",
             )
-        if not tool.needs_cad:
-            return _run(session, tool, args, progress, cancelled)
-        with session.holding(name, cancelled):  # one call at a time in the CAD; waiting for another is bounded
-            return _run(session, tool, args, progress)
+        order = engineer_orders.admit(session.settings, name, arguments, call_id)  # refuses an order he did not confirm
+        with engineer_orders.confirming(order):
+            if not tool.needs_cad:
+                return _run(session, tool, args, progress, cancelled)
+            with session.holding(name, cancelled):  # one call at a time in the CAD; waiting for another is bounded
+                return _run(session, tool, args, progress)
     except ValidationError as exc:
         return fail(_invalid(tool, exc, session))
     except ToolError as failure:

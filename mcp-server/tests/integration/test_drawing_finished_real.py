@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import ORDER, Cad, pending_points, pending_rows, running_server
+from tests.integration.conftest import Cad, order, pending_points, pending_rows, running_server
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="the visible FreeCAD window is exercised on Windows")
 
@@ -98,7 +98,7 @@ async def test_a_plate_drawing_is_refused_until_it_is_finished_then_written_and_
     async with running_server(workspace, visible=True) as (cad, _):
         await make_plate(cad)
         await cad.ok(
-            "memory", action="brief", drawing_review="propio", text="Ana: el agente revisa el plano por su cuenta"
+            "memory", action="brief", drawing_review="propio", text=cad.says("el agente revisa el plano por su cuenta")
         )
 
         # 1. a deliberately incomplete drawing: no material, no notes, the dowels not called out
@@ -213,7 +213,7 @@ async def test_a_plate_drawing_is_refused_until_it_is_finished_then_written_and_
                 action="answer",
                 id=row,
                 text="no aplica: la nota de la hoja y el archivo de intención ya lo dicen",
-                **ORDER,
+                **order(cad),
             )
         done = await cad.ok("drawing", action="review")
         out.say("review after the answers", done)
@@ -240,7 +240,7 @@ async def test_a_plate_drawing_is_refused_until_it_is_finished_then_written_and_
 
         # 8. the engineer approves; "Aprobó" is filled and a change of the sheet empties it
         approved = await cad.ok(
-            "drawing", action="approve", sheet="Drawing", by="Engineer", reason="the engineer: approve it"
+            "drawing", action="approve", sheet="Drawing", by="Engineer", reason=cad.says("I approve this drawing")
         )
         out.say("approve", approved)
         listed = await cad.ok("drawing", action="list")

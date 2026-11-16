@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from tests.integration.conftest import ORDER, Cad, Reply, run_freecad_script, running_server
+from tests.integration.conftest import Cad, Reply, run_freecad_script, running_server
 from tests.integration.test_drawing_compose_real import compose_the_rest, in_one_order
 from tests.integration.test_drawing_pattern_real import flange
 from tests.integration.test_drawing_review_gaps_real import plate
@@ -87,7 +87,7 @@ DIAMETERS = [
 async def test_shaft_in_steps_mode(workspace: Path, tmp_path: Path) -> None:
     shots = Path(os.environ.get("COTAFORGE_TEST_SHOTS") or tmp_path / "shots")
     async with running_server(workspace, visible=True) as (cad, _):
-        await cad.ok("memory", action="brief", drawing_review="propio", text="la prueba: el agente revisa el plano por su cuenta")
+        await cad.ok("memory", action="brief", drawing_review="propio", text=cad.says("el agente revisa el plano por su cuenta"))
         await shaft(cad, workspace)
         print("CREATE", await cad.ok("drawing", action="create", title="Eje de transmision", template="A3", language="es"))
         print("ADD", await cad.ok("drawing", action="add", items=[{"type": "baseline_dims", "from": "face:6", "view": "front", "side": "below"}, *DIAMETERS, {"type": "view_lines"}]))
@@ -128,13 +128,12 @@ async def test_flange_in_sheet_mode(workspace: Path, tmp_path: Path) -> None:
         print("LIST", await cad.ok("drawing", action="list"))
         shot(shots, "sheet_flange", await cad("drawing", action="capture"))
         print("REVIEW", await cad.ok("drawing", action="review"))
-        assert ORDER
 
 
 async def test_flange_in_steps_mode(workspace: Path, tmp_path: Path) -> None:
     shots = Path(os.environ.get("COTAFORGE_TEST_SHOTS") or tmp_path / "shots")
     async with running_server(workspace, visible=True) as (cad, _):
-        await cad.ok("memory", action="brief", drawing_review="propio", text="la prueba: el agente revisa el plano por su cuenta")
+        await cad.ok("memory", action="brief", drawing_review="propio", text=cad.says("el agente revisa el plano por su cuenta"))
         await flange(cad)
         await cad.ok("drawing", action="create", template="A3", views=["top", "iso"])
         await cad.ok("drawing", action="add", items=[{"type": "hole_dim", "all": True}, {"type": "view_lines"}, {"type": "overall"}])
@@ -209,7 +208,7 @@ async def test_a_plate_thickness_with_a_fit_prints_its_deviations_in_mm(workspac
     visible = os.environ.get("COTAFORGE_TEST_HEADLESS") != "1"
     shots = Path(os.environ.get("COTAFORGE_TEST_SHOTS") or tmp_path / "shots")
     async with running_server(workspace, visible=visible) as (cad, _):
-        await cad.ok("memory", action="brief", drawing_review="propio", text="la prueba: el agente revisa el plano por su cuenta")
+        await cad.ok("memory", action="brief", drawing_review="propio", text=cad.says("el agente revisa el plano por su cuenta"))
         await plate(cad, "placa", 20, False, "Placa base")
         await cad.ok("drawing", action="create", title="Placa base", template="A3", language="es")
         thickness = {"type": "dim", "id": "thick", "kind": "distance", "from": {"at": [-60, 0, 0]}, "to": {"at": [-60, 0, 20]}, "along": "z", "view": "front", "side": "left", "fit": "h9"}

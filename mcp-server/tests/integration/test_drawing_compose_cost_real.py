@@ -69,7 +69,7 @@ async def test_compose_of_a_welded_bracket_takes_seconds_and_not_minutes(workspa
             "answers": {r: "no aplica: la ménsula de esta prueba no lo declara" for r in rows},
         }
         started = time.monotonic()
-        composed = await cad.ok("drawing", action="compose", decisions=decisions, by="la prueba", reason="la prueba mide el tiempo")
+        composed = await cad.ok("drawing", action="compose", decisions=decisions, by="Ana", reason=cad.says("esta prueba mide el tiempo"))
         elapsed = time.monotonic() - started
         print(f"COMPOSE_SECONDS {elapsed:.1f}")
         assert "composed sheet" in composed, composed

@@ -41,7 +41,7 @@ def test_each_one_holds_the_export_and_the_agents_own_word_does_not_close_it(set
         id=code,
         text="no aplica: el corte enseña el montaje",
         by="Ana",
-        reason="el corte B-B enseña cómo encajan las placas con los separadores",
+        reason=call.says("el corte B-B enseña cómo encajan las placas con los separadores"),
     )
     assert f"- {code}:" not in call.err("export", action="pdf")  # closed by the engineer's order, the rest still holds
 

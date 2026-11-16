@@ -18,7 +18,7 @@ from tests.unit.test_drawing_requirements import PLATE
 from tests.unit.test_memory_v2 import PRINCIPLE
 from tests.unit.test_pocket_corners import SLOT, _block, _pocket, _rect
 
-WORDS = "Ana: deja las esquinas como están, el taller las hace por electroerosión"
+WORDS = "deja las esquinas como están, el taller las hace por electroerosión"
 ORDERED = f"does not apply: {WORDS}"
 SHEET_ORDER = {"by": "Ana", "reason": WORDS}
 PLAIN = "does not apply: the shop makes it by EDM"
@@ -107,11 +107,11 @@ def test_fixed_closes_it(base_call: Caller, scenario: Any) -> None:
 def test_an_order_with_his_words_closes_it_and_the_review_shows_who_and_what(base_call: Caller, scenario: Any) -> None:
     entry, _ = scenario(base_call)
     read(base_call, entry)
-    done = base_call.ok("memory", action="answer", id=entry, text=ORDERED, by="Ana")
+    done = base_call.ok("memory", action="answer", id=entry, text=f"does not apply: {base_call.says(WORDS)}", by="Ana")
     assert f"answered: {entry}" in done and "ordered by Ana" in done
     ready = base_call.ok("memory", action="review", stage="detail")
     assert "ready - 1 entry answered" in ready and f"- {entry}: ORDERED KEPT, measured:" in ready
-    assert "[ordered by Ana]" in ready and "Ana: deja las esquinas como están" in ready
+    assert "[ordered by Ana]" in ready and "deja las esquinas como están" in ready
     assert measured_alerts.open_now(base_call.session) == {}
 
 
@@ -134,7 +134,7 @@ def test_an_order_needs_his_name_and_words_that_are_not_a_yes(base_call: Caller,
     read(base_call, entry)
     only_words = base_call.err("memory", action="answer", id=entry, text=ORDERED)  # no name: it is the agent's
     assert "measured_not_dismissable" in only_words
-    only_name = base_call.err("memory", action="answer", id=entry, text="does not apply: ok", by="Ana")
+    only_name = base_call.err("memory", action="answer", id=entry, text=f"does not apply: {base_call.says('ok')}", by="Ana")
     assert "answer is not enough" in only_name
     assert entry not in base_call.session.mem.answers
 
@@ -143,7 +143,7 @@ def test_an_order_needs_his_name_and_words_that_are_not_a_yes(base_call: Caller,
 def test_the_order_is_kept_with_the_document_state(base_call: Caller, scenario: Any) -> None:
     entry, _ = scenario(base_call)
     read(base_call, entry)
-    base_call.ok("memory", action="answer", id=entry, text=ORDERED, by="Ana")
+    base_call.ok("memory", action="answer", id=entry, text=f"does not apply: {base_call.says(WORDS)}", by="Ana")
     state = base_call.session.mem.to_json()["answers"][entry]
     assert state["ordered_by"] == "Ana" and state["order"] == WORDS and state["measured"].startswith("memory: ")
     assert measured_alerts.covered(state, measured_alerts.live(base_call.session)[entry])
@@ -156,7 +156,7 @@ def test_a_new_violation_after_the_order_is_open_again(base_call: Caller) -> Non
     call = base_call
     entry, _ = pocket_open(call)
     read(call, entry)
-    call.ok("memory", action="answer", id=entry, text=ORDERED, by="Ana")
+    call.ok("memory", action="answer", id=entry, text=f"does not apply: {call.says(WORDS)}", by="Ana")
     assert "ready" in call.ok("memory", action="review", stage="detail")
     call.ok(
         "op",
@@ -257,7 +257,7 @@ def test_the_row_is_closed_by_his_order_given_in_memory(settings: Settings) -> N
     _the_plate_pocket(call)
     _answer_the_rest(call)
     read(call, pocket_corners.ENTRY_ID)
-    call.ok("memory", action="answer", id=pocket_corners.ENTRY_ID, text=ORDERED, by="Ana")
+    call.ok("memory", action="answer", id=pocket_corners.ENTRY_ID, text=f"does not apply: {call.says(WORDS)}", by="Ana")
     assert "exported pdf" in call.ok("export", action="pdf")
 
 
@@ -265,6 +265,7 @@ def test_no_answer_on_the_sheet_closes_the_row_not_even_with_his_words(settings:
     call, fake = _drawing(settings)
     _the_plate_pocket(call)
     _answer_the_rest(call)
+    call.says(WORDS)  # even with words he really typed
     for extra in ({}, SHEET_ORDER):
         text = call.err("drawing", action="answer", id="req.measured_alerts", text="met: it is fine here", **extra)
         assert "measured_not_dismissable" in text and "memory(action=answer" in text

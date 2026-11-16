@@ -364,7 +364,9 @@ def restore_review(session: "Session") -> list[str]:
             reports = [r for r in mine if r.action == "review_report" and r.by == who]
             held = info.reports.get(who)
             if reports and (held is None or (reports[-1].at or 0.0) > held.at):
-                todo.append(reports[-1])
+                # the report is the last call that replaced it and the pieces added after it, in order
+                start = max((i for i, r in enumerate(reports) if not r.append), default=0)
+                todo.extend(reports[start:])
         todo.extend(r for key, r in latest_answer.items() if key not in info.answers)
         for request in todo:
             try:

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import ORDER, Cad, Reply, pending_points, running_server
+from tests.integration.conftest import Cad, Reply, order, pending_points, running_server
 from tests.integration.test_drawing_compose_real import compose_the_rest, in_one_order
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="the visible FreeCAD window is exercised on Windows")
@@ -100,7 +100,7 @@ async def steps_sheet(cad: Cad, shots: Path, name: str, title: str, views: list[
     shot(
         shots, name, await cad("drawing", action="capture")
     )  # what the order of create leaves: view_lines is there already
-    await cad.ok("drawing", action="remove", items=["rq_view_lines"], **ORDER)
+    await cad.ok("drawing", action="remove", items=["rq_view_lines"], **order(cad))
     review = await cad.ok("drawing", action="review")
     findings, _, _ = await pending_points(cad)
     unmarked = diagonal_findings(findings)

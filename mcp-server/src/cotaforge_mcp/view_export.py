@@ -525,6 +525,12 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
     with session.lock:
         session.require_executor()
         action = args.action
+        if args.append and action != "review_report":
+            raise ToolError(
+                f"append belongs to review_report only (it adds items to a reviewer's report); {action} takes none",
+                code="invalid_input",
+                field_name="append",
+            )
         if action in ("plan", "compose"):
             drawing_compose.require_sheet_flow(session, action)
             run = drawing_compose.plan if action == "plan" else drawing_compose.compose
@@ -674,7 +680,8 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                 return ok(drawing_gate.review_choice(session, args.sheet, args.by))
             if action == "review_report":
                 return ok(
-                    drawing_gate.review_report(session, args.sheet, args.by, args.items), limit=REVIEW_REPLY_CHARS
+                    drawing_gate.review_report(session, args.sheet, args.by, args.items, args.append),
+                    limit=REVIEW_REPLY_CHARS,
                 )
             return ok(drawing_gate.approve(session, args.sheet, args.by, args.reason))
         session.need("capture_drawing", "drawing capture")

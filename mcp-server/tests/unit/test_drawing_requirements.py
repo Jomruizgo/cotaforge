@@ -267,11 +267,11 @@ def test_a_measured_row_is_not_dismissed_on_the_agents_word_but_an_engineers_ord
     assert "measured_not_dismissable" in text and "1 threaded holes" in text and "by=<his name>" in text
     assert call.err("drawing", action="answer", id="req.thread", text="no aplica: x y z", by="Ana").count("by (his name) and reason") == 1
     done = call.ok(
-        "drawing", action="answer", id="req.thread", text="no aplica: la rosca la hace el cliente", by="Ana", reason="Ana: la rosca la mecaniza el cliente, quítala del plano"
+        "drawing", action="answer", id="req.thread", text="no aplica: la rosca la hace el cliente", by="Ana", reason=call.says("la rosca la mecaniza el cliente, quítala del plano")
     )
     assert "requirement" in done
     answer = fake.drawings["Drawing"]["answers"]["req.thread"]
-    assert answer.ordered_by == "Ana" and "«Ana: la rosca la mecaniza el cliente, quítala del plano»" in answer.text
+    assert answer.ordered_by == "Ana" and "«la rosca la mecaniza el cliente, quítala del plano»" in answer.text
     review = call.ok("drawing", action="review")
     assert "req.thread: DOES NOT APPLY: la rosca la hace el cliente" in review and "(ordered by Ana)" in review
     assert "[answered] req.thread" in review and "answered: DOES NOT APPLY" in review
@@ -296,7 +296,7 @@ def test_a_measured_finding_is_not_dismissed_on_the_agents_word_either(settings:
     call, _ = drawing_session(settings, adapter=fake, mode="own")
     text = call.err("drawing", action="answer", id="hole_not_located:@20,20,8", text="no aplica: es de paso")
     assert "measured_not_dismissable" in text and "Agujero Ø6" in text
-    call.ok("drawing", action="answer", id="hole_not_located:@20,20,8", text="no aplica: es de paso", by="Ana", reason="Ana: no se ubica, la ubica el montaje")
+    call.ok("drawing", action="answer", id="hole_not_located:@20,20,8", text="no aplica: es de paso", by="Ana", reason=call.says("no se ubica, la ubica el montaje"))
     assert "(ordered by Ana)" in call.ok("drawing", action="review")
     assert "exported pdf" in call.ok("export", action="pdf")  # his order closed the measurement
 

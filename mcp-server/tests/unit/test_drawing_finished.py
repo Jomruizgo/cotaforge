@@ -244,16 +244,16 @@ def test_approve_is_the_engineers_gate_and_fills_the_title_block(settings: Setti
         assert "engineer's gate" in call.err("drawing", action="approve", sheet="Drawing", **arguments)
     assert "names the sheet" in call.err("drawing", action="approve", by="Ana", reason="Ana: apruébalo")
     assert [a.action for a in fake.annotated if a.action == "approve"] == []
-    text = call.ok("drawing", action="approve", sheet="Drawing", by="Ana", reason="Ana: apruébalo")
-    assert "approved: sheet Drawing by Ana (Ana: apruébalo)" in text and "empties it again" in text
+    text = call.ok("drawing", action="approve", sheet="Drawing", by="Ana", reason=call.says("apruebo el plano"))
+    assert "approved: sheet Drawing by Ana (apruebo el plano)" in text and "empties it again" in text
     request = fake.annotated[-1]
-    assert (request.action, request.by, request.text) == ("approve", "Ana", "Ana: apruébalo")
+    assert (request.action, request.by, request.text) == ("approve", "Ana", "apruebo el plano")
     assert "approved by: Ana" in call.ok("drawing", action="review")
 
 
 def test_any_change_of_the_sheet_empties_the_approval(settings: Settings) -> None:
     call, _ = drawing_session(settings)
-    call.ok("drawing", action="approve", sheet="Drawing", by="Ana", reason="Ana: apruébalo")
+    call.ok("drawing", action="approve", sheet="Drawing", by="Ana", reason=call.says("apruebo el plano"))
     call.ok("drawing", action="add", items=[{"type": "note", "text": "Sin rebabas"}])
     assert 'not approved ("Aprobó" is empty)' in call.ok("drawing", action="review")
 
