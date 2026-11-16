@@ -797,8 +797,10 @@ def _over_dimensioning(data: ReviewInput) -> list[Finding]:
             for m in same[1:]:
                 if abs(m.lo - chain[-1].hi) < SAME_MM:
                     chain.append(m)
-            if len(chain) >= 2 and abs(sum(m.hi - m.lo for m in chain) - overall) < SAME_MM * 2:
-                ids = tuple(dict.fromkeys(str(m.spec["id"]) for m in chain))
+            ids = tuple(dict.fromkeys(str(m.spec["id"]) for m in chain))
+            # a chain made by ONE item (the default hole location of two groups of holes) is that item's own composition: the
+            # drafter has no tool to take one dimension out of it, so it is not a finding it could ever clear
+            if len(chain) >= 2 and len(ids) >= 2 and abs(sum(m.hi - m.lo for m in chain) - overall) < SAME_MM * 2:  # noqa: PLR2004
                 text = ctx.say(
                     f"Las cotas {', '.join(ids)} forman una cadena que suma la cota total en {axis} "
                     f"({ctx.num(overall)} mm): sobreacotado. Deja el localizador desde el borde de referencia con la separación y "

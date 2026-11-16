@@ -249,3 +249,14 @@ def test_the_fix_the_message_names_is_one_the_gate_lets_through() -> None:
         (one,) = _closing(_plate_review({"type": "datum_dims", "id": "g", "auto": True}, _plate_row("low8", 52, 60), language=language))
         assert start in one.message
         assert one.message.count('drawing(action="remove", items=[') == 1 and "rq_" in one.message and "reason=" in one.message and "ids=" not in one.message
+
+
+def test_a_chain_made_by_the_default_hole_location_alone_is_not_a_finding_the_drafter_could_clear() -> None:
+    """Two groups of holes (Ø6.6 on the rows y = 8 and 52, Ø5 on y = 20 and 52): the default location gives 8 + 44 from the bottom
+    and 8 from the top, which closes on 60, all from the ONE item. The drafter has no tool to take one dimension out of it, so the
+    review leaves it alone (a chain with another item in it is flagged: the test above)."""
+    ctx = views_context([hole(0, 10, 8), hole(1, 90, 8), hole(2, 10, 52), hole(3, 90, 52), hole(4, 50, 20, 5.0), hole(5, 70, 20, 5.0), hole(6, 50, 52, 5.0), hole(7, 70, 52, 5.0)])
+    found = run_review(ctx, {"type": "overall", "id": "o1"}, {"type": "datum_dims", "id": "g", "auto": True})
+    spans = [(a, b) for item, axis, a, b in ctx.extras["position_spans"] if axis == "y"]
+    assert (0.0, 8.0) in spans and (8.0, 52.0) in spans and (52.0, 60.0) in spans, spans  # the chain does close, inside one item
+    assert _closing(found) == []
