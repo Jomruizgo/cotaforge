@@ -122,3 +122,55 @@ def table(path: Path) -> str:
         for (width, dashed), mm in sorted(merged.items())
     ]
     return f"{path.name}\n" + "\n".join(rows)
+
+
+def dashed_strokes(path: Path) -> list[tuple[float, tuple[float, ...], tuple[float, float, float, float]]]:
+    """Every stroke of the file drawn with a dash pattern: ``(width in mm, the pattern in mm on the paper, the box of the
+    stroke in mm from the lower left corner of the page)``. The pattern is what says which line type a line is: a dashed
+    line has two lengths (dash, gap), the long-dash dotted one of ISO 128 four (long dash, gap, dot, gap)."""
+    found: list[tuple[float, tuple[float, ...], tuple[float, float, float, float]]] = []
+    for stream in _streams(path.read_bytes()):
+        ctm = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        stack: list[tuple[list[float], float, tuple[float, ...]]] = []
+        width, pattern = 1.0, ()
+        nums: list[float] = []
+        points: list[tuple[float, float]] = []
+        for token in _TOKEN.findall(stream):
+            if token.startswith(b"["):
+                try:
+                    pattern = tuple(float(x) for x in token[1:-1].split())
+                except ValueError:
+                    pattern = ()
+                continue
+            try:
+                nums.append(float(token))
+                continue
+            except ValueError:
+                pass
+            if token == b"q":
+                stack.append((ctm[:], width, pattern))
+            elif token == b"Q" and stack:
+                ctm, width, pattern = stack.pop()
+            elif token == b"cm" and len(nums) >= 6:
+                ctm = _mul(nums[-6:], ctm)
+            elif token == b"w" and nums:
+                width = nums[-1]
+            elif token in (b"m", b"l", b"c", b"v", b"y") and len(nums) >= 2:
+                x, y = nums[-2], nums[-1]
+                points.append(((x * ctm[0] + y * ctm[2] + ctm[4]) * PT_MM, (x * ctm[1] + y * ctm[3] + ctm[5]) * PT_MM))
+            elif token in STROKE:
+                scale = math.sqrt(abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])) or 1.0
+                if pattern and points:
+                    xs, ys = [p[0] for p in points], [p[1] for p in points]
+                    box = (min(xs), min(ys), max(xs), max(ys))
+                    found.append((round(width * scale * PT_MM, 2), tuple(round(v * scale * PT_MM, 2) for v in pattern), box))
+                points = []
+            elif token in NO_PAINT:
+                points = []
+            nums = []
+    return found
+
+
+def is_chain(pattern: tuple[float, ...]) -> bool:
+    """Whether a dash pattern is a long-dash dotted line: a long dash, a gap, a dot (much shorter than the dash), a gap."""
+    return len(pattern) == 4 and pattern[0] >= 6 * pattern[2] and pattern[0] > pattern[1]  # noqa: PLR2004
