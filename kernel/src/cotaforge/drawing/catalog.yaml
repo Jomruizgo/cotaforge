@@ -281,9 +281,9 @@ rules:
       plus one locator from a reachable edge; never an unstated symmetry. A measurement that needs a special instrument
       gets a note.
     origin: owner
-    sources: [owner, prompt]
-    checks: []
-    weight: debt
+    sources: [owner, prompt, checks]
+    checks: [measurement_unstated]
+    weight: blocks
   - id: hole_group.spacing_from_first
     step: dimensions
     applies: {features: [hole_group]}
@@ -291,9 +291,9 @@ rules:
       A group of holes that receives screws is located by its function, the first from the edge and the others
       from the first, centre to centre.
     origin: owner
-    sources: [prompt]
-    checks: []
-    weight: debt
+    sources: [prompt, checks]
+    checks: [hole_group_no_locator]
+    weight: blocks
   - id: circular_pattern.polar
     step: dimensions
     applies: {features: [circular_pattern]}

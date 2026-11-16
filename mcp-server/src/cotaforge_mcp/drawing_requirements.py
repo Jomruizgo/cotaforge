@@ -302,17 +302,17 @@ ROWS: tuple[Row, ...] = (
         auto="callouts",
         title=("Tamaño y posición de cada rasgo", "Size and location of every feature"),
         must=(
-            "cada agujero, rasgo y radio lleva su tamaño y su posición desde una referencia de la hoja, una vez",
-            "every hole, feature and radius carries its size and its location from a reference the sheet has, once",
+            "cada agujero, rasgo y radio lleva su tamaño y su posición, una vez; cada grupo de agujeros iguales, la separación entre ellos y UNA cota desde una arista de la pieza, como las mide el taller con calibre",
+            "every hole, feature and radius carries its size and its location, once; each group of equal holes, the spacing between them and ONE dimension from an edge of the part, as the shop measures them with a caliper",
         ),
         standard="ISO 129-1",
         question=(
-            "¿Desde qué cara, arista o eje se cuentan las posiciones y cuál es la cota crítica de cada relación?",
-            "Which face, edge or axis are the positions counted from and which dimension is critical in each relation?",
+            "¿Cuál es la cota crítica de cada relación? (las posiciones de los agujeros no se preguntan: se acotan para el calibre, el micrómetro y el gramil que tiene todo taller)",
+            "Which dimension is critical in each relation? (the positions of the holes are not asked: they are dimensioned for the caliper, micrometer and height gauge every shop has)",
         ),
         proposal=(
-            "desde las caras de referencia del archivo de intención; sin referencia se pregunta, nunca desde la esquina de la caja",
-            "from the reference faces of the intent file; with no reference it is asked, never from the corner of the box",
+            "por grupo de agujeros iguales, su separación y una cota desde la arista más cercana (o desde el dato que el archivo de intención declare); una línea base desde un dato solo si se pide; lo que exige otro instrumento (MMC, redondez, perfil) lleva una nota que dice cómo medirlo",
+            "per group of equal holes, its spacing and a dimension from the nearest edge (or from the datum the intent file declares); a baseline from one datum only when asked; what needs another instrument (CMM, roundness, profile) carries a note that says how to measure it",
         ),
         only="part",
         triggers=("holes", "features", "rounds"),
@@ -655,6 +655,7 @@ MEASURED_FINDINGS = frozenset(
         "hole_not_located",
         "hole_partly_located",
         "hole_no_reference",
+        "hole_group_no_locator",
         "hole_no_callout",
         "thread_no_callout",
         "thread_no_representation",
@@ -719,6 +720,11 @@ MEASURED_FINDINGS = frozenset(
 no callout, an item that cannot be drawn, two views on top of each other): an answer ``does not apply`` cannot dismiss
 them, only the engineer's order can. The ones that are a judgement stay answerable: ``collision`` (accepted when no free
 place exists), ``fit_hole_no_tolerance`` (a diameter that LOOKS like a dowel), ``text_over_part``, the ``notes_*`` (a part may have no heat treatment), the style ones."""
+
+RECHECKED_FINDINGS = frozenset({"view_adds_nothing"})
+"""Measured findings whose fix is visible on the sheet itself: a view with no dimension, callout or balloon. The agent answered
+``applies`` ("covered by the dimensions put") on the side view of a plate that carried none and the view stayed: only the
+engineer's order keeps one, the agent drops it or dimensions it."""
 
 NOT_APPLIES = "not_applies"
 APPLIES = "applies"
@@ -889,7 +895,11 @@ def answer_counts(answer: Any, measured: bool) -> bool:
 
 
 def finding_closed(finding: Any) -> bool:
-    """A review finding is closed by an answer that counts (``MEASURED_FINDINGS`` cannot be dismissed on the agent's word)."""
+    """A review finding is closed by an answer that counts (``MEASURED_FINDINGS`` cannot be dismissed on the agent's word).
+    A ``RECHECKED_FINDINGS`` one is closed by no word of the agent at all, ``applies`` included: fixing it makes it disappear
+    from the review, so a claim of a fix with the finding still standing is contradicted by the sheet itself."""
+    if finding.answer is not None and finding.code in RECHECKED_FINDINGS:
+        return bool(getattr(finding.answer, "ordered_by", ""))
     return answer_counts(finding.answer, finding.code in MEASURED_FINDINGS)
 
 

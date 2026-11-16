@@ -158,7 +158,7 @@ def check_every_item_shows_on_the_page_when_it_is_added_and_the_page_matches_the
     call("create_drawing", op("d", template="A3", title="Placa", scale=1.0))
     # the overall dimensions are TechDraw's own objects, not mirrored ones; the thread arc of the M6 and the centre lines of
     # the default location are cosmetic edges of the views (no object of their own)
-    assert keys() == set(), keys()
+    assert keys() == {"loc"}, keys()  # the default location: its dimensions are TechDraw dimension objects of the sheet
     steps: list[tuple[list[dict[str, Any]], str]] = [
         ([{"type": "view_lines", "id": "vl"}], "vl"),
         ([{"type": "hole_dim", "id": "dowels", "at": [[x, y, 0] for x, y in DOWELS], "fit": "H7"}], "dowels"),
@@ -345,8 +345,8 @@ def check_a_callout_the_placer_chooses_stays_inside_the_frame() -> None:
     """Without side or offset the placer moves a callout that would leave the frame (or land on something) to a place that
     does not, on every sheet size."""
     build_part()
-    for template in ("A4", "A3"):
-        call("create_drawing", op("d", template=template, scale=1.0, fresh=True))
+    for template, scale in (("A4", 0.5), ("A3", 1.0)):  # the largest scale the plate takes with its dimensions on each paper
+        call("create_drawing", op("d", template=template, scale=scale, fresh=True))
         add({"type": "hole_dim", "id": "dowels", "at": [[x, y, 0] for x, y in DOWELS], "fit": "H7"})
         add(
             {"type": "hole_dim", "id": "clear", "at": [[x, y, 0] for x, y in CLEARANCE]},
@@ -431,7 +431,10 @@ def check_every_centre_mark_is_at_the_projected_centre_of_its_hole_in_the_sheet_
         # a cross somebody moved is named
         # a TechDraw view: the crosses are cosmetic edges of it; the engineer deletes one of them by hand
         top = next(v for v in drawing.part_views(page) if drawing.view_key(v) == "top")
-        kind, values = json.loads(str(top.CotaforgeCosmetic))["loc"][1][0]
+        edges = json.loads(str(top.CotaforgeCosmetic))["loc"][1]
+        # the first ones are the centre lines that join the holes of a row or a column (the default location draws them before the
+        # marks): the engineer deletes one of the CROSSES, a short line through a hole centre
+        kind, values = next((k, v) for k, v in edges if k == "line" and abs(v[2] - v[0]) + abs(v[3] - v[1]) <= 12.0)
         top.removeCosmeticEdge(str(sheet_native._find(top, (kind, tuple(values))).Tag))  # noqa: SLF001
         problems = drawing.centre_mark_problems(_rec(), None, "check")
         assert problems and any("not at the centre of any hole" in p or "page does not" in p for p in problems), (
