@@ -614,3 +614,74 @@ def test_the_signature_of_a_view_with_centre_lines_says_they_are_centre_line_obj
     assert su.cosmetic_signature([axis(38.75, 101.25)]) != old
     thin = su.NativeCosmetic("t1", "front", "arc", (1.0, 2.0, 3.0, 0.0, 90.0), "thin")
     assert su.CENTRE_LINE_MARK not in su.cosmetic_signature([thin])
+
+
+# --- the lines of a thread: cosmetic edges of the view, and what the engineer's hand leaves alone ---------------------------
+
+
+def thread_unit() -> Any:
+    """What an external thread asks of a view at (100, 100), scale 2: two thin lines at the minor diameter, the wide line that
+    ends them across the major diameter, and the thin arc of an end view."""
+    page = lambda x, y: (100 + 2 * x, 100 + 2 * y)  # noqa: E731
+    lines = [
+        su.NativeCosmetic("threads", "front", "line", (*page(60, 9.0), *page(80, 9.0)), "thin"),
+        su.NativeCosmetic("threads", "front", "line", (*page(60, -9.0), *page(80, -9.0)), "thin"),
+        su.NativeCosmetic("threads", "front", "line", (*page(60, -10.0), *page(60, 10.0)), "thick"),
+        su.NativeCosmetic("threads", "front", "arc", (*page(30, 0.0), 18.0, 90.0, 360.0), "thin"),
+    ]
+    return types.SimpleNamespace(key="threads", natives=tuple(lines))
+
+
+def test_the_thread_lines_are_cosmetic_edges_in_the_weights_of_the_table_and_the_continuous_line(native: Any) -> None:
+    view = shaft_view()
+    page = page_of(native, view)
+    assert native.sync_cosmetics(page, [thread_unit()]) == {}
+    assert view.CenterLines == [] and len(view.CosmeticEdges) == 4  # no centre-line object, no picture
+    assert [e.Format["weight"] for e in view.CosmeticEdges] == [0.18, 0.18, 0.35, 0.18]
+    assert [e.number for e in view.CosmeticEdges] == [lt.CONTINUOUS] * 4  # none is left the dashed line
+    assert native.line_type_problems(page) == []
+    wide = view.CosmeticEdges[2]  # across the major diameter, exactly
+    assert abs(wide.End.y - wide.Start.y) == pytest.approx(20.0) and wide.Start.x == wide.End.x == pytest.approx(60.0)
+
+
+def test_a_thread_line_the_engineer_deleted_stays_deleted_and_the_sheet_says_so(native: Any) -> None:
+    view = shaft_view()
+    page = page_of(native, view)
+    native.sync_cosmetics(page, [thread_unit()])
+    view.removeCosmeticEdge(view.CosmeticEdges[2].Tag)  # the engineer takes the end line off
+    made: list[str] = []
+    native.sync_cosmetics(page, [thread_unit()], made)
+    assert made == [] and len(view.CosmeticEdges) == 3
+    assert native.deleted_by_hand(page) == ["threads (front)"]
+    assert native.cosmetic_problems(page, thread_unit()) == []  # a hand deletion is no problem of the sheet
+
+
+def test_a_weight_or_a_line_number_the_engineer_gave_a_thread_line_is_never_put_back(native: Any) -> None:
+    view = shaft_view()
+    page = page_of(native, view)
+    native.sync_cosmetics(page, [thread_unit()])
+    view.CosmeticEdges[0].Format = {**view.CosmeticEdges[0].Format, "weight": 0.5}
+    view.CosmeticEdges[1].number = 2
+    for _ in range(2):
+        native.sync_cosmetics(page, [thread_unit()])
+    assert [e.Format["weight"] for e in view.CosmeticEdges] == [0.5, 0.18, 0.35, 0.18]
+    assert [e.number for e in view.CosmeticEdges] == [lt.CONTINUOUS, 2, lt.CONTINUOUS, lt.CONTINUOUS]
+
+
+def test_a_file_that_did_not_keep_the_weights_gets_the_table_put_on_its_lines_once(native: Any) -> None:
+    """A sheet made before the sheet kept the weight it set: its lines are not told apart from the engineer's, so the table's weight
+    goes on them once (the old behaviour), and from then on a weight that differs is his."""
+    import json  # noqa: PLC0415
+
+    view = shaft_view()
+    page = page_of(native, view)
+    native.sync_cosmetics(page, [thread_unit()])
+    stored = json.loads(view.CotaforgeCosmetic)
+    del stored["threads"][3:]  # what an older sheet stored: no weights
+    view.CotaforgeCosmetic = json.dumps(stored)
+    view.CosmeticEdges[0].Format = {**view.CosmeticEdges[0].Format, "weight": 0.5}
+    native.sync_cosmetics(page, [thread_unit()])
+    assert [e.Format["weight"] for e in view.CosmeticEdges] == [0.18, 0.18, 0.35, 0.18]
+    view.CosmeticEdges[0].Format = {**view.CosmeticEdges[0].Format, "weight": 0.5}
+    native.sync_cosmetics(page, [thread_unit()])
+    assert view.CosmeticEdges[0].Format["weight"] == 0.5
