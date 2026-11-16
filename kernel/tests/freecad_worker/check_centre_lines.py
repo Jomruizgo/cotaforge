@@ -76,27 +76,26 @@ def centre_line_ends(view: Any) -> list[tuple[float, ...]]:
 
 
 def check_a_centre_line_follows_the_model_and_its_view_with_no_harness() -> None:
-    """The engineer opens the file in plain FreeCAD, makes the plate thicker and moves the view: the axes of the holes are
-    TechDraw's own centre lines, so TechDraw draws them again from the sides of the holes, still in the chain line."""
+    """The engineer opens the file in plain FreeCAD, makes the plate thicker and moves the views. A centre line is TechDraw's
+    own object between two edges: where the view keeps the numbers of its edges (the right view, the centre line between the
+    two faces of the plate) TechDraw draws it again from them, with no harness. TechDraw names the edges by number, though,
+    and numbers them again when the hidden edges of a view change (the front view, measured in 1.1.3): those centre lines
+    land on other edges, as a dimension of TechDraw does, until the sheet is updated: it makes again every centre line whose
+    two edges are no longer the sides of its feature (``test_sheet_linetype``). Only the first is checked here."""
     sheet_with_lines()
     doc = _rec().fc_doc
-    front = views()["front"]
-    before = centre_line_ends(front)
-    through = [row for row in before if abs((row[3] - row[1]) - (19.0 + 5.0)) < 1e-3]  # the plate is 19 thick: 2.5 past each face
-    assert len(through) == 4, before
+    right = views()["right"]
+    assert centre_line_ends(right) == [(0.0, -12.0, 0.0, 12.0)]  # the plate is 19 thick: 2.5 past each face
     pad = next(o for o in doc.Objects if str(o.TypeId) == "PartDesign::Pad")
     pad.Length = 29.0
-    front.X = float(front.X) + 12.0
+    right.X = float(right.X) + 12.0
     doc.recompute()
     for _ in range(50):
-        if "Touched" not in [str(x) for x in front.State]:
+        if "Touched" not in [str(x) for x in right.State]:
             break
         doc.recompute()
-    after = centre_line_ends(front)
-    longer = [row for row in after if abs((row[3] - row[1]) - (29.0 + 5.0)) < 1e-3]
-    assert len(longer) == 4, (before, after)  # each still 2.5 past both faces of the thicker plate
-    assert sorted(row[0] for row in longer) == sorted(row[0] for row in through)  # on the axes of the same holes
-    assert all(n == CHAIN for n in numbers(front, "CenterLines"))
+    assert centre_line_ends(right) == [(0.0, -17.0, 0.0, 17.0)]  # followed the faces of the thicker plate, in the moved view
+    assert numbers(right, "CenterLines") == [CHAIN]
 
 
 def check_the_review_names_a_centre_line_that_is_not_a_chain_line() -> None:

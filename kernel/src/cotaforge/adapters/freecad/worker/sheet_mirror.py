@@ -353,7 +353,7 @@ def sync(fc_doc: Any, page: Any, units: list[su.Unit], page_h: float, sheet: str
         fc_doc.recompute()
         _wait_computed(fc_doc, page)  # the dimensions measure the edges of the views AS they are now: in the CAD window TechDraw
         # finishes a view in the background, and a dimension made against the list it had before points at other edges
-        if sheet_native.verify_centre_lines(page):  # a centre line TechDraw drew elsewhere is a cosmetic line now
+        if sheet_native.verify_centre_lines(page, lambda: _wait_computed(fc_doc, page)):  # a centre line TechDraw drew elsewhere is a cosmetic line now
             fc_doc.recompute()
             _wait_computed(fc_doc, page)
     report.fallbacks.update(

@@ -1226,10 +1226,29 @@ def _line_ends(edge: Any) -> tuple[float, float, float, float]:
     return float(a.x), float(a.y), float(b.x), float(b.y)
 
 
-def verify_centre_lines(page: Any) -> list[str]:
+VERIFY_WAITS = 12  # how many times a view that has not drawn its centre lines yet is waited for
+
+
+def _drawn_centre_lines(view: Any, frame: Frame) -> list[tuple[float, float, float, float]] | None:
+    """The centre lines of ``view`` as it draws them now (TechDraw lists them last); ``None`` while the view has not drawn
+    them (a section view is computed in the background of the CAD window: its edges are still the ones from before)."""
+    count = len(list(view.CenterLines))
+    first = len(frame.edges) - count
+    if first < 0:
+        return None
+    for index in range(first, len(frame.edges)):
+        try:
+            view.getCenterLineBySelection(f"Edge{index}")
+        except Exception:  # noqa: BLE001 - TechDraw raises for an edge that is not a centre line
+            return None
+    return [_line_ends(e) for e in frame.edges[first:] if type(e.Curve).__name__ == "Line"]
+
+
+def verify_centre_lines(page: Any, wait: Any = None) -> list[str]:
     """After the views were computed: every centre line the sheet made is where the sheet asked for it (TechDraw draws it
     from its two edges, its reach and its shift). One that is not is taken off and drawn as a cosmetic line of the same
-    type at the place asked, so nothing wrong stays on the page; returns what was replaced (the caller computes again)."""
+    type at the place asked, so nothing wrong stays on the page; returns what was replaced (the caller computes again).
+    ``wait`` lets the views finish (the mirror's own wait) when one has not drawn its centre lines yet."""
     replaced: list[str] = []
     for name in view_names(page):
         view = view_object(page, name)
@@ -1237,8 +1256,14 @@ def verify_centre_lines(page: Any) -> list[str]:
         if not any(spec[0] == CLINE for entry in stored.values() for spec in entry[1]):
             continue
         frame = Frame(page, view)
-        count = len(list(view.CenterLines))
-        painted = [_line_ends(e) for e in frame.edges[max(len(frame.edges) - count, 0) :] if type(e.Curve).__name__ == "Line"]
+        drawn = _drawn_centre_lines(view, frame)
+        for _ in range(VERIFY_WAITS if wait is not None else 0):
+            if drawn is not None:
+                break
+            wait()
+            frame.refresh()
+            drawn = _drawn_centre_lines(view, frame)
+        painted = drawn or []
         numbers: dict[int, int] = {}
         for key, entry in stored.items():
             for spec in entry[1]:

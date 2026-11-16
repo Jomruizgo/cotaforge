@@ -120,6 +120,12 @@ class View:
         self.CenterLines.append(line)
         return line.Tag
 
+    def getCenterLineBySelection(self, name: str) -> Line:  # noqa: N802
+        index = int(name[4:]) - len(self.model) - len(self.CosmeticEdges)
+        if index < 0:
+            raise ValueError("not a centre line")
+        return self.CenterLines[index]
+
     def getCenterLine(self, tag: str) -> Line:  # noqa: N802
         return next(e for e in self.CenterLines if e.Tag == tag)
 
