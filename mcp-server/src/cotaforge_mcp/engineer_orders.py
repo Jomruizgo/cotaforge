@@ -25,7 +25,8 @@ types into a tool argument proves nothing, so the person is asked, by Claude Cod
   Claude Code gives a permission dialog no timeout: if he types and leaves at that very moment, the dialog waits for
   him, like any of its own. That is why the window is short.
 * Everything he confirms is shown to him, whole: what the call carries and the digest covers is what the dialog says.
-  An order too long for the dialog (``MAX_DIALOG`` characters) is refused with the reason, so the agent splits it.
+  An order too long for the dialog (``MAX_DIALOG`` characters) is refused with the reason, so the agent splits it; a
+  review report is split with ``append`` (``too_long``): the first piece replaces the report, each next one adds to it.
 * A permission mode in which no person answers a dialog (``bypassPermissions``, ``dontAsk``, anything unknown) and
   ``plan`` are denied at once as well, with the reason.
 
@@ -83,6 +84,9 @@ ASKING_MODES = frozenset({"default", "acceptEdits", "auto"})
 PRESENCE_KEY = "order_presence_min"
 PRESENCE_MIN_DEFAULT = 2.0
 """Minutes since the engineer's last typed message within which he counts as being at the screen."""
+PRESENCE_MIN_MAX = 10.0
+"""The most the brief may ask for: the agent can edit ``brief.yaml``, and a window of hours would open a dialog with
+nobody there (the session would wait for it, which is what the window exists to prevent)."""
 KEEP_DAYS = 7
 """How long a ticket, or an order that waits for the engineer, is kept."""
 CALL_ID = r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}"
@@ -157,6 +161,15 @@ def _drawing(args: Mapping[str, Any]) -> Order | None:
             return None  # the manufacturer agent's own report
         items = args.get("items") if isinstance(args.get("items"), list) else []
         points = "; ".join(_remark(item) for item in items)
+        if args.get("append") is True:  # one more piece of a report recorded in pieces: it adds, it does not replace
+            listed_es = f"{len(items)} observaciones más: {points}" if items else "sin observaciones más"
+            listed_en = f"{len(items)} more remarks: {points}" if items else "no more remarks"
+            return Order(
+                "review_report",
+                reason,
+                f"tu informe de revisión{on_es}: se AÑADE a lo ya registrado, {listed_es}",
+                f"your review report{on_en}: ADDED to what is already recorded, {listed_en}",
+            )
         listed_es = f"{len(items)} observaciones: {points}" if items else "sin observaciones"
         listed_en = f"{len(items)} remarks: {points}" if items else "no remarks"
         return Order("review_report", reason, f"tu informe de revisión{on_es}, {listed_es}", f"your review report{on_en}, {listed_en}")
@@ -324,11 +337,13 @@ def _brief(workspace: str | None) -> dict[str, Any]:
 
 
 def presence_minutes(brief: Mapping[str, Any]) -> float:
-    """``order_presence_min`` of the brief: how long after his last message the engineer still counts as present."""
+    """``order_presence_min`` of the brief: how long after his last message the engineer still counts as present, at
+    most ``PRESENCE_MIN_MAX`` (a larger value counts as that); an invalid one (not a number, zero, negative, not finite)
+    is the default."""
     value = brief.get(PRESENCE_KEY)
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < float("inf"):
         return PRESENCE_MIN_DEFAULT
-    return float(value)
+    return min(float(value), PRESENCE_MIN_MAX)
 
 
 def language_of(brief: Mapping[str, Any]) -> str:
@@ -406,6 +421,25 @@ def question(order: Order, language: str) -> str:
     return f"¿Es orden tuya? Frase: {phrase}. Cierra: {order.closes(language)}."
 
 
+def too_long(kind: str, length: int) -> str:
+    """The refusal of an order whose dialog would not fit: what to send instead, so that nothing is left unrecorded."""
+    start = (
+        f"NOT RECORDED: this {kind} order is too long to show him whole ({length} characters; the dialog takes "
+        f"{MAX_DIALOG}) and he must see all of what he confirms. "
+    )
+    if kind == "review_report":
+        return (
+            start + "A report is recorded in pieces: send the first remarks as this same call (it replaces his "
+            "report), then each next group with append=true (it adds to the report, the ids go on); if an earlier "
+            "piece of this report is already recorded, this one and the rest go with append=true. Each piece is put to "
+            "him on its own: keep it short enough to fit, and leave none of his remarks out."
+        )
+    return (
+        start + "Split it into smaller calls (fewer points or shorter text in each) and repeat them; every call is put "
+        "to him on its own."
+    )
+
+
 def _forget_old(folder: Path, now: float, pattern: str = "*.json") -> None:
     try:
         files = list(folder.glob(pattern))
@@ -479,12 +513,7 @@ def decide(payload: object, environ: Mapping[str, str], now: float | None = None
     language = language_of(brief)
     asked = question(order, language)
     if len(asked) > MAX_DIALOG:
-        return _answer(
-            "deny",
-            f"NOT RECORDED: this {order.kind} order is too long to show him whole ({len(asked)} characters; the dialog "
-            f"takes {MAX_DIALOG}) and he must see all of what he confirms. Split it into smaller calls (fewer points "
-            "or shorter text in each) and repeat them; every call is put to him on its own.",
-        )
+        return _answer("deny", too_long(order.kind, len(asked)))
     mode = payload.get("permission_mode")
     if mode not in ASKING_MODES:
         return _answer(

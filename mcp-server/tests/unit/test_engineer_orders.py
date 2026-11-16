@@ -198,8 +198,25 @@ def test_the_dialog_shows_an_answer_and_the_words_whole(engineer: Engineer) -> N
 def test_an_order_too_long_to_show_whole_is_refused_so_the_agent_splits_it(engineer: Engineer, settings: Settings) -> None:
     items = [{"kind": "missing", "text": f"punto {n} " + "largo " * 20} for n in range(1, 20)]
     verdict, reason = decision(hook(engineer, "drawing", {"action": "review_report", "sheet": "Plano", "by": "engineer", "items": items}))
-    assert verdict == "deny" and "NOT RECORDED" in reason and "too long" in reason and "Split it" in reason
+    assert verdict == "deny" and "NOT RECORDED" in reason and "too long" in reason
+    assert "append=true" in reason and "replaces his report" in reason  # a report is split with append, not "split it"
     assert tickets(settings) == [] and engineer_orders.pending(settings.home, str(settings.workspace)) == []  # nothing to wait for: it must be split
+
+
+def test_the_other_orders_too_long_keep_the_generic_refusal(engineer: Engineer) -> None:
+    verdict, reason = decision(hook(engineer, "memory", {**APPROVE, "text": "apruébala " * 200}))
+    assert verdict == "deny" and "Split it" in reason and "append" not in reason
+
+
+def test_a_piece_of_a_report_says_in_the_dialog_that_it_adds_to_what_is_recorded(engineer: Engineer) -> None:
+    arguments = {"action": "review_report", "sheet": "Plano", "by": "engineer", "items": [{"kind": "missing", "text": "falta el número"}], "append": True}
+    shown = shown_for(engineer, "drawing", arguments)
+    assert "se AÑADE a lo ya registrado" in shown and "1 observaciones más: missing: falta el número" in shown
+    assert "AÑADE" not in shown_for(engineer, "drawing", {**arguments, "append": False})
+    assert "AÑADE" not in shown_for(engineer, "drawing", {k: v for k, v in arguments.items() if k != "append"})
+    design_memory.write_language(engineer.workspace, "en")
+    assert "ADDED to what is already recorded, 1 more remarks" in shown_for(engineer, "drawing", arguments)
+    assert engineer_orders.digest("drawing", arguments) != engineer_orders.digest("drawing", {**arguments, "append": False})  # his OK covers append
 
 
 def test_an_order_too_long_is_refused_whether_or_not_he_is_there(engineer: Engineer) -> None:
@@ -229,17 +246,41 @@ def test_he_counts_as_present_for_the_minutes_the_brief_says(engineer: Engineer,
     assert decision(hook(engineer, "memory", APPROVE))[0] == "ask"  # 2 minutes by default: a dialog has no timeout
     engineer.leaves(minutes=2.5)
     assert decision(hook(engineer, "memory", APPROVE))[0] == "deny"
-    (settings.workspace / "brief.yaml").write_text("order_presence_min: 30\n", encoding="utf-8")
+    (settings.workspace / "brief.yaml").write_text("order_presence_min: 5\n", encoding="utf-8")
+    engineer.leaves(minutes=4.5)
     assert decision(hook(engineer, "memory", APPROVE))[0] == "ask"
-    engineer.leaves(minutes=31)
+    engineer.leaves(minutes=5.5)
     assert decision(hook(engineer, "memory", APPROVE))[0] == "deny"
+
+
+@pytest.mark.parametrize(
+    ("written", "minutes"),
+    [("5", 5.0), ("0.5", 0.5), ("10", 10.0), ("99999", 10.0), ("11", 10.0), (".inf", 2.0), ("0", 2.0), ("-3", 2.0), ("true", 2.0), ("'much'", 2.0), ("[1]", 2.0)],
+)
+def test_the_presence_window_is_at_most_ten_minutes_and_an_invalid_one_is_the_default(written: str, minutes: float) -> None:
+    """The agent can edit the brief: with 99999 a dialog would open with nobody there and the session would hang."""
+    import yaml
+
+    brief = yaml.safe_load(f"order_presence_min: {written}\n")
+    assert engineer_orders.presence_minutes(brief) == minutes
+    assert engineer_orders.presence_minutes({}) == engineer_orders.PRESENCE_MIN_DEFAULT == 2.0
+
+
+def test_a_huge_presence_window_in_the_brief_does_not_keep_him_present_for_hours(engineer: Engineer, settings: Settings) -> None:
+    (settings.workspace / "brief.yaml").write_text("order_presence_min: 99999\n", encoding="utf-8")
+    engineer.leaves(minutes=9)
+    assert decision(hook(engineer, "memory", APPROVE))[0] == "ask"
+    engineer.leaves(minutes=11)  # ten is the most, whatever the file says
+    verdict, reason = decision(hook(engineer, "memory", APPROVE))
+    assert verdict == "deny" and "10 min" in reason
+    assert engineer_orders.pending(settings.home, str(settings.workspace))  # it waits for him instead of opening a dialog
 
 
 def test_the_presence_setting_survives_a_change_of_the_brief(settings: Settings) -> None:
     (settings.workspace / "brief.yaml").write_text("order_presence_min: 30\n", encoding="utf-8")
     design_memory.save_brief(settings, "moldes", None)
     data = design_memory._read_yaml(settings.workspace / "brief.yaml")  # noqa: SLF001
-    assert data["sector"] == "moldes" and data["order_presence_min"] == 30
+    assert data["sector"] == "moldes" and data["order_presence_min"] == 30  # the file keeps what was written; the hook clamps it
 
 
 @pytest.mark.parametrize("origin", ["sdk", "task_notification"])

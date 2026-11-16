@@ -177,8 +177,13 @@ class DrawingFake(FakeAdapter):
         name = self._need_sheet(request.sheet)
         sheet = self.drawings[name]
         if request.action == "review_report":
-            sheet["report_n"] += 1
-            n = sheet["report_n"]
+            held = sheet["reports"].get(request.by) if request.append else None  # append: the pieces of one report
+            kept = tuple(held["remarks"]) if held else ()
+            if held:
+                n = held["n"]
+            else:
+                sheet["report_n"] += 1
+                n = sheet["report_n"]
             prefix = {"fabricator": "fab", "engineer": "eng"}[request.by]
             remarks = tuple(
                 DrawingRemark(
@@ -188,9 +193,9 @@ class DrawingFake(FakeAdapter):
                     text=r["text"],
                     fix=r.get("fix", ""),
                 )
-                for i, r in enumerate(request.remarks, start=1)
+                for i, r in enumerate(request.remarks, start=len(kept) + 1)
             )
-            sheet["reports"][request.by] = {"n": n, "at": request.at, "edits": sheet["edits"], "remarks": remarks}
+            sheet["reports"][request.by] = {"n": n, "at": request.at, "edits": sheet["edits"], "remarks": (*kept, *remarks)}
             return self._drawing_result(name, changed=tuple(r.id for r in remarks))
         if request.action == "request_review":
             sheet["request"] = {"at": request.at}

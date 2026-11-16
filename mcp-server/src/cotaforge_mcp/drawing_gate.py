@@ -51,7 +51,7 @@ from cotaforge.contract import (
     DrawingReport,
     DrawingSheetInfo,
 )
-from cotaforge.contract.drawing_items import canonical_author
+from cotaforge.contract.drawing_items import MAX_REMARKS, canonical_author
 from cotaforge.language import say
 from cotaforge.memory import MemoryEntry
 from pydantic import ValidationError
@@ -66,7 +66,8 @@ ANSWER_USAGE = 'drawing(action="answer", sheet?, id="<id from review>", text="ap
 ANSWER_EXAMPLE = 'drawing(action="answer", id="q.callouts", text="no aplica: una placa con un solo tipo de agujero no necesita distinguirlos")'
 REPORT_USAGE = (
     'drawing(action="review_report", sheet, by="fabricator" | "engineer", items=[{"kind": "missing" | "ambiguous" | '
-    '"costly" | "other", "where": "<place on the sheet>", "text": "<the point>", "fix": "<smallest change>"}])'
+    '"costly" | "other", "where": "<place on the sheet>", "text": "<the point>", "fix": "<smallest change>"}], '
+    "append?=true: add the items to the reviewer's current report instead of replacing it)"
 )
 CHOICE_USAGE = 'drawing(action="review_choice", sheet, by="engineer" | "fabricator")'
 MAX_SHOWN_REMARKS = 12
@@ -834,8 +835,12 @@ def review_choice(session: Session, sheet: str | None, by: str | None) -> str:
     return f"recorded: the engineer chose the manufacturer for sheet {info.sheet}. Now: {_launch(info.sheet)}"
 
 
-def review_report(session: Session, sheet: str | None, by: str | None, items: list[Any] | None) -> str:
-    """Store a reviewer's report (``items`` may be empty: it looked and found nothing). Does not change the sheet."""
+def review_report(
+    session: Session, sheet: str | None, by: str | None, items: list[Any] | None, append: bool = False
+) -> str:
+    """Store a reviewer's report (``items`` may be empty: it looked and found nothing). Does not change the sheet. With
+    ``append`` the items are added to the reviewer's current report, so a long one is recorded in pieces (each piece
+    is its own call, and for the engineer its own dialog)."""
     info = sheet_info(session, sheet)
     if info is None:
         raise ToolError(
@@ -845,6 +850,15 @@ def review_report(session: Session, sheet: str | None, by: str | None, items: li
         )
     if canonical_author(by) == "engineer":
         engineer_orders.confirmed(f"the engineer's review report of sheet {info.sheet}")
+    held = info.reports.get(str(canonical_author(by))) if append else None
+    if held is not None and len(held.remarks) + len(items or ()) > MAX_REMARKS:
+        raise ToolError(
+            f"the report holds {len(held.remarks)} remark(s) and at most {MAX_REMARKS} fit in one report: group the "
+            "minor ones; nothing was changed",
+            code="invalid_input",
+            field_name="items",
+            usage=REPORT_USAGE,
+        )
     try:
         request = AnnotateDrawingRequest(
             operation_id="drawing_review_report",
@@ -852,6 +866,7 @@ def review_report(session: Session, sheet: str | None, by: str | None, items: li
             sheet=info.sheet,
             by=by,
             remarks=tuple(items or ()),
+            append=append,
             at=clock(),
         )
     except ValidationError as exc:
@@ -875,8 +890,9 @@ def review_report(session: Session, sheet: str | None, by: str | None, items: li
         note = f" (drawing_review={mode}: only the {mode} report opens the export)"
     if not ids:
         return f"recorded: {by} report on sheet {info.sheet} with no remarks: nothing to answer{note}"
+    added = f" (this call added {len(items or ())})" if held is not None else ""
     return (
-        f"recorded: {by} report {report.n if report else ''} on sheet {info.sheet}, {len(ids)} remark(s): "
+        f"recorded: {by} report {report.n if report else ''} on sheet {info.sheet}, {len(ids)} remark(s){added}: "
         f"{', '.join(ids)}. Close each: fix the sheet and answer "
         f'drawing(action="answer", id=<id>, text="corregido: what you changed") (the report stays valid through the '
         f'fixes it asked for), or text="no aplica: why it is not a problem" -- never a reason invented to get through; '
