@@ -1206,7 +1206,7 @@ def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     if carried is not None:
         _clear_approval(spec)
     page, layout, waited, built = _build(doc, spec, op)
-    result = _result(doc, page, layout.scale, waited, [*warnings, *built], op, state=True)
+    result = _result(doc, page, layout.scale, waited, [*warnings, *built], op)
     result.update(_rebuild_report(old_spec, carried, spec, result["items"], fresh))
     return result
 

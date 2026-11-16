@@ -575,12 +575,9 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                 *block,
                 SHEET_NEXT if drawing_compose.flow_of(session) == "sheet" else STEPS_NEXT,
             ]
-            line = (
-                drawing_plan.step_line(session, reviewed)
-                if reviewed is not None
-                else drawing_plan.step_line(session, result.page_state, quick=True)
-            )
-            return ok("\n".join(lines), limit=REVIEW_REPLY_CHARS, tail=line)
+            # the line reads the sheet the requirements were reviewed on (none in a project that asks no review: the next
+            # add brings it, and `plan` is there); a create never reads the sheet again for it
+            return ok("\n".join(lines), limit=REVIEW_REPLY_CHARS, tail=drawing_plan.step_line(session, reviewed))
         if action in ("add", "remove", "remove_sheet", "update", "add_view", "remove_view"):
             session.need("annotate_drawing", f"drawing {action}")
             if action == "remove_sheet":

@@ -165,7 +165,7 @@ class DrawingFake(FakeAdapter):
             "request": None,
             "choice": None,
         }
-        return self._drawing_result(name, ("a note",) if request.scale == 7.0 else (), rebuilt=self.rebuilt, state=True)
+        return self._drawing_result(name, ("a note",) if request.scale == 7.0 else (), rebuilt=self.rebuilt)
 
     def annotate_drawing(self, request: Any) -> Any:
         from cotaforge.contract import (
