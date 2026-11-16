@@ -175,12 +175,13 @@ def _view_types() -> list[str]:
 def check_a_view_can_be_dropped_and_the_scale_grows_to_the_largest_standard_one_that_fits() -> None:
     build_part()
     first = call("create_drawing", op("d", template="A4"))
-    assert first["scale"] == 0.5 and first["views"] == ["front", "top", "right", "isometric"], first
+    # the default location of the holes keeps room on the far side of the views for the dimensions that cannot share a side (1:2 before it did)
+    assert first["scale"] == 0.2 and first["views"] == ["front", "top", "right", "isometric"], first
     remove("loc")  # the engineer wants no default location: its rows need no room, so the scale can grow
     add({"type": "hole_dim", "id": "h1", "at": [[15, 12, 0]]})
     dropped = call("annotate_drawing", op("v", action="remove_view", view="right", items=[], ids=[]))
     assert dropped["scale"] == 1.0 and dropped["views"] == ["front", "top", "isometric"], dropped
-    assert "1 : 2 -> 1 : 1" in " ".join(dropped["warnings"]), dropped["warnings"]
+    assert "1 : 5 -> 1 : 1" in " ".join(dropped["warnings"]), dropped["warnings"]
     assert "Right" not in _view_types() and "h1" in sheet_mirror.owned(_page())  # the items are kept, on the new layout
     assert call("describe_drawing", op("r"))["sheets"][0]["views"] == ["front", "top", "isometric"]
     back = call("annotate_drawing", op("v", action="add_view", view="right", items=[], ids=[]))

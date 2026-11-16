@@ -683,6 +683,11 @@ def _dimension_room(
     rows_x = {"top": 0, "front": 0, "right": 0}
     rows_y = 0
     found = hole_infos(doc, spec.get("body"), op)
+    box = _bounds(doc, spec.get("body"), op)
+    far_x = {"top": 0, "front": 0, "right": 0}
+    far_y = 0
+    import items_datum  # noqa: PLC0415 - the default location of the holes: where its dimensions stand
+
     for name, ((ix, iy), direction) in axes.items():
         if name not in shown:
             continue
@@ -690,21 +695,31 @@ def _dimension_room(
         if mine:
             rows_x[name] = _distinct([h.centre[ix] for h in mine])
             rows_y = max(rows_y, _distinct([h.centre[iy] for h in mine]))
+            if box is not None:  # the dimensions that cannot stand on the usual side go to the opposite one (items_datum._split)
+                near_far = items_datum.far_rows(mine, name, (tuple(box["min"]), tuple(box["max"])))
+                far_x[name], far_y = near_far[0], max(far_y, near_far[1])
 
     def room(rows: int, extra: int = 0) -> float:
         return ROW_FIRST_MM + ROW_STEP_MM * (rows - 1 + extra) if rows else 0.0
 
     out: dict[str, float] = {
         "left_mm": room(rows_y),
-        "right_mm": CALLOUT_ROOM_MM if found else 0.0,
-        "spacing_mm": CALLOUT_SPACING_MM if found else 0.0,  # between the views: callouts of the top view go there too
+        "right_mm": CALLOUT_ROOM_MM + ROW_STEP_MM * far_y if found else 0.0,
+        "spacing_mm": CALLOUT_SPACING_MM + ROW_STEP_MM * far_x["top"] if found else 0.0,  # between the views: callouts and the far rows of the top view go there
+        "need_right_mm": room(far_y),  # what the far rows take whatever the callouts
+        "need_spacing_mm": room(far_x["top"]) if "front" in shown else 0.0,
     }
+    standing_alone = "front" not in shown  # no other view on the far side of the top view: the room is the paper's
     if third:  # the top view hangs above the front one: its rows go above it
         out["above_mm"] = room(rows_x["top"])
         out["below_mm"] = room(rows_x["front"], 1)
+        if standing_alone:
+            out["below_mm"] = room(far_x["top"])
     else:  # the top view hangs below the front one: its rows go below it; the front one's go above (next to the overall)
         out["below_mm"] = room(rows_x["top"])
         out["above_mm"] = room(rows_x["front"], 1)
+        if standing_alone:
+            out["above_mm"] = room(far_x["top"], 1)
     return {k: v for k, v in out.items() if v}
 
 

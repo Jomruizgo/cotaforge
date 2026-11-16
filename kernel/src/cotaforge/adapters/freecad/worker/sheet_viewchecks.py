@@ -927,16 +927,16 @@ def _redundant(data: ReviewInput) -> list[Finding]:
         if r.reason == "cut_only":
             text = ctx.say(
                 f"La vista {r.name} solo lleva la línea de corte {labels}: otra vista que se queda puede llevarla y el corte "
-                f"lleva las cotas. Quítala (drawing action=remove_view, view={r.name}){move}.",
+                f"lleva las cotas. Quítala (drawing action=remove_view, views=[{r.name}]){move}.",
                 f"The {r.name} view only carries the cutting line {labels}: another view that stays can carry it and the "
-                f"section carries the dimensions. Drop it (drawing action=remove_view, view={r.name}){move}.",
+                f"section carries the dimensions. Drop it (drawing action=remove_view, views=[{r.name}]){move}.",
             )
         else:
             text = ctx.say(
                 f"Las cotas de la vista {r.name} las repite {', '.join(r.repeated_in)} y no lleva nada propio: es redundante. "
-                f"Quítala (drawing action=remove_view, view={r.name}){move}.",
+                f"Quítala (drawing action=remove_view, views=[{r.name}]){move}.",
                 f"The dimensions of the {r.name} view are repeated in {', '.join(r.repeated_in)} and it carries nothing of its "
-                f"own: it is redundant. Drop it (drawing action=remove_view, view={r.name}){move}.",
+                f"own: it is redundant. Drop it (drawing action=remove_view, views=[{r.name}]){move}.",
             )
         out.append(Finding("view_redundant", "warning", text, (r.name,), key=r.name))
     return out

@@ -106,7 +106,7 @@ async def face_with_normal(cad: Cad, normal: str) -> str:
     return next(line.split()[0] for line in faces.splitlines() if f"n({normal})" in line)
 
 
-async def test_a_plate_lists_its_rows_and_the_symmetry_is_a_reference_only_when_declared(workspace: Path, tmp_path: Path) -> None:
+async def test_a_plate_lists_its_rows_and_every_hole_is_located_for_the_caliper_whatever_the_symmetry(workspace: Path, tmp_path: Path) -> None:
     out = transcript(tmp_path)
     async with running_server(workspace) as (cad, _):
         await cad.ok("memory", action="brief", drawing_review="propio", text=cad.says("el agente revisa el plano por su cuenta"))
@@ -118,18 +118,18 @@ async def test_a_plate_lists_its_rows_and_the_symmetry_is_a_reference_only_when_
         assert "added automatically" in created and "rq_callouts" in created and "rq_edge_state" in created and "rq_heat_treatment" in created
         listing = rows_of(created)
         assert listing["req.edge_state"] == "added automatically" and listing["req.heat_treatment"] == "added automatically"
-        assert listing["req.dimensions"] == "MISSING" and listing["req.surface_texture"] == "MISSING"  # no Ra anywhere: a question
+        assert listing["req.dimensions"] == "added automatically" and listing["req.surface_texture"] == "MISSING"  # every hole is located without asking; no Ra anywhere: a question
         assert listing["req.title_block"] in ("met", "added automatically") and listing["req.general_tolerance"] in ("met", "added automatically")
         assert listing["req.centre_lines"] in ("met", "added automatically")
         assert "req.thread" not in listing and "req.fit_class" not in listing  # a plate with clearance holes has neither
-        assert "no reference to count the position" in created  # the plate is symmetric by shape; nobody said so: no centre line, asked
+        assert "no reference to count the position" not in created and "as a caliper measures" in created  # nobody is asked which face the positions are counted from: the nearest edge, per group of holes
 
         await snapshot(cad, out, "d2_plate_automatic.png")
-        stated = await cad.ok("drawing", action="update", symmetry=True)  # the design intent says it is symmetric
+        stated = await cad.ok("drawing", action="update", symmetry=True)  # the design intent says it is symmetric: it changes nothing about how the holes are located
         out.say("update symmetry=true", stated)
         review = await cad.ok("drawing", action="review")
         out.say("review after declaring the symmetry", review)
-        assert "hole_not_located" not in review  # the plane of symmetry is now a reference
+        assert "hole_not_located" not in review and "hole_group_no_locator" not in review  # the symmetry is no reference: the locators come from the edges
 
         refused = await cad.err("export", action="pdf", path="placa.pdf")
         out.say("export refused", refused)

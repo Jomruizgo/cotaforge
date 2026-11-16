@@ -85,7 +85,7 @@ SHEET_WINDOW_LINE = (
 COMPOSE_LINES = (
     "PLAN: drawing(action=plan, sheet?) draws no annotation: it makes the views and the title block when the document has "
     "no sheet (the facts are measured on it) and lists (1) what the harness puts on by itself: views, paper and scale, "
-    "overall sizes, the positions of the holes from the datums or the declared symmetry, callouts with the thread and "
+    "overall sizes, the positions of the holes for the caliper (spacing per group and one locator from an edge), callouts with the thread and "
     "the fit the model declares, axes, chamfers, keyway, parts list and balloons, notes with the intent file's own words, "
     "title block; (2) the decisions it needs, each with its question and the key that answers it. Ask the engineer "
     "those questions one at a time, with the proposal the plan gives; when he is present show him the plan and wait for "
@@ -165,8 +165,9 @@ ITEM_LINES = (
     "section item is on the sheet; the items are drawn after it whatever their order) takes kind=distance (a face is a "
     "line of the cut: the extension line starts at its end), kind=diameter (a shaft or boss seen from the side) and "
     "kind=angle; a section has no TechDraw view, so its dimensions are the sheet's own drawing like a callout's.",
-    "datum_dims: where the holes are, counted from two datum edges of one view (default top). Every sheet with holes "
-    "already carries the item loc (auto=true), see drawing:quality. mode=ordinate (default: "
+    "datum_dims: where the holes are, counted from two datum edges of one view (default top): the scheme of a shop with "
+    "a height gauge or a CMM. Every sheet with holes already carries the item loc (auto=true: the spacing per group "
+    "and a locator from the nearest edge, for a caliper), see drawing:quality. mode=ordinate (default: "
     "baseline dimensions from the datum edge to each hole centre, one line per distinct position, TechDraw's own "
     "dimensions: FreeCAD has no ordinate dimension) or table (numbered holes and a table of X, Y and the callout). "
     'x_from / y_from: a face id (a plane seen edge-on, perpendicular to that direction) or "min" / "max" (the '
@@ -369,17 +370,16 @@ QUALITY_LINES = (
     "any field by name (document_type, drawing_number, fixed_note_1..3: the standing statements beside the "
     "projection symbol); scale, sheet number and the revision rows are the sheet's own. A logo is not supported.",
     "LOCATION OF THE HOLES: a sheet whose part has holes carries the item loc (datum_dims with auto=true) from "
-    "create on. A number on a sheet must have a function: loc never counts from the corner of the part's box. In each "
-    "direction of the view it counts from a reference the sheet HAS: (1) the datums you declared (the first datum items "
-    "whose face is seen edge-on across x and across y: baseline dimensions stacked outside the part 7 mm apart, nearest "
-    "first, one per distinct value, a centre line joining the holes that share it), else (2) the part's plane of "
-    "symmetry across that direction, ONLY when the intent declares the part symmetric (symmetry=true on create / "
-    "update; never from the shape): a hole on it has no dimension at all, the holes either side are ONE dimension "
-    "between each pair, and the plane is drawn as a centre line. With neither it draws nothing "
-    "for that direction and says so (loc is a warning: 'no reference along x ...'; the review says hole_not_located / "
-    "hole_partly_located with the same words): ASK THE ENGINEER which face or edge the positions are counted from "
-    "(do not pick one for him), declare it with a datum item (face) and the location follows. Holes you locate "
-    "yourself are left to you. drawing(action=remove, "
+    "create on, for the tools every shop has (caliper, micrometer, depth gauge, height gauge, thread and plug gauges: "
+    "never ask about them). Per GROUP of equal holes: the spacing between its holes (76 and 44 for the dowels, 28 for "
+    "the counterbores) and ONE locator from the nearest edge (12, 36, 50 from the left edge, 8 from the other) or from "
+    "the datum you declared across it; a row at one pitch says it once ('3×20'). Never everything from one datum "
+    "baseline (a height gauge: datum_dims x_from / y_from asks for it), never from the box corner, never by symmetry "
+    "(a hole in the middle gets its distance from an edge); a bore on a turned part's axis has the axis. Two dimensions "
+    "that cannot share a side without an extension line across the other's line go to opposite sides. review: "
+    "hole_group_no_locator (a group spaced but never measured from an edge). What needs another instrument (position "
+    "on a CMM, roundness, profile, runout) carries a note saying how to measure it ('Posición de los 4× Ø6 H7: verificar "
+    "en MMC'): measurement_unstated. drawing(action=remove, "
     'items=["loc"]) takes the default off for good (the review then asks for the positions).',
     "REPEATED DIMENSIONS: the same size in two views (ISO 129: the length 50 on the front view and again on a section) "
     "is flagged dimension_repeated (info, it does not hold the export): keep the one in the view that shows it best.",
