@@ -656,6 +656,7 @@ MEASURED_FINDINGS = frozenset(
         "hole_partly_located",
         "hole_no_reference",
         "hole_group_no_locator",
+        "measurement_unstated",
         "hole_no_callout",
         "thread_no_callout",
         "thread_no_representation",
@@ -721,8 +722,9 @@ no callout, an item that cannot be drawn, two views on top of each other): an an
 them, only the engineer's order can. The ones that are a judgement stay answerable: ``collision`` (accepted when no free
 place exists), ``fit_hole_no_tolerance`` (a diameter that LOOKS like a dowel), ``text_over_part``, the ``notes_*`` (a part may have no heat treatment), the style ones."""
 
-RECHECKED_FINDINGS = frozenset({"view_adds_nothing"})
-"""Measured findings whose fix is visible on the sheet itself: a view with no dimension, callout or balloon. The agent answered
+RECHECKED_FINDINGS = frozenset({"view_adds_nothing", "measurement_unstated"})
+"""Measured findings whose fix is visible on the sheet itself: a view with no dimension, callout or balloon, a tolerance whose note
+saying how to measure it is not there. The agent answered
 ``applies`` ("covered by the dimensions put") on the side view of a plate that carried none and the view stayed: only the
 engineer's order keeps one, the agent drops it or dimensions it."""
 

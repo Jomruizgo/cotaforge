@@ -387,6 +387,50 @@ def plan(
     )  # fmt: skip
 
 
+ROW_FIRST_MM = 15.0  # the first row of dimension lines: 10 mm from the view, and its text above the line
+ROW_STEP_MM = 7.0  # each further row
+CALLOUT_SPACING_MM = 34.0  # between the front view and the top / right ones when the part has holes (a callout fits)
+CALLOUT_ROOM_MM = 24.0  # beside the views of a part with holes: where the leaders of their callouts end and their text goes
+
+
+def rows_room(
+    rows_x: dict[str, int],
+    far_x: dict[str, int],
+    rows_y: int,
+    far_y: int,
+    shown: tuple[str, ...],
+    third: bool,
+    with_holes: bool,
+) -> dict[str, float]:
+    """The room (mm of paper) round the views that ROWS of dimension lines take, as the keyword arguments of ``plan``:
+    ``rows_x`` / ``far_x`` the rows of x values of each standard view on its usual side and on the opposite one, ``rows_y`` /
+    ``far_y`` the rows of y values on the left and on the right of the views. The first row stands ``ROW_FIRST_MM`` from the view,
+    each further one ``ROW_STEP_MM`` beyond; the far rows are room no scale gives up (``need_*``), unlike the callouts'."""
+
+    def room(rows: int, extra: int = 0) -> float:
+        return ROW_FIRST_MM + ROW_STEP_MM * (rows - 1 + extra) if rows else 0.0
+
+    out: dict[str, float] = {
+        "left_mm": room(rows_y),
+        "right_mm": CALLOUT_ROOM_MM + ROW_STEP_MM * far_y if with_holes else 0.0,
+        "spacing_mm": CALLOUT_SPACING_MM + ROW_STEP_MM * far_x["top"] if with_holes else 0.0,  # between the views: callouts and the far rows of the top view go there
+        "need_right_mm": room(far_y),
+        "need_spacing_mm": room(far_x["top"]) if "front" in shown else 0.0,
+    }
+    standing_alone = "front" not in shown  # no other view on the far side of the top view: the room is the paper's
+    if third:  # the top view hangs above the front one: its rows go above it
+        out["above_mm"] = room(rows_x["top"])
+        out["below_mm"] = room(rows_x["front"], 1)
+        if standing_alone:
+            out["below_mm"] = room(far_x["top"])
+    else:  # the top view hangs below the front one: its rows go below it; the front one's go above (next to the overall)
+        out["below_mm"] = room(rows_x["top"])
+        out["above_mm"] = room(rows_x["front"], 1)
+        if standing_alone:
+            out["above_mm"] = room(far_x["top"], 1)
+    return {k: v for k, v in out.items() if v}
+
+
 AUTO_PAPERS = ("A4", "A3", "A2", "A1", "A0")
 FULL_SIZE_PAPERS = 2  # a part is first tried at full size on the papers a shop prints every day: A4 and A3
 LEGIBLE_SCALE = 0.2

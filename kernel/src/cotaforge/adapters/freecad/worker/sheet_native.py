@@ -320,6 +320,8 @@ def _make_dim(
     if dim.text is not None:
         obj.Arbitrary = True
         obj.FormatSpec = dim.text
+    elif dim.prefix:  # text before the value, in TechDraw's own format: the number stays the measured one, a hand edit moves it
+        obj.FormatSpec = f"{dim.prefix}{MEASURED_SPEC}"
     if dim.tol is not None:
         obj.EqualTolerance = False
         obj.OverTolerance = float(dim.tol[0])
@@ -650,6 +652,10 @@ def compare_unit(page: Any, unit: su.Unit, objects: list[Any]) -> list[str]:
             if dim.text is not None and str(obj.FormatSpec) != dim.text:
                 problems.append(
                     f"{unit.key}: {obj.Label} has text {str(obj.FormatSpec)!r} edited by hand (the sheet says {dim.text!r})"
+                )
+            if dim.prefix and dim.text is None and str(obj.FormatSpec) != f"{dim.prefix}{MEASURED_SPEC}":
+                problems.append(
+                    f"{unit.key}: {obj.Label} has its format {str(obj.FormatSpec)!r} edited by hand (the sheet says {dim.prefix + MEASURED_SPEC!r})"
                 )
             if dim.tol_text is not None and (
                 not bool(obj.ArbitraryTolerances)

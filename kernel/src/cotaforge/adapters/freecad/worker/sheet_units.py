@@ -88,6 +88,7 @@ class NativeDim:
     secondary: bool = False  # an intermediate process stage: drawn grey so the final size stands out
     tol_text: tuple[str, str] | None = None  # the upper and lower deviation as the sheet writes them (mm, its decimal sign)
     suffix: str = ""  # written after the measured value (the fit symbol of a toleranced size: ``P9``)
+    prefix: str = ""  # written before the measured value (``3×`` before the pitch of a row): TechDraw's own format spec, so the value follows the model
 
 
 @dataclass(frozen=True)
@@ -358,6 +359,7 @@ def signature(unit: Unit) -> str:
                 *(["exact"] if n.exact else []),  # only when set: a sheet made before keeps its objects
                 *(["secondary"] if n.secondary else []),
                 *([["tol_text", list(n.tol_text), n.suffix]] if n.tol_text else []),
+                *([["prefix", n.prefix]] if n.prefix else []),
             ]
         if isinstance(n, NativeFlag):
             return ["f", n.view, n.prop]
