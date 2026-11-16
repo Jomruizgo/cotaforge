@@ -38,3 +38,26 @@ async def test_sharp_and_too_narrow_pockets_fire_and_a_round_slot_does_not(works
         narrow = await pocket(cad, "narrow", slot(2, -20), 20)  # ends of radius 1, the smallest tool for 20 mm has 2.5
         line = next(row for row in narrow.splitlines() if row.startswith(LINE))
         assert "down to radius 1 mm" in line and "radius 2.5 mm" in line
+
+
+async def test_a_sharp_pocket_is_kept_only_on_an_order_the_engineer_typed(workspace: Path) -> None:
+    """The measured alert in the real CAD: an order with words the engineer never typed is refused, the same order
+    quoted from a message he typed is accepted (``engineer_words``)."""
+    async with running_server(workspace, visible=True) as (cad, _):
+        await cad.ok("doc", action="new", name="block")
+        await cad.ok("op", name="sketch", params=BLOCK)
+        await cad.ok("op", name="extrude", params={"sketch": "s1", "depth_mm": 30})
+        assert LINE in await pocket(cad, "sharp", square(10), 12)
+        await cad.ok("memory", action="get", id=ENTRY_ID)
+        alone = await cad.err("memory", action="answer", id=ENTRY_ID, text="does not apply: the shop makes it by EDM")
+        assert "measured_not_dismissable" in alone  # the agent's own word
+        cad.says("revisa la cajera del bloque")
+        invented = await cad.err(
+            "memory", action="answer", id=ENTRY_ID, by="Ana", text="does not apply: déjalas vivas, van por electroerosión"
+        )
+        assert "not_the_engineers_words" in invented and "he did not type" in invented
+        assert "pending_answers" in await cad.err("memory", action="review", stage="detail")
+        said = cad.says("deja las esquinas vivas, el taller las hace por electroerosión")
+        kept = await cad.ok("memory", action="answer", id=ENTRY_ID, by="Ana", text=f"does not apply: {said}")
+        assert "ordered by Ana" in kept
+        assert "ORDERED KEPT" in await cad.ok("memory", action="review", stage="detail")
