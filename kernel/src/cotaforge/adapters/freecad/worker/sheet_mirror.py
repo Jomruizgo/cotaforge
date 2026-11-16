@@ -341,6 +341,11 @@ def sync(fc_doc: Any, page: Any, units: list[su.Unit], page_h: float, sheet: str
         fc_doc, page, [u for u in units if su.view_of(u) is not None], sheet, have, report, lambda: _wait_computed(fc_doc, page)
     )
     units_native = [u for u in units if u.natives and u.key not in views_failed]
+    # the hidden edges of the views before the lines: a centre line hangs from the two sides of its hole, which are hidden
+    # edges in a view from the side, and TechDraw numbers the edges of a view again when it shows them
+    if sheet_native.sync_flags(page, units_native):
+        fc_doc.recompute()
+        _wait_computed(fc_doc, page)
     # the cosmetic edges next: a dimension may measure one (the pitch circle of a bolt pattern), so its view must have it
     drawn: list[str] = []
     report.fallbacks = {**views_failed, **sheet_native.sync_cosmetics(page, units_native, drawn)}
@@ -348,6 +353,9 @@ def sync(fc_doc: Any, page: Any, units: list[su.Unit], page_h: float, sheet: str
         fc_doc.recompute()
         _wait_computed(fc_doc, page)  # the dimensions measure the edges of the views AS they are now: in the CAD window TechDraw
         # finishes a view in the background, and a dimension made against the list it had before points at other edges
+        if sheet_native.verify_centre_lines(page, lambda: _wait_computed(fc_doc, page)):  # a centre line TechDraw drew elsewhere is a cosmetic line now
+            fc_doc.recompute()
+            _wait_computed(fc_doc, page)
     report.fallbacks.update(
         sheet_native.sync(
             fc_doc, page, [u for u in units if u.natives and u.key not in report.fallbacks], sheet, have, report, views_new
@@ -566,13 +574,15 @@ def page_crosses(page: Any, page_h: float) -> list[tuple[float, float]]:
 
 
 def _cosmetic_crosses(page: Any) -> list[tuple[float, float]]:
-    """The centre marks that live on the views as cosmetic edges (``sheet_native.sync_cosmetics``), in page mm."""
+    """The centre marks that live on the views as centre lines or cosmetic edges (``sheet_native.sync_cosmetics``), in page mm."""
     lines: list[tuple[float, float, float, float]] = []
     for name in sheet_native.view_names(page):
         view = sheet_native.view_object(page, name)
         if view is None:
             continue
         frame = sheet_native.Frame(page, view)
+        for a, b, c, d in sheet_native.centre_line_segments(view):  # a mark whose bars are TechDraw's centre-line objects
+            lines.append((frame.x + a * frame.scale, frame.y + b * frame.scale, frame.x + c * frame.scale, frame.y + d * frame.scale))
         for edge in view.CosmeticEdges:
             if edge.Format.get("style") != sheet_native.ISO_STYLE["centre"]:
                 continue

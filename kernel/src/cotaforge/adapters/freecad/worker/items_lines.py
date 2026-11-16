@@ -1,10 +1,11 @@
 # ruff: noqa: E501
 """``line``: an axis or a line between two points of the part, in an ISO 128 line type (no FreeCAD import).
 
-The sheet draws its own lines (the ``EJES`` layer is the ISO 128-20 long-dash dotted line, ``OCULTAS`` the dashed one,
-``COTAS`` the thin continuous one) and TechDraw shows them as the picture of the item, so what the window and the PDF paint
-is exactly the line type asked for. TechDraw's own cosmetic lines cannot be used for this: in 1.1.3 every ``style`` number
-paints the same ISO dashed line (measured), so a centre line made with ``makeCosmeticLine`` is never a chain.
+The line types are those of ISO 128-20: the ``EJES`` layer is the long-dash dotted line (04), ``OCULTAS`` the dashed
+one, ``COTAS`` the thin continuous one. On the page a centre line is TechDraw's own centre-line object between the two
+edges it lies midway between (it follows the model and the view), or a cosmetic line where the view has no such edges; both
+carry TechDraw's line number of the chain line, which is what the window paints and the PDF exports (``sheet_linetype``
+says what was measured: the ``style`` of ``Format`` is not the line type, the line number is).
 
 ``axis=<cylinder face>`` draws the centre line of a shaft, a boss or a bore along its whole length (plus a few mm beyond), in
 every standard view that sees it from the side, and the centre cross in the views that look along it; ``view`` says where

@@ -64,6 +64,7 @@ import sheet_isoview
 import sheet_items
 import sheet_keyway
 import sheet_layout
+import sheet_linetype
 import sheet_look
 import sheet_marks
 import sheet_mirror
@@ -113,10 +114,16 @@ TECHDRAW_PREFS = "User parameter:BaseApp/Preferences/Mod/TechDraw/"
 DEFAULT_PREFS: tuple[tuple[str, str, float], ...] = (
     ("Decorations", "LineGroup", sheet_weights.LINE_GROUP_INDEX),  # TechDraw's own list: "FC 0.35mm" (thick 0.35, thin 0.18), the group of the sheet's table
     ("Dimensions", "FontSize", sheet_native.FONT_MM),  # the 3.5 mm of ISO 3098; TechDraw's own default is 5 mm
+    ("Standards", sheet_native.LINE_STANDARD, sheet_native.LINE_STANDARD_ISO),  # TechDraw's own list: ISO 128-20; unset it paints the ASME line table
 )
 """What a new TechDraw object reads when the engineer adds one by hand to the sheet: the line group and the text size of the
 sheet. Measured in 1.1.3: with the preferences unset a dimension added by hand came out 0.35 mm thick and 5 mm high, next to
-the sheet's own widths and 3.5 mm."""
+the sheet's own widths and 3.5 mm. The line standard is what a line NUMBER paints: with ISO 128-20 the centre line (number 4)
+is the long-dash dotted line (4.32 0.54 0.18 0.54 mm at 0.18 in the PDF); unset, TechDraw paints the ASME table, where it is
+a long and a short dash."""
+
+
+LIST_PREFS = frozenset({sheet_native.LINE_STANDARD})  # preferences that hold the index of an item of a list
 
 
 def apply_techdraw_defaults() -> None:
@@ -125,8 +132,7 @@ def apply_techdraw_defaults() -> None:
     for group, key, value in DEFAULT_PREFS:
         params = App.ParamGet(TECHDRAW_PREFS + group)
         if isinstance(value, int):
-            if params.GetInt(key, -99) == -99:
-                params.SetInt(key, value)
+            sheet_linetype.set_default_int(params, key, value, key in LIST_PREFS)
         elif params.GetFloat(key, -99.0) == -99.0:
             params.SetFloat(key, float(value))
 
@@ -3809,6 +3815,42 @@ def page_findings(page: Any, ctx: sc.Context) -> list[dict[str, Any]]:
         rows.append({"code": code, "severity": "warning", "message": message, "items": [], "features": [], "key": key})
 
     read = pc.read_page(page, lambda obj: _view_name_of(page, obj))
+    dashed = sheet_native.line_type_problems(page)
+    if dashed:
+        shown = "; ".join(f"{view}: {what}" + (f" ({number})" if number >= 0 else "") for view, what, number in dashed[:4])
+        rows.append(
+            {
+                "code": "centre_line_not_chain",
+                "severity": "warning",
+                "message": ctx.say(
+                    f"Hay {len(dashed)} eje(s) o marca(s) de centro de los que hizo la hoja que no son línea de trazo largo y punto (ISO 128, tipo 04; número de línea de TechDraw entre paréntesis): {shown}. "
+                    "Así se leen como aristas ocultas. Se corrigen al actualizar la hoja (compose o cualquier cambio de un elemento). "
+                    "Los ejes que el ingeniero hace a mano no se juzgan: llevan su estilo de línea.",
+                    f"{len(dashed)} axis or centre mark line(s) the sheet made are not the long-dash dotted line (ISO 128, type 04; TechDraw's line number in brackets): {shown}. "
+                    "They read as hidden edges. They are put right when the sheet is updated (compose, or any change of an item). "
+                    "The axes the engineer makes by hand are not judged: they carry his line style.",
+                ),
+                "items": [],
+                "features": [],
+                "key": dashed[0][0],
+            }
+        )
+    deleted = sheet_native.deleted_by_hand(page)
+    if deleted:  # one line, never a question: a hand deletion is final and the export does not wait for it
+        shown = ", ".join(deleted[:4]) + (f" (+{len(deleted) - 4})" if len(deleted) > 4 else "")
+        rows.append(
+            {
+                "code": "line_deleted_by_hand",
+                "severity": "info",
+                "message": ctx.say(
+                    f"Líneas de eje o de marca que hizo la hoja y el ingeniero borró a mano: {shown}. Se respetan: la hoja no las vuelve a poner.",
+                    f"Axis or mark lines the sheet made and the engineer deleted by hand: {shown}. They stay deleted: the sheet does not put them back.",
+                ),
+                "items": [],
+                "features": [],
+                "key": "",
+            }
+        )
     marked = pc.marker_texts(read.texts)
     if marked:
         shown = "; ".join(f"{t.where}: «{t.text}»" for t in marked[:4])
