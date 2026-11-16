@@ -60,3 +60,20 @@ def misplaced(wanted_left: float, box: tuple[float, float, float] | None, tolera
     offset = box[0] - wanted_left
     return offset if abs(offset) > tolerance else None
 
+
+NOTE_SNAP_MM = 5.0  # a note's X keeps this far from the X of any other object of the page
+NOTE_SNAP_STEP_MM = 4.0  # ... by widening its text block this much at a time
+NOTE_SNAP_TRIES = 8
+
+
+def block_clear_of_others(others: list[float], left: float, block: float) -> float:
+    """The width of a note's text block (its centre, X, is ``left`` + half of it) widened until that X is at least
+    ``NOTE_SNAP_MM`` from the X of every other object of the page (``others``). The window pulls an object whose X is within a
+    few mm of another one onto it (measured in 1.1.3): a dimension centred 3 mm from the notes' X moved every line of them
+    3.3 mm and the fit could not put them back. An object on the very same X is no risk (the lines of the notes share one)."""
+    for _ in range(NOTE_SNAP_TRIES):
+        centre = left + block / 2
+        if all(abs(centre - o) < 0.05 or abs(centre - o) >= NOTE_SNAP_MM for o in others):
+            break
+        block += NOTE_SNAP_STEP_MM
+    return block

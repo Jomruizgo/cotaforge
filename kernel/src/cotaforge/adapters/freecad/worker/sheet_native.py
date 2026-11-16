@@ -361,6 +361,9 @@ def _make_note(fc_doc: Any, page: Any, note: su.NativeNote, key: str, sheet: str
     # moved lines of different widths by up to 2 mm
     longest = max((_text_width(line, note.size) for line in note.lines), default=0.0)
     block = max(NOTE_BLOCK_MM, longest * NOTE_BLOCK_FACTOR + NOTE_BLOCK_PAD_MM) if note.fit else longest * 1.5 + 6.0  # a loose label: the room its words take, with a margin so TechDraw does not wrap them
+    if note.fit:  # the block is as wide as it likes: not so that its X lands where the window would pull it onto another object
+        others = [float(x) for view in page.Views if (x := getattr(view, "X", None)) is not None]
+        block = sheet_notefit.block_clear_of_others(others, note.at[0], block)
     for index, line in enumerate(note.lines):
         obj = fc_doc.addObject("TechDraw::DrawViewAnnotation", _object_name(page, key, f"{note.name}{index + 1}"))
         page.addView(obj)

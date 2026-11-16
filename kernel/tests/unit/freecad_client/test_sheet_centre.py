@@ -127,15 +127,3 @@ def test_the_review_flags_a_long_centre_line_that_crosses_a_dimension_and_one_th
 def test_a_clean_sheet_has_no_centre_line_finding() -> None:
     found = run_review(views_context([hole(0, 10, 10)]), {"type": "overall", "offset_mm": 10.0}, {"type": "view_lines"})
     assert not {"centre_line_long", "centre_line_crosses"} & set(codes(found))
-
-
-def test_the_plane_of_symmetry_goes_the_same_short_way_past_both_edges_of_the_view() -> None:
-    import items_datum  # noqa: PLC0415
-
-    ctx = views_context()
-    top = ctx.views["top"]
-    items_datum._symmetry_line(ctx, top, top.project((50.0, 0.0, 0.0))[0], True)  # noqa: SLF001
-    (rec,) = ctx.extras[centre.KEY]
-    first, last = centre.overshoots(rec)
-    assert math.isclose(first, OVER) and math.isclose(last, OVER)
-    assert ctx.sheet.of_layer(model.AXES) == [rec.line]

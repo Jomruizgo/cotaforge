@@ -178,6 +178,8 @@ async def test_a_plate_drawing_is_refused_until_it_is_finished_then_written_and_
             assert gone not in after_fixes, gone
         assert "notes_heat_treatment" in after_fixes  # still to be answered
         await out.shot(cad, "02_corregido.png")
+        if "view_adds_nothing:right" in after_fixes:  # the side view of a plate adds nothing: "applies" does not close it, the view goes
+            await cad.ok("drawing", action="remove_view", views=["right"])
 
         # ... and answer the rest: some "no aplica" with their reason, the memory ones after reading them
         findings, questions, memory = await pending_points(cad)

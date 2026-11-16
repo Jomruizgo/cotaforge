@@ -7,18 +7,16 @@ The datums are the two edges of the view the positions are counted from: ``x_fro
 silhouette of the view). Every value is the measured distance from the hole's axis to that edge, in model millimetres.
 
 ``auto`` is the default location every sheet with holes carries (``drawing`` makes the item): it locates the holes no
-other item locates, in the view that shows each one as a circle, and in each direction of that view from a reference
-the sheet HAS: the datums it declares (the ``datum`` items: the first faces seen edge-on across x and across y) or the
-part's own plane of symmetry across that direction (measured on the shape): a hole on the plane needs no dimension, the
-holes either side of it are one dimension between each pair, and the plane is drawn as a centre line. It never counts
-from the corner of the part's box: where no reference exists it draws nothing for that direction and says which
-direction lacks one, so the agent asks the engineer which face or edge the positions are counted from.
+other item locates, in the view that shows each one as a circle, for the measuring tools every shop has (a caliper, a
+micrometer, a depth gauge): per group of equal holes the spacing between its holes and ONE locator from the edge of the
+part nearest to the group (or from the datum edge the sheet declares across that direction), in each direction of the
+view. It is never a baseline from one datum (that needs a height gauge: ``datum_dims`` with ``x_from`` / ``y_from`` asks
+for it) and never the symmetry of the part: the middle of a plate is dimensioned from an edge like any other place.
 """
 
 from dataclasses import dataclass
 from typing import Any
 
-import sheet_centre
 import sheet_pattern
 from items_common import hole_mark, mark_once
 from items_holes import describe
@@ -40,8 +38,8 @@ from sheet_context import (
     v_points3,
 )
 from sheet_draw import exact_box, linear_dimension, table
-from sheet_model import AXES, CENTRE_OVERSHOOT_MM, TEXT, Line, Text, text_width
 from sheet_marks import NativeTable
+from sheet_model import AXES, CENTRE_OVERSHOOT_MM, TEXT, Line, Sheet, Text, text_width
 from sheet_units import NativeDim, NativeNote, Ref2
 
 GAP_MM = 1.0
@@ -308,95 +306,15 @@ def _located(ctx: Context, hole: HoleInfo, view: ViewInfo, horizontal: bool) -> 
         ctx.extras.setdefault("loc_axes", {}).setdefault(hole.index, set()).add(axis)
 
 
-def _mirror_pairs(
-    ctx: Context,
-    view: ViewInfo,
-    placed: list[tuple[HoleInfo, Point]],
-    plane: float,
-    horizontal: bool,
-    side: str,
-    spec: dict[str, Any],
-    tag: str,
-    item: str,
-) -> list[float]:
-    """A direction the part is symmetric across: ``plane`` (the page coordinate of its plane of symmetry) is the reference.
-    A hole on the plane needs no dimension; the holes either side come in pairs (the part is mirror-symmetric) and the pair
-    is ONE dimension between the two centres, on its own line stacked outward. The plane itself is drawn by the caller."""
-    i, j = (0, 1) if horizontal else (1, 0)  # i: the coordinate this direction measures, j: the other one
-    low_side = side in ("below", "left")
-    pairs: dict[float, dict[int, tuple[HoleInfo, Point]]] = {}
-    lines: dict[float, list[Point]] = {}
-    for hole, p in placed:
-        key = round((p[i] - plane) / view.scale, 2)
-        ctx.extras.setdefault("positions", {}).setdefault(hole.index, {})["x" if horizontal else "y"] = abs(key)
-        if abs(key) < POSITION_ON_DATUM_MM:  # on the plane: located by symmetry, nothing to say
-            _located(ctx, hole, view, horizontal)
-            continue
-        lines.setdefault(key, []).append(p)
-        sign = 1 if key > 0 else -1
-        slot = pairs.setdefault(abs(key), {})
-        current = slot.get(sign)
-        if current is None or (p[j] < current[1][j] if low_side else p[j] > current[1][j]):
-            slot[sign] = (hole, p)
-    box = view.box
-    edge = (box[1] if horizontal else box[0]) if low_side else (box[3] if horizontal else box[2])
-    values: list[float] = []
-    for value in sorted(pairs):
-        slot = pairs[value]
-        if len(slot) != 2:
-            continue  # a hole with no mirror image: the symmetry does not locate it
-        pa, pb = slot[-1][1], slot[1][1]
-        distance = ctx.stack_distance(view.name, side, spec.get("offset_mm"))
-        line = edge - distance if low_side else edge + distance
-        span = round(abs(pb[i] - pa[i]) / view.scale, 2)
-        exact = _exact(ctx, (h for h, q in placed if round(abs(q[i] - plane) / view.scale, 2) == value))
-        entities, taken = linear_dimension(pa, pb, "h" if horizontal else "v", line, ctx.num(span), "lo")
-        if exact:
-            exact_box(entities)
-        for key in (-value, value):
-            _, p = slot[1 if key > 0 else -1]
-            far = max(lines[key], key=lambda q: abs(q[j] - p[j]))
-            if abs(far[j] - p[j]) > 0.05:
-                entities.append(_link(p, far, LINK_OVERSHOOT_MM))
-            for hole, q in placed:
-                if round((q[i] - plane) / view.scale, 2) == key:
-                    _located(ctx, hole, view, horizontal)
-        ctx.add(entities)
-        ctx.reserve_dimension([e for e in entities if getattr(e, "layer", None) != AXES], taken)
-        mid = (pa[i] + pb[i]) / 2
-        ctx.native(
-            NativeDim(
-                item=item,
-                name=f"{tag}{'x' if horizontal else 'y'}{len(values) + 1}",
-                kind="distance",
-                view=view.name,
-                refs=(Ref2("point", pa), Ref2("point", pb)),
-                label=(mid, line) if horizontal else (line, mid),
-                expected=span,
-                orient="h" if horizontal else "v",
-                rect=taken,
-                exact=exact,
-            )
-        )
-        values.append(span)
-    return values
-
-
-def _symmetry_line(ctx: Context, view: ViewInfo, plane: float, horizontal: bool) -> None:
-    """The centre line of a plane of symmetry across the view (a chain line past the outline at both ends), once."""
-    done: set[tuple[str, bool]] = ctx.extras.setdefault("symmetry_lines", set())
-    if (view.name, horizontal) in done:
-        return
-    done.add((view.name, horizontal))
-    box = view.box
-    reach = LINK_OVERSHOOT_MM
-    if horizontal:  # the plane is the vertical line x = plane
-        ends = (plane, box[1]), (plane, box[3])
-    else:
-        ends = (box[0], plane), (box[2], plane)
-    line = sheet_centre.side_line(ctx, view.name, ends[0], ends[1], reach)  # the same reach at both ends, short of any dimension
-    if line is not None:
-        ctx.add([line])
+def _stack_sides(ctx: Context, view: ViewInfo, spec: dict[str, Any]) -> tuple[str, str]:
+    """The side of the view the x dimensions go (``x_side``) and the y ones (``y_side``): the rows go on the side of the view
+    that has no other view beside it -- below the top view and above the front one in first angle (the top view hangs under
+    the front one), the other way round in third angle."""
+    stacked_with_other = (
+        {"front": "above", "top": "below"} if not ctx.third_angle else {"front": "below", "top": "above"}
+    )
+    default_x = stacked_with_other.get(view.name, "below") if (spec.get("auto") or ctx.third_angle) else "below"
+    return spec.get("x_side", default_x), spec.get("y_side", "left")
 
 
 def _ordinates(
@@ -406,46 +324,259 @@ def _ordinates(
     spec: dict[str, Any],
     dx: float,
     dy: float,
-    tag: str = "",
-    modes: tuple[str | None, str | None] = ("datum", "datum"),
 ) -> str:
-    """The positions of the holes as BASELINE dimensions (ISO 129-1), per direction of the view: ``modes`` says what each
-    is counted from -- ``datum`` (the edge ``dx`` / ``dy``: one dimension per distinct position, from the datum edge to the
-    hole centre, each on its own line stacked outward, nearest first, all outside the part; holes that share a coordinate
-    share its dimension, and a centre line joins them so the pattern reads as rows and columns), ``symmetry`` (the plane
-    of symmetry at ``dx`` / ``dy``: see ``_mirror_pairs``) or ``None`` (nothing: no reference, the caller says so). They
-    are TechDraw's own dimensions (``DrawViewDimension``): FreeCAD has no ordinate dimension, and what it cannot do the
-    sheet does not do."""
-    # the rows go on the side of the view that has no other view beside it: below the top view and above the front one in
-    # first angle (the top view hangs under the front one), the other way round in third angle
-    stacked_with_other = (
-        {"front": "above", "top": "below"} if not ctx.third_angle else {"front": "below", "top": "above"}
-    )
-    default_x = stacked_with_other.get(view.name, "below") if (spec.get("auto") or ctx.third_angle) else "below"
-    x_side, y_side = spec.get("x_side", default_x), spec.get("y_side", "left")
+    """The positions of the holes as BASELINE dimensions (ISO 129-1) from the datum edges ``dx`` / ``dy``, per direction of
+    the view: one dimension per distinct position, from the datum edge to the hole centre, each on its own line stacked
+    outward, nearest first, all outside the part; holes that share a coordinate share its dimension, and a centre line
+    joins them so the pattern reads as rows and columns. It is the scheme of a shop with a height gauge or a CMM, asked for
+    by name (``datum_dims`` with ``x_from`` / ``y_from``): the default location is the caliper's (``_draw_auto``). They are
+    TechDraw's own dimensions (``DrawViewDimension``): FreeCAD has no ordinate dimension, and what it cannot do the sheet does
+    not do."""
+    x_side, y_side = _stack_sides(ctx, view, spec)
     placed = [(h, view.project(h.centre)) for h in holes]
     item = str(ctx.extras["current"])
-    values_x: list[float] = []
-    values_y: list[float] = []
-    if modes[0] == "datum":
-        values_x = _along_x(ctx, view, placed, dx, x_side, spec, tag, item)
-    elif modes[0] == "symmetry":
-        _symmetry_line(ctx, view, dx, True)
-        values_x = _mirror_pairs(ctx, view, placed, dx, True, x_side, spec, tag, item)
-    if modes[1] == "datum":
-        values_y = _along_y(ctx, view, placed, dy, y_side, spec, tag, item)
-    elif modes[1] == "symmetry":
-        _symmetry_line(ctx, view, dy, False)
-        values_y = _mirror_pairs(ctx, view, placed, dy, False, y_side, spec, tag, item)
-    said = []
-    for label, mode, values in (("x", modes[0], values_x), ("y", modes[1], values_y)):
-        shown = ", ".join(ctx.num(v) for v in values)
-        if mode == "datum":
-            said.append(f"{label} from {shown}")
-        elif mode == "symmetry":
-            said.append(f"{label} about the symmetry line" + (f" between {shown}" if values else ""))
-    where = "from the datum edges" if "datum" in modes else "from the symmetry lines"
-    return f"{len(holes)} hole(s) in the {view.name} view; {'; '.join(said)} (mm, {where})"
+    values_x = _along_x(ctx, view, placed, dx, x_side, spec, "", item)
+    values_y = _along_y(ctx, view, placed, dy, y_side, spec, "", item)
+    said = [
+        f"{label} from {', '.join(ctx.num(v) for v in values)}" for label, values in (("x", values_x), ("y", values_y))
+    ]
+    return f"{len(holes)} hole(s) in the {view.name} view; {'; '.join(said)} (mm, from the datum edges)"
+
+
+# --- the default location: for the measuring tool of the shop ------------------------------------------------------------
+
+CROSS_TOL_MM = 0.05  # an extension line this close to an end of another dimension only touches it
+MAX_SPLIT = 12  # dimensions of one direction that are split between the two sides of the view by trying every way
+
+
+@dataclass
+class _Dim:
+    """One dimension of the default location, before it is drawn. It spans ``lo`` .. ``hi`` along its direction (page mm,
+    the coordinates of its two extension lines); ``first`` / ``second`` are the hole centres of the columns it runs between
+    (``first`` is empty for a locator, which starts at the vertex of the edge it is counted from, ``edge``). The hole each
+    end is drawn to is the one nearest the side the dimension stands on."""
+
+    value: float  # model mm
+    lo: float
+    hi: float
+    first: list[Point]
+    second: list[Point]
+    holes: list[HoleInfo]
+    edge: float | None = None  # a locator: the page coordinate of the edge (or datum) it is counted from
+    text: str | None = None  # a repeated spacing is said once: ``3×20``
+
+
+def _group_key(pool: list[HoleInfo], rep: HoleInfo) -> tuple[float, ...]:
+    """What makes the holes of two axes the same feature: the diameters of the stack on the axis (a counterbore is 9 and 14, a
+    plain hole 9)."""
+    return tuple(sorted(round(g.diameter, 3) for g in pool if parallel(g.direction, rep.direction) and rep.on_axis(g.centre)))
+
+
+def _groups(ctx: Context, pool: list[HoleInfo], axes: list[HoleInfo]) -> dict[tuple[float, ...], list[HoleInfo]]:
+    """The axes of ``pool`` by group of equal holes (a bore on the axis of revolution of the part has none: the axis says it)."""
+    groups: dict[tuple[float, ...], list[HoleInfo]] = {}
+    for rep in axes:
+        if not _on_revolution_axis(ctx, rep):
+            groups.setdefault(_group_key(pool, rep), []).append(rep)
+    return groups
+
+
+def _on_revolution_axis(ctx: Context, hole: HoleInfo) -> bool:
+    """Whether ``hole`` lies on the axis of revolution of the part itself (the bore of a bush, a ring, a spacer): the axis
+    is its reference, nothing to measure from an edge."""
+    if ctx.assembly is not None or ctx.weldment is not None or ctx.geometry is None:
+        return False
+    found = ctx.geometry.round_extent()
+    box = ctx.extras.get("model_box")
+    if found is None or box is None:
+        return False
+    middle = tuple((lo + hi) / 2 for lo, hi in zip(box[0], box[1], strict=True))
+    return parallel(hole.direction, found[0]) and hole.on_axis(middle)  # type: ignore[arg-type]
+
+
+def _group_dims(
+    ctx: Context,
+    view: ViewInfo,
+    placed: list[tuple[HoleInfo, Point]],
+    horizontal: bool,
+    datum: float | None,
+) -> list[_Dim]:
+    """The dimensions of ONE group of equal holes along one direction of the view (``horizontal``: page x): the spacing
+    between its holes (a caliper measures a distance between two holes) and ONE locator, from the edge of the part nearest
+    to the group (or from the datum edge the sheet declares across that direction), to its nearest hole. Never the symmetry
+    of the part: a group in the middle is dimensioned from the edge like any other."""
+    i = 0 if horizontal else 1  # the page coordinate this direction measures
+    scale = view.scale
+    columns: dict[float, list[tuple[HoleInfo, Point]]] = {}
+    for hole, p in placed:
+        columns.setdefault(round(p[i] / scale, 2), []).append((hole, p))
+    keys = sorted(columns)
+    out: list[_Dim] = []
+    gaps = [round(b - a, 2) for a, b in zip(keys, keys[1:], strict=False)]
+    if len(gaps) >= 2 and max(gaps) - min(gaps) <= 0.011:  # a row at one pitch: the pitch once, with how many
+        pairs = [(keys[0], keys[1])]
+        said: str | None = f"{len(keys) - 1}×{ctx.num(gaps[0])}"
+    else:
+        pairs = list(zip(keys, keys[1:], strict=False))
+        said = None
+    for ka, kb in pairs:
+        points = [[p for _, p in columns[k]] for k in (ka, kb)]
+        out.append(
+            _Dim(round(kb - ka, 2), ka * scale, kb * scale, points[0], points[1], [h for k in (ka, kb) for h, _ in columns[k]], text=said)
+        )
+    box = _silhouette(ctx, view)
+    lo, hi = (box[0], box[2]) if horizontal else (box[1], box[3])
+    if datum is not None:
+        key = min(keys, key=lambda k: abs(k * scale - datum))
+        edge = datum
+    elif keys[0] * scale - lo <= hi - keys[-1] * scale + 0.005:  # the nearer edge (the low one when it is a tie)
+        key, edge = keys[0], lo
+    else:
+        key, edge = keys[-1], hi
+    distance = round(abs(key * scale - edge) / scale, 2)
+    if distance >= POSITION_ON_DATUM_MM:
+        out.append(
+            _Dim(
+                distance,
+                min(edge, key * scale),
+                max(edge, key * scale),
+                [],
+                [p for _, p in columns[key]],
+                [h for h, _ in columns[key]],
+                edge=edge,
+            )
+        )
+    for hole, p in placed:  # what the sheet says of each hole: how far from the edge it counted from
+        ctx.extras.setdefault("positions", {}).setdefault(hole.index, {})["x" if horizontal else "y"] = round(
+            abs(p[i] - edge) / scale, 2
+        )
+        _located(ctx, hole, view, horizontal)
+        ctx.extras.setdefault("loc_edge", {}).setdefault(hole.index, set()).add(
+            model_axis(view.xdir if horizontal else view.ydir) or ("x" if horizontal else "y")
+        )
+    return out
+
+
+def _crossings(order: list[_Dim]) -> int:
+    """How many pairs of ``order`` (nearest the part first) one of whose extension lines lies across the line of the other:
+    the outer dimension's two extension lines, inside the span of the inner one."""
+    count = 0
+    for a, inner in enumerate(order):
+        for outer in order[a + 1 :]:
+            if any(inner.lo + CROSS_TOL_MM < e < inner.hi - CROSS_TOL_MM for e in (outer.lo, outer.hi)):
+                count += 1
+    return count
+
+
+def _split(dims: list[_Dim]) -> tuple[list[_Dim], list[_Dim]]:
+    """The dimensions of one direction on the usual side of the view and on the opposite one, so that no extension line crosses
+    the line of another dimension (ISO 129): each side stacks the shorter dimensions nearest the part (the longer one stands
+    outside the shorter ones it runs along), and two dimensions that overlap without one holding the other cannot share a side
+    (an extension line of the outer one would cross the inner line), so the split is the one with the fewest crossings and,
+    then, the fewest dimensions on the opposite side."""
+    ranked = sorted(dims, key=lambda d: (d.value, d.lo))
+    if len(ranked) > MAX_SPLIT or _crossings(ranked) == 0:
+        return ranked, []
+    best: tuple[int, int, int] | None = None
+    chosen: tuple[list[_Dim], list[_Dim]] = (ranked, [])
+    for mask in range(1 << len(ranked)):
+        far = [d for k, d in enumerate(ranked) if mask >> k & 1]
+        near = [d for k, d in enumerate(ranked) if not mask >> k & 1]
+        cost = (_crossings(near) + _crossings(far), len(far), mask)
+        if best is None or cost < best:
+            best, chosen = cost, (near, far)
+    return chosen
+
+
+def _draw_dims(
+    ctx: Context,
+    view: ViewInfo,
+    sides: list[tuple[str, list[_Dim]]],
+    horizontal: bool,
+    spec: dict[str, Any],
+    tag: str,
+    item: str,
+) -> list[float]:
+    """Draw the dimensions of one direction of ``view``, each side with the shorter ones nearest the part (ISO 129-1), every
+    one on its own line stacked outward, with a centre line that joins the holes of a column or a row that share one."""
+    box = view.box
+    i, j = (0, 1) if horizontal else (1, 0)
+    values: list[float] = []
+    linked: set[tuple[float, float, float, float]] = set()
+    for side, dims in sides:
+        low_side = side in ("below", "left")
+        edge = (box[1] if horizontal else box[0]) if low_side else (box[3] if horizontal else box[2])
+
+        def near(points: list[Point], low: bool = low_side, other: int = j) -> Point:
+            return (min if low else max)(points, key=lambda q: q[other])
+
+        for dim in dims:
+            if dim.edge is not None:
+                along = (box[1] if low_side else box[3]) if horizontal else (box[0] if low_side else box[2])
+                a = _real_point(view, dim.edge, along, vertical=horizontal)
+            else:
+                a = near(dim.first)
+            b = near(dim.second)
+            distance = ctx.stack_distance(view.name, side, spec.get("offset_mm"))
+            line = edge - distance if low_side else edge + distance
+            exact = _exact(ctx, dim.holes)
+            text = dim.text or ctx.num(dim.value)
+            entities, taken = linear_dimension(a, b, "h" if horizontal else "v", line, text, "lo" if a[i] <= b[i] else "hi")
+            if exact:
+                exact_box(entities)
+            for p in (a, b):
+                same = [q for h in dim.holes if abs((q := view.project(h.centre))[i] - p[i]) <= 0.05]
+                far = max(same, key=lambda q: abs(q[j] - p[j]), default=None)
+                if far is not None and abs(far[j] - p[j]) > 0.05:
+                    span = tuple(round(v, 2) for v in (*p, *far))
+                    if span not in linked and (span[2], span[3], span[0], span[1]) not in linked:
+                        linked.add(span)  # type: ignore[arg-type]
+                        entities.append(_link(p, far, LINK_OVERSHOOT_MM))
+            ctx.add(entities)
+            ctx.reserve_dimension([e for e in entities if getattr(e, "layer", None) != AXES], taken)
+            ctx.native(
+                NativeDim(
+                    item=item,
+                    name=f"{tag}{'x' if horizontal else 'y'}{len(values) + 1}",
+                    kind="distance",
+                    view=view.name,
+                    refs=(Ref2("point", a), Ref2("point", b)),
+                    label=((a[0] + b[0]) / 2, line) if horizontal else (line, (a[1] + b[1]) / 2),
+                    expected=dim.value,
+                    text=dim.text,
+                    orient="h" if horizontal else "v",
+                    rect=taken,
+                    exact=exact,
+                )
+            )
+            values.append(dim.value)
+    return values
+
+
+STANDARD_VIEWS = {  # (direction towards the viewer, x direction) of the standard views, first angle
+    "top": ((0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
+    "front": ((0.0, -1.0, 0.0), (1.0, 0.0, 0.0)),
+    "right": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+}
+
+
+def far_rows(holes: list[HoleInfo], view_name: str, box: tuple[tuple[float, float, float], tuple[float, float, float]]) -> tuple[int, int]:
+    """How many dimensions of the default location of ``holes`` stand on the OPPOSITE side of the standard view ``view_name`` of a
+    part with the model box ``box`` (x across the page, y up it): the room the layout keeps for them (``drawing``). The same
+    arithmetic as ``_draw_auto``, on a scratch view at scale 1: no datum is declared, which only moves a locator."""
+    direction, xdir = STANDARD_VIEWS[view_name]
+    centre = tuple((lo + hi) / 2 for lo, hi in zip(box[0], box[1], strict=True))
+    view = ViewInfo(view_name, 0.0, 0.0, 1.0, direction, xdir, centre, (0.0, 0.0, 0.0, 0.0))  # type: ignore[arg-type]
+    ctx = Context(Sheet(1.0, 1.0), {view_name: view}, holes, None, (0.0, 0.0, 1.0, 1.0))  # type: ignore[arg-type]
+    ctx.extras["model_box"] = box
+    pool = [h for h in holes if view.looks_along(h.direction)]
+    out = []
+    for horizontal in (True, False):
+        dims: list[_Dim] = []
+        for reps in _groups(ctx, pool, _axes(pool)).values():
+            dims += _group_dims(ctx, view, [(h, view.project(h.centre)) for h in reps], horizontal, None)
+        out.append(len(_split(dims)[1]))
+    return out[0], out[1]
 
 
 # --- the default location ------------------------------------------------------------------------------------------------
@@ -513,40 +644,15 @@ def declared_datums(ctx: Context, view: ViewInfo) -> tuple[str | None, str | Non
     return found.get("x"), found.get("y")
 
 
-@dataclass(frozen=True)
-class Reference:
-    """What the positions of one direction of a view are counted from: ``datum`` (a declared face, ``value`` its id) or
-    ``symmetry`` (the part's plane of symmetry across the direction); ``axis`` is the model axis the direction runs along."""
-
-    kind: str
-    axis: str
-    position: float  # the page coordinate of the datum edge / the plane of symmetry in this direction
-    value: str = ""
-
-
-def _reference(ctx: Context, view: ViewInfo, horizontal: bool, face: str | None) -> Reference | None:
-    """The reference of one direction of ``view`` (page x when ``horizontal``): the datum the sheet declares across it, else
-    the part's plane of symmetry across it, else none -- a corner of the box is not a reference, the engineer says which
-    edge matters."""
-    vector = view.xdir if horizontal else view.ydir
-    axis = model_axis(vector) or ""
-    if face is not None:
-        return Reference("datum", axis, _datum_position(ctx, view, face, horizontal=not horizontal), face)
-    plane = ctx.extras.get("symmetry", {}).get(axis) if axis else None
-    if plane is None:
-        return None
-    point = list(view.centre)
-    point["xyz".index(axis)] = plane
-    page = view.project((point[0], point[1], point[2]))
-    return Reference("symmetry", axis, page[0] if horizontal else page[1])
-
-
 def _draw_auto(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
-    """Locate every hole no other item locates, each in the view that shows it as a circle, in each direction from the
-    reference the sheet has (a declared datum, else the plane of symmetry); a direction with none is said, not guessed."""
+    """Locate every hole no other item locates, each in the view that shows it as a circle, the way the shop measures it with
+    the tools every shop has (a caliper, a micrometer, a depth gauge): per GROUP of equal holes the spacing between its holes
+    and ONE locator from the edge of the part nearest to it (or from the datum edge the sheet declares across that
+    direction), in each direction of the view. Not everything from one datum baseline (that needs a height gauge: ask for it
+    with ``datum_dims`` x_from / y_from) and never by the symmetry of the part (a hole in the middle is dimensioned too). A hole
+    on the axis of revolution of a turned part has the axis as its reference."""
     taken = located_by_others(ctx, str(spec["id"]))
     details: list[str] = []
-    missing: dict[str, int] = {}
     first = True
     for name in AUTO_VIEWS:
         view = ctx.views.get(name)
@@ -558,43 +664,58 @@ def _draw_auto(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         if not pool:
             continue
         ctx.used_view(name)
-        declared = declared_datums(ctx, view)
-        refs = (_reference(ctx, view, True, declared[0]), _reference(ctx, view, False, declared[1]))
-        own = {"auto": True, **({"offset_mm": spec["offset_mm"]} if "offset_mm" in spec else {})}
         axes = _axes(pool)
-        if any(refs):
-            modes = tuple(r.kind if r is not None else None for r in refs)
-            dx, dy = (r.position if r is not None else 0.0 for r in refs)
-            details.append(_ordinates(ctx, view, axes, own, dx, dy, "" if first else f"{name}_", modes))  # type: ignore[arg-type]
+        own = {"auto": True, **({"offset_mm": spec["offset_mm"]} if "offset_mm" in spec else {})}
+        x_side, y_side = _stack_sides(ctx, view, own)
+        declared = declared_datums(ctx, view)
+        datums = tuple(
+            None if face is None else _datum_position(ctx, view, face, horizontal=not horizontal)
+            for horizontal, face in ((True, declared[0]), (False, declared[1]))
+        )
+        groups = _groups(ctx, pool, axes)
+        on_axis = [rep for rep in axes if _on_revolution_axis(ctx, rep)]
+        for rep in on_axis:  # the axis of the part locates it in both directions: nothing to measure, and the review knows
+            _located(ctx, rep, view, True)
+            _located(ctx, rep, view, False)
+        if on_axis and not groups:
+            details.append(f"{len(on_axis)} hole(s) in the {name} view on the axis of the part: the axis locates them, nothing to measure")
+        dims: dict[bool, list[_Dim]] = {True: [], False: []}
+        for reps in groups.values():
+            placed = [(h, view.project(h.centre)) for h in reps]
+            dims[True] += _group_dims(ctx, view, placed, True, datums[0])
+            dims[False] += _group_dims(ctx, view, placed, False, datums[1])
+        if groups:
+            tag = "" if first else f"{name}_"
+            item = str(ctx.extras["current"])
+            shown = []
+            for horizontal, side in ((True, x_side), (False, y_side)):
+                near, far = _split(dims[horizontal])
+                opposite = {"below": "above", "above": "below", "left": "right", "right": "left"}[side]
+                values = _draw_dims(ctx, view, [(side, near), (opposite, far)], horizontal, own, tag, item)
+                if values:
+                    shown.append(f"{'x' if horizontal else 'y'} {', '.join(ctx.num(v) for v in values)}")
+            details.append(
+                f"{len(axes)} hole(s) in the {name} view; {'; '.join(shown)} (mm: the spacing in each group of equal holes "
+                "and one locator from the nearest edge, as a caliper measures)"
+            )
             first = False
-        for horizontal, ref in ((True, refs[0]), (False, refs[1])):
-            if ref is None:
-                axis = model_axis(view.xdir if horizontal else view.ydir) or ("x" if horizontal else "y")
-                missing[axis] = missing.get(axis, 0) + len(axes)
-                for h in pool:  # the review says which holes lack a reference, and along which axis
-                    ctx.extras.setdefault("loc_missing", {}).setdefault(h.index, set()).add(axis)
         done = ctx.extras.setdefault("loc_axes", {})
         for rep in axes:  # a counterbore is two holes on one axis: they are located together
             for h in pool:
                 if h.index != rep.index and parallel(h.direction, rep.direction) and rep.on_axis(h.centre):
                     if rep.index in done:
                         done.setdefault(h.index, set()).update(done[rep.index])
+                        ctx.extras.setdefault("loc_edge", {}).setdefault(h.index, set()).update(
+                            ctx.extras.get("loc_edge", {}).get(rep.index, set())
+                        )
         ctx.extras.setdefault("auto_covered", set()).update(h.index for h in pool if h.index in done)
         for hole in axes:  # the axis of every hole, as a centre mark that reaches past the largest of its stack
             p = view.project(hole.centre)
             widest = max(g.diameter for g in pool if parallel(g.direction, hole.direction) and g.on_axis(hole.centre))
             if mark_once(ctx, view, p):
                 ctx.add(hole_mark(ctx, view, hole, p, widest / 2 * view.scale))
-    if not details and not missing:
+    if not details:
         return "ok", "no hole to locate: every one is located by another item, or none is seen as a circle"
-    if missing:
-        where = " and ".join(sorted(missing))
-        asked = (
-            f"no reference to count the position along {where} from: the part is not symmetric across it and no datum "
-            "item faces across it. Ask the engineer which face or edge those positions are counted from, declare it with "
-            "a datum item (face=...) and the location follows"
-        )
-        return "warning", "; ".join([*details, asked])
     return "ok", "; ".join(details)
 
 
