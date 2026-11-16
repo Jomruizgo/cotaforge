@@ -46,23 +46,24 @@ def _holes() -> list[dict[str, Any]]:
     ]
 
 
-def check_the_default_location_counts_from_the_symmetry_and_from_the_declared_datums() -> None:
+def check_the_default_location_is_the_spacing_of_each_group_and_one_locator_from_the_nearest_edge() -> None:
     from check_drawing_live import side_face  # noqa: PLC0415
 
     base = build_part()  # symmetric across x = 50 (one plane), not across y
     made = call("create_drawing", op("d", template="A3", views=["front", "top", "iso"], symmetry=True))  # intent, not shape
     loc = next(i for i in made["items"] if i["id"] == "loc")
-    assert loc["status"] == "warning" and "Ask the engineer which face or edge" in loc["detail"], loc
+    assert loc["status"] == "ok", loc  # nothing asks for a reference: the nearest edge is the one a caliper reaches
     add(*_holes())
     m = _metrics()
     holes = [h for h in m["holes"].values() if h["diameter"] in (5.0, 6.0, 9.0)]
-    assert holes and all("x" in h and "y" not in h for h in holes), holes  # x by the symmetry, y asks for a reference
+    assert holes and all("x" in h and "y" in h for h in holes), holes  # both directions of every hole, symmetric or not
     codes = {f["code"] for f in _findings()}
-    assert "hole_partly_located" in codes and "hole_not_located" not in codes, codes
-    assert not any(v in _page_texts() for v in ("15", "12", "48")), "nothing is counted from the corner of the box"
+    assert not codes & {"hole_not_located", "hole_partly_located", "hole_group_no_locator", "dimension_crossing"}, codes
+    texts = _page_texts()
+    assert "70" in texts and "15" in texts, "the dowels are 70 apart and 15 from the left edge: not leaning on the symmetry"
     add(
         {"type": "datum", "id": "dC", "letter": "C", "face": side_face(base, (0, -1, 0))}
-    )  # the engineer's reference in y
+    )  # the engineer's reference in y: the locator counts from it
     m = _metrics()
     holes = [h for h in m["holes"].values() if h["diameter"] in (5.0, 6.0, 9.0)]
     assert all("x" in h and "y" in h for h in holes), holes

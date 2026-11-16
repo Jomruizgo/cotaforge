@@ -5,8 +5,10 @@ sheet's own placement should have prevented.
 * leaders: two callouts whose leaders cross, a leader that goes through the part more than once, a leader that crosses a
   dimension line or an extension line (ISO 128-22: a leader crosses nothing but the outline of the part, once);
 * dimensions: a dimension line or its text inside the outline of a view;
-* positions: a hole located in one direction only (a lone "30"); a hole is located by a dimension, by a datum the default
-  location counts from or by the part's own symmetry (a hole on a plane of symmetry needs no number there);
+* positions: a hole located in one direction only (a lone "30"); a hole is located by a dimension or by the default
+  location (per group of equal holes the spacing and one locator from an edge: what a caliper measures); a group located
+  only by the spacing between its holes has no locator (``hole_group_no_locator``);
+* a tolerance only a special instrument verifies, with no note saying how (``measurement_unstated``);
 * the same dimension in two views (ISO 129);
 * dowel holes that look like registration holes and are not marked;
 
@@ -43,6 +45,8 @@ def check(data: ReviewInput) -> list[Finding]:
         _dimensions_inside,
         _centre_lines,
         _partly_located,
+        _group_locators,
+        _special_measurement,
         _patterns,
         _dowels,
         _fit_differs,
@@ -248,6 +252,122 @@ def _partly_located(data: ReviewInput) -> list[Finding]:
         )
         text += ask_reference(ctx, {hole.index})
         out.append(Finding("hole_partly_located", "warning", text, ids, key=sheet_checks.hole_key([hole])))
+    return out
+
+
+def _edge_located(data: ReviewInput) -> dict[int, set[str]]:
+    """The axes along which an edge, a face or a datum of the part (not another hole) locates each hole: a distance dimension
+    from a face or an edge to the hole, a ``datum_dims`` baseline, the default location's locator."""
+    ctx = data.ctx
+    edged: dict[int, set[str]] = {}
+    for m in _measure(data):
+        if bool(m.holes[0]) != bool(m.holes[1]):  # one end is a hole, the other is the part itself
+            for index in m.holes[0] | m.holes[1]:
+                edged.setdefault(index, set()).add(m.axis)
+    for spec in _of(data, "datum_dims"):
+        if spec.get("auto"):
+            continue
+        view = ctx.views.get(str(spec.get("view", "top")))
+        wanted = spec.get("holes", "all")
+        for h in ctx.holes:
+            if view is not None and view.looks_along(h.direction) and (wanted == "all" or any(h.on_axis(p) for p in wanted)):
+                edged.setdefault(h.index, set()).update(_plane_axes(h) or ())
+    if any(i.get("type") == "datum_dims" and i.get("auto") and _ok(data, i) for i in data.items):
+        for index, axes in ctx.extras.get("loc_edge", {}).items():
+            edged.setdefault(index, set()).update(axes)
+    return edged
+
+
+def _group_locators(data: ReviewInput) -> list[Finding]:
+    """A group of equal holes located only by the distance between its holes (or by the symmetry of the part) in some
+    direction: the shop measures a plate with a caliper, and a spacing says where the holes are from each other, not where the
+    group is on the part. Each group needs ONE locator from an edge or a face of the part in each direction it is spaced
+    (the default location draws it; a hole nobody dimensions from another is ``hole_not_located``'s)."""
+    ctx = data.ctx
+    edged = _edge_located(data)
+    spaced: dict[int, set[str]] = {}
+    ids: dict[int, list[str]] = {}
+    for m in _measure(data):
+        if m.holes[0] and m.holes[1]:
+            for index in m.holes[0] | m.holes[1]:
+                spaced.setdefault(index, set()).add(m.axis)
+                ids.setdefault(index, []).append(str(m.spec["id"]))
+    if not spaced:
+        return []
+    chained = {f.key for f in sheet_checks._hole_references(data)}  # noqa: SLF001 - hole_no_reference says it already
+    polar = set(ctx.extras.get("polar_located", ()))
+    groups: dict[tuple[Any, ...], list[list[HoleInfo]]] = {}
+    for stack in items_holes._stacks(list(ctx.holes)):  # noqa: SLF001
+        if sheet_checks.hole_key(stack) in chained or {h.index for h in stack} & polar:
+            continue
+        key = (tuple(sorted(round(h.diameter, 3) for h in stack)), tuple(round(abs(c), 3) for c in stack[0].direction))
+        groups.setdefault(key, []).append(stack)
+    out: list[Finding] = []
+    for stacks in groups.values():
+        indexes = {h.index for stack in stacks for h in stack}
+        axes_spaced = set().union(*(spaced.get(i, set()) for i in indexes))
+        axes_edged = set().union(*(edged.get(i, set()) for i in indexes))
+        missing = sorted(axes_spaced - axes_edged)
+        if not missing:
+            continue
+        first = stacks[0]
+        name = f"{len(stacks)}× " + " + ".join(f"Ø{ctx.num(h.diameter)}" for h in first)
+        where = ", ".join(missing)
+        text = ctx.say(
+            f"Los agujeros {name} se ubican solo por la distancia entre ellos en {where} (o por la simetría de la pieza): "
+            "falta una cota desde una arista o una cara de la pieza hasta el agujero más cercano del grupo. Un calibre mide "
+            "desde un borde; la separación sola no dice dónde está el grupo en la pieza.",
+            f"The holes {name} are located only by the distance between them along {where} (or by the symmetry of the part): "
+            "a dimension from an edge or a face of the part to the nearest hole of the group is missing. A caliper measures "
+            "from an edge; the spacing alone does not say where the group is on the part.",
+        )
+        items = tuple(dict.fromkeys(i for index in indexes for i in ids.get(index, [])))
+        out.append(Finding("hole_group_no_locator", "warning", text, items, key=f"{sheet_checks.hole_key(first)}:{where}"))
+    return out
+
+
+SPECIAL_TOOLS = {
+    "position": r"posici.n|position",
+    "concentricity": r"concentric|coaxial",
+    "coaxiality": r"concentric|coaxial",
+    "symmetry": r"simetr|symmetr",
+    "runout": r"alabeo|oscilaci|runout|excentric|run-out",
+    "total_runout": r"alabeo|oscilaci|runout|excentric|run-out",
+    "profile_line": r"perfil|profile",
+    "profile_surface": r"perfil|profile",
+    "cylindricity": r"cilindric",
+    "circularity": r"circularidad|redondez|roundness|circularity",
+}
+"""The geometric tolerances no caliper, micrometer or height gauge can check (a CMM for a position, a roundness tester, a
+profile projector, a runout indicator between centres): the word each is called by in a note."""
+_HOW_MEASURED = re.compile(r"verific|medir|medici|comprob|inspecc|calibre pasa|galga|verify|measure|inspect|gauge|check", re.I)
+
+
+def _special_measurement(data: ReviewInput) -> list[Finding]:
+    """A tolerance only a special instrument can verify (see ``SPECIAL_TOOLS``) with no note that says how it is measured: the
+    shop assumes the general tools (caliper, micrometer, depth gauge, height gauge, thread and plug gauges), so what needs
+    another one says which, and the shop gets it or the part goes elsewhere (``Posición de los 4× Ø6 H7: verificar en MMC``)."""
+    ctx = data.ctx
+    notes = sheet_checks._notes(data)  # noqa: SLF001
+    out: list[Finding] = []
+    for spec in _of(data, "gdt"):
+        char = str(spec.get("char", ""))
+        words = SPECIAL_TOOLS.get(char)
+        if words is None:
+            continue
+        if any(_HOW_MEASURED.search(n) and re.search(words, n, re.I) for n in notes):
+            continue
+        text = ctx.say(
+            f"{spec['id']} ({char}): esta tolerancia no se verifica con el calibre, el micrómetro ni el gramil de un taller "
+            "general (hace falta una máquina de medir por coordenadas, un comprobador de redondez, un proyector de perfiles o un "
+            "comparador entre puntos) y la hoja no dice cómo medirla. Añade una nota, p. ej. «Posición de los 4× Ø6 H7: "
+            "verificar en MMC»; el taller consigue el medio o la pieza se hace en otro.",
+            f"{spec['id']} ({char}): this tolerance cannot be checked with the caliper, micrometer or height gauge of a general "
+            "shop (it needs a coordinate measuring machine, a roundness tester, a profile projector or an indicator between "
+            "centres) and the sheet does not say how to measure it. Add a note, e.g. 'Position of the 4× Ø6 H7: verify on a "
+            "CMM'; the shop gets the tool or the part is made elsewhere.",
+        )
+        out.append(Finding("measurement_unstated", "warning", text, (str(spec["id"]),), key=str(spec["id"])))
     return out
 
 

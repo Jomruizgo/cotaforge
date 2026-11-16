@@ -282,6 +282,8 @@ def plan(
     iso_dims: tuple[float, float, float] | None = None,
     own_iso_scale: bool = True,
     notes: tuple[float, float] | None = None,
+    need_right_mm: float = 0.0,
+    need_spacing_mm: float = 0.0,
     _comfort_checked: bool = False,
 ) -> Layout:
     """The layout of a part ``w`` (x) by ``d`` (y) by ``h`` (z) mm on a page; ``scale`` is the ratio asked for
@@ -295,7 +297,11 @@ def plan(
     sheet's scale is chosen, or asked for, and the isometric view does not fit beside the main views at that scale, it takes
     the largest standard scale that does (at most one step smaller; none for an assembly sheet or ``own_iso_scale=False``);
     ``Layout.iso_scale`` is 0 when it has the sheet's. ``notes`` = (width, height) of the numbered notes block: it stands in a
-    free corner, so the views must leave the room for it (``fits_round_notes``); omitted, the views take the whole area."""
+    free corner, so the views must leave the room for it (``fits_round_notes``); omitted, the views take the whole area.
+    ``need_right_mm`` / ``need_spacing_mm`` are the part of the room beside the views and between them that dimensions
+    stand in (the opposite side of a view that the default location of the holes uses): unlike the room of the callouts,
+    which is a comfort, no scale gives it up."""
+    right_mm, spacing_mm = max(right_mm, need_right_mm), max(spacing_mm, SPACING_MM + need_spacing_mm)
     if scale is None and not _comfort_checked and (right_mm or spacing_mm != SPACING_MM):
         # the room for the callouts is a comfort: a scale smaller than the sheet would have without it is not worth it
         args = (w, d, h, page_w, page_h, None, reserve, isometric, has_top, has_right)
@@ -304,7 +310,7 @@ def plan(
             "own_iso_scale": own_iso_scale, "notes": notes,
         }  # fmt: skip
         roomy = plan(*args, **keep, right_mm=right_mm, spacing_mm=spacing_mm, _comfort_checked=True)
-        tight = plan(*args, **keep, _comfort_checked=True)
+        tight = plan(*args, **keep, right_mm=need_right_mm, spacing_mm=SPACING_MM + need_spacing_mm, _comfort_checked=True)
         return roomy if roomy.scale >= tight.scale else tight
     left, top, right, bottom = drawing_area(page_w, page_h)
     area_w, area_h = right - left, bottom - top

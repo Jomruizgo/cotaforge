@@ -6,6 +6,8 @@ dimensioned (the harness measures it and dimensions it)."""
 
 from types import SimpleNamespace
 
+from cotaforge.contract import DrawingAnswer
+
 from cotaforge_mcp import drawing_requirements as dr
 from tests.unit.test_drawing_requirements import ALL_FACTS, PLATE, finding, rows
 
@@ -93,6 +95,29 @@ def test_a_view_that_carries_nothing_is_not_dismissed_with_the_agents_own_reason
     f = finding("view_adds_nothing", answer=None)
     assert not dr.answer_counts(own, f.code in dr.MEASURED_FINDINGS)
     assert dr.answer_counts(ordered, f.code in dr.MEASURED_FINDINGS)
+
+
+def test_a_view_that_carries_nothing_stays_a_finding_when_the_agent_answers_applies_and_changes_nothing() -> None:
+    """The agent of the owner's session answered ``applies: covered by the dimensions put`` on the right view of a plate that
+    carried none, and the view stayed: ``applies`` closes a measured finding, so for this one (the sheet itself shows whether it
+    was fixed) no word of the agent closes it and only the engineer's order does."""
+    claimed = DrawingAnswer(verdict="applies", text="applies: covered by the dimensions put")
+    ordered = DrawingAnswer(verdict="applies", text="applies: the engineer says so", ordered_by="engineer")
+    assert "view_adds_nothing" in dr.RECHECKED_FINDINGS
+    assert not dr.finding_closed(finding("view_adds_nothing", answer=claimed))
+    assert not dr.finding_closed(finding("view_adds_nothing", answer=DrawingAnswer(verdict="not_applies", text="no aplica: x")))
+    assert dr.finding_closed(finding("view_adds_nothing", answer=ordered))
+    assert dr.finding_closed(finding("hole_not_located", answer=claimed))  # any other measured finding keeps its rule
+
+
+def test_the_new_location_findings_are_in_the_catalog_not_in_a_row() -> None:
+    from cotaforge.drawing import catalog  # noqa: PLC0415
+
+    assert "hole_group_no_locator" in dr.MEASURED_FINDINGS
+    assert "measurement_unstated" not in dr.MEASURED_FINDINGS  # a judgement: the shop may have the tool, the agent answers
+    by_check = {c: r.id for r in catalog.load().rules for c in r.checks}
+    assert by_check["hole_group_no_locator"] == "hole_group.spacing_from_first"
+    assert by_check["measurement_unstated"] == "dimensions.for_the_instrument"
 
 
 # --- the chamfer of a shaft -------------------------------------------------------------------------------------------------

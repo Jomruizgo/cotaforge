@@ -390,10 +390,10 @@ def _survey(session: Session, sheet: str | None, extra: list[dict[str, Any]] | N
                 LOCATION_KEYS,
                 say(
                     language,
-                    "¿Desde qué cara o arista se cuentan las posiciones de los agujeros? (una cara de datos con su letra; "
-                    "o la simetría de la pieza si la intención la declara)",
-                    "Which face or edge are the positions of the holes counted from? (a datum face with its letter; or the "
-                    "part's symmetry if the intent declares it)",
+                    "¿Desde qué cara o arista se cuentan las posiciones de los agujeros que no se pueden medir con calibre "
+                    "desde un borde? (una cara de datos con su letra)",
+                    "Which face or edge are the positions of the holes that a caliper cannot measure from an edge counted "
+                    "from? (a datum face with its letter)",
                 ),
             ),
         )
@@ -423,7 +423,7 @@ def _derived_lines(survey: Survey) -> list[str]:
     have = {i.type for i in info.items}
     lines = [f"views: {', '.join(info.views)}; title block and overall dimensions"]
     if "datum_dims" in have:
-        lines.append("hole positions (loc): from the datums or the declared symmetry; none is drawn without a reference")
+        lines.append("hole positions (loc): per group of equal holes the spacing and one locator from the nearest edge (or the declared datum), as a caliper measures")
     lines += [f"{a.item['id']}: {a.what} (meets {', '.join(a.rows)})" for a in survey.adds]
     return lines
 
