@@ -3611,6 +3611,11 @@ def _review_data(
     data = sheet_review.ReviewInput(items, {r.id: r for r in results}, ctx, sheet, feature_infos(doc))
     ctx.extras["review_input"] = data
     ctx.extras["hand_marks"] = hand_marks(page)  # what the engineer put on the TechDraw page by hand
+    try:  # the thread arcs the page holds, whoever drew them (``thread_no_representation`` reads them)
+        ctx.extras["page_circles"] = sheet_native.cosmetic_circles(page)
+    except Exception as exc:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind: listed, never skipped
+        ctx.extras["page_circles"] = []
+        ctx.extras.setdefault("page_unread", []).append(f"the cosmetic arcs of the views: {type(exc).__name__}: {exc}")
     return data
 
 

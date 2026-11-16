@@ -424,7 +424,8 @@ rules:
     step: dimensions
     applies: {features: [thread]}
     text: >-
-      Every thread carries its full designation and usable length and is drawn as the standard shows.
+      Every thread carries its full designation and usable length and is drawn as the standard shows, with the
+      cosmetic lines of the view (what TechDraw's own thread commands make); one the engineer drew by hand counts.
     standard: ISO 6410
     origin: standard
     requirement: req.thread
