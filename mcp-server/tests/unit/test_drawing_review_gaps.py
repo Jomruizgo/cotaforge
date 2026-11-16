@@ -114,7 +114,15 @@ def test_the_new_location_findings_are_in_the_catalog_not_in_a_row() -> None:
     from cotaforge.drawing import catalog  # noqa: PLC0415
 
     assert "hole_group_no_locator" in dr.MEASURED_FINDINGS
-    assert "measurement_unstated" not in dr.MEASURED_FINDINGS  # a judgement: the shop may have the tool, the agent answers
+    # the catalog says the finding blocks: the sheet shows whether the note is there, so no word of the agent closes it
+    assert "measurement_unstated" in dr.MEASURED_FINDINGS
+    assert "measurement_unstated" in dr.RECHECKED_FINDINGS
+    claimed = DrawingAnswer(verdict="applies", text="applies: the shop has a CMM")
+    dismissed = DrawingAnswer(verdict="not_applies", text="no aplica: el taller tiene MMC")
+    ordered = DrawingAnswer(verdict="applies", text="applies: the engineer says the shop has a CMM", ordered_by="engineer")
+    assert not dr.finding_closed(finding("measurement_unstated", answer=claimed))  # the note is on the sheet or it is not
+    assert not dr.finding_closed(finding("measurement_unstated", answer=dismissed))
+    assert dr.finding_closed(finding("measurement_unstated", answer=ordered))
     by_check = {c: r.id for r in catalog.load().rules for c in r.checks}
     assert by_check["hole_group_no_locator"] == "hole_group.spacing_from_first"
     assert by_check["measurement_unstated"] == "dimensions.for_the_instrument"
