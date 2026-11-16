@@ -10,6 +10,7 @@ Every call is recorded in ``Space.trace`` and printed as a section of the report
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import AsyncIterator, Generator
@@ -125,9 +126,8 @@ class Space:
         (entry,) = self.settings["hooks"]["UserPromptSubmit"]
         (handler,) = entry["hooks"]
         payload = {**claude_code_prompt(self.home, SESSION_ID, text), "cwd": str(self.workspace)}
-        done = subprocess.run(  # noqa: S602 - the command init generated, as Claude Code runs it
-            handler["command"],
-            shell=True,
+        done = subprocess.run(  # noqa: S603 - the command init generated
+            [shutil.which("bash") or "sh", "-c", handler["command"]],  # Claude Code runs hooks in sh (Git Bash on Windows)
             input=json.dumps(payload).encode("utf-8"),
             env=self.environment(),
             cwd=self.workspace,
