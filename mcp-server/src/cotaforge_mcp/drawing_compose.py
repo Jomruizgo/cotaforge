@@ -22,13 +22,20 @@ from cotaforge.contract import AdapterError, AnnotateDrawingRequest, DrawingRequ
 from cotaforge.language import say
 from pydantic import ValidationError
 
-from cotaforge_mcp import design_memory, drawing_gate, drawing_weld_questions, engineer_orders, process_stages
+from cotaforge_mcp import (
+    design_memory,
+    drawing_gate,
+    drawing_plan,
+    drawing_weld_questions,
+    engineer_orders,
+    process_stages,
+)
 from cotaforge_mcp import drawing_requirements as reqs
 from cotaforge_mcp.reply import Reply, ToolError, ok
 from cotaforge_mcp.schemas import DrawingArgs
 from cotaforge_mcp.session import Session
 
-REPLY_CHARS = 14000
+REPLY_CHARS = 20000
 COMPOSED_PREFIX = "dc_"
 """The id of every item a ``compose`` puts on the sheet starts with it (``dc_gdt1``): the next compose replaces them."""
 MAX_ITEMS_PER_CALL = 50
@@ -460,6 +467,7 @@ def plan(session: Session, args: DrawingArgs, make_request: Any) -> Reply:
         "next: show this plan to the engineer and wait for his go-ahead (he is the one who knows what the part is for); "
         'then drawing(action="compose", decisions={...}); cad_guide(topic="drawing:compose") has the shape'
     )
+    lines += drawing_plan.lines(session, info, args.step)
     return ok("\n".join(lines), limit=REPLY_CHARS)
 
 
@@ -696,4 +704,5 @@ def _report(session: Session, sheet: str, items: list[dict[str, Any]], derived: 
         "off one; a second compose is refused unless the whole sheet changes (paper, scale, views, the dimension scheme); "
         "never rebuild with add what compose derives"
     )
+    lines += drawing_plan.step_line(session, sheet, info)
     return lines

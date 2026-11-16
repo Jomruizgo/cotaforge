@@ -71,11 +71,15 @@ def test_the_engineer_can_choose_steps_in_the_brief_and_the_tools_follow(setting
     assert "drawing_flow: steps" in (settings.workspace / "brief.yaml").read_text(encoding="utf-8")
     drawing = TOOLS_BY_NAME["drawing"]
     schema = input_schema(drawing, call.session)
-    assert "plan" not in schema["properties"]["action"]["enum"] and "compose" not in schema["properties"]["action"]["enum"]
+    assert "plan" in schema["properties"]["action"]["enum"] and "compose" not in schema["properties"]["action"]["enum"]  # the work sequence is for both flows
     assert "decisions" not in schema["properties"] and "recompose" not in schema["properties"]
     assert tool_description(drawing, call.session) == drawing.description  # the text of always
-    refused = call.err("drawing", action="plan")
-    assert "action" in refused and "plan" in refused
+    refused = call.err("drawing", action="compose")
+    assert "action" in refused and "compose" in refused
+    assert "no drawing sheet" in call.err("drawing", action="plan")  # in steps the plan reads a sheet that exists, it makes none
+    call.ok("drawing", action="create")
+    steps = call.ok("drawing", action="plan")
+    assert "STEP 1 WHAT IT IS FOR" in steps and "decisions it needs" not in steps
     call.ok("memory", action="brief", drawing_flow="sheet")
     assert "drawing_flow" not in (settings.workspace / "brief.yaml").read_text(encoding="utf-8")  # the default is not written
 
@@ -84,7 +88,7 @@ def test_steps_keeps_the_guide_and_the_next_line_of_create_as_they_were(settings
     choose_steps(settings)
     call, fake = shaft_session(settings)
     text = call.ok("drawing", action="create")
-    assert 'drawing(action="add", items=[...]) a few at a time' in text and "plan" not in text.split("next:")[-1]
+    assert 'drawing(action="add", items=[...]) a few at a time' in text and "compose" not in text.split("next:")[-1]
     guide = call.ok("cad_guide", topic="drawing")
     assert WINDOW_LINE in guide and INDEX_LINE in guide and "compose" not in guide
     assert guide == drawing_text(call.session.capabilities.tools)
@@ -107,7 +111,7 @@ def test_plan_makes_the_bare_sheet_adds_nothing_and_lists_what_it_derives_and_as
     assert "rq_callouts: a callout of every hole" in text.split("decisions it needs")[0]
     assert "req.surface_texture" in text and "[finish]" in text
     assert "wait for his go-ahead" in text
-    assert "req.thread" not in text.split("decisions it needs")[1]  # the harness meets it
+    assert "req.thread" not in text.split("decisions it needs")[1].split("work sequence of sheet")[0]  # the harness meets it
     call.ok("drawing", action="plan")
     assert len(fake.created) == 1  # an existing sheet is not made again
 
@@ -131,7 +135,7 @@ def test_plan_uses_the_intent_file_and_asks_only_what_it_does_not_say(settings: 
     fake.findings = (finding("notes_heat_treatment", "Falta"), finding("notes_coating", "Falta"), finding("notes_edges", "Falta"))
     call = bare_session(settings, fake)
     text = call.ok("drawing", action="plan")
-    derived, asked = text.split("decisions it needs")
+    derived, asked = text.split("work sequence of sheet")[0].split("decisions it needs")
     assert "rq_heat_treatment" in derived and "rq_coating" in derived and "req.edge_state" in asked
     assert "req.heat_treatment" not in asked
 

@@ -52,6 +52,7 @@ from cotaforge.contract import (
     DrawingSheetInfo,
 )
 from cotaforge.contract.drawing_items import MAX_REMARKS, canonical_author
+from cotaforge.drawing import context as sheet_context
 from cotaforge.language import say
 from cotaforge.memory import MemoryEntry
 from pydantic import ValidationError
@@ -538,7 +539,7 @@ def _requirement_lines(rows: list[reqs.Requirement], language: str) -> list[str]
     return lines
 
 
-def requirements_report(session: Session, sheet: str | None) -> str:
+def requirements_report(session: Session, sheet: str | None, seen: list[Any] | None = None) -> str:
     """``drawing(action=requirements)``: what the sheet must carry, row by row, and the questions to put before drawing: the
     rows whose data is neither in the intent file nor on the sheet, each with a proposed answer (the engineer's language)."""
     brief = _brief(session)
@@ -550,6 +551,8 @@ def requirements_report(session: Session, sheet: str | None) -> str:
             field_name="sheet",
         )
     info, adds = determine(session, info)
+    if seen is not None:
+        seen.append(info)  # the sheet as reviewed: the caller's step line reads it instead of reviewing it again
     return "\n".join([*added_lines(adds), *requirements_lines(session, info, brief.lang)])
 
 
@@ -1005,6 +1008,14 @@ def answer(
         engineer_orders.confirmed(f"an answer to {item_id} ordered by the engineer (by={by.strip()})")
         ordered = by.strip()
         said = f"{said} [ordered by {ordered}: «{' '.join(reason.split())}»]"
+    plan_keys = [f"{sheet_context.QUESTION_PREFIX}{key}" for key in sheet_context.QUESTION_KEYS]
+    if item_id.startswith(sheet_context.QUESTION_PREFIX) and item_id not in plan_keys:
+        raise ToolError(
+            f"{item_id!r} is not a question of the plan; they are {', '.join(plan_keys)}",
+            code="unknown_entry",
+            field_name="id",
+            usage=ANSWER_USAGE,
+        )
     if not is_memory:
         _guard_answer(session, sheet, item_id, verdict, bool(ordered), reviewed)
     given = AnnotateDrawingRequest(

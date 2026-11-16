@@ -206,7 +206,7 @@ class DrawingFake(FakeAdapter):
         if request.action == "answer":
             known = {f.id or f.code for f in self.findings} | {q.id for q in self.questions}
             known |= {r.id for rep in sheet["reports"].values() for r in rep["remarks"]}
-            if not request.memory and request.id not in known and not request.id.startswith("req."):
+            if not request.memory and request.id not in known and not request.id.startswith(("req.", "plan.")):
                 message = f"sheet {name} has no finding or question {request.id!r} now"
                 raise AdapterError(ErrorInfo(code=ErrorCode.invalid_request, message=message, recoverable=True))
             sheet.setdefault("answers", {})[request.id] = DrawingAnswer(

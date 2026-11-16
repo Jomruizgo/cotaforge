@@ -180,7 +180,7 @@ class DrawingArgs(Strict):
         "plan",
         "compose",
     ]
-    sheet: str | None = Field(default=None, description="sheet (default first)")
+    sheet: str | None = Field(default=None, description="default: first")
     template: Literal["A4", "A3", "A2", "A1", "A0", "Letter"] = "A4"  # create: landscape paper
     angle: Literal["first", "third"] = "first"  # create: projection angle
     title: str | None = None  # title block fields (create): the guide has them
@@ -213,6 +213,7 @@ class DrawingArgs(Strict):
         description="compose: decisions (cad_guide drawing:compose)",
     )
     recompose: bool = False  # compose again: only on the engineer's order (by, reason)
+    step: int | None = None  # plan: show this step (1-8) in full
 
 
 class ExportArgs(Strict):
@@ -443,8 +444,10 @@ def _drawing_actions(session: "Session") -> list[str]:
         ("capture_drawing", ("capture",)),
     )
     found = [action for tool, actions in pairs if tool in t for action in actions]
+    if "describe_drawing" in t:
+        found.append("plan")  # the work sequence of this sheet and the rules of each step, in both flows
     if sheet_flow(session) and {"create_drawing", "annotate_drawing", "describe_drawing"} <= set(t):
-        found += ["plan", "compose"]  # the default flow; a project that chose drawing_flow=steps does not see them
+        found.append("compose")  # the default flow; a project that chose drawing_flow=steps does not see it
     return found
 
 
@@ -539,13 +542,14 @@ TOOLS: tuple[ToolDef, ...] = (
         "out again after the part changed) | list | read (texts the sheet prints only) | "
         "capture (the PDF's own image; region "
         "zooms) | review (findings) | requirements (what the standards ask this part's sheet to carry, with the "
-        "questions to ask) | "
+        "questions to ask) | plan (the 8 work steps of THIS sheet, each with the rules that apply to this part and "
+        "their status on the page; every reply ends with the step you are at) | "
         "answer (id, text; by, reason: the engineer's order) | request_review, review_choice, review_report (by, items: who reviews it) | approve (the "
         "ENGINEER's gate: by, reason). export(pdf|dxf) writes ONE sheet, refused until its review is done. Items, "
         'finishing: cad_guide(topic="drawing" | "drawing:done").',
         DrawingArgs,
-        "drawing(action=create|add|remove|remove_sheet|update|add_view|remove_view|list|read|review|requirements|capture|"
-        "answer|approve|request_review|review_choice|review_report, "
+        "drawing(action=create|add|remove|remove_sheet|update|add_view|remove_view|list|read|review|requirements|plan|capture|"
+        "answer|approve|request_review|review_choice|review_report, step?, "
         "sheet?, items?, template?, angle?, title?, author?, date?, material?, scale?, language?, drawing_number?, "
         "revision?, general_tolerances?, company?, title_block?, body?, isometric?, views?, symmetry?, "
         "region?, id?, text?, by?, reason?, append?)",

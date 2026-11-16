@@ -1741,7 +1741,7 @@ def _remark_ids(spec: dict[str, Any]) -> list[str]:
     return [str(r["id"]) for report in spec.get("reports", {}).values() for r in report.get("remarks", [])]
 
 
-REQUIREMENT_PREFIX = "req."  # the ids of the rows of the table of requirements: the caller (the server) evaluated them
+REQUIREMENT_PREFIX = ("req.", "plan.")  # the rows of the table of requirements and the open questions of the plan: the caller (the server) evaluated them
 
 
 def answer(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:

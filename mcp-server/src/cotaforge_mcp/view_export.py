@@ -40,7 +40,16 @@ from cotaforge.contract import (
 from cotaforge.ir import FaceRef
 from pydantic import ValidationError
 
-from cotaforge_mcp import design_memory, drawing_compose, drawing_gate, drawing_look, feature_tools, pdf_check, rules
+from cotaforge_mcp import (
+    design_memory,
+    drawing_compose,
+    drawing_gate,
+    drawing_look,
+    drawing_plan,
+    feature_tools,
+    pdf_check,
+    rules,
+)
 from cotaforge_mcp.reply import Image, Reply, ToolError, first_validation_issues, ok
 from cotaforge_mcp.schemas import DrawingArgs, ExportArgs, ViewArgs
 from cotaforge_mcp.session import Session
@@ -512,6 +521,7 @@ STEPS_NEXT = (
     'next: ask what the requirements above lack BEFORE drawing it, then drawing(action="add", items=[...]) a '
     "few at a time (one feature or group per call: the engineer "
     'watches the sheet window and each item shows as it is added; cad_guide(topic="drawing")); '
+    'drawing(action="plan") gives the work sequence and the rules of each step for THIS part; '
     'export(action="pdf" or "dxf") to write it'
 )
 SHEET_NEXT = (
@@ -531,6 +541,16 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                 code="invalid_input",
                 field_name="append",
             )
+        if action == "plan" and drawing_compose.flow_of(session) != "sheet":
+            session.need("describe_drawing", "drawing plan")
+            info = drawing_gate.sheet_info(session, args.sheet, review=True)
+            if info is None:
+                raise ToolError(
+                    'the document has no drawing sheet: drawing(action="create") makes one, then plan gives its steps',
+                    code="invalid_input",
+                    field_name="sheet",
+                )
+            return ok("\n".join(drawing_plan.lines(session, info, args.step)), limit=drawing_compose.REPLY_CHARS)
         if action in ("plan", "compose"):
             drawing_compose.require_sheet_flow(session, action)
             run = drawing_compose.plan if action == "plan" else drawing_compose.compose
@@ -549,6 +569,7 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                 *[f"warning: {w}" for w in result.warnings],
                 *_requirements_block(session, result.sheet),
                 SHEET_NEXT if drawing_compose.flow_of(session) == "sheet" else STEPS_NEXT,
+                *drawing_plan.step_line(session, result.sheet),
             ]
             return ok("\n".join(lines), limit=REVIEW_REPLY_CHARS)
         if action in ("add", "remove", "remove_sheet", "update", "add_view", "remove_view"):
@@ -622,11 +643,14 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                     else "next: the engineer sees it in the sheet window; fix an item with drawing(action=\"update\", "
                     'items=[{"id":"d3","offset_mm":12}]) (nothing else moves), add the next few items'
                 ),
+                *drawing_plan.step_line(session, result.sheet),
             ]
             return ok("\n".join(lines))
         if action == "requirements":
             session.need("describe_drawing", "drawing requirements")
-            return ok(drawing_gate.requirements_report(session, args.sheet), limit=REVIEW_REPLY_CHARS)
+            seen: list[Any] = []
+            report = drawing_gate.requirements_report(session, args.sheet, seen)
+            return ok("\n".join([report, *drawing_plan.step_line(session, args.sheet, seen[0])]), limit=REVIEW_REPLY_CHARS)
         if action in ("list", "read", "review"):
             session.need("describe_drawing", f"drawing {action}")
             described = session.adapter.describe_drawing(
@@ -669,21 +693,21 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                 if action == "review":
                     lines += drawing_gate.added_lines(added.get(sheet.sheet, []))
                     lines += drawing_gate.review_lines(session, sheet)
+                    lines += drawing_plan.step_line(session, sheet.sheet, sheet)
             return ok("\n".join(lines), limit=REVIEW_REPLY_CHARS)
         if action in ("answer", "approve", "request_review", "review_choice", "review_report"):
             session.need("annotate_drawing", f"drawing {action}")
             if action == "answer":
-                return ok(drawing_gate.answer(session, args.sheet, args.id, args.text, args.by, args.reason))
-            if action == "request_review":
-                return ok(drawing_gate.request_review(session, args.sheet), limit=REVIEW_REPLY_CHARS)
-            if action == "review_choice":
-                return ok(drawing_gate.review_choice(session, args.sheet, args.by))
-            if action == "review_report":
-                return ok(
-                    drawing_gate.review_report(session, args.sheet, args.by, args.items, args.append),
-                    limit=REVIEW_REPLY_CHARS,
-                )
-            return ok(drawing_gate.approve(session, args.sheet, args.by, args.reason))
+                said = drawing_gate.answer(session, args.sheet, args.id, args.text, args.by, args.reason)
+            elif action == "request_review":
+                said = drawing_gate.request_review(session, args.sheet)
+            elif action == "review_choice":
+                said = drawing_gate.review_choice(session, args.sheet, args.by)
+            elif action == "review_report":
+                said = drawing_gate.review_report(session, args.sheet, args.by, args.items, args.append)
+            else:
+                said = drawing_gate.approve(session, args.sheet, args.by, args.reason)
+            return ok("\n".join([said, *drawing_plan.step_line(session, args.sheet)]), limit=REVIEW_REPLY_CHARS)
         session.need("capture_drawing", "drawing capture")
         region = _region(args.region)
         width = _capture_width(region)
@@ -997,6 +1021,7 @@ def export(session: Session, args: ExportArgs) -> Reply:
             if args.action == "pdf":
                 drawing_gate.record_release(session, sheet)  # the next export of this sheet is compared with what it stated now
                 wrote += "".join(f"\n{line}" for line in getattr(session, "revision_notes", []))
+            wrote += "".join(f"\n{line}" for line in drawing_plan.step_line(session, sheet))
         elif args.action == "step":
             session.adapter.export_step(ExportRequest(operation_id="export", path=str(target)))
         elif args.action == "parasolid":
