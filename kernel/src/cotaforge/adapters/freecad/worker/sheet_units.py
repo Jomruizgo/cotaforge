@@ -26,6 +26,7 @@ from sheet_model import (
     PARTING,
     TEXT,
     THREAD,
+    THREAD_END,
     ZONE,
     Arc,
     Circle,
@@ -156,6 +157,7 @@ CENTRE_LINE_MARK = "centre-line objects"  # in a cosmetic signature: its straigh
 COSMETIC_STYLES = {  # the layer the compositor draws on -> the kind of line TechDraw is asked for
     AXES: "centre",
     THREAD: "thin",
+    THREAD_END: "thick",  # the end of the useful length of a thread: wide, like the outline
     FLAT_FACES: "thin",
     PARTING: "parting",
     ZONE: "thin",
