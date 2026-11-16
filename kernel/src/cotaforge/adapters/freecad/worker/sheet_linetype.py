@@ -34,6 +34,11 @@ LINE_NUMBERS: dict[int, dict[str, int]] = {  # the line number of a kind of line
     ASME: {"centre": 4, "parting": 14},  # Center; Phantom
     ISO: {"centre": 4, "parting": 8},  # 04 long-dash dotted; 08 long-dash short-dash
 }
+CHAIN_NUMBERS: dict[int, tuple[int, ...]] = {  # every number of the table of a standard that paints a centre line (a chain)
+    ANSI: (3,),  # long dash, dash
+    ASME: (4, 5, 17),  # Center, Symmetry, Chain: the same long dash and dash
+    ISO: (4, 5),  # 04 long-dash dotted, 05 long-dash double-dotted
+}
 CHAIN_MM = (24.0, 3.0, 1.0, 3.0)  # ISO 128-20 line 04 in pen widths: long dash, gap, dot, gap
 ITEMS = {"CenterLines": "CenterLine", "CosmeticEdges": "CosmeticEdge"}
 MODE_VERTICAL, MODE_HORIZONTAL = 0, 1
@@ -43,6 +48,25 @@ _NUMBER = re.compile(r'<LineNumber value="(\d+)"')
 def line_number(style: str, standard: int) -> int:
     """TechDraw's line number of ``style`` (centre, parting; anything else is the continuous line) with ``standard``."""
     return LINE_NUMBERS.get(standard, LINE_NUMBERS[ISO]).get(style, CONTINUOUS)
+
+
+UNSET_INT = -99  # what ``GetInt`` answers for a preference that was never saved (no real index is that)
+
+
+def set_default_int(params: Any, key: str, value: int, is_list: bool = False) -> bool:
+    """Set the integer preference ``key`` of the parameter group ``params`` to ``value`` only when the engineer has none of his
+    own: never changes a value that is there. A list preference (the line standard) saved with "no item" holds a negative
+    index; that is no choice of his either, TechDraw falls back to its own default for it. Returns whether it was written."""
+    stored = int(params.GetInt(key, UNSET_INT))
+    if stored != UNSET_INT and not (is_list and stored < 0):
+        return False
+    params.SetInt(key, value)
+    return True
+
+
+def is_chain(number: int, standard: int) -> bool:
+    """Whether the line number ``number`` of the table of ``standard`` paints a centre line (any chain line it has)."""
+    return number in CHAIN_NUMBERS.get(standard, CHAIN_NUMBERS[ISO])
 
 
 def _blocks(xml: str, prop: str) -> list[re.Match[str]]:

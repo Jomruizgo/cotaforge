@@ -98,15 +98,43 @@ def check_a_centre_line_follows_the_model_and_its_view_with_no_harness() -> None
     assert numbers(right, "CenterLines") == [CHAIN]
 
 
-def check_the_review_names_a_centre_line_that_is_not_a_chain_line() -> None:
+def check_the_review_names_a_centre_line_of_the_sheet_that_is_not_a_chain_line() -> None:
     sheet_with_lines()
     assert "centre_line_not_chain" not in codes()
     front = views()["front"]
-    lines = [row[0] for row in sheet_native._model_lines(sheet_native.Frame(_page(), front))]  # noqa: SLF001
-    tag = front.makeCenterLine([f"Edge{lines[0]}", f"Edge{lines[1]}"], 2)  # by hand: TechDraw makes it the dashed line
+    sheet_linetype.apply(front, "CenterLines", {0: 2})  # one of the sheet's own, left the dashed line
     _rec().fc_doc.recompute()
     assert ("front", "centre line", 2) in sheet_native.line_type_problems(_page())
     assert "centre_line_not_chain" in codes()
-    front.removeCenterLine(tag)
-    _rec().fc_doc.recompute()
+    add({"type": "note", "id": "n3", "text": "Sin rebabas"})  # any update puts it right
     assert "centre_line_not_chain" not in codes()
+
+
+def check_the_review_never_judges_a_centre_line_the_engineer_made() -> None:
+    sheet_with_lines()
+    front = views()["front"]
+    lines = [row[0] for row in sheet_native._model_lines(sheet_native.Frame(_page(), front))]  # noqa: SLF001
+    own = len(list(front.CenterLines))
+    front.makeCenterLine([f"Edge{lines[0]}", f"Edge{lines[1]}"], 2)  # by hand: TechDraw gives it the engineer's own line style
+    _rec().fc_doc.recompute()
+    assert len(list(front.CenterLines)) == own + 1
+    for number in (2, 5):  # whatever his style is
+        sheet_linetype.apply(front, "CenterLines", {own: number})
+        assert sheet_native.line_type_problems(_page()) == [], number
+        assert "centre_line_not_chain" not in codes(), number
+
+
+def check_a_centre_line_the_engineer_deletes_stays_deleted() -> None:
+    sheet_with_lines()
+    front = views()["front"]
+    before = len(list(front.CenterLines))
+    front.removeCenterLine(str(front.CenterLines[0].Tag))  # what deleting it in the window does
+    _rec().fc_doc.recompute()
+    for _ in range(2):  # an item added, a review, the next update
+        add({"type": "note", "id": f"n{_}", "text": f"Sin rebabas {_}"})
+        assert len(list(front.CenterLines)) == before - 1
+        assert codes().count("line_deleted_by_hand") == 1
+        rows = call("describe_drawing", op("r", review=True))["sheets"][0]["findings"]
+        assert not [r for r in rows if r["code"] == "line_deleted_by_hand" and r["blocking"]]
+        assert "window_differs" not in [r["code"] for r in rows]
+    assert drawing.compare_window(_rec(), None, "check") == []

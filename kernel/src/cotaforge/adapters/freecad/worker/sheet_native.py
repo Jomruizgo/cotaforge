@@ -936,8 +936,10 @@ Geometry = tuple[str, tuple[float, ...]]
 
 
 def line_standard() -> int:
-    """The line standard TechDraw paints with (``Standards/LineStandard``; unset is ASME, measured in 1.1.3)."""
-    return int(App.ParamGet(STANDARDS_PREF).GetInt(LINE_STANDARD, sheet_linetype.UNSET_STANDARD))
+    """The line standard TechDraw paints with (``Standards/LineStandard``; unset is ASME, measured in 1.1.3). A stored
+    negative value (a combo box that saved "no item") is no choice: TechDraw uses its own default then."""
+    stored = int(App.ParamGet(STANDARDS_PREF).GetInt(LINE_STANDARD, sheet_linetype.UNSET_STANDARD))
+    return stored if stored >= 0 else sheet_linetype.UNSET_STANDARD
 
 
 def line_number(style: str) -> int:
@@ -1043,6 +1045,23 @@ def _find(view: Any, geometry: Geometry) -> Any | None:
     """The centre line or cosmetic edge of ``view`` that has ``geometry`` (``None`` when it is gone: deleted by hand)."""
     index = _index(view, geometry)
     return None if index is None else _listed(view, geometry)[index]
+
+
+def _deleted(view: Any, specs: list[Any]) -> list[Any]:
+    """The specs among ``specs`` whose object is not on ``view`` any more: the engineer deleted it (or edited it, which makes
+    it his own). The sheet never makes such a line again: a hand deletion is final."""
+    return [s for s in specs if _find(view, (s[0], tuple(s[1]))) is None]
+
+
+def _deleted_spec(geometry: Geometry, lost: list[Any]) -> Any | None:
+    """The spec in ``lost`` that is the line ``geometry`` (in the view's own units) would make: a straight line is known by its
+    two ends, a circle or an arc by its centre and radius."""
+    kind, values = geometry
+    size = 3 if kind == "circle" else 4
+    for spec in lost:
+        if (spec[0] == "circle") == (kind == "circle") and _close(tuple(spec[1][:size]), tuple(values[:size])):
+            return spec
+    return None
 
 
 def _drop(view: Any, specs: list[Any]) -> None:
@@ -1192,11 +1211,11 @@ def sync_cosmetics(page: Any, units: list[su.Unit], made: list[str] | None = Non
         for key, natives in mine.items():
             signature = su.cosmetic_signature(natives)
             old = stored.get(key)
+            lost = _deleted(view, old[1]) if old is not None else []  # the engineer took these off by hand: they stay off
             if (
                 old is not None
                 and old[0] == signature
-                and all(_find(view, (k, tuple(v))) is not None for k, v in old[1])
-                and all(_hangs_as_made(frame, tuple(v)) for k, v in old[1] if k == CLINE)
+                and all(_hangs_as_made(frame, tuple(v)) for k, v in old[1] if k == CLINE and [k, v] not in lost)
             ):
                 _reweigh(view, natives, old[1])
                 continue
@@ -1205,6 +1224,10 @@ def sync_cosmetics(page: Any, units: list[su.Unit], made: list[str] | None = Non
             specs: list[Any] = []
             try:
                 for n in natives:
+                    gone = _deleted_spec(_local(frame, n), lost)
+                    if gone is not None:  # kept as a spec with no object: the next sync still knows it was taken off
+                        specs.append(gone)
+                        continue
                     kind, values = _make_cosmetic(frame, n)
                     specs.append([kind, list(values)])
             except Exception as exc:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind
@@ -1270,7 +1293,7 @@ def verify_centre_lines(page: Any, wait: Any = None) -> list[str]:
         numbers: dict[int, int] = {}
         for key, entry in stored.items():
             for spec in entry[1]:
-                if spec[0] != CLINE:
+                if spec[0] != CLINE or _find(view, (CLINE, tuple(spec[1]))) is None:  # one the engineer deleted stays deleted
                     continue
                 want = tuple(float(v) for v in spec[1][:4])
                 turned = (want[2], want[3], want[0], want[1])
@@ -1291,28 +1314,33 @@ def verify_centre_lines(page: Any, wait: Any = None) -> list[str]:
 
 
 def line_type_problems(page: Any) -> list[tuple[str, str, int]]:
-    """Every centre line of ``page`` that is not the chain line, read from the page's own objects: ``(view, what, line
-    number)`` for TechDraw's centre lines (the engineer's too) and for the cosmetic lines drawn as centre lines. A list that
-    cannot be read is reported with the number -1: it is not known to be right."""
-    chain = line_number("centre")
+    """Every centre line the SHEET made on ``page`` that is not a chain line of the engineer's line standard, read from the
+    page's own objects: ``(view, what, line number)`` for TechDraw's centre lines and for the cosmetic lines drawn as centre
+    lines. The centre lines the engineer makes himself carry his own line style and are his choice: they are never judged.
+    A list that cannot be read is reported with the number -1: it is not known to be right."""
+    standard = line_standard()
     found: list[tuple[str, str, int]] = []
     for name in view_names(page):
         view = view_object(page, name)
         if view is None:
             continue
-        lists = (
-            (CENTRE_LINES, "centre line", [True for _ in view.CenterLines]),
-            (COSMETIC_EDGES, "cosmetic centre line", [dict(e.Format).get("style") == ISO_STYLE["centre"] for e in view.CosmeticEdges]),
-        )
-        for prop, what, centre in lists:
-            if not any(centre):
+        own: dict[str, list[int]] = {CENTRE_LINES: [], COSMETIC_EDGES: []}
+        for entry in _stored(view).values():
+            for kind, values in entry[1]:
+                prop = CENTRE_LINES if kind == CLINE else COSMETIC_EDGES
+                index = _index(view, (kind, tuple(values)), set(own[prop]))
+                if index is None or (kind != CLINE and dict(_listed(view, (kind, ()))[index].Format).get("style") != ISO_STYLE["centre"]):
+                    continue  # deleted by hand, or not a centre line (a thread arc): not judged
+                own[prop].append(index)
+        for prop, what in ((CENTRE_LINES, "centre line"), (COSMETIC_EDGES, "cosmetic centre line")):
+            if not own[prop]:
                 continue
             try:
                 numbers = sheet_linetype.numbers_of(view, prop)
             except Exception:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind
                 found.append((name, what, -1))
                 continue
-            found += [(name, what, number) for is_centre, number in zip(centre, numbers, strict=False) if is_centre and number != chain]
+            found += [(name, what, numbers[i]) for i in own[prop] if i < len(numbers) and not sheet_linetype.is_chain(numbers[i], standard)]
     return found
 
 
@@ -1322,13 +1350,13 @@ def centre_line_segments(view: Any) -> list[tuple[float, float, float, float]]:
         (float(v[0]), float(v[1]), float(v[2]), float(v[3]))
         for entry in _stored(view).values()
         for kind, v in entry[1]
-        if kind == CLINE
+        if kind == CLINE and _find(view, (kind, tuple(v))) is not None
     ]
 
 
 def own_cosmetic_count(view: Any) -> int:
-    """How many cosmetic edges of ``view`` the sheet made (the rest are the engineer's own)."""
-    return sum(1 for entry in _stored(view).values() for spec in entry[1] if spec[0] != CLINE)
+    """How many cosmetic edges of ``view`` the sheet made and the engineer has not deleted (the rest are his own)."""
+    return sum(1 for entry in _stored(view).values() for spec in entry[1] if spec[0] != CLINE and _find(view, (spec[0], tuple(spec[1]))) is not None)
 
 
 def own_centre_count(view: Any) -> int:
@@ -1337,7 +1365,8 @@ def own_centre_count(view: Any) -> int:
 
 
 def cosmetic_problems(page: Any, unit: su.Unit) -> list[str]:
-    """The centre lines and cosmetic edges ``unit`` asks for that the page does not have (deleted by hand, or never made)."""
+    """The centre lines and cosmetic edges ``unit`` asks for that the page never got. One the engineer deleted is no problem:
+    a hand deletion is final (``deleted_by_hand`` tells the review about it)."""
     problems: list[str] = []
     by_view: dict[str, list[su.NativeCosmetic]] = {}
     for n in unit.natives:
@@ -1348,9 +1377,19 @@ def cosmetic_problems(page: Any, unit: su.Unit) -> list[str]:
         entry = _stored(view).get(unit.key) if view is not None else None
         if entry is None or entry[0] != su.cosmetic_signature(natives):
             problems.append(f"{unit.key}: the {name} view does not carry the {len(natives)} cosmetic line(s) the sheet draws")
-        elif any(_find(view, (k, tuple(v))) is None for k, v in entry[1]):
-            problems.append(f"{unit.key}: the {name} view lost a cosmetic line the sheet draws (deleted by hand)")
     return problems
+
+
+def deleted_by_hand(page: Any) -> list[str]:
+    """What the engineer took off the views of ``page`` by hand among the lines the sheet made: ``<unit key> (<view>)``, one per
+    unit. The sheet leaves them off (``sync_cosmetics``); the review says so once."""
+    found: list[str] = []
+    for name in view_names(page):
+        view = view_object(page, name)
+        if view is None:
+            continue
+        found += [f"{key} ({name})" for key, entry in _stored(view).items() if _deleted(view, entry[1])]
+    return found
 
 
 def _same_edge(edge: Any, geometry: Geometry) -> bool:
@@ -1418,6 +1457,8 @@ def cosmetic_paths(page: Any, key: str) -> list[list[tuple[float, float]]]:
             continue
         frame = Frame(page, view)
         for kind, values in entry[1]:
+            if _find(view, (kind, tuple(values))) is None:  # the engineer deleted it: nothing to point at
+                continue
             if kind in ("line", CLINE):
                 a, b = values[0:2], values[2:4]
                 paths.append([(frame.x + a[0] * frame.scale, frame.y + a[1] * frame.scale), (frame.x + b[0] * frame.scale, frame.y + b[1] * frame.scale)])

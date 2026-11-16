@@ -21,7 +21,7 @@ import pytest
 from tests import pdf_widths
 from tests.integration.conftest import Cad, finish_drawing, running_server
 from tests.integration.test_drawing_compose_real import compose_the_rest, in_one_order
-from tests.integration.test_drawing_line_weights_real import plate_sheet, shaft_sheet
+from tests.integration.test_drawing_line_weights_real import plate_sheet, shaft_sheet, unexplained_widths
 from tests.integration.test_drawing_turned_section_real import make_ring
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="the visible FreeCAD window is exercised on Windows")
@@ -96,6 +96,9 @@ async def test_the_centre_lines_are_long_dash_dotted_in_the_pdf_and_in_the_file(
         fcstd = workspace / f"{which}.FCStd"
         await cad.ok("doc", action="save", path=str(fcstd))
     assert chain, (name, "no thin long-dash dotted stroke in the PDF")
+    widths = pdf_widths.by_width(kept)
+    print("WIDTHS", name, widths)
+    assert not unexplained_widths(widths), (name, widths, "the line standard changes the dash patterns, never the widths of the table")
     not_chain = sorted({pattern for pattern, _ in thin if not pdf_widths.is_chain(pattern)})
     assert not not_chain, (name, "thin dashed strokes that are not the chain line (they read as hidden edges)", not_chain)
     if visible:

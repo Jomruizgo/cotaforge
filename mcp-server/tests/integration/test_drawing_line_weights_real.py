@@ -119,6 +119,22 @@ other width of the PDF must be the table's."""
 OLD_TABLE = (0.5, 0.25, 0.12)  # the widths the harness used before the table: none may be left
 
 
+def off_table(widths: dict[float, float]) -> dict[float, float]:
+    """The widths of a PDF (width -> mm of line) that are not the table's and carry a real share of the ink."""
+    total = sum(widths.values()) or 1.0
+    allowed = table_widths()  # the frame and the outer line of the title block are the table's FRAME weight, 0.7
+    return {
+        w: mm
+        for w, mm in widths.items()
+        if mm / total >= INK_SHARE and not any(abs(w - a) <= TOLERANCE_MM for a in allowed)
+    }
+
+
+def unexplained_widths(widths: dict[float, float]) -> dict[float, float]:
+    """The widths that are neither the table's nor one TechDraw draws itself and the harness cannot set (``TECHDRAW_OWN``)."""
+    return {w: mm for w, mm in off_table(widths).items() if w not in TECHDRAW_OWN}
+
+
 @pytest.mark.parametrize("visible", [True, False], ids=["visible", "headless"])
 @pytest.mark.parametrize("which", list(SCENARIOS))
 async def test_the_pdf_carries_the_harness_line_weights(
@@ -126,13 +142,8 @@ async def test_the_pdf_carries_the_harness_line_weights(
 ) -> None:
     widths, kept = await export_and_measure(which, visible, workspace, tmp_path)
     total = sum(widths.values()) or 1.0
-    allowed = table_widths()  # the frame and the outer line of the title block are the table's FRAME weight, 0.7
-    off = {
-        w: mm
-        for w, mm in widths.items()
-        if mm / total >= INK_SHARE and not any(abs(w - a) <= TOLERANCE_MM for a in allowed)
-    }
-    unexplained = {w: mm for w, mm in off.items() if w not in TECHDRAW_OWN}
+    off = off_table(widths)
+    unexplained = unexplained_widths(widths)
     assert not unexplained, f"widths outside the table in {kept.name}: {unexplained}"
     assert sum(off.values()) / total < 0.15, (off, "TechDraw's own widths are a small part of the sheet")
     assert not any(w in widths for w in OLD_TABLE), (widths, "a width of the old table is left")

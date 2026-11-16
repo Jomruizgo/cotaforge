@@ -353,22 +353,171 @@ def test_a_centre_line_whose_edges_were_numbered_again_is_made_again_on_the_side
     assert made == ["ln1"] and sorted(line.Edges) == ["Edge4", "Edge5"] and line.number == 4
 
 
-def test_the_review_reads_a_dashed_centre_line_made_by_hand(native: Any) -> None:
+def test_the_review_reads_a_centre_line_of_the_sheet_that_is_dashed(native: Any) -> None:
     view = shaft_view()
     page = page_of(native, view)
     native.sync_cosmetics(page, [unit(axis(38.75, 101.25))])
-    view.makeCenterLine(["Edge0", "Edge1"], lt.MODE_HORIZONTAL)  # the engineer's: TechDraw makes it dashed (number 2)
+    view.CenterLines[0].number = 2  # the sheet's own, left the dashed line
     assert native.line_type_problems(page) == [("front", "centre line", 2)]
+    native.sync_cosmetics(page, [unit(axis(38.75, 101.25))])  # an update puts it right
+    assert native.line_type_problems(page) == []
 
 
-def test_the_review_reads_a_cosmetic_centre_line_that_is_dashed(native: Any) -> None:
+def test_the_review_never_judges_a_centre_line_the_engineer_made(native: Any) -> None:
+    """A centre line made by hand carries the engineer's own line style (FreeCAD's dialog default, 5, or the dashed 2): his choice."""
     view = shaft_view()
     page = page_of(native, view)
+    native.sync_cosmetics(page, [unit(axis(38.75, 101.25))])
+    hand = view.getCenterLine(view.makeCenterLine(["Edge0", "Edge1"], lt.MODE_HORIZONTAL))
+    for number in (2, 4, 5, 8):
+        hand.number = number
+        assert native.line_type_problems(page) == [], number
     tag = view.makeCosmeticLine(types.SimpleNamespace(x=0, y=30), types.SimpleNamespace(x=9, y=30))
-    view.getCosmeticEdge(tag).Format = {"style": 4, "weight": 0.18}  # a sheet made before the line number was set
+    view.getCosmeticEdge(tag).Format = {"style": 4, "weight": 0.18}  # a cosmetic line of his, drawn as a centre line
+    assert native.line_type_problems(page) == []
+
+
+@pytest.mark.parametrize(
+    ("standard", "chain", "not_chain"),
+    [(lt.ISO, (4, 5), (1, 2, 8)), (lt.ASME, (4, 5, 17), (1, 2, 14)), (lt.ANSI, (3,), (1, 2, 4))],
+    ids=["iso", "asme", "ansi"],
+)
+def test_every_chain_line_of_the_engineers_standard_is_a_chain_line(
+    native: Any, standard: int, chain: tuple[int, ...], not_chain: tuple[int, ...]
+) -> None:
+    native.line_standard = lambda: standard
+    view = shaft_view()
+    page = page_of(native, view)
+    native.sync_cosmetics(page, [unit(axis(38.75, 101.25))])
+    for number in chain:
+        view.CenterLines[0].number = number
+        assert native.line_type_problems(page) == [], number
+    for number in not_chain:
+        view.CenterLines[0].number = number
+        assert native.line_type_problems(page) == [("front", "centre line", number)], number
+
+
+def test_the_review_reads_a_cosmetic_centre_line_of_the_sheet_that_is_dashed(native: Any) -> None:
+    view = shaft_view()
+    page = page_of(native, view)
+    native.sync_cosmetics(page, [unit(axis(10.0, 30.0, y=40.0))])  # no sides in the view: a cosmetic line
+    view.CosmeticEdges[0].number = 2
     thin = view.makeCosmeticLine(types.SimpleNamespace(x=0, y=35), types.SimpleNamespace(x=9, y=35))
-    view.getCosmeticEdge(thin).Format = {"style": 1, "weight": 0.18}  # not a centre line: any number
+    view.getCosmeticEdge(thin).Format = {"style": 1, "weight": 0.18}  # his, and not a centre line anyway
     assert native.line_type_problems(page) == [("front", "cosmetic centre line", 2)]
+
+
+# --- a line the engineer deleted by hand stays deleted ---------------------------------------------------------------------
+
+THREADS = su.NativeCosmetic("ln1", "front", "arc", (120.0, 110.0, 8.0, 10.0, 170.0), "thin")
+
+
+def synced(native: Any, view: View, *natives: su.NativeCosmetic) -> tuple[Any, list[str]]:
+    page = page_of(native, view)
+    made: list[str] = []
+    native.sync_cosmetics(page, [unit(*natives)], made)
+    return page, made
+
+
+def test_an_axis_the_engineer_deleted_is_never_made_again_and_is_no_problem(native: Any) -> None:
+    view = shaft_view()
+    page, _ = synced(native, view, axis(38.75, 101.25))
+    view.removeCenterLine(view.CenterLines[0].Tag)  # the engineer selects it and deletes it
+    written = list(view.restored)
+    for _ in range(2):  # any later sync: an item added, the review, the export
+        made: list[str] = []
+        assert native.sync_cosmetics(page, [unit(axis(38.75, 101.25))], made) == {}
+        assert made == [] and view.CenterLines == [] and view.CosmeticEdges == [] and view.restored == written
+        assert native.verify_centre_lines(page) == [] and view.CosmeticEdges == []  # nor as the cosmetic line it falls back to
+    assert native.cosmetic_problems(page, unit(axis(38.75, 101.25))) == []  # no blocking finding
+    assert native.deleted_by_hand(page) == ["ln1 (front)"]  # one line of information for the review
+    assert native.own_centre_count(view) == 0 and native.centre_line_segments(view) == []
+
+
+def test_a_cosmetic_line_the_engineer_deleted_stays_deleted_too(native: Any) -> None:
+    view = shaft_view()
+    page, _ = synced(native, view, axis(10.0, 30.0, y=40.0), THREADS)
+    view.removeCosmeticEdge(view.CosmeticEdges[0].Tag)  # the centre mark with no sides
+    made: list[str] = []
+    native.sync_cosmetics(page, [unit(axis(10.0, 30.0, y=40.0), THREADS)], made)
+    assert made == [] and len(view.CosmeticEdges) == 1 and native.own_cosmetic_count(view) == 1
+    assert native.cosmetic_problems(page, unit(axis(10.0, 30.0, y=40.0), THREADS)) == []
+    assert native.deleted_by_hand(page) == ["ln1 (front)"]
+
+
+def test_a_unit_that_changes_does_not_bring_back_what_was_deleted(native: Any) -> None:
+    view = shaft_view()
+    page, _ = synced(native, view, axis(38.75, 101.25))
+    view.removeCenterLine(view.CenterLines[0].Tag)
+    more = (axis(38.75, 101.25), THREADS)  # the item gets a thread arc: its signature changes, the arc is made
+    made: list[str] = []
+    native.sync_cosmetics(page, [unit(*more)], made)
+    assert made == ["ln1"] and view.CenterLines == [] and len(view.CosmeticEdges) == 1
+    made.clear()
+    native.sync_cosmetics(page, [unit(*more)], made)  # and the next sync still leaves the axis off
+    assert made == [] and view.CenterLines == [] and native.deleted_by_hand(page) == ["ln1 (front)"]
+    assert native.line_type_problems(page) == []
+
+
+def test_an_axis_the_engineer_edited_is_his_and_is_not_made_a_second_time(native: Any) -> None:
+    view = shaft_view()
+    page, _ = synced(native, view, axis(38.75, 101.25))
+    view.CenterLines[0].Extension += 4.0  # he stretched it by hand
+    native.sync_cosmetics(page, [unit(axis(38.75, 101.25))])
+    assert len(view.CenterLines) == 1 and view.CenterLines[0].Extension == pytest.approx(6.5)
+    assert native.own_centre_count(view) == 0  # it is his now
+
+
+def test_the_engineers_own_lines_are_not_counted_as_the_sheets_when_it_deleted_one(native: Any) -> None:
+    view = shaft_view()
+    page, _ = synced(native, view, axis(38.75, 101.25))
+    view.removeCenterLine(view.CenterLines[0].Tag)
+    view.makeCenterLine(["Edge0", "Edge1"], lt.MODE_HORIZONTAL)  # his own
+    assert len(view.CenterLines) - native.own_centre_count(view) == 1  # the page lists one line of his, and none of the sheet's
+
+
+# --- the line standard: his is never overwritten ---------------------------------------------------------------------------
+
+
+class Params:
+    """A TechDraw parameter group: ``GetInt(key, default)`` and ``SetInt``."""
+
+    def __init__(self, **values: int) -> None:
+        self.values = dict(values)
+
+    def GetInt(self, key: str, default: int) -> int:  # noqa: N802 - FreeCAD's name
+        return self.values.get(key, default)
+
+    def SetInt(self, key: str, value: int) -> None:  # noqa: N802
+        self.values[key] = value
+
+
+def test_the_line_standard_is_set_to_iso_only_when_he_has_none() -> None:
+    params = Params()
+    assert lt.set_default_int(params, "LineStandard", lt.ISO, is_list=True) is True
+    assert params.values == {"LineStandard": lt.ISO}
+
+
+@pytest.mark.parametrize("his", [lt.ANSI, lt.ASME, lt.ISO])
+def test_a_line_standard_he_set_is_never_overwritten(his: int) -> None:
+    params = Params(LineStandard=his)
+    assert lt.set_default_int(params, "LineStandard", lt.ISO, is_list=True) is False
+    assert params.values == {"LineStandard": his}
+
+
+def test_a_stored_minus_one_is_no_choice_of_his_for_a_list_but_is_for_a_plain_number() -> None:
+    params = Params(LineStandard=-1, Other=-1)
+    assert lt.set_default_int(params, "LineStandard", lt.ISO, is_list=True) is True
+    assert lt.set_default_int(params, "Other", 5) is False  # a plain number may be negative: it stays
+    assert params.values == {"LineStandard": lt.ISO, "Other": -1}
+
+
+def test_a_negative_line_standard_is_read_as_the_default_one(native: Any) -> None:
+    import importlib  # noqa: PLC0415
+
+    sys.modules["FreeCAD"].ParamGet = lambda path: Params(LineStandard=-1)  # type: ignore[attr-defined]
+    fresh = importlib.reload(native)  # the fixture replaced ``line_standard`` with a fixed one: the module's own is wanted here
+    assert fresh.line_standard() == lt.UNSET_STANDARD
 
 
 def test_a_centre_line_techdraw_drew_elsewhere_becomes_a_cosmetic_chain_line_where_it_was_asked(native: Any) -> None:

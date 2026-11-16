@@ -254,7 +254,7 @@ ITEM_LINES = (
     "that are not on one line cannot be cut by one plane (refused, says so): name the ones to cut with holes=[...].",
     "line: an axis or a line in an ISO 128 line type. An axis is TechDraw's own centre-line object between the two sides "
     "of its cylinder (it follows the model), in the long-dash dotted line (04); review says centre_line_not_chain for a "
-    "centre line that is not. axis=<cylindrical face> (a shaft, boss or bore: its centre line along its whole "
+    "sheet centre line that is not (his own hand-made ones are not judged); an axis he deletes by hand stays deleted. axis=<cylindrical face> (a shaft, boss or bore: its centre line along its whole "
     "length plus 2.5 mm at each end, never into a dimension or its text, in every standard view that sees it from the side and a centre cross where it is seen end-on) "
     "or from={ref} + to={ref} (two places of the part, as in dim: the line between them); style? chain (long-dash "
     "dotted, default for an axis) | dashed | continuous (thin, default between two places); view? (front, top, right "

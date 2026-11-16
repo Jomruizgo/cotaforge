@@ -64,6 +64,7 @@ import sheet_isoview
 import sheet_items
 import sheet_keyway
 import sheet_layout
+import sheet_linetype
 import sheet_look
 import sheet_marks
 import sheet_mirror
@@ -122,14 +123,16 @@ is the long-dash dotted line (4.32 0.54 0.18 0.54 mm at 0.18 in the PDF); unset,
 a long and a short dash."""
 
 
+LIST_PREFS = frozenset({sheet_native.LINE_STANDARD})  # preferences that hold the index of an item of a list
+
+
 def apply_techdraw_defaults() -> None:
     """Set the TechDraw preferences of ``DEFAULT_PREFS`` the engineer has not set himself (never changes a value that is there):
     what he adds to the sheet by hand then has the line weights and text size of the sheet's own objects."""
     for group, key, value in DEFAULT_PREFS:
         params = App.ParamGet(TECHDRAW_PREFS + group)
         if isinstance(value, int):
-            if params.GetInt(key, -99) == -99:
-                params.SetInt(key, value)
+            sheet_linetype.set_default_int(params, key, value, key in LIST_PREFS)
         elif params.GetFloat(key, -99.0) == -99.0:
             params.SetFloat(key, float(value))
 
@@ -3822,16 +3825,32 @@ def page_findings(page: Any, ctx: sc.Context) -> list[dict[str, Any]]:
                 "code": "centre_line_not_chain",
                 "severity": "warning",
                 "message": ctx.say(
-                    f"Hay {len(dashed)} eje(s) o marca(s) de centro que no son línea de trazo largo y punto (ISO 128, tipo 04; número de línea de TechDraw entre paréntesis): {shown}. "
-                    "Así se leen como aristas ocultas. Los que hizo la hoja se corrigen al actualizarla (compose o cualquier cambio de un elemento); "
-                    "en uno hecho a mano, elige el estilo de línea 4 en el diálogo de la línea de centro.",
-                    f"{len(dashed)} axis or centre mark line(s) are not the long-dash dotted line (ISO 128, type 04; TechDraw's line number in brackets): {shown}. "
-                    "They read as hidden edges. The ones the sheet made are put right when it is updated (compose, or any change of an item); "
-                    "for one made by hand, pick line style 4 in the centre line dialog.",
+                    f"Hay {len(dashed)} eje(s) o marca(s) de centro de los que hizo la hoja que no son línea de trazo largo y punto (ISO 128, tipo 04; número de línea de TechDraw entre paréntesis): {shown}. "
+                    "Así se leen como aristas ocultas. Se corrigen al actualizar la hoja (compose o cualquier cambio de un elemento). "
+                    "Los ejes que el ingeniero hace a mano no se juzgan: llevan su estilo de línea.",
+                    f"{len(dashed)} axis or centre mark line(s) the sheet made are not the long-dash dotted line (ISO 128, type 04; TechDraw's line number in brackets): {shown}. "
+                    "They read as hidden edges. They are put right when the sheet is updated (compose, or any change of an item). "
+                    "The axes the engineer makes by hand are not judged: they carry his line style.",
                 ),
                 "items": [],
                 "features": [],
                 "key": dashed[0][0],
+            }
+        )
+    deleted = sheet_native.deleted_by_hand(page)
+    if deleted:  # one line, never a question: a hand deletion is final and the export does not wait for it
+        shown = ", ".join(deleted[:4]) + (f" (+{len(deleted) - 4})" if len(deleted) > 4 else "")
+        rows.append(
+            {
+                "code": "line_deleted_by_hand",
+                "severity": "info",
+                "message": ctx.say(
+                    f"Líneas de eje o de marca que hizo la hoja y el ingeniero borró a mano: {shown}. Se respetan: la hoja no las vuelve a poner.",
+                    f"Axis or mark lines the sheet made and the engineer deleted by hand: {shown}. They stay deleted: the sheet does not put them back.",
+                ),
+                "items": [],
+                "features": [],
+                "key": "",
             }
         )
     marked = pc.marker_texts(read.texts)
