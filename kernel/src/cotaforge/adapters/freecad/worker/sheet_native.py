@@ -919,7 +919,9 @@ def sync_views(
 # --- the lines a unit draws ON a view: centre lines (TechDraw's own centre-line object), centre marks, thread arcs, the
 # --- parting line (cosmetic edges) --------------------------------------------------------------------------------------
 
-PROP_COSMETIC = "CotaforgeCosmetic"  # on a view: the centre lines and cosmetic edges the sheet made, {unit key: [signature, [geometry...]]}
+PROP_COSMETIC = "CotaforgeCosmetic"  # on a view: what the sheet made, {unit key: [signature, [geometry...], [line number it set...]]}
+NOT_SET = 0  # the sheet has not given this line its line number yet (made now, or the CAD refused): it will, and the review judges it
+HIS = -1  # a line of a file saved before the sheet kept what it set: it is not told apart from his own, so it is never renumbered or judged
 ISO_STYLE = {"centre": 4, "thin": 1, "parting": 8, "thick": 1}  # the Qt pen style of ``Format`` (4: dash dot); TechDraw paints the LINE NUMBER (``line_number``), not this
 STANDARDS_PREF = "User parameter:BaseApp/Preferences/Mod/TechDraw/Standards"
 LINE_STANDARD = "LineStandard"
@@ -970,6 +972,16 @@ def _store(view: Any, data: dict[str, list[Any]]) -> None:
         view.addProperty("App::PropertyString", PROP_COSMETIC, GROUP, "Cosmetic edges the sheet made on this view")
         view.setEditorMode(PROP_COSMETIC, 1)
     setattr(view, PROP_COSMETIC, json.dumps(data, separators=(",", ":")))
+
+
+def _set_numbers(entry: list[Any]) -> list[int]:
+    """The line numbers the sheet set on the lines of the stored ``entry``, parallel to its specs: ``NOT_SET`` for a line it has
+    not numbered yet. An entry saved before they were kept gets ``HIS`` for all of them (``entry`` is completed in place)."""
+    if len(entry) < 3 or not isinstance(entry[2], list):
+        entry[2:] = [[HIS] * len(entry[1])]
+    numbers: list[int] = entry[2]
+    numbers += [NOT_SET] * (len(entry[1]) - len(numbers))
+    return numbers
 
 
 def _cosmetic_geometry(cosmetic: Any) -> Geometry:
@@ -1163,22 +1175,43 @@ def _reweigh(view: Any, natives: list[su.NativeCosmetic], specs: list[Any]) -> N
 
 
 def _number(view: Any, natives: dict[str, list[su.NativeCosmetic]], stored: dict[str, list[Any]]) -> list[str]:
-    """Give every line the sheet made on ``view`` TechDraw's line number of its kind (the chain line for a centre line, the
-    continuous one for a thread arc): ``Format`` cannot, so a new line is the dashed one. Returns why it could not."""
+    """Give the lines the sheet made on ``view`` that have no line number of its yet TechDraw's line number of their kind (the
+    chain line for a centre line, the continuous one for a thread arc): ``Format`` cannot, so a new line is the dashed one. It
+    is done once per line and kept (``_set_numbers``): a line whose number is not the one the sheet set is the engineer's
+    choice and is never touched. Returns why it could not."""
     wanted: dict[str, dict[int, int]] = {CENTRE_LINES: {}, COSMETIC_EDGES: {}}
+    where: dict[str, dict[int, tuple[list[int], int]]] = {CENTRE_LINES: {}, COSMETIC_EDGES: {}}
+    changed = False
     for key, mine in natives.items():
-        for n, (kind, values) in zip(mine, stored.get(key, ["", []])[1], strict=False):
-            numbers = wanted[CENTRE_LINES if kind == CLINE else COSMETIC_EDGES]
-            index = _index(view, (kind, tuple(values)), set(numbers))
-            if index is not None:
-                numbers[index] = line_number(n.style)
+        entry = stored.get(key)
+        if entry is None:
+            continue
+        before = len(entry)
+        numbers = _set_numbers(entry)
+        changed = changed or before < 3
+        for i, (n, (kind, values)) in enumerate(zip(mine, entry[1], strict=False)):
+            prop = CENTRE_LINES if kind == CLINE else COSMETIC_EDGES
+            index = _index(view, (kind, tuple(values)), set(where[prop]))  # the positions of the lines already seen are not this one's
+            if index is None:
+                continue
+            where[prop][index] = (numbers, i)
+            if numbers[i] == NOT_SET:
+                wanted[prop][index] = line_number(n.style)
     problems: list[str] = []
-    for prop, numbers in wanted.items():
+    for prop, numbers_at in wanted.items():
+        if not numbers_at:
+            continue
         try:
-            if numbers:
-                sheet_linetype.apply(view, prop, numbers)
+            sheet_linetype.apply(view, prop, numbers_at)
         except Exception as exc:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind
             problems.append(f"the line type of its {prop} could not be set ({type(exc).__name__}: {exc})")
+            continue
+        for index, number in numbers_at.items():
+            numbers, i = where[prop][index]
+            numbers[i] = number
+            changed = True
+    if changed:
+        _store(view, stored)
     return problems
 
 
@@ -1244,7 +1277,7 @@ def sync_cosmetics(page: Any, units: list[su.Unit], made: list[str] | None = Non
                 )
                 changed = True
                 continue
-            stored[key] = [signature, specs]
+            stored[key] = [signature, specs, [NOT_SET] * len(specs)]
             changed = True
             touched(key)
         if changed:
@@ -1297,8 +1330,10 @@ def verify_centre_lines(page: Any, wait: Any = None) -> list[str]:
             drawn = _drawn_centre_lines(view, frame)
         painted = drawn or []
         numbers: dict[int, int] = {}
+        made: list[tuple[list[int], int, int]] = []
         for key, entry in stored.items():
-            for spec in entry[1]:
+            set_numbers = _set_numbers(entry)
+            for i, spec in enumerate(entry[1]):
                 if spec[0] != CLINE or _find(view, (CLINE, tuple(spec[1]))) is None:  # one the engineer deleted stays deleted
                     continue
                 want = tuple(float(v) for v in spec[1][:4])
@@ -1309,35 +1344,47 @@ def verify_centre_lines(page: Any, wait: Any = None) -> list[str]:
                 tag = view.makeCosmeticLine(App.Vector(want[0], want[1], 0), App.Vector(want[2], want[3], 0))
                 view.getCosmeticEdge(tag).Format = _format("centre")
                 spec[0], spec[1] = "line", list(want)
+                set_numbers[i] = NOT_SET  # a new line of the sheet's: it gets its number now
                 index = _index(view, ("line", want))
                 if index is not None:
                     numbers[index] = line_number("centre")
+                    made.append((set_numbers, i, numbers[index]))
                 replaced.append(f"{key}: a centre line of the {name} view")
-        if numbers:
+        if numbers or replaced:
             _store(view, stored)
+        if numbers:
             sheet_linetype.apply(view, COSMETIC_EDGES, numbers)
+            for set_numbers, i, number in made:
+                set_numbers[i] = number
+            _store(view, stored)
     return replaced
 
 
 def line_type_problems(page: Any) -> list[tuple[str, str, int]]:
     """Every centre line the SHEET made on ``page`` that is not a chain line of the engineer's line standard, read from the
     page's own objects: ``(view, what, line number)`` for TechDraw's centre lines and for the cosmetic lines drawn as centre
-    lines. The centre lines the engineer makes himself carry his own line style and are his choice: they are never judged.
-    A list that cannot be read is reported with the number -1: it is not known to be right."""
+    lines. Only a line the sheet itself left wrong is judged: one it has not numbered (the CAD refused) or one still with the
+    number it set. The centre lines the engineer makes himself, and the ones of the sheet he gave another line style, are his
+    choice: they are never judged. A list that cannot be read is reported with the number -1: it is not known to be right."""
     standard = line_standard()
     found: list[tuple[str, str, int]] = []
     for name in view_names(page):
         view = view_object(page, name)
         if view is None:
             continue
-        own: dict[str, list[int]] = {CENTRE_LINES: [], COSMETIC_EDGES: []}
+        own: dict[str, dict[int, int]] = {CENTRE_LINES: {}, COSMETIC_EDGES: {}}  # position -> the number the sheet set (NOT_SET: none yet)
+        seen: dict[str, set[int]] = {CENTRE_LINES: set(), COSMETIC_EDGES: set()}
         for entry in _stored(view).values():
-            for kind, values in entry[1]:
+            set_numbers = _set_numbers(entry)
+            for i, (kind, values) in enumerate(entry[1]):
                 prop = CENTRE_LINES if kind == CLINE else COSMETIC_EDGES
-                index = _index(view, (kind, tuple(values)), set(own[prop]))
-                if index is None or (kind != CLINE and dict(_listed(view, (kind, ()))[index].Format).get("style") != ISO_STYLE["centre"]):
-                    continue  # deleted by hand, or not a centre line (a thread arc): not judged
-                own[prop].append(index)
+                index = _index(view, (kind, tuple(values)), seen[prop])
+                if index is None:
+                    continue  # deleted by hand
+                seen[prop].add(index)
+                if set_numbers[i] == HIS or (kind != CLINE and dict(_listed(view, (kind, ()))[index].Format).get("style") != ISO_STYLE["centre"]):
+                    continue  # kept from a file that did not tell, or not a centre line (a thread arc): not judged
+                own[prop][index] = set_numbers[i]
         for prop, what in ((CENTRE_LINES, "centre line"), (COSMETIC_EDGES, "cosmetic centre line")):
             if not own[prop]:
                 continue
@@ -1346,7 +1393,12 @@ def line_type_problems(page: Any) -> list[tuple[str, str, int]]:
             except Exception:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind
                 found.append((name, what, -1))
                 continue
-            found += [(name, what, numbers[i]) for i in own[prop] if i < len(numbers) and not sheet_linetype.is_chain(numbers[i], standard)]
+            for i, set_number in own[prop].items():
+                if i >= len(numbers) or sheet_linetype.is_chain(numbers[i], standard):
+                    continue
+                if set_number != NOT_SET and numbers[i] != set_number:
+                    continue  # the engineer gave it another line style: his choice, whatever it is
+                found.append((name, what, numbers[i]))
     return found
 
 

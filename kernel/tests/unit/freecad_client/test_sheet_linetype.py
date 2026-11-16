@@ -353,14 +353,24 @@ def test_a_centre_line_whose_edges_were_numbered_again_is_made_again_on_the_side
     assert made == ["ln1"] and sorted(line.Edges) == ["Edge4", "Edge5"] and line.number == 4
 
 
-def test_the_review_reads_a_centre_line_of_the_sheet_that_is_dashed(native: Any) -> None:
+def refuse_line_numbers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The CAD refuses to take the line numbers (its property cannot be restored): the lines stay as TechDraw made them."""
+
+    def refuse(view: Any, prop: str, wanted: dict[int, int]) -> bool:
+        raise RuntimeError("cannot restore")
+
+    monkeypatch.setattr(lt, "apply", refuse)
+
+
+def test_the_review_reads_a_centre_line_of_the_sheet_that_it_could_not_make_a_chain_line(native: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     view = shaft_view()
     page = page_of(native, view)
-    native.sync_cosmetics(page, [unit(axis(38.75, 101.25))])
-    view.CenterLines[0].number = 2  # the sheet's own, left the dashed line
+    with monkeypatch.context() as refused:
+        refuse_line_numbers(refused)
+        native.sync_cosmetics(page, [unit(axis(38.75, 101.25))])  # left the dashed line, and the sheet knows it did not number it
     assert native.line_type_problems(page) == [("front", "centre line", 2)]
-    native.sync_cosmetics(page, [unit(axis(38.75, 101.25))])  # an update puts it right
-    assert native.line_type_problems(page) == []
+    native.sync_cosmetics(page, [unit(axis(38.75, 101.25))])  # the next update numbers it
+    assert view.CenterLines[0].number == 4 and native.line_type_problems(page) == []
 
 
 def test_the_review_never_judges_a_centre_line_the_engineer_made(native: Any) -> None:
@@ -378,33 +388,94 @@ def test_the_review_never_judges_a_centre_line_the_engineer_made(native: Any) ->
 
 
 @pytest.mark.parametrize(
-    ("standard", "chain", "not_chain"),
-    [(lt.ISO, (4, 5), (1, 2, 8)), (lt.ASME, (4, 5, 17), (1, 2, 14)), (lt.ANSI, (3,), (1, 2, 4))],
+    ("standard", "chain", "other"),
+    [(lt.ISO, 4, (1, 2, 5, 8)), (lt.ASME, 4, (1, 2, 5, 14, 17)), (lt.ANSI, 3, (1, 2, 4))],
     ids=["iso", "asme", "ansi"],
 )
-def test_every_chain_line_of_the_engineers_standard_is_a_chain_line(
-    native: Any, standard: int, chain: tuple[int, ...], not_chain: tuple[int, ...]
+def test_the_sheet_sets_the_chain_line_of_the_engineers_standard_and_every_other_number_he_picks_is_his(
+    native: Any, standard: int, chain: int, other: tuple[int, ...]
 ) -> None:
     native.line_standard = lambda: standard
     view = shaft_view()
     page = page_of(native, view)
     native.sync_cosmetics(page, [unit(axis(38.75, 101.25))])
-    for number in chain:
+    assert view.CenterLines[0].number == chain and native.line_type_problems(page) == []
+    for number in other:  # he restyles it, in any way: the sheet neither judges it nor puts it back
         view.CenterLines[0].number = number
         assert native.line_type_problems(page) == [], number
-    for number in not_chain:
-        view.CenterLines[0].number = number
-        assert native.line_type_problems(page) == [("front", "centre line", number)], number
+        native.sync_cosmetics(page, [unit(axis(38.75, 101.25))])
+        assert view.CenterLines[0].number == number, number
 
 
-def test_the_review_reads_a_cosmetic_centre_line_of_the_sheet_that_is_dashed(native: Any) -> None:
+def test_the_review_reads_a_cosmetic_centre_line_of_the_sheet_that_it_could_not_make_a_chain_line(native: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     view = shaft_view()
     page = page_of(native, view)
+    refuse_line_numbers(monkeypatch)
     native.sync_cosmetics(page, [unit(axis(10.0, 30.0, y=40.0))])  # no sides in the view: a cosmetic line
-    view.CosmeticEdges[0].number = 2
     thin = view.makeCosmeticLine(types.SimpleNamespace(x=0, y=35), types.SimpleNamespace(x=9, y=35))
     view.getCosmeticEdge(thin).Format = {"style": 1, "weight": 0.18}  # his, and not a centre line anyway
     assert native.line_type_problems(page) == [("front", "cosmetic centre line", 2)]
+
+
+# --- a line the engineer restyled stays as he styled it ---------------------------------------------------------------------
+
+
+def test_a_centre_line_he_restyled_is_never_put_back_to_the_chain_line(native: Any) -> None:
+    view = shaft_view()
+    page = page_of(native, view)
+    native.sync_cosmetics(page, [unit(axis(38.75, 101.25))])
+    view.CenterLines[0].number = 5  # he picks ISO 05 in the line style of the line
+    written, tag = list(view.restored), view.CenterLines[0].Tag
+    for _ in range(2):  # any later sync: an item added, the review, the export
+        assert native.sync_cosmetics(page, [unit(axis(38.75, 101.25))]) == {}
+        assert view.CenterLines[0].number == 5 and view.restored == written and view.CenterLines[0].Tag == tag
+    assert native.line_type_problems(page) == []
+
+
+def test_a_thread_arc_he_restyled_is_never_put_back_to_the_continuous_line(native: Any) -> None:
+    view = shaft_view()
+    page, _ = synced(native, view, THREADS)
+    assert view.CosmeticEdges[0].number == lt.CONTINUOUS
+    view.CosmeticEdges[0].number = 2  # a dashed line: his choice
+    written = list(view.restored)
+    native.sync_cosmetics(page, [unit(THREADS)])
+    assert view.CosmeticEdges[0].number == 2 and view.restored == written
+
+
+def test_a_centre_line_with_a_number_that_is_no_chain_line_is_not_judged_when_it_is_his_choice(native: Any) -> None:
+    view = shaft_view()
+    page = page_of(native, view)
+    native.sync_cosmetics(page, [unit(axis(38.75, 101.25))])
+    view.CenterLines[0].number = 8  # not a chain line of ISO: he wants it so
+    assert native.line_type_problems(page) == []  # the review would block the export on a line he chose
+    native.sync_cosmetics(page, [unit(axis(38.75, 101.25))])
+    assert native.line_type_problems(page) == [] and view.CenterLines[0].number == 8
+
+
+def test_a_new_line_gets_its_number_and_the_one_he_restyled_keeps_his(native: Any) -> None:
+    view = shaft_view()
+    page = page_of(native, view)
+    native.sync_cosmetics(page, [unit(axis(38.75, 101.25))])
+    view.CenterLines[0].number = 5
+    second = types.SimpleNamespace(key="ln2", natives=(su.NativeCosmetic("ln2", "front", "line", (110.0, 160.0, 150.0, 160.0), "centre"),))
+    native.sync_cosmetics(page, [unit(axis(38.75, 101.25)), second])
+    assert [e.number for e in view.CosmeticEdges] == [4] and view.CenterLines[0].number == 5
+    assert native.line_type_problems(page) == []
+
+
+def test_a_file_saved_before_the_sheet_kept_its_numbers_is_left_as_it_is(native: Any) -> None:
+    view = shaft_view()
+    page = page_of(native, view)
+    native.sync_cosmetics(page, [unit(axis(38.75, 101.25))])
+    stored = native._stored(view)  # noqa: SLF001
+    for entry in stored.values():
+        del entry[2:]  # what a sheet saved before wrote: no record of what it set
+    native._store(view, stored)  # noqa: SLF001
+    view.CenterLines[0].number = 2
+    written = list(view.restored)
+    native.sync_cosmetics(page, [unit(axis(38.75, 101.25))])
+    assert view.CenterLines[0].number == 2 and view.restored == written  # not told apart from his own: never renumbered
+    assert native.line_type_problems(page) == []  # nor judged
 
 
 # --- a line the engineer deleted by hand stays deleted ---------------------------------------------------------------------

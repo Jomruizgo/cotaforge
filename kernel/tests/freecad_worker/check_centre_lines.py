@@ -98,16 +98,34 @@ def check_a_centre_line_follows_the_model_and_its_view_with_no_harness() -> None
     assert numbers(right, "CenterLines") == [CHAIN]
 
 
-def check_the_review_names_a_centre_line_of_the_sheet_that_is_not_a_chain_line() -> None:
+def check_the_review_names_a_centre_line_of_the_sheet_that_it_could_not_make_a_chain_line() -> None:
     sheet_with_lines()
     assert "centre_line_not_chain" not in codes()
     front = views()["front"]
-    sheet_linetype.apply(front, "CenterLines", {0: 2})  # one of the sheet's own, left the dashed line
+    sheet_linetype.apply(front, "CenterLines", {0: 2})  # the CAD took the line number but the record says the sheet never set it
+    stored = sheet_native._stored(front)  # noqa: SLF001
+    for entry in stored.values():
+        entry[2] = [sheet_native.NOT_SET] * len(entry[1])
+    sheet_native._store(front, stored)  # noqa: SLF001
     _rec().fc_doc.recompute()
     assert ("front", "centre line", 2) in sheet_native.line_type_problems(_page())
     assert "centre_line_not_chain" in codes()
-    add({"type": "note", "id": "n3", "text": "Sin rebabas"})  # any update puts it right
+    add({"type": "note", "id": "n3", "text": "Sin rebabas"})  # the next update numbers it
     assert "centre_line_not_chain" not in codes()
+    assert numbers(front, "CenterLines")[0] == CHAIN
+
+
+def check_a_centre_line_the_engineer_restyles_is_never_put_back_nor_judged() -> None:
+    sheet_with_lines()
+    front = views()["front"]
+    for number in (5, 8):  # ISO 05, and a number that is no chain line: his choice
+        sheet_linetype.apply(front, "CenterLines", {0: number})
+        _rec().fc_doc.recompute()
+        assert sheet_native.line_type_problems(_page()) == [], number
+        assert "centre_line_not_chain" not in codes(), number
+        add({"type": "note", "id": f"n{number}", "text": f"Sin rebabas {number}"})
+        assert numbers(front, "CenterLines")[0] == number, number
+        assert all(n == CHAIN for n in numbers(front, "CenterLines")[1:])
 
 
 def check_the_review_never_judges_a_centre_line_the_engineer_made() -> None:
