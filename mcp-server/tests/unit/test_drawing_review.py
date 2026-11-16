@@ -55,7 +55,7 @@ def session_in(settings: Settings, mode: str, wait: int | None = None) -> tuple[
     fake = DrawingFake()
     call = Caller(
         make_session(
-            Settings(adapter="fake", workspace=settings.workspace, home=settings.home, session_id=settings.session_id, entrypoint=settings.entrypoint, base_memory=False), fake
+            Settings(adapter="fake", workspace=settings.workspace, home=settings.home, base_memory=False), fake
         )
     )
     plate(call)

@@ -4,7 +4,7 @@ pocket and a slot too narrow for its depth fire, and a slot whose rounded ends a
 from pathlib import Path
 
 from cotaforge_mcp.pocket_corners import ENTRY_ID
-from tests.integration.conftest import running_server
+from tests.integration.conftest import Reply, running_server
 
 XY = {"kind": "plane", "name": "XY"}
 TOP = {"kind": "face", "from_op": "s2", "select": {"normal": [0, 0, 1]}}
@@ -41,8 +41,8 @@ async def test_sharp_and_too_narrow_pockets_fire_and_a_round_slot_does_not(works
 
 
 async def test_a_sharp_pocket_is_kept_only_on_an_order_the_engineer_typed(workspace: Path) -> None:
-    """The measured alert in the real CAD: an order with words the engineer never typed is refused, the same order
-    quoted from a message he typed is accepted (``engineer_words``)."""
+    """The measured alert in the real CAD: an order the engineer rejects at Claude Code's dialog never reaches the
+    server, one that skipped the dialog is refused by the server, and the one he confirms is kept (``engineer_orders``)."""
     async with running_server(workspace, visible=True) as (cad, _):
         await cad.ok("doc", action="new", name="block")
         await cad.ok("op", name="sketch", params=BLOCK)
@@ -51,11 +51,10 @@ async def test_a_sharp_pocket_is_kept_only_on_an_order_the_engineer_typed(worksp
         await cad.ok("memory", action="get", id=ENTRY_ID)
         alone = await cad.err("memory", action="answer", id=ENTRY_ID, text="does not apply: the shop makes it by EDM")
         assert "measured_not_dismissable" in alone  # the agent's own word
-        cad.says("revisa la cajera del bloque")
-        invented = await cad.err(
-            "memory", action="answer", id=ENTRY_ID, by="Ana", text="does not apply: déjalas vivas, van por electroerosión"
-        )
-        assert "not_the_engineers_words" in invented and "he did not type" in invented
+        invented = {"action": "answer", "id": ENTRY_ID, "by": "Ana", "text": "does not apply: déjalas vivas, van por electroerosión"}
+        assert "rejected" in await cad.err("memory", **invented)  # he never said it: he rejects the dialog
+        unasked = Reply(await cad.session.call_tool("memory", invented))  # a call that skipped the dialog
+        assert unasked.is_error and "order_not_confirmed" in unasked.text
         assert "pending_answers" in await cad.err("memory", action="review", stage="detail")
         said = cad.says("deja las esquinas vivas, el taller las hace por electroerosión")
         kept = await cad.ok("memory", action="answer", id=ENTRY_ID, by="Ana", text=f"does not apply: {said}")

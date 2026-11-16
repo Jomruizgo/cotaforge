@@ -52,7 +52,7 @@ def practice(entry_id: str, sector: str, **overrides: Any) -> dict[str, Any]:
 
 
 def base_call(settings: Settings) -> Caller:
-    on = Settings(adapter="fake", workspace=settings.workspace, home=settings.home, session_id=settings.session_id, entrypoint=settings.entrypoint, base_memory=True)
+    on = Settings(adapter="fake", workspace=settings.workspace, home=settings.home, base_memory=True)
     return Caller(make_session(on, FakeAdapter()))
 
 

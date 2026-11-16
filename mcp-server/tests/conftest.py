@@ -1,8 +1,10 @@
 """Shared fixtures: a session over the fake adapter, a direct tool caller and fake variants with fewer capabilities."""
 
 import json
+import time
 import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +12,7 @@ import pytest
 from cotaforge.adapters.fake import FakeAdapter
 from cotaforge.contract import TOOL_REGISTRY, Capabilities
 
-from cotaforge_mcp import engineer_words
+from cotaforge_mcp import engineer_orders
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.reply import Reply
 from cotaforge_mcp.server import make_session
@@ -517,46 +519,125 @@ def fake_without(*tools: str) -> FakeAdapter:
 
 
 SESSION_ID = "unit-session"
-ENTRYPOINT = "cli"
-"""The session of a test is one a person types in at the terminal, as the engineer's is."""
-TURN_SOURCES = {"human": "typed", "sdk": "sdk"}
+REJECTED = "The user doesn't want to proceed with this tool use. The tool use was rejected"
+"""What Claude Code tells the agent when the person rejects a permission dialog."""
+ACCEPTS_UNASKED = frozenset({"brief", "review_choice"})
+"""The orders the engineer of a test accepts whatever their words: facts of the project he states (its sector, its
+processes, who reviews). An approval, a dismissal, a report or a decision he accepts only with the words the test made
+him say (``Engineer.says``)."""
 
 
-def claude_code_prompt(home: Path, session_id: str, text: str, turn: str = "human") -> dict[str, str]:
-    """What Claude Code does when a message starts a turn, as far as the harness sees it (measured on Claude Code
-    2.1.323): the message goes into the session's transcript with who started the turn (``human``: typed at the
-    terminal; ``sdk``: given by a program; ``task_notification``: the result of a background task), and the
-    ``UserPromptSubmit`` hook is run with the payload returned here."""
-    transcript = home / "claude-code" / f"{session_id}.jsonl"
-    transcript.parent.mkdir(parents=True, exist_ok=True)
-    prompt_id = str(uuid.uuid4())
-    entry = {
-        "type": "user",
-        "promptId": prompt_id,
-        "promptSource": TURN_SOURCES.get(turn, "system"),
-        "turnOrigin": turn,
-        "message": {"role": "user", "content": text},
-    }
-    with transcript.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    return {
-        "hook_event_name": engineer_words.HOOK_EVENT,
-        "session_id": session_id,
-        "prompt_id": prompt_id,
-        "transcript_path": str(transcript),
-        "prompt": text,
-    }
+class Engineer:
+    """The person at Claude Code, as far as the harness sees him (measured on Claude Code 2.1.325): what he types goes
+    into the session's transcript as a ``human`` turn; before every tool call Claude Code runs the ``PreToolUse`` hook
+    that ``cotaforge init`` wrote, and when the hook answers ``ask`` it shows him its permission dialog, which only he
+    answers; accepted, the call reaches the server with the id of the call in ``_meta``; rejected or denied, it never
+    does. The hook is the real one (``engineer_orders.decide``). He accepts a dialog that shows words he said."""
+
+    def __init__(self, home: Path, workspace: Path, session_id: str = SESSION_ID) -> None:
+        self.home, self.workspace, self.session_id = home, workspace, session_id
+        self.transcript = home / "claude-code" / f"{session_id}.jsonl"
+        self.mode = "default"
+        self.present = True
+        """He stays at the screen for the whole test (however long the CAD takes) until he ``leaves``."""
+        self.agreed: list[str] = []
+        self.dialogs: list[str] = []
+        """Every dialog Claude Code showed him, in order."""
+        self.denied: list[str] = []
+        """Every call the hook denied without asking (he was away, or the mode asks nobody), with its reason."""
+        self.types("hola")  # he is at the screen
+
+    def types(self, text: str, minutes_ago: float = 0.0, origin: str = "human") -> str:
+        """He types ``text`` (``origin``: another source of the turn, for what is NOT his)."""
+        self.transcript.parent.mkdir(parents=True, exist_ok=True)
+        at = datetime.fromtimestamp(time.time() - minutes_ago * 60, tz=UTC).isoformat().replace("+00:00", "Z")
+        entry = {
+            "type": "user",
+            "promptId": str(uuid.uuid4()),
+            "timestamp": at,
+            "turnOrigin": origin,
+            "message": {"role": "user", "content": text},
+        }
+        with self.transcript.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        return text
+
+    def says(self, text: str) -> str:
+        """He types ``text`` and will accept the dialog that shows it. Returns the text, to carry it in the order."""
+        self.agreed.append(text)
+        return self.types(text)
+
+    def leaves(self, minutes: float = 60.0) -> None:
+        """He went away: his last message is ``minutes`` old."""
+        self.present = False
+        self.transcript.unlink(missing_ok=True)
+        self.types("vuelvo luego", minutes_ago=minutes)
+
+    def environ(self) -> dict[str, str]:
+        return {engineer_orders.ENV_HOME: str(self.home), engineer_orders.ENV_PROJECT: str(self.workspace)}
+
+    def payload(self, tool: str, arguments: dict[str, Any], call_id: str) -> dict[str, Any]:
+        return {
+            "hook_event_name": engineer_orders.PRE_TOOL_EVENT,
+            "session_id": self.session_id,
+            "transcript_path": str(self.transcript),
+            "cwd": str(self.workspace),
+            "permission_mode": self.mode,
+            "tool_name": f"{engineer_orders.TOOL_PREFIX}{tool}",
+            "tool_input": arguments,
+            "tool_use_id": call_id,
+        }
+
+    def hook(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        """Run the ``PreToolUse`` hook on ``payload`` (here in this process; the acceptance tests run the command
+        ``cotaforge init`` generated)."""
+        return engineer_orders.decide(payload, self.environ())
+
+    def before(self, tool: str, arguments: dict[str, Any], call_id: str) -> str | None:
+        """What happens before the call reaches the server: ``None`` when it goes on (no order in it, or he accepted
+        the dialog), else what Claude Code tells the agent instead of running the tool."""
+        order = engineer_orders.order_of(tool, arguments)
+        if order is not None and self.present:
+            self.types("sigo aquí")
+        answer = self.hook(self.payload(tool, arguments, call_id))
+        if answer is None:
+            return None
+        said = answer["hookSpecificOutput"]
+        if said["permissionDecision"] == "deny":
+            self.denied.append(said["permissionDecisionReason"])
+            return said["permissionDecisionReason"]
+        shown = said["permissionDecisionReason"]
+        self.dialogs.append(shown)
+        assert order is not None
+        if order.kind in ACCEPTS_UNASKED:
+            return None
+        plain = " ".join(shown.split()).casefold()
+        for phrase in self.agreed:
+            if " ".join(phrase.split()).casefold() in plain:
+                self.agreed.remove(phrase)
+                return None
+        return REJECTED
+
+    def back(self, text: str) -> str | None:
+        """He writes again: what the ``UserPromptSubmit`` side of the hook adds to the conversation (``None``: nothing)."""
+        self.present = True
+        self.types(text)
+        payload = {"hook_event_name": engineer_orders.PROMPT_EVENT, "session_id": self.session_id, "cwd": str(self.workspace), "prompt": text}
+        answer = engineer_orders.back(payload, self.environ())
+        return None if answer is None else answer["hookSpecificOutput"]["additionalContext"]
+
+    def call(self, session: Session, tool: str, arguments: dict[str, Any]) -> Reply:
+        """One tool call of the agent, the way Claude Code makes it."""
+        call_id = f"toolu_{uuid.uuid4().hex}"
+        refusal = self.before(tool, arguments, call_id)
+        if refusal is not None:
+            return Reply(refusal, is_error=True)
+        return call_tool(session, tool, arguments, call_id=call_id)
 
 
-def engineer_says(settings: Settings, text: str, turn: str = "human") -> str:
-    """The engineer types ``text`` in the session of ``settings``: Claude Code writes it to the transcript and runs
-    the hook, which records it, exactly as in a real session. Returns the text, to quote it in an order. ``turn``:
-    another origin of the message, for the tests of what is NOT his."""
-    assert settings.home is not None and settings.session_id
-    payload = claude_code_prompt(settings.home, settings.session_id, text, turn)
-    written = engineer_words.hook(payload, {engineer_words.ENV_HOME: str(settings.home)})
-    assert written is not None, "the hook recorded nothing"
-    return text
+def engineer_of(settings: Settings) -> Engineer:
+    assert settings.home is not None, "a test never uses the real data folder"
+    return Engineer(settings.home, settings.workspace)
 
 
 @pytest.fixture
@@ -566,8 +647,6 @@ def settings(tmp_path: Path) -> Settings:
         workspace=tmp_path,
         home=tmp_path / "home",
         base_memory=False,
-        session_id=SESSION_ID,
-        entrypoint=ENTRYPOINT,
     )  # never the real ~/.cotaforge
 
 
@@ -587,6 +666,7 @@ class Caller:
     def __init__(self, session: Session, looks: bool = True) -> None:
         self.session = session
         self.last: Reply | None = None
+        self._engineer: Engineer | None = None
         self.looks = looks
         """Look at the sheet before an export of it, like the agent does (the export waits for a capture taken after the last
         change): the tests of the export are about something else; the ones about the look itself pass looks=False."""
@@ -601,12 +681,19 @@ class Caller:
             and "capture_drawing" in self.session.capabilities.tools
         ):
             call_tool(self.session, "drawing", {"action": "capture", "sheet": arguments.get("sheet")})
-        self.last = call_tool(self.session, tool, arguments)
+        self.last = self.engineer.call(self.session, tool, arguments)
         return self.last
 
     def says(self, text: str) -> str:
-        """The engineer types ``text`` (see ``engineer_says``)."""
-        return engineer_says(self.session.settings, text)
+        """The engineer types ``text`` and will accept the dialog that shows it (see ``Engineer``)."""
+        return self.engineer.says(text)
+
+    @property
+    def engineer(self) -> Engineer:
+        """The person at this session's Claude Code (made when first needed)."""
+        if self._engineer is None:
+            self._engineer = engineer_of(self.session.settings)
+        return self._engineer
 
     def ok(self, tool: str, **arguments: Any) -> str:
         reply = self(tool, **arguments)

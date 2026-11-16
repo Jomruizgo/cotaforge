@@ -34,7 +34,7 @@ from cotaforge.memory import (
 )
 from pydantic import ValidationError
 
-from cotaforge_mcp import design_memory, engineer_words, rules
+from cotaforge_mcp import design_memory, engineer_orders, rules
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.reply import Reply, ToolError, ok
 from cotaforge_mcp.schemas import MemoryArgs
@@ -74,7 +74,7 @@ USER_QUESTIONS = {
 """The ONE question the agent asks before anything goes to the user scope (every future design), in the engineer's
 language: he reads it word for word."""
 APPROVE_USER_EXAMPLE = (
-    'memory(action="approve", id="x", scope="user", by="Ana", text="it holds for all my designs")'
+    'memory(action="approve", id="x", scope="user", by="Ana", text="Ana: it holds for all my designs")'
 )
 
 
@@ -297,8 +297,8 @@ def _user_question(entry: MemoryEntry, language: str) -> str:
     return (
         f"ASK THE ENGINEER, once and before anything else: {USER_QUESTIONS[language]!r} The user memory reaches "
         f"EVERY future design, so only his answer decides it, never you. Yes, for his next designs -> "
-        f"memory(action=approve, id={entry.id}, scope=user, by, text=<his words, as he typed them>). Only this project -> "
-        f"memory(action=approve, id={entry.id}, scope=project, by, text=<his words, as he typed them>) moves it to the project "
+        f"memory(action=approve, id={entry.id}, scope=user, by, text=<his words>). Only this project -> "
+        f"memory(action=approve, id={entry.id}, scope=project, by, text=<his words>) moves it to the project "
         "memory. A fact about this one "
         "design (its lifting, mass, where something goes, a client's choice) is better as a `case` entry or in "
         "assumptions-and-decisions.md: say so if that is what he means"
@@ -417,11 +417,11 @@ def _approve(session: "Session", store: MemoryStore, args: MemoryArgs) -> Reply:
     if not (args.by and args.by.strip()) or not (args.text and args.text.strip()):
         raise ToolError(
             "approve is the engineer's gate: call it only on his explicit instruction, naming him in `by` and "
-            "quoting in `text` the words he typed in this session (they are checked)",
+            "quoting his words in `text`",
             code="invalid_input",
             field_name="by",
             usage=USAGE,
-            example='memory(action="approve", id="x", by="Ana", text="approve that rule")  (text: what she typed)',
+            example='memory(action="approve", id="x", by="Ana", text="Ana: approve it")',
         )
     item = store.get(args.id)
     if item is None:
@@ -432,8 +432,8 @@ def _approve(session: "Session", store: MemoryStore, args: MemoryArgs) -> Reply:
             code="not_proposed",
             field_name="id",
         )
-    words = engineer_words.require(session.settings, args.text, f"the approval of memory entry {args.id}", "text")
-    said = f"by {args.by.strip()} ({words})"
+    engineer_orders.confirmed(f"the approval of memory entry {args.id}")
+    said = f"by {args.by.strip()} ({' '.join(args.text.split())})"
     scope = item.scope
     if scope is Scope.user:
         if args.scope is None:
@@ -588,14 +588,14 @@ def _brief(session: "Session", args: MemoryArgs) -> Reply:
         if mode is not None and mode != design_memory.DEFAULT_DRAWING_REVIEW and not (args.text or "").strip():
             raise ToolError(
                 f"drawing_review={mode} replaces the default review of a drawing: it is the engineer's decision. Ask "
-                "him and put in text the words he typed in this session (they are checked)",
+                "him and put his words in text",
                 code="invalid_input",
                 field_name="text",
-                usage='memory(action="brief", drawing_review="own", text="I review the drawing myself, no fabricator")  (text: what he typed)',
+                usage='memory(action="brief", drawing_review="own", text="Ana: I review the drawing myself, no fabricator")',
             )
         said = args.text if mode is not None else None
-        if mode is not None and mode != design_memory.DEFAULT_DRAWING_REVIEW:
-            said = engineer_words.require(settings, args.text, f"drawing_review={mode} (who reviews a drawing)", "text")
+        if args.sector is not None or args.processes is not None or mode not in (None, design_memory.DEFAULT_DRAWING_REVIEW):
+            engineer_orders.confirmed("the sector, the processes and who reviews the drawings (the project brief)")
         brief = design_memory.save_brief(settings, args.sector, args.processes, mode, wait_min, said, args.language, args.drawing_flow)
         verb = "brief updated"
     else:

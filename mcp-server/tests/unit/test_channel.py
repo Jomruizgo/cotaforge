@@ -12,42 +12,59 @@ import sys
 import threading
 import time
 import types
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from cotaforge_mcp import channel_tools, drawing_window
+from cotaforge_mcp import channel_tools, drawing_window, engineer_orders
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.reply import Reply, ToolError
 from cotaforge_mcp.schemas import TOOLS_BY_NAME, ChannelArgs, input_schema, visible_tools
-from tests.conftest import SESSION_ID, BareFake, Caller, DrawingFake, MakeSession, engineer_says
+from tests.conftest import BareFake, Caller, DrawingFake, Engineer, MakeSession
 
 NAME = "soporte"
 
 
-def session_settings(workspace: Path) -> Settings:
-    """The settings of the server that runs the channel in ``workspace`` (the session the engineer types in)."""
-    home = workspace.parent / f"{workspace.name}-home"
-    return Settings(adapter="fake", workspace=workspace, home=home, session_id=SESSION_ID, entrypoint="cli")
+ENGINEERS: dict[Path, Engineer] = {}
+
+
+def engineer(workspace: Path) -> Engineer:
+    """The person at the Claude Code session that runs the channel in ``workspace``."""
+    if workspace not in ENGINEERS:
+        ENGINEERS[workspace] = Engineer(workspace.parent / f"{workspace.name}-home", workspace)
+    return ENGINEERS[workspace]
 
 
 def said(workspace: Path, text: str) -> str:
-    """The engineer types ``text`` in that session; returns it, to record it as his."""
-    return engineer_says(session_settings(workspace), text)
+    """The engineer types ``text`` in that session and will confirm it at the dialog; returns it."""
+    return engineer(workspace).says(text)
+
+
+def through_claude_code(workspace: Path, arguments: dict[str, object]) -> Reply:
+    """One ``channel`` call the way it reaches the server: the hook first (the engineer confirms an order of
+    his at the dialog), then the server's own gate, then the tool."""
+    person = engineer(workspace)
+    call_id = f"toolu_{uuid.uuid4().hex}"
+    refusal = person.before("channel", arguments, call_id)
+    if refusal is not None:
+        raise ToolError(refusal, code="rejected")
+    settings = Settings(adapter="fake", workspace=workspace, home=person.home)
+    order = engineer_orders.admit(settings, "channel", arguments, call_id)
+    with engineer_orders.confirming(order):
+        return channel_tools.run(workspace, ChannelArgs.model_validate(arguments))
 
 
 def call(workspace: Path, **arguments: object) -> str:
-    reply: Reply = channel_tools.run(
-        workspace, ChannelArgs.model_validate(arguments), settings=session_settings(workspace)
-    )
+    reply: Reply = through_claude_code(workspace, arguments)
     assert not reply.is_error
     return reply.text
 
 
 def refused(workspace: Path, **arguments: object) -> ToolError:
     with pytest.raises(ToolError) as caught:
-        channel_tools.run(workspace, ChannelArgs.model_validate(arguments), settings=session_settings(workspace))
+        through_claude_code(workspace, arguments)
     return caught.value
 
 
@@ -385,7 +402,7 @@ def test_a_disputed_question_is_decided_only_with_the_objection_on_record(tmp_pa
         role="designer",
         name=NAME,
         q=1,
-        text="Sin ajuste, insiste",
+        text=said(tmp_path, "Sin ajuste, insiste"),
         objection="el diseñador recomendó H7: recibe un pasador",
     )
     assert status_of(tmp_path, 1) == "decided"

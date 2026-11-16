@@ -56,7 +56,7 @@ from cotaforge.language import say
 from cotaforge.memory import MemoryEntry
 from pydantic import ValidationError
 
-from cotaforge_mcp import design_memory, drawing_look, drawing_revisions, engineer_words, measured_alerts, recovery
+from cotaforge_mcp import design_memory, drawing_look, drawing_revisions, engineer_orders, measured_alerts, recovery
 from cotaforge_mcp import drawing_requirements as reqs
 from cotaforge_mcp.reply import ToolError
 from cotaforge_mcp.session import Session
@@ -65,10 +65,9 @@ MAX_LINE = 190
 ANSWER_USAGE = 'drawing(action="answer", sheet?, id="<id from review>", text="applies: how, here" | "no aplica: why")'
 ANSWER_EXAMPLE = 'drawing(action="answer", id="q.callouts", text="no aplica: una placa con un solo tipo de agujero no necesita distinguirlos")'
 REPORT_USAGE = (
-    'drawing(action="review_report", sheet, by="fabricator" | "engineer", reason="<by=engineer: his words, as he typed them>", items=[{"kind": "missing" | "ambiguous" | '
+    'drawing(action="review_report", sheet, by="fabricator" | "engineer", items=[{"kind": "missing" | "ambiguous" | '
     '"costly" | "other", "where": "<place on the sheet>", "text": "<the point>", "fix": "<smallest change>"}])'
 )
-APPROVE_USAGE = 'drawing(action="approve", sheet="Drawing", by="Ana", reason="apruebo el plano")  (reason: what she typed)'
 CHOICE_USAGE = 'drawing(action="review_choice", sheet, by="engineer" | "fabricator")'
 MAX_SHOWN_REMARKS = 12
 
@@ -158,7 +157,7 @@ def _words(language: str) -> tuple[str, str, str]:
 def _engineer_report(sheet: str, language: str = "es") -> str:
     return (
         f'record what the engineer says (every remark, or none: "{_words(language)[2]}") with drawing(action=review_report, '
-        f'sheet="{sheet}", by="engineer", reason="<his words, as he typed them>", items=[...]); what he points at in the sheet window you read with '
+        f'sheet="{sheet}", by="engineer", items=[...]); what he points at in the sheet window you read with '
         "view(action=selection) and put in `where`"
     )
 
@@ -394,7 +393,7 @@ def guard_removal(session: Session, sheet: str | None, ids: list[str], reason: s
             usage=ANSWER_USAGE,
         )
     if by and by.strip():
-        engineer_words.require(session.settings, reason, f"removing {', '.join(auto)} in the engineer's name (by={by.strip()})")
+        engineer_orders.confirmed(f"removing {', '.join(auto)} in the engineer's name (by={by.strip()})")
     return [r.id for r in rows]
 
 
@@ -496,7 +495,7 @@ def review_lines(session: Session, sheet: DrawingSheetInfo) -> list[str]:
     lines.append(
         f"approved by: {sheet.approved_by}"
         if sheet.approved_by
-        else 'not approved ("Aprobó" is empty): only the engineer fills it, drawing(action=approve, sheet=, by=, reason=<the words he typed>)'
+        else 'not approved ("Aprobó" is empty): only the engineer fills it, drawing(action=approve, sheet=, by=, reason=)'
     )
     return lines
 
@@ -533,7 +532,7 @@ def _requirement_lines(rows: list[reqs.Requirement], language: str) -> list[str]
         lines.append(
             "  to close a row: ask what it lacks BEFORE you draw it (the designer through the channel, or the engineer), "
             'put it on the sheet, then drawing(action=answer, id="req....", text="met: where on the sheet" | "does not '
-            "apply: why\"); a measured row only on the engineer's order (by=, reason=: his words, as he typed them)"
+            "apply: why\"); a measured row only on the engineer's order (by=, reason=: his words)"
         )
     return lines
 
@@ -820,6 +819,7 @@ def review_choice(session: Session, sheet: str | None, by: str | None) -> str:
     info = sheet_info(session, sheet)
     if info is None:
         raise ToolError("the document has no drawing sheet", code="invalid_input", field_name="sheet")
+    engineer_orders.confirmed(f"the choice of who reviews sheet {info.sheet}")
     chosen = AnnotateDrawingRequest(
         operation_id="drawing_review_choice", action="review_choice", sheet=info.sheet, by=by
     )
@@ -834,11 +834,8 @@ def review_choice(session: Session, sheet: str | None, by: str | None) -> str:
     return f"recorded: the engineer chose the manufacturer for sheet {info.sheet}. Now: {_launch(info.sheet)}"
 
 
-def review_report(
-    session: Session, sheet: str | None, by: str | None, items: list[Any] | None, reason: str | None = None
-) -> str:
-    """Store a reviewer's report (``items`` may be empty: it looked and found nothing). Does not change the sheet. The
-    engineer's report is his: ``reason`` carries the words he typed (his remarks, or that he has none), checked."""
+def review_report(session: Session, sheet: str | None, by: str | None, items: list[Any] | None) -> str:
+    """Store a reviewer's report (``items`` may be empty: it looked and found nothing). Does not change the sheet."""
     info = sheet_info(session, sheet)
     if info is None:
         raise ToolError(
@@ -847,7 +844,7 @@ def review_report(
             field_name="sheet",
         )
     if canonical_author(by) == "engineer":
-        engineer_words.require(session.settings, reason, f"the engineer's review report of sheet {info.sheet}")
+        engineer_orders.confirmed(f"the engineer's review report of sheet {info.sheet}")
     try:
         request = AnnotateDrawingRequest(
             operation_id="drawing_review_report",
@@ -893,7 +890,7 @@ def review_report(
 MEASURED_REFUSAL = (
     "{what} was MEASURED by the harness ({why}): 'does not apply' is not accepted on the agent's word. Put it on the sheet "
     "and answer 'met: where on the sheet'; if the ENGINEER orders that it does not apply, answer again with by=<his name> and "
-    "reason=<his words, exactly as he typed them in this session: they are checked>: the answer is then marked with his name and he reads it in the review"
+    "reason=<his words>; Claude Code then asks HIM to confirm that call, and the answer is marked with his name"
 )
 
 
@@ -924,7 +921,7 @@ def _guard_answer(
             raise ToolError(
                 f"{row.id} is open: {row.why}; {' | '.join(row.detail)}. No answer on the sheet closes it: fix the model "
                 "(the harness measures again and the row is gone) or, if the ENGINEER orders it kept, record his order "
-                "where the alert lives: memory(action=answer, id=<the entry>, by=<his name>, text='does not apply: <his words, as he typed them>')",
+                "where the alert lives: memory(action=answer, id=<the entry>, by=<his name>, text='does not apply: <his words>')",
                 code="measured_not_dismissable",
                 field_name="text",
                 usage=ANSWER_USAGE,
@@ -984,14 +981,14 @@ def answer(
     if (by and by.strip()) or (reason and reason.strip()):
         if not (by and by.strip()) or not (reason and reason.strip()):
             raise ToolError(
-                "an answer the engineer ordered needs both by (his name) and reason (his words, as he typed them)",
+                "an answer the engineer ordered needs both by (his name) and reason (his words, quoted)",
                 code="invalid_input",
                 field_name="by",
                 usage=ANSWER_USAGE,
             )
+        engineer_orders.confirmed(f"an answer to {item_id} ordered by the engineer (by={by.strip()})")
         ordered = by.strip()
-        reason = engineer_words.require(session.settings, reason, f"an answer ordered by the engineer (by={ordered})")
-        said = f"{said} [ordered by {ordered}: «{reason}»]"
+        said = f"{said} [ordered by {ordered}: «{' '.join(reason.split())}»]"
     if not is_memory:
         _guard_answer(session, sheet, item_id, verdict, bool(ordered), reviewed)
     given = AnnotateDrawingRequest(
@@ -1024,23 +1021,25 @@ def approve(session: Session, sheet: str | None, by: str | None, reason: str | N
             "approve names the sheet it approves",
             code="invalid_input",
             field_name="sheet",
-            usage=APPROVE_USAGE,
+            usage='drawing(action="approve", sheet="Drawing", by="Ana", reason="Ana: aprueba el plano")',
         )
     if not (by and by.strip()) or not (reason and reason.strip()):
         raise ToolError(
             "approve is the engineer's gate: call it only on his explicit instruction, naming him in `by` and quoting "
-            "in `reason` the words he typed in this session (they are checked); 'Aprobó' in the title block is his and nobody else writes it",
+            "his words in `reason`; 'Aprobó' in the title block is his and nobody else writes it",
             code="invalid_input",
             field_name="by",
-            usage=APPROVE_USAGE,
-            example=APPROVE_USAGE,
+            usage='drawing(action="approve", sheet="Drawing", by="Ana", reason="Ana: aprueba el plano")',
+            example='drawing(action="approve", sheet="Drawing", by="Ana", reason="Ana: aprueba el plano")',
         )
-    reason = engineer_words.require(session.settings, reason, f"the approval of sheet {sheet}")
+    engineer_orders.confirmed(f"the approval of sheet {sheet}")
     result = session.adapter.annotate_drawing(
-        AnnotateDrawingRequest(operation_id="drawing_approve", action="approve", sheet=sheet, by=by.strip(), text=reason)
+        AnnotateDrawingRequest(
+            operation_id="drawing_approve", action="approve", sheet=sheet, by=by.strip(), text=" ".join(reason.split())
+        )
     )
     session.dirty = True
     return (
-        f"approved: sheet {result.sheet} by {by.strip()} ({reason}); 'Aprobó' is filled in the title "
+        f"approved: sheet {result.sheet} by {by.strip()} ({' '.join(reason.split())}); 'Aprobó' is filled in the title "
         "block. Any later change of the sheet (an item, a view, a layout) empties it again: the approval is of this drawing"
     )

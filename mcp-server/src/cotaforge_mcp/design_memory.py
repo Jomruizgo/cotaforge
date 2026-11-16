@@ -28,7 +28,7 @@ from cotaforge.memory import (
     triggered_at_milestone,
 )
 
-from cotaforge_mcp import engineer_words, measured_alerts, rules
+from cotaforge_mcp import engineer_orders, measured_alerts, rules
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.reply import ToolError
 
@@ -264,6 +264,9 @@ def save_brief(
     if brief.drawing_flow != DEFAULT_DRAWING_FLOW:
         data["drawing_flow"] = brief.drawing_flow
     path = settings.workspace / BRIEF_FILE
+    presence = _read_yaml(path).get(engineer_orders.PRESENCE_KEY)
+    if presence is not None:  # the engineer's own setting (how long he counts as present): kept as he wrote it
+        data[engineer_orders.PRESENCE_KEY] = presence
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return brief
 
@@ -610,9 +613,8 @@ def record_answer(session: "Session", entry_id: str, text: str, by: str | None =
             field_name="text",
         )
     if name:
+        engineer_orders.confirmed(f"an answer to {entry_id} ordered by the engineer (by={name})")
         prefix = next(p for p in (*APPLIES_PREFIXES, *NOT_APPLIES_PREFIXES) if said.lower().startswith(p))
-        what = f"an answer ordered by the engineer (by={name}): the words after '{prefix}'"
-        engineer_words.require(session.settings, said[len(prefix) :], what, "text")
         answer["text"] = f"{said} [ordered by {name}]"
         answer["ordered_by"] = name
         answer["order"] = said[len(prefix) :].strip()
@@ -628,7 +630,7 @@ def _measured_pending(session: "Session", entry_id: str, lines: list[str]) -> st
     return (
         f"- {entry_id} — MEASURED on the model, still fires: {' | '.join(lines)} [{read}]; it closes only when the "
         "model is fixed (the harness measures again) or the ENGINEER orders it kept: memory(action=answer, id, "
-        "by=<his name>, text=\"does not apply: <his words, exactly as he typed them: they are checked>\")"
+        "by=<his name>, text=\"does not apply: <his words, quoted>\")"
     )
 
 

@@ -303,7 +303,7 @@ DONE_LINES = (
     "(face=) or a flat pattern (flat=) is not a drawing and is not asked.",
     "WHO REVIEWS is the project's setting drawing_review, kept in brief.yaml: memory(action=brief, drawing_review=<mode>"
     "[:<wait min>], text=<his words>). The default is engineer_or_fabricator; any other mode is the ENGINEER's decision "
-    "(his typed words: text). engineer_or_fabricator: the engineer chooses between reviewing the sheet himself and the "
+    "(quote his words in text). engineer_or_fabricator: the engineer chooses between reviewing the sheet himself and the "
     "manufacturer agent, and if he does not choose within drawing_review_wait_min (default 15) the manufacturer counts | "
     "fabricator: the manufacturer agent | engineer: the engineer, no time limit | own: you ask yourself (below) | "
     "none: nobody (the blocking findings of the CAD are not asked either).",
@@ -331,7 +331,7 @@ DONE_LINES = (
     "FINDINGS, found by the CAD on the real geometry and sheet, hold the export in every mode but none and are checked "
     "again on every export: FIX one (it is gone on the next review) or ANSWER it. A measurement (hole_not_located, a thread "
     "with no callout, an item that cannot be drawn...) cannot be answered 'no aplica' on your word: only the engineer's "
-    "order closes it (by=<him>, reason=<his typed words>). One that stands for a missing requirement is listed under its row.",
+    "order closes it (by=<him>, reason=<his words>). One that stands for a missing requirement is listed under its row.",
     "REQUIREMENTS: what the standards ask a sheet to carry is a table, not prose: drawing(action=requirements) (also in "
     "create and review) lists the rows that apply to THIS part (thread, fits, tolerance, title block, texture, edges, treatments, "
     "locations, welds, parts list...), each added automatically, met, or a question, with its standard. What the model or "
@@ -348,7 +348,7 @@ DONE_LINES = (
     "BEFORE answering it (answering one also closes it at memory(review)). In the other modes the reviewer uses the entries "
     "as his checklist.",
     "APPROVAL: 'Aprobó' in the title block is the engineer's and only he fills it: drawing(action=approve, sheet=, by="
-    "<him>, reason=<his typed words>), only on his explicit instruction. Any later change of the "
+    "<him>, reason=<his words, quoted>), only on his explicit instruction. Any later change of the "
     "sheet (an item, a view, update) empties it again: he approved that drawing, not the next one.",
 )
 

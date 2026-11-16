@@ -22,7 +22,7 @@ from cotaforge.contract import AdapterError, AnnotateDrawingRequest, DrawingRequ
 from cotaforge.language import say
 from pydantic import ValidationError
 
-from cotaforge_mcp import design_memory, drawing_gate, drawing_weld_questions, engineer_words, process_stages
+from cotaforge_mcp import design_memory, drawing_gate, drawing_weld_questions, engineer_orders, process_stages
 from cotaforge_mcp import drawing_requirements as reqs
 from cotaforge_mcp.reply import Reply, ToolError, ok
 from cotaforge_mcp.schemas import DrawingArgs
@@ -505,12 +505,10 @@ def _check_answers(session: Session, survey: Survey, answers: dict[str, str], by
         if verdict != reqs.APPLIES and (row.measured or row.row.model_only) and not (by and by.strip() and reason and reason.strip()):
             problems.append(
                 f"answers[{row_id}]: the harness measured it (or the intent file says it): 'no aplica' only on the "
-                "engineer's order (by=<him>, reason=<his words, as he typed them>)"
+                "engineer's order (by=<him>, reason=<his words>)"
             )
     if problems:
         raise _bad(problems)
-    if answers and by and by.strip() and reason and reason.strip():  # before anything is put on the sheet
-        engineer_words.require(session.settings, reason, f"answers ordered by the engineer (by={by.strip()})")
 
 
 def _scope(args: DrawingArgs, sheet_over: dict[str, Any]) -> dict[str, Any]:
@@ -524,19 +522,19 @@ def _scope(args: DrawingArgs, sheet_over: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(stated, sort_keys=True, default=str))
 
 
-def _refuse_repeat(session: Session, info: Any, scope: dict[str, Any], args: DrawingArgs) -> dict[str, Any]:
+def _refuse_repeat(info: Any, scope: dict[str, Any], args: DrawingArgs) -> dict[str, Any]:
     """A sheet already composed is not composed again for a local fix: the signature it recorded is compared with what this
     order states of the whole sheet, and an order that changes none of it is refused (the engineer can order it). Returns
     the signature recorded (empty: the sheet was not composed in one order, or before it was recorded)."""
     recorded = dict((info.composed or {}).get("signature") or {})
     if args.recompose and not (args.by and args.by.strip() and args.reason and args.reason.strip()):
         raise ToolError(
-            "recompose is the engineer's order: by=<him> and reason=<his words, as he typed them>; a local fix is update / add / remove",
+            "recompose is the engineer's order: by=<him> and reason=<his words>; a local fix is update / add / remove",
             code="invalid_input",
             field_name="recompose",
         )
     if args.recompose:
-        engineer_words.require(session.settings, args.reason, "recompose (composing the whole sheet again)")
+        engineer_orders.confirmed("recompose (composing the whole sheet again)")
     if "signature" not in (info.composed or {}) or args.recompose or any(recorded.get(k) != v for k, v in scope.items()):
         return recorded
     raise ToolError(
@@ -560,7 +558,7 @@ def compose(session: Session, args: DrawingArgs, make_request: Any) -> Reply:
     fixed_scale = sheet_over.get("scale") or (args.scale if "scale" in args.model_fields_set else None)
     info, made = _bare_sheet(session, args, make_request)
     scope = _scope(args, sheet_over)
-    recorded = _refuse_repeat(session, info, scope, args)
+    recorded = _refuse_repeat(info, scope, args)
     pinned = set((info.composed or {}).get("pinned") or ())
     survey = _survey(session, info.sheet, items)
     _check_answers(session, survey, answers, args.by, args.reason)

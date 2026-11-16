@@ -52,7 +52,7 @@ def drawing_session(
 ) -> tuple[Caller, DrawingFake]:
     set_review(settings, mode)
     fake = adapter or DrawingFake()
-    on = Settings(adapter="fake", workspace=settings.workspace, home=settings.home, session_id=settings.session_id, entrypoint=settings.entrypoint, base_memory=base)
+    on = Settings(adapter="fake", workspace=settings.workspace, home=settings.home, base_memory=base)
     call = Caller(make_session(on, fake))
     plate(call)
     call.ok("drawing", action="create")
@@ -60,7 +60,7 @@ def drawing_session(
 
 
 def drawing_entries(settings: Settings) -> list[str]:
-    on = Settings(adapter="fake", workspace=settings.workspace, home=settings.home, session_id=settings.session_id, entrypoint=settings.entrypoint, base_memory=True)
+    on = Settings(adapter="fake", workspace=settings.workspace, home=settings.home, base_memory=True)
     call = Caller(make_session(on, DrawingFake()))
     return [e.id for e in design_memory.drawing_entries(call.session)]
 

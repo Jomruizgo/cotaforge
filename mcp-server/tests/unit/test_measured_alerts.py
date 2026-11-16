@@ -12,7 +12,7 @@ from cotaforge.adapters.fake import FakeAdapter
 from cotaforge_mcp import bearing_seats, design_memory, measured_alerts, pocket_corners, turned_ends
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.server import make_session
-from tests.conftest import SESSION_ID, Caller, DrawingFake, declare
+from tests.conftest import Caller, DrawingFake, declare
 from tests.unit.test_drawing_finished import drawing_session
 from tests.unit.test_drawing_requirements import PLATE
 from tests.unit.test_memory_v2 import PRINCIPLE
@@ -27,7 +27,7 @@ Fix = Callable[[Caller], None]
 
 @pytest.fixture
 def base_call(tmp_path: Path) -> Caller:
-    settings = Settings(adapter="fake", workspace=tmp_path, home=tmp_path / "home", base_memory=True, session_id=SESSION_ID, entrypoint="cli")
+    settings = Settings(adapter="fake", workspace=tmp_path, home=tmp_path / "home", base_memory=True)
     return Caller(make_session(settings, FakeAdapter()))
 
 
@@ -85,7 +85,7 @@ def test_the_review_holds_the_open_violation_with_what_was_measured(base_call: C
     entry, _ = scenario(base_call)
     refused = base_call.err("memory", action="review", stage="detail")
     assert "pending_answers" in refused and f"- {entry} — MEASURED on the model, still fires" in refused
-    assert "by=<his name>" in refused and "<his words, exactly as he typed them" in refused
+    assert "by=<his name>" in refused and "<his words, quoted>" in refused
 
 
 @pytest.mark.parametrize("scenario", CASES)
@@ -134,7 +134,7 @@ def test_an_order_needs_his_name_and_words_that_are_not_a_yes(base_call: Caller,
     read(base_call, entry)
     only_words = base_call.err("memory", action="answer", id=entry, text=ORDERED)  # no name: it is the agent's
     assert "measured_not_dismissable" in only_words
-    only_name = base_call.err("memory", action="answer", id=entry, text="does not apply: ok", by="Ana")
+    only_name = base_call.err("memory", action="answer", id=entry, text=f"does not apply: {base_call.says('ok')}", by="Ana")
     assert "answer is not enough" in only_name
     assert entry not in base_call.session.mem.answers
 
