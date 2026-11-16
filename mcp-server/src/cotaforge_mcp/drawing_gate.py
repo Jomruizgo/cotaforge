@@ -47,6 +47,7 @@ from cotaforge.contract import (
     AdapterError,
     AnnotateDrawingRequest,
     DescribeDrawingRequest,
+    DrawingAnswer,
     DrawingRemark,
     DrawingReport,
     DrawingSheetInfo,
@@ -661,11 +662,17 @@ def revise_released(
     return fresh
 
 
-def record_release(session: Session, sheet: str | None) -> None:
-    """The sheet's PDF was written: keep what it stated, so the next export of it can tell what changed."""
-    info = sheet_info(session, sheet, review=True)
+def record_release(session: Session, sheet: str | None) -> DrawingSheetInfo | None:
+    """The sheet's PDF was written: keep what it stated, so the next export of it can tell what changed. It reads the sheet
+    the gate just reviewed for this export (``require_finished``) instead of reviewing it again; returns that sheet, for the
+    step line of the reply."""
+    info = getattr(session, "gate_info", None)
+    session.gate_info = None
+    if info is None or not info.facts or (sheet is not None and info.sheet != sheet):
+        info = sheet_info(session, sheet, review=True)
     if info is not None and info.facts:
         drawing_revisions.record_release(session, info)
+    return info
 
 
 def require_finished(
@@ -675,6 +682,7 @@ def require_finished(
     sheet while the project's review is not done (see the module docstring); the refusal lists what is missing and what
     to do next. There is no draft PDF: the draft is the TechDraw sheet in the document. A sheet released before and changed
     since gets its revision row first (``by``: who asked for the change, ``reason``: why)."""
+    session.gate_info = None  # the sheet this gate reviews, kept for the release record and the step line of the export
     if "describe_drawing" not in session.capabilities.tools:
         return sheet
     mode = mode_of(session)
@@ -690,6 +698,7 @@ def require_finished(
     miss = missing(session, info)
     if not miss.count:
         drawing_look.require(session, info, action)  # the points are closed; the last look must be after the last change
+        session.gate_info = info
         return info.sheet
     block = [f"sheet {info.sheet}: {miss.count} pending (drawing review mode: {mode})"]
     if miss.state:
@@ -915,16 +924,17 @@ MEASURED_REFUSAL = (
 
 def _guard_answer(
     session: Session, sheet: str | None, item_id: str, verdict: str, ordered: bool, info: DrawingSheetInfo | None = None
-) -> None:
+) -> DrawingSheetInfo | None:
     """A row that is not active on this sheet cannot be answered; a ``does not apply`` on a row the harness measured, or on
     a finding that is a measurement, is refused unless the engineer ordered it. ``info``: the reviewed sheet, when the caller
-    answers several points in a row (an answer does not change which rows apply: the CAD is not asked for the review again)."""
+    answers several points in a row (an answer does not change which rows apply: the CAD is not asked for the review again).
+    Returns the reviewed sheet (``None``: the CAD describes none)."""
     if "describe_drawing" not in session.capabilities.tools:
-        return
+        return None
     if info is None:
         info = sheet_info(session, sheet, review=True)
     if info is None:
-        return
+        return None
     rows = {r.id: r for r in sheet_requirements(session, info)}
     if item_id.startswith(reqs.PREFIX):
         row = rows.get(item_id)
@@ -952,7 +962,7 @@ def _guard_answer(
                 field_name="text",
                 usage=ANSWER_USAGE,
             )
-        return
+        return info
     finding = next((f for f in info.findings if finding_id(f) == item_id), None)
     if (
         finding is not None
@@ -966,6 +976,13 @@ def _guard_answer(
             field_name="text",
             usage=ANSWER_USAGE,
         )
+    return info
+
+
+def _with_answer(info: DrawingSheetInfo, item_id: str, given: DrawingAnswer) -> DrawingSheetInfo:
+    """The sheet ``info`` as it is once ``item_id`` is answered: its answers, and the finding it closes."""
+    findings = tuple(f.model_copy(update={"answer": given}) if finding_id(f) == item_id else f for f in info.findings)
+    return info.model_copy(update={"answers": {**info.answers, item_id: given}, "findings": findings})
 
 
 def answer(
@@ -976,7 +993,11 @@ def answer(
     by: str | None = None,
     reason: str | None = None,
     reviewed: DrawingSheetInfo | None = None,
+    seen: list[DrawingSheetInfo] | None = None,
 ) -> str:
+    """Record the answer to a point of the review, a requirement, a question of the plan or a memory entry. ``seen``: the
+    sheet as this call reviewed it, with the answer put on it, is appended (the caller's step line reads it instead of
+    reviewing the sheet again)."""
     if not item_id or not text:
         raise ToolError(
             "answer needs id (from drawing(action=review)) and text",
@@ -1016,8 +1037,19 @@ def answer(
             field_name="id",
             usage=ANSWER_USAGE,
         )
+    if item_id.startswith(sheet_context.QUESTION_PREFIX) and item_id.removeprefix(sheet_context.QUESTION_PREFIX) in sheet_context.DESIGN_KEYS and not ordered:
+        raise ToolError(
+            f"{item_id} is a design fact (the route of the part, what the function depends on, what seats on what): the intent file "
+            "says it, or the ENGINEER orders it. Your own word, and a bare 'does not apply', do not close it. Ask the designer "
+            "(channel) and, if the engineer answers, record it with by=<his name> and reason=<his words>; Claude Code asks HIM "
+            "to confirm that call",
+            code="design_fact",
+            field_name="by",
+            usage=ANSWER_USAGE,
+        )
+    checked: DrawingSheetInfo | None = None
     if not is_memory:
-        _guard_answer(session, sheet, item_id, verdict, bool(ordered), reviewed)
+        checked = _guard_answer(session, sheet, item_id, verdict, bool(ordered), reviewed)
     given = AnnotateDrawingRequest(
         operation_id="drawing_answer",
         action="answer",
@@ -1031,6 +1063,8 @@ def answer(
     result = session.adapter.annotate_drawing(given)
     recovery.note(session, given.model_copy(update={"sheet": result.sheet}))  # outside the document too: a crash
     session.dirty = True  # the answer is in the sheet: it is saved with the document
+    if seen is not None and checked is not None:
+        seen.append(_with_answer(checked, item_id, DrawingAnswer(verdict=verdict, text=said, ordered_by=ordered)))  # type: ignore[arg-type]
     if is_memory:  # the same answer closes the entry at the milestone: memory(review) does not ask it a second time
         stage = design_memory.current_stage(session).value
         session.mem.answers[item_id] = {"verdict": verdict, "text": said, "stage": stage}

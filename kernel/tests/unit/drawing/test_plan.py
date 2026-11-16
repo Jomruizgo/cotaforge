@@ -79,6 +79,24 @@ def test_a_laser_cut_plate_has_its_process_and_its_hole_features() -> None:
     assert {"hole", "hole_group", "circular_pattern", "thread", "fit"} <= set(found.features)
 
 
+def test_a_word_inside_another_word_names_no_process() -> None:
+    assert "casting" not in context.processes_in("Profundidad del taladro 12 mm; la profundidad de la rosca es 18.")
+    assert "casting" not in context.processes_in("la profundidad del chavetero")
+    assert "casting" in context.processes_in("Fundición gris, pieza fundida") and "casting" in context.processes_in("sand casting")
+
+
+def test_a_manual_weld_is_welding_and_no_hand_tool_work() -> None:
+    assert context.processes_in("soldadura manual") == ("welding",)
+    assert context.processes_in("Soldadura manual con electrodo revestido") == ("welding",)
+    assert context.processes_in("manual welding") == ("welding",)
+    assert "hand_tools" in context.processes_in("acabado manual de las aristas")  # a manual finish stays hand work
+    assert "hand_tools" in context.processes_in("soldadura manual y limado de los cordones")  # the file is the hand work here
+
+
+def test_the_design_facts_of_the_plan_are_named() -> None:
+    assert set(context.DESIGN_KEYS) == {"process", "fits", "relations"} and set(context.DESIGN_KEYS) <= set(context.QUESTION_KEYS)
+
+
 # --- the plan ---------------------------------------------------------------------------------------------------------
 
 
@@ -141,17 +159,45 @@ def test_an_open_question_holds_its_step_and_the_review_is_the_last_one() -> Non
     assert "nothing open in the plan" in clean.line()
 
 
-def test_the_plan_reads_whole_gives_the_current_step_in_full_and_stays_short() -> None:
+def test_the_plan_gives_the_current_step_in_full_and_one_line_for_each_other() -> None:
     made = plan.build(context.build(SHAFT_FACTS, SHAFT_INTENT), catalog.load(), rows={"req.keyway": plan.RowState(False)})
     lines = plan.render(made)
     text = "\n".join(lines)
     assert "sheet type: part" in lines[0] and "turning" in lines[0]
     assert "STEP 4 DIMENSIONS (1 open) <- YOU ARE HERE" in text and "Work in this order" in text
     assert "[OPEN] keyway.dimensioned" in text and "req.keyway needs an answer" in text
-    assert "  [ok] views.isometric (blocks the export)" in lines  # a clear standard rule of another step: its id is enough
-    assert any(line.strip().startswith("[read] drawing.purpose") and "only thing the shop receives" in line for line in lines)  # the owner's: always in words
-    assert "Start from the fewest views" not in text and "Start from the fewest views" in "\n".join(plan.render(made, step=2))
-    assert len(text) < 16000, len(text)  # it is read whole: the reply of the tool cuts at 20000
+    # the other steps are ONE line each: how many rules, which are open; no rule of theirs is listed, not even the owner's
+    assert sum(line.startswith("STEP ") for line in lines) == 8
+    assert any(line.startswith("STEP 2 VIEWS (nothing open; ") and line.endswith(" rules)") for line in lines)
+    assert "views.isometric" not in text and "drawing.purpose" not in text and "Start from the fewest views" not in text
+    assert "Start from the fewest views" in "\n".join(plan.render(made, step=2))  # another step is asked for by number
+    assert "STEP 4 DIMENSIONS (1 open: keyway.dimensioned" not in text  # the step in view is not summarised
+    everything = "\n".join(plan.render(made, full=True))
+    assert "  [ok] views.isometric (blocks the export)" in everything and "only thing the shop receives" in everything
+    assert len(text) < 0.4 * len(everything) and len(text) < 7000, (len(text), len(everything))  # the full plan is on request only
+
+
+def test_a_step_that_is_not_in_view_names_its_first_open_rules_in_its_line() -> None:
+    made = plan.build(context.build(SHAFT_FACTS, SHAFT_INTENT), catalog.load(), open_codes={"cylinder_no_axis": 1, "no_view_lines": 1})
+    lines = plan.render(made, step=4)
+    line = next(line for line in lines if line.startswith("STEP 2 VIEWS"))
+    assert "1 open: views.centre_lines" in line and "<- YOU ARE HERE" in line
+
+
+def test_the_line_of_a_quick_read_says_it_is_the_step_checks_only() -> None:
+    made = plan.build(context.build(SHAFT_FACTS, SHAFT_INTENT), catalog.load())
+    assert "nothing open in the plan |" in made.line() and "step checks only" not in made.line()
+    quick = made.line(quick=True)
+    assert "nothing open in the plan so far" in quick and 'step checks only: drawing(action="review")' in quick
+
+
+def test_a_rule_a_tool_gate_enforces_is_clear_not_read_and_says_its_gate() -> None:
+    made = plan.build(context.build(SHAFT_FACTS, SHAFT_INTENT), catalog.load())
+    status = next(s for s in step(made, "purpose").rules if s.rule.id == "drawing.destructive_needs_order")
+    assert status.state == "clear" and not status.holds
+    assert "gate: the tool refuses both calls without the engineer's order" in plan.render(made, step=1)[-1] or any(
+        "gate: the tool refuses" in line for line in plan.render(made, step=1)
+    )
 
 
 def test_every_sheet_type_method_names_only_steps_of_the_sequence() -> None:

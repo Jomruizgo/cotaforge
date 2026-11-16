@@ -187,7 +187,7 @@ class DrawingArgs(Strict):
     author: str | None = None
     date: str | None = None
     material: str | None = None
-    scale: str | None = Field(default=None, description="create: 1:2, 2:1 (default largest)")
+    scale: str | None = Field(default=None, description="create: 1:2 (default largest)")
     language: str | None = None  # create: es | en, default the project's (memory brief)
     drawing_number: str | None = None
     revision: str | None = None
@@ -202,18 +202,19 @@ class DrawingArgs(Strict):
     fresh: bool = Field(default=False, description="create: start over")
     symmetry: bool | None = None  # create, update: only when the design intent declares the part symmetric
     items: list[Any] | None = Field(default=None, description="add: items; remove: ids; review_report: remarks")
-    append: bool = Field(default=False, description="review_report: add items to the report, not replace it")
-    region: list[float] | None = Field(default=None, description="capture: zoom x0,y0,x1,y1 mm")
+    append: bool = Field(default=False, description="review_report: add")
+    region: list[float] | None = Field(default=None, description="capture: zoom x0,y0,x1,y1")
     id: str | None = None  # answer / approve / review_*: see cad_guide(topic="drawing:done")
     text: str | None = None
     by: str | None = Field(default=None, description="approve, answer: engineer; review_*: engineer|fabricator")
     reason: str | None = None
     decisions: dict[str, Any] | None = Field(
         default=None,
-        description="compose: decisions (cad_guide drawing:compose)",
+        description="compose: decisions",
     )
     recompose: bool = False  # compose again: only on the engineer's order (by, reason)
     step: int | None = None  # plan: show this step (1-8) in full
+    full: bool = False  # plan: every step in full (the default gives the current step and one line for each other)
 
 
 class ExportArgs(Strict):

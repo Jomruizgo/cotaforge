@@ -467,7 +467,7 @@ def plan(session: Session, args: DrawingArgs, make_request: Any) -> Reply:
         "next: show this plan to the engineer and wait for his go-ahead (he is the one who knows what the part is for); "
         'then drawing(action="compose", decisions={...}); cad_guide(topic="drawing:compose") has the shape'
     )
-    lines += drawing_plan.lines(session, info, args.step)
+    lines += drawing_plan.lines(session, info, args.step, args.full)
     return ok("\n".join(lines), limit=REPLY_CHARS)
 
 
@@ -601,7 +601,8 @@ def compose(session: Session, args: DrawingArgs, make_request: Any) -> Reply:
         paper, layout = _raise_paper(session, survey.info.sheet, make_request, fixed_scale, layout)
         notes += paper
     _record(session, survey.info.sheet, {**recorded, **scope})
-    return ok("\n".join(_report(session, survey.info.sheet, put, derived, remove, notes, layout)), limit=REPLY_CHARS)
+    report, line = _report(session, survey.info.sheet, put, derived, remove, notes, layout)
+    return ok("\n".join(report), limit=REPLY_CHARS, tail=line)
 
 
 def _record(session: Session, sheet: str, signature: dict[str, Any]) -> None:
@@ -678,7 +679,8 @@ def _layout_lines(layout: Layout | None) -> list[str]:
     return lines
 
 
-def _report(session: Session, sheet: str, items: list[dict[str, Any]], derived: list[dict[str, Any]], removed: list[str], notes: list[str], layout: Layout | None = None) -> list[str]:
+def _report(session: Session, sheet: str, items: list[dict[str, Any]], derived: list[dict[str, Any]], removed: list[str], notes: list[str], layout: Layout | None = None) -> tuple[list[str], str]:
+    """The reply of a compose, and the step line that closes it (kept apart: it is never cut). The sheet is reviewed once, here."""
     survey = _survey(session, sheet, again=False)
     info = survey.info
     mine = {i["id"] for i in items} | {d["id"] for d in derived}
@@ -704,5 +706,4 @@ def _report(session: Session, sheet: str, items: list[dict[str, Any]], derived: 
         "off one; a second compose is refused unless the whole sheet changes (paper, scale, views, the dimension scheme); "
         "never rebuild with add what compose derives"
     )
-    lines += drawing_plan.step_line(session, sheet, info)
-    return lines
+    return lines, drawing_plan.step_line(session, info)

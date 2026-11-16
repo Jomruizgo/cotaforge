@@ -36,6 +36,8 @@ SEQUENCE: tuple[tuple[str, str], ...] = (
 LINE_DETAIL = 60
 """How much of what a rule lacks the one-line status of a reply quotes: the plan gives it whole."""
 ENFORCEMENT = {"blocks": "blocks the export", "warns": "warns", "debt": "no check yet: you read it on the sheet"}
+SUMMARY_OPEN = 3
+"""How many open rules the one-line summary of a step that is not the one in view names."""
 
 
 class SheetType(BaseModel):
@@ -108,8 +110,9 @@ class Plan:
     def current(self) -> Step:
         return next((s for s in self.steps if s.open), self.steps[-1])
 
-    def line(self) -> str:
-        """The one line every drawing reply ends with: the step the sheet is at and what it still lacks."""
+    def line(self, quick: bool = False) -> str:
+        """The one line every drawing reply ends with: the step the sheet is at and what it still lacks. ``quick``: read
+        from the checks of the step just taken, not from the whole review (an add, an update, a remove): it says so."""
         step = self.current
         missing = step.open
         layout = [s for s in self.layout if s.holds]
@@ -118,9 +121,11 @@ class Plan:
             shown = "; ".join(missing[:3]) + (f"; +{len(missing) - 3} more" if len(missing) > 3 else "")
             text += f"{len(missing)} open ({shown})"
         else:
-            text += "nothing open in the plan"
+            text += "nothing open in the plan" + (" so far" if quick else "")
         if layout:
             text += f" | layout: {', '.join(s.rule.id.removeprefix('layout.') for s in layout)} open"
+        if quick:
+            text += ' | step checks only: drawing(action="review") runs the whole review'
         return text + ' | drawing(action="plan") gives this step\'s rules'
 
 
@@ -144,7 +149,7 @@ def _status(rule: Rule, open_codes: Mapping[str, int], rows: Mapping[str, RowSta
         return RuleStatus(rule, "open", ", ".join(found))
     if row is not None:
         return RuleStatus(rule, "clear", f"{rule.requirement} closed")
-    if not rule.checks:
+    if not rule.checks and rule.weight != "gate":
         return RuleStatus(rule, "unchecked")
     return RuleStatus(rule, "clear")
 
@@ -182,16 +187,34 @@ def build(
 def _rule_line(status: RuleStatus, text: bool) -> str:
     rule = status.rule
     mark = {"open": "OPEN", "clear": "ok", "unchecked": "read"}[status.state]
-    how = "its requirement row holds the export" if rule.weight == "debt" and rule.requirement else ENFORCEMENT[rule.weight]
+    how = (
+        "its requirement row holds the export"
+        if rule.weight == "debt" and rule.requirement
+        else f"gate: {rule.gate}"
+        if rule.weight == "gate"
+        else ENFORCEMENT[rule.weight]
+    )
     head = f"[{mark}] {rule.id} ({how}{', owner' if rule.origin == 'owner' else ''})"
     if status.detail and status.state == "open":
         head += f" <- {status.detail}"
     return f"{head}: {' '.join(rule.text.split())}" if text else head
 
 
-def render(plan: Plan, step: int | None = None) -> list[str]:
-    """The plan as the agent reads it. Every step is listed with its rules and their status; the text of a rule is given
-    in the current step (or the one asked for with ``step``), and anywhere for a rule that is open or the owner's."""
+def _summary(s: Step) -> str:
+    """What a step that is not in view comes to in one line: how many of its rules are open (the first few named) and how
+    many it has."""
+    held = [r.rule.id for r in s.rules if r.holds]
+    asked = [f"ask {q.id}" for q in s.questions]
+    shown = [*asked, *held][:SUMMARY_OPEN]
+    more = len(asked) + len(held) - len(shown)
+    state = f"{len(s.open)} open: {', '.join(shown)}{f' +{more}' if more > 0 else ''}" if s.open else "nothing open"
+    return f"STEP {s.number} {s.title.upper()} ({state}; {len(s.rules)} rules)"
+
+
+def render(plan: Plan, step: int | None = None, full: bool = False) -> list[str]:
+    """The plan as the agent reads it: the step in view (the current one, or the one asked for with ``step``) in full, with
+    each of its rules, their status and their text; every other step in ONE line (how many of its rules are open, named
+    the first few). ``full``: every step in full, which is long and only given on request."""
     context = plan.context
     current = plan.current
     lines = [
@@ -208,17 +231,20 @@ def render(plan: Plan, step: int | None = None) -> list[str]:
         )
         lines += [f"  ? {q.id} [{q.step}] {q.about}: {q.text}" for q in context.questions]
     for s in plan.steps:
-        shown = step == s.number if step else s.number == current.number
+        shown = full or (step == s.number if step else s.number == current.number)
+        here = " <- YOU ARE HERE" if s.number == current.number else ""
+        if not shown:
+            lines.append(_summary(s) + here)
+            continue
         state = f"{len(s.open)} open" if s.open else "nothing open"
-        lines.append(f"STEP {s.number} {s.title.upper()} ({state}){' <- YOU ARE HERE' if s.number == current.number else ''}")
-        if shown and s.method:
+        lines.append(f"STEP {s.number} {s.title.upper()} ({state}){here}")
+        if s.method:
             lines += [f"  {line}" for line in s.method.splitlines()]
         lines += [f"  wait: {p}" for p in s.pending]
-        for status in s.rules:
-            lines.append("  " + _rule_line(status, shown or status.state == "open" or status.rule.origin == "owner"))
+        lines += ["  " + _rule_line(status, True) for status in s.rules]
     if plan.layout:
         lines.append("AT EVERY STEP (layout)")
-        lines += ["  " + _rule_line(status, True) for status in plan.layout]
+        lines += ["  " + _rule_line(status, full or status.state == "open") for status in plan.layout]
     if plan.method and plan.method.never:
         lines.append(f"this {context.sheet_type} sheet never carries: " + "; ".join(plan.method.never))
     return lines

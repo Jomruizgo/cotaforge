@@ -22,8 +22,8 @@ PROCESS_WORDS: dict[str, str] = {
     "laser_plasma_water": r"laser|plasma|chorro de agua|water\s?jet|oxicorte",
     "wire_edm": r"\bhilo\b|wire[\s-]*(?:cut|edm)|\bwedm\b",
     "sinker_edm": r"penetracion|sinker|die[\s-]*sink",
-    "casting": r"fundi|\bcast(?:ing)?\b",
-    "hand_tools": r"\bmanual|a mano\b|\blima(?:do)?\b|by hand|hand tools?",
+    "casting": r"\bfundi|\bcast(?:ing)?\b",
+    "hand_tools": r"(?<!soldadura )(?<!welding )\bmanual(?!\s+(?:welding|weld|soldadura))|a mano\b|\blima(?:do)?\b|by hand|hand tools?",
     "sheet_metal_bending": r"dobl|plega|\bbend|\bbent\b|\bfold",
     "welding": r"solda|\bweld",
     "injection_moulding": r"inyec|injection|mo(?:u)?ld(?:ed|ing)",
@@ -33,6 +33,9 @@ PROCESS_WORDS: dict[str, str] = {
 QUESTION_PREFIX = "plan."
 """The id of an open question of the context starts with it (``plan.process``): the sheet keeps its answer."""
 QUESTION_KEYS = ("type", "process", "material", "quantity", "datums", "relations", "fits")
+DESIGN_KEYS = ("process", "relations", "fits")
+"""The questions whose answer is a design fact (the route the part takes, what the function depends on, what seats on
+what): the intent file states them, or the engineer orders them (``by``). The drafter's own word closes none of them."""
 MACHINING = frozenset({"turning", "milling", "grinding"})
 
 _FIT_CLASS = re.compile(r"(?<![A-Za-z0-9])(?:[A-HJ-LNP-Z]{1,2}|[a-hj-np-z]{1,2})\d{1,2}(?![A-Za-z0-9])")

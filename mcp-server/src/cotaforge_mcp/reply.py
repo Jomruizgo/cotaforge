@@ -46,15 +46,19 @@ class ToolError(Exception):
         return "\n".join(lines)
 
 
-def clip(text: str, limit: int = MAX_CHARS) -> str:
-    if len(text) <= limit:
-        return text
-    cut = text[: limit - 60].rsplit("\n", 1)[0]
-    return f"{cut}\n... (+{len(text) - len(cut)} chars cut; narrow the request)"
+def clip(text: str, limit: int = MAX_CHARS, tail: str = "") -> str:
+    """``text`` cut to ``limit``. ``tail``: the line that closes the reply and is never cut (the per-step line of a
+    drawing reply): its room is reserved first, so it is the body that gives way."""
+    if tail:
+        limit = max(limit - len(tail) - 1, 0)
+    if len(text) > limit:
+        cut = text[: max(limit - 60, 0)].rsplit("\n", 1)[0]
+        text = f"{cut}\n... (+{len(text) - len(cut)} chars cut; narrow the request)"
+    return f"{text}\n{tail}" if tail else text
 
 
-def ok(text: str, *, limit: int = MAX_CHARS) -> Reply:
-    return Reply(clip(text, limit))
+def ok(text: str, *, limit: int = MAX_CHARS, tail: str = "") -> Reply:
+    return Reply(clip(text, limit, tail))
 
 
 def fail(failure: ToolError) -> Reply:

@@ -2,6 +2,11 @@
 """``drawing(action=plan)`` serves the work sequence of THIS sheet with the catalog rules of each step, and every drawing
 reply ends with the step the sheet is at. The status is read from the page (the CAD's review), never kept aside."""
 
+import logging
+
+import pytest
+
+from cotaforge_mcp import drawing_gate
 from cotaforge_mcp.config import Settings
 from tests.conftest import DrawingFake
 from tests.unit.test_drawing_auto import shaft_session
@@ -54,8 +59,11 @@ def test_the_plan_gives_the_sequence_with_the_rules_of_this_part_and_what_the_in
     assert "revolution_body" in text and "bearing_seat" in text
     for number, title in enumerate(("WHAT IT IS FOR", "VIEWS", "REFERENCES", "DIMENSIONS", "TOLERANCES", "NOTES", "DELIVERABLES", "READ IT AS THE SHOP"), start=1):
         assert f"STEP {number} {title}" in text
-    assert "views.turned_axial_section" in text and "keyway.dimensioned" in text
-    assert "circular_pattern.polar" not in text and "welded.weld_symbols" not in text  # not this part's
+    assert "views.turned_axial_section" not in text  # the step in view is in full, the others are one line each
+    assert "views.turned_axial_section" in call.ok("drawing", action="plan", step=2) and "keyway.dimensioned" in call.ok("drawing", action="plan", step=4)
+    everything = call.ok("drawing", action="plan", full=True)
+    assert "views.turned_axial_section" in everything and "keyway.dimensioned" in everything and len(everything) > 2 * len(text)
+    assert "circular_pattern.polar" not in everything and "welded.weld_symbols" not in everything  # not this part's
     assert "open questions" not in text  # the intent file says it all
     assert text.splitlines()[-1].startswith("step ")
 
@@ -70,11 +78,39 @@ def test_what_the_intent_file_does_not_say_is_an_open_question_of_the_plan(setti
     assert "STEP 1 WHAT IT IS FOR AND WHO READS IT" in text and "<- YOU ARE HERE" in text.split("STEP 2")[0]
     assert "step 1/8" in text.splitlines()[-1] and "ask plan.process" in text.splitlines()[-1]
     # what the engineer answers is recorded on the sheet: the question closes and the plan reads the answer
-    call.ok("drawing", action="answer", id="plan.process", text="applies: torneado y rectificado, dicho por el ingeniero")
     call.ok("drawing", action="answer", id="plan.quantity", text="applies: 10 unidades, dicho por el ingeniero")
+    call.ok("drawing", action="answer", id="plan.process", text="applies: torneado y rectificado", by="Ana", reason=call.says("torneado y rectificado"))
     again = call.ok("drawing", action="plan")
     assert "plan.process" not in again and "plan.quantity" not in again and "? plan.datums" in again
     assert "processes: turning, grinding, machining" in again and "quantity: 10 unidades" in again
+
+
+@pytest.mark.parametrize("key", ["process", "fits", "relations"])
+def test_the_design_facts_of_the_plan_are_never_closed_on_the_drafters_own_word(settings: Settings, key: str) -> None:
+    choose_steps(settings)
+    call, fake = shaft_session(settings)  # no intent file: the question is open
+    call.ok("drawing", action="create")
+    fake.facts = {**fake.facts, "turned": 1}  # fits are asked of a turned part
+    asked = call.ok("drawing", action="plan")
+    assert f"? plan.{key} " in asked
+    for text in ("applies: lo que a mí me parece", "no aplica: la pieza no lo necesita"):
+        refused = call.err("drawing", action="answer", id=f"plan.{key}", text=text)
+        assert "design fact" in refused and "intent file" in refused and "by=<his name>" in refused
+    assert not fake.drawings["Drawing"].get("answers")  # nothing was recorded
+    assert f"? plan.{key} " in call.ok("drawing", action="plan")
+    # the engineer's order records it, and then the question is closed
+    call.ok("drawing", action="answer", id=f"plan.{key}", text="applies: lo dicho por el ingeniero", by="Ana", reason=call.says("lo dicho por el ingeniero"))
+    assert f"? plan.{key} " not in call.ok("drawing", action="plan")
+
+
+def test_an_answer_to_a_design_fact_that_an_old_sheet_holds_without_his_name_does_not_count(settings: Settings) -> None:
+    choose_steps(settings)
+    call, fake = shaft_session(settings)
+    call.ok("drawing", action="create")
+    from cotaforge.contract import DrawingAnswer
+
+    fake.drawings["Drawing"]["answers"] = {"plan.process": DrawingAnswer(verdict="not_applies", text="no aplica: nada")}  # a bare one, as an earlier version stored it
+    assert "? plan.process " in call.ok("drawing", action="plan")
 
 
 def test_a_finding_of_the_page_shows_as_the_open_rule_of_its_step_and_plan_takes_a_step(settings: Settings) -> None:
@@ -99,16 +135,78 @@ def test_every_reply_that_changes_or_reviews_the_sheet_ends_with_the_step_line(s
     assert created.splitlines()[-1].startswith("step ") and 'drawing(action="plan")' in created.splitlines()[-1]
     before = len(fake.described)
     added = call.ok("drawing", action="add", items=[{"type": "note", "text": "Sin tratamiento"}])
-    assert added.splitlines()[-1].startswith("step ")
-    assert reviews(fake, before) == 1  # the line costs ONE review of the sheet, nothing else
+    assert added.splitlines()[-1].startswith("step ") and "step checks only" in added.splitlines()[-1]
+    updated = call.ok("drawing", action="update", items=[{"id": "o1", "offset_mm": 12}])
+    removed = call.ok("drawing", action="remove", items=["o1"])
+    assert updated.splitlines()[-1].startswith("step ") and removed.splitlines()[-1].startswith("step ")
+    assert len(fake.described) == before  # the line costs NO read of the sheet: no review, no compose, nothing
     before = len(fake.described)
     reviewed = call.ok("drawing", action="review")
-    assert reviewed.splitlines()[-1].startswith("step ")
+    assert reviewed.splitlines()[-1].startswith("step ") and "step checks only" not in reviewed.splitlines()[-1]
     listed = call.ok("drawing", action="requirements")
     assert listed.splitlines()[-1].startswith("step ")
+    before = len(fake.described)
     answered = call.ok("drawing", action="answer", id="req.coating", text="no aplica: la pieza no lleva recubrimiento")
     assert answered.splitlines()[-1].startswith("step ")
+    assert reviews(fake, before) == 1  # the review that guards the answer is the one the line reads
     assert "step " not in call.ok("drawing", action="list").splitlines()[-1]  # a plain look at the sheet reviews nothing
+
+
+def test_the_step_line_builds_from_the_state_a_step_returns_the_facts_and_its_own_findings(settings: Settings) -> None:
+    choose_steps(settings)
+    with_intent(settings)
+    call, fake = shaft_session(settings)
+    fake.facts = {**fake.facts, "turned": 1}
+    call.ok("drawing", action="create")
+    fake.step_rows = (finding("view_adds_nothing", "La vista derecha no lleva cota"),)  # what the step's own rules found
+    before = len(fake.described)
+    line = call.ok("drawing", action="add", items=[{"type": "note", "text": "Sin tratamiento"}]).splitlines()[-1]
+    assert line.startswith("step 2/8 views: 1 open (views.each_view_shows_its_own (view_adds_nothing))"), line
+    assert len(fake.described) == before
+    fake.step_rows = (finding("view_adds_nothing", "La vista derecha no lleva cota", blocking=False),)  # a note, not a block
+    quiet = call.ok("drawing", action="add", items=[{"type": "note", "text": "Otra"}]).splitlines()[-1]
+    assert "view_adds_nothing" not in quiet and "views.each_view_shows_its_own" not in quiet
+
+
+def test_a_finding_that_does_not_block_is_not_an_open_rule_of_the_line(settings: Settings) -> None:
+    choose_steps(settings)
+    with_intent(settings)
+    call, fake = shaft_session(settings)
+    call.ok("drawing", action="create")
+    fake.findings = (finding("cylinder_no_axis", "Cilindro sin eje", blocking=False),)
+    text = call.ok("drawing", action="plan", step=2)
+    assert "[ok] views.centre_lines" in text and "cylinder_no_axis" not in text
+    fake.findings = (finding("cylinder_no_axis", "Cilindro sin eje"),)
+    assert "[OPEN] views.centre_lines" in call.ok("drawing", action="plan", step=2)
+
+
+def test_the_step_line_is_never_cut_by_a_long_reply(settings: Settings) -> None:
+    choose_steps(settings)
+    with_intent(settings)
+    call, _ = shaft_session(settings)
+    call.ok("drawing", action="create")
+    long = [{"type": "note", "id": f"n{i}", "text": f"nota {i} " + "x" * 60} for i in range(45)]
+    text = call.ok("drawing", action="add", items=long)
+    assert "chars cut" in text  # the body gave way...
+    assert text.splitlines()[-1].startswith("step ") and 'drawing(action="plan")' in text.splitlines()[-1]  # ...the line did not
+
+
+def test_a_step_line_that_cannot_be_built_leaves_the_reply_and_is_logged(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    choose_steps(settings)
+    with_intent(settings)
+    call, _ = shaft_session(settings)
+    call.ok("drawing", action="create")
+
+    def broken(*_args: object, **_kwargs: object) -> list[object]:
+        raise KeyError("an exception nobody listed")
+
+    monkeypatch.setattr(drawing_gate, "sheet_requirements", broken)
+    with caplog.at_level(logging.WARNING):
+        text = call.ok("drawing", action="add", items=[{"type": "note", "text": "Sin tratamiento"}])
+    assert "drawing Drawing" in text and "step " not in text.splitlines()[-1]  # the add answered, without the line
+    assert any("step line" in record.getMessage() for record in caplog.records)
 
 
 def test_review_and_requirements_read_the_sheet_once_for_their_reply_and_their_line(settings: Settings) -> None:

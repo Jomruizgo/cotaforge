@@ -94,6 +94,8 @@ class DrawingFake(FakeAdapter):
         self.sheet_views: tuple[str, ...] = ()  # the views the described sheet says it has
         self.collides: set[str] = set()  # item ids whose edit the CAD refuses: the new place lies on another object
         self.measures: tuple[Any, ...] = ()  # what the dimensions of the sheet state (``DrawingMeasure``), read by a review
+        self.step_rows: tuple[Any, ...] = ()  # the findings of the step's own rules (``page_state``): what an add stands on
+        self.composes = 0  # how many times a call composed the sheet again (a describe or an annotate that does not give its state)
 
     def _need_sheet(self, sheet: str | None) -> str:
         from cotaforge.contract import AdapterError, ErrorCode, ErrorInfo
@@ -114,6 +116,7 @@ class DrawingFake(FakeAdapter):
         refused: tuple[Any, ...] = (),
         changed: tuple[str, ...] = (),
         rebuilt: dict[str, tuple[str, ...]] | None = None,
+        state: bool = False,
     ) -> Any:
         from cotaforge.contract import DrawingItemResult, DrawingResult
 
@@ -137,6 +140,7 @@ class DrawingFake(FakeAdapter):
             warnings=warnings,
             changed=changed,
             window="1 new" if changed else "",
+            page_state=self._info(name, True, self.step_rows) if state and name in self.drawings else None,
             **(rebuilt or {}),
         )
 
@@ -161,7 +165,7 @@ class DrawingFake(FakeAdapter):
             "request": None,
             "choice": None,
         }
-        return self._drawing_result(name, ("a note",) if request.scale == 7.0 else (), rebuilt=self.rebuilt)
+        return self._drawing_result(name, ("a note",) if request.scale == 7.0 else (), rebuilt=self.rebuilt, state=True)
 
     def annotate_drawing(self, request: Any) -> Any:
         from cotaforge.contract import (
@@ -220,7 +224,7 @@ class DrawingFake(FakeAdapter):
             if self.layout_fails is not None:
                 info = ErrorInfo(code=ErrorCode.invalid_request, message=self.layout_fails, recoverable=True)
                 raise AdapterError(info)
-            return self._drawing_result(name, rebuilt=self.layout_report or None)
+            return self._drawing_result(name, rebuilt=self.layout_report or None, state=True)
         if request.action == "record":  # what the order that composed the sheet decided; the pins of the hand stay
             pinned = sheet.get("composed", {}).get("pinned")
             sheet["composed"] = {**request.composed, **({"pinned": pinned} if pinned else {})}
@@ -248,11 +252,11 @@ class DrawingFake(FakeAdapter):
             sheet["composed"] = {**sheet.get("composed", {}), "pinned": sorted(pinned)}
             sheet["approved_by"] = ""
             sheet["edits"] += 1
-            return self._drawing_result(name, changed=tuple(p["id"] for p in request.items))
+            return self._drawing_result(name, changed=tuple(p["id"] for p in request.items), state=True)
         sheet["approved_by"] = ""  # any change of the sheet empties "Aprobó" and makes the reports old
         sheet["edits"] += 1
         if request.action == "update":
-            return self._drawing_result(name)
+            return self._drawing_result(name, state=True)
         if request.action == "remove_sheet":
             del self.drawings[name]
             return self._drawing_result(name, removed=True)
@@ -263,7 +267,7 @@ class DrawingFake(FakeAdapter):
                 message = f"no item {', '.join(missing)} on sheet {name}; it has: {', '.join(sorted(known))}"
                 raise AdapterError(ErrorInfo(code=ErrorCode.invalid_request, message=message, recoverable=True))
             sheet["items"] = [i for i in sheet["items"] if i["id"] not in request.ids]
-            return self._drawing_result(name, changed=tuple(request.ids))
+            return self._drawing_result(name, changed=tuple(request.ids), state=True)
         refused = []
         added = []
         for item in request.items:
@@ -279,11 +283,11 @@ class DrawingFake(FakeAdapter):
             sheet["next"] += 1
         if self.on_add is not None:
             self.on_add(self, [i for i in sheet["items"] if i["id"] in added])
-        return self._drawing_result(name, refused=tuple(refused), changed=tuple(added))
+        return self._drawing_result(name, refused=tuple(refused), changed=tuple(added), state=True)
 
-    def describe_drawing(self, request: Any) -> Any:
+    def _info(self, n: str, review: bool, findings: tuple[Any, ...] | None = None) -> Any:
+        """One sheet as a describe states it (``findings``: those it lists with a review, default every finding of the fake)."""
         from cotaforge.contract import (
-            DescribeDrawingResult,
             DrawingItemInfo,
             DrawingQuestion,
             DrawingReport,
@@ -291,70 +295,49 @@ class DrawingFake(FakeAdapter):
             DrawingSheetInfo,
         )
 
+        sheet = self.drawings[n]
+        answered = sheet.get("answers", {})
+        listed = self.findings if findings is None else findings
+        r = sheet["request"]
+        c = sheet["choice"]
+        return DrawingSheetInfo(
+            sheet=n,
+            template=sheet["template"],
+            language=sheet["language"],
+            page_mm=(297.0, 210.0),
+            scale=sheet["scale"],
+            fields={"title": "plate"},
+            findings=tuple(f.model_copy(update={"answer": answered.get(f.id or f.code)}) for f in listed) if review else (),
+            questions=tuple(DrawingQuestion(id=q.id, text=q.text, answer=answered.get(q.id)) for q in self.questions) if review else (),
+            answers=answered,
+            facts=dict(self.facts) if review else {},
+            measures=tuple(self.measures) if review else (),
+            weldment=self.weldment if review else None,
+            views=self.sheet_views,
+            approved_by=sheet.get("approved_by", ""),
+            edits=sheet["edits"],
+            reports={
+                who: DrawingReport(n=rep["n"], by=who, at=rep["at"], remarks=rep["remarks"], edit=rep["edits"])
+                for who, rep in sheet["reports"].items()
+            },
+            review_request=None if r is None else DrawingReviewRequest(at=r["at"]),
+            review_choice=c["who"] if c is not None else "",
+            composed=dict(sheet.get("composed", {})),
+            printed=("Fabrication notes", "19 de espesor"),
+            items=tuple(
+                DrawingItemInfo(id=i["id"], type=i["type"], status="ok", detail="drawn", spec=i) for i in sheet["items"]
+            ),
+        )
+
+    def describe_drawing(self, request: Any) -> Any:
+        from cotaforge.contract import DescribeDrawingResult
+
         self.described.append(request)
         names = ([self._need_sheet(request.sheet)] if request.sheet else list(self.drawings)) if self.drawings else []
         if request.sheet is None and self.drawings:
             self._need_sheet(None)
-
-        def answers(n: str) -> dict[str, Any]:
-            return self.drawings[n].get("answers", {})
-
-        def reports(n: str) -> dict[str, Any]:
-            sheet = self.drawings[n]
-            return {
-                who: DrawingReport(n=r["n"], by=who, at=r["at"], remarks=r["remarks"], edit=r["edits"])
-                for who, r in sheet["reports"].items()
-            }
-
-        def asked(n: str) -> Any:
-            sheet = self.drawings[n]
-            r = sheet["request"]
-            return None if r is None else DrawingReviewRequest(at=r["at"])
-
-        def chosen(n: str) -> str:
-            sheet = self.drawings[n]
-            c = sheet["choice"]
-            return c["who"] if c is not None else ""
-
-        return DescribeDrawingResult(
-            sheets=tuple(
-                DrawingSheetInfo(
-                    sheet=n,
-                    template=self.drawings[n]["template"],
-                    language=self.drawings[n]["language"],
-                    page_mm=(297.0, 210.0),
-                    scale=self.drawings[n]["scale"],
-                    fields={"title": "plate"},
-                    findings=tuple(
-                        f.model_copy(update={"answer": answers(n).get(f.id or f.code)}) for f in self.findings
-                    )
-                    if request.review
-                    else (),
-                    questions=tuple(
-                        DrawingQuestion(id=q.id, text=q.text, answer=answers(n).get(q.id)) for q in self.questions
-                    )
-                    if request.review
-                    else (),
-                    answers=answers(n),
-                    facts=dict(self.facts) if request.review else {},
-                    measures=tuple(self.measures) if request.review else (),
-                    weldment=self.weldment if request.review else None,
-                    views=self.sheet_views,
-                    approved_by=self.drawings[n].get("approved_by", ""),
-                    edits=self.drawings[n]["edits"],
-                    reports=reports(n),
-                    review_request=asked(n),
-                    review_choice=chosen(n),
-                    composed=dict(self.drawings[n].get("composed", {})),
-                    printed=("Fabrication notes", "19 de espesor"),
-                    items=tuple(
-                        DrawingItemInfo(id=i["id"], type=i["type"], status="ok", detail="drawn", spec=i)
-                        for i in self.drawings[n]["items"]
-                    ),
-                )
-                for n in names
-            )
-        )
+        self.composes += len(names)  # a describe composes the sheet, as the CAD's does
+        return DescribeDrawingResult(sheets=tuple(self._info(n, bool(request.review)) for n in names))
 
     def capture_drawing(self, request: Any) -> Any:
         from cotaforge.contract import CaptureDrawingResult, SheetCrop

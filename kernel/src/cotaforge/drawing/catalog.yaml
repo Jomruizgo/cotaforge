@@ -51,6 +51,15 @@ rules:
     sources: [prompt, guide]
     checks: []
     weight: debt
+  - id: drawing.destructive_needs_order
+    step: purpose
+    text: >-
+      A sheet that exists is redone with create, which keeps what is on it. Throwing it away (create with fresh=true)
+      or removing the whole sheet (remove_sheet) happens only when the engineer orders it.
+    origin: owner
+    sources: [owner]
+    gate: "the tool refuses both calls without the engineer's order (by, reason: his words), which Claude Code asks him to confirm"
+    weight: gate
   - id: drawing.read_as_shop
     step: review
     text: >-
@@ -222,7 +231,8 @@ rules:
     step: references
     text: >-
       Positions are counted from the functional references the intent file declares (or a declared symmetry); with
-      none it is asked, never from the corner of the part's box.
+      none it is asked, never from the corner of the part's box. create takes symmetry=true only if the intent file
+      declares the part symmetric: the shape alone never says so.
     standard: ISO 129-1
     origin: owner
     sources: [prompt, guide, checks, memory_base]
@@ -279,8 +289,8 @@ rules:
     text: >-
       Each dimension says what is critical: from a datum, that distance to the datum; in a chain, each link; between
       two features, the relation between them. It holds for every dimension (lengths, steps, slots, shoulders, faces,
-      angles, hole positions), by what the part couples or locates there, not by habit. Where the intent file does not
-      say which relation is critical and from what, it is asked.
+      angles, hole positions), by what the part couples or locates there, not by habit; the sheet says which scheme it
+      follows (a note). Where the intent file does not say which relation is critical and from what, it is asked.
     origin: owner
     sources: [prompt, owner]
     checks: []
@@ -462,7 +472,8 @@ rules:
     text: >-
       Equal holes share one callout; a callout says what the model declares, never contradicts it, and is not
       crowded against another. The fit or thread is written out in it, so a sheet printed in black and white loses
-      nothing of what the isometric shows in colour.
+      nothing of what the isometric shows in colour. Colour and fit belong to the model: the callout is made with
+      hole_dim and never changes them.
     origin: harness
     sources: [guide, prompt, checks]
     checks: [callout_contradicts, callouts_crowded, hole_fit_differs]
@@ -637,7 +648,8 @@ rules:
     applies: {sheet_types: [welded], features: [weld_joint]}
     text: >-
       One weld symbol per joint or group of equal joints, with size, sides and extent, on its line, the standard
-      named; the ISO 5817 quality level, not ISO 13920, as the weld class.
+      named; the ISO 5817 quality level, not ISO 13920, as the weld class. A joint the CAD cannot draw a symbol for is
+      written in a note.
     standard: ISO 2553, ISO 5817
     origin: standard
     requirement: req.welds

@@ -109,7 +109,7 @@ def test_a_create_says_which_settings_it_did_not_get_so_a_rebuild_can_keep_the_s
     call.ok("drawing", action="create", template="A3", scale="1:2")
     request = adapter.created[-1]
     assert request.fresh is False and request.unset == ("angle", "language", "body")
-    call.ok("drawing", action="create", fresh=True)
+    call.ok("drawing", action="create", fresh=True, by="Ana", reason=call.says("rehazla desde cero"))
     assert adapter.created[-1].fresh is True
 
 
@@ -125,7 +125,7 @@ def test_a_rebuild_reply_says_what_it_kept_what_no_longer_resolves_and_what_a_fr
     assert "rebuilt: kept items o1, hd (placed again on the new views); 2 answer(s) to the review" in text
     assert "no longer resolve (fix or remove them): dz (dim): the sheet has no 'right' view" in text
     adapter.rebuilt = {"discarded": ("items hd", "the chosen reviewer (fabricante)")}
-    text = call.ok("drawing", action="create", fresh=True)
+    text = call.ok("drawing", action="create", fresh=True, by="Ana", reason=call.says("tírala y empieza de nuevo"))
     assert "fresh: threw away items hd; the chosen reviewer (fabricante)" in text and "rebuilt:" not in text
 
 
@@ -198,8 +198,28 @@ def test_remove_takes_items_off_by_id_and_never_the_sheet(sheet: tuple[Caller, D
 def test_remove_sheet_is_the_one_way_to_take_a_sheet_away(sheet: tuple[Caller, DrawingFake]) -> None:
     call, adapter = sheet
     call.ok("drawing", action="create")
-    gone = call.ok("drawing", action="remove_sheet")
+    gone = call.ok("drawing", action="remove_sheet", by="Ana", reason=call.says("quita la hoja entera"))
     assert "sheet removed" in gone and "none" in gone and adapter.annotated[-1].action == "remove_sheet"
+
+
+def test_throwing_a_sheet_away_or_removing_it_needs_the_engineers_order(sheet: tuple[Caller, DrawingFake]) -> None:
+    """``fresh=true`` and ``remove_sheet`` destroy what is on the sheet: the tool refuses both unless the engineer
+    ordered them (by, reason: his words, confirmed in Claude Code's dialog); the agent's own word is not an order."""
+    call, adapter = sheet
+    call.ok("drawing", action="create")
+    made, kept = len(adapter.created), len(adapter.annotated)
+    for arguments in ({"action": "create", "fresh": True}, {"action": "remove_sheet"}):
+        assert "is the engineer's order" in call.err("drawing", **arguments)  # no by, no reason: not even put to him
+    assert call.engineer.dialogs == []  # a call that carries no order is never put to him
+    for arguments in ({"action": "create", "fresh": True}, {"action": "remove_sheet"}):
+        call.err("drawing", **arguments, by="Ana", reason="lo decido yo")  # typed by the agent, never said: rejected
+    assert len(call.engineer.dialogs) == 2
+    assert len(adapter.created) == made and len(adapter.annotated) == kept  # nothing reached the CAD
+    call.ok("drawing", action="create", fresh=True, by="Ana", reason=call.says("hazla de nuevo"))
+    assert "throwing the sheet" in call.engineer.dialogs[-1] or "tirar la hoja" in call.engineer.dialogs[-1]
+    assert adapter.created[-1].fresh is True
+    call.ok("drawing", action="remove_sheet", by="Ana", reason=call.says("ya no hace falta"))
+    assert adapter.annotated[-1].action == "remove_sheet" and not adapter.drawings
 
 
 def test_update_lays_the_sheet_out_again(sheet: tuple[Caller, DrawingFake]) -> None:
@@ -222,7 +242,8 @@ def test_list_shows_every_item_with_what_was_stored(sheet: tuple[Caller, Drawing
 def test_every_action_needs_a_sheet_to_work_on(sheet: tuple[Caller, DrawingFake]) -> None:
     call, _ = sheet
     for action in ("update", "remove_sheet"):
-        assert "create it first" in call.err("drawing", action=action)
+        order = {"by": "Ana", "reason": call.says("quítala")} if action == "remove_sheet" else {}
+        assert "create it first" in call.err("drawing", action=action, **order)
     assert "create it first" in call.err("drawing", action="add", items=[{"type": "overall"}])
     assert "no sheets" in call.ok("drawing", action="list")
 

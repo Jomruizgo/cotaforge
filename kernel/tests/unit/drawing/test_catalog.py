@@ -83,3 +83,33 @@ def test_the_weight_agrees_with_what_holds_the_export() -> None:
 def test_the_debt_only_shrinks() -> None:
     debt = catalog.load().debt()
     assert len(debt) <= DEBT_CEILING, f"{len(debt)} rules with no check: {[r.id for r in debt]}"
+
+
+def test_a_rule_a_tool_gate_enforces_names_its_gate_and_is_not_debt() -> None:
+    rule = next(r for r in catalog.load().rules if r.id == "drawing.destructive_needs_order")
+    assert rule.weight == "gate" and rule.gate and not rule.checks
+    assert rule not in catalog.load().debt()  # a gate refuses it: nobody has to read the sheet for it
+
+
+def test_gate_and_check_do_not_mix() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    base = {"id": "x.y", "step": "purpose", "text": "t", "origin": "owner"}
+    with pytest.raises(ValidationError):
+        catalog.Rule(**base, weight="gate")  # a gate rule names its gate
+    with pytest.raises(ValidationError):
+        catalog.Rule(**base, weight="blocks", checks=("a",), gate="g")  # a rule has a check or a gate, not both
+    with pytest.raises(ValidationError):
+        catalog.Rule(**base, weight="debt", gate="g")
+    assert catalog.Rule(**base, weight="gate", gate="the tool refuses it").gate
+
+
+def test_what_the_old_drafter_prompt_said_of_the_sheet_is_in_the_catalog() -> None:
+    text = {r.id: " ".join(r.text.split()) for r in catalog.load().rules}
+    assert "symmetry=true only if the intent file declares" in text["references.functional_datums"]
+    assert "the sheet says which scheme it follows" in text["dimensions.scheme_from_function"]
+    assert "Colour and fit belong to the model" in text["callouts.clear"] and "hole_dim" in text["callouts.clear"]
+    assert "cannot draw a symbol for is written in a note" in text["welded.weld_symbols"]
+    destructive = text["drawing.destructive_needs_order"]
+    assert "fresh=true" in destructive and "remove_sheet" in destructive
