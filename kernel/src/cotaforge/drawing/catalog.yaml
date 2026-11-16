@@ -167,6 +167,37 @@ rules:
     checks: [centre_mark_missing, cylinder_no_axis, no_view_lines, centre_line_crosses, centre_line_long, centre_line_gap,
              flat_face_unmarked]
     weight: blocks
+  - id: turned.centre_line_every_segment
+    step: views
+    applies: {features: [revolution_body]}
+    text: >-
+      Every coaxial segment of a turned part carries the centre line, continuous along the whole axis; a gap on a
+      bearing seat or any other segment is a defect.
+    standard: ISO 128
+    origin: owner
+    sources: [owner, checks]
+    checks: [cylinder_no_axis, centre_line_gap]
+    weight: blocks
+  - id: keyway.shown_face_on
+    step: views
+    applies: {features: [keyway]}
+    text: >-
+      A keyway is best dimensioned in the view that looks at it face-on, when that view has nothing more important to
+      show. If it must appear in another view, it is shown there in a partial (broken-out) section.
+    origin: owner
+    sources: [owner]
+    checks: []
+    weight: debt
+  - id: thread.end_line_native
+    step: views
+    applies: {features: [thread]}
+    text: >-
+      The thread-end line is FreeCAD's own thread representation, never a line longer than the thread diameter.
+    standard: ISO 6410
+    origin: owner
+    sources: [owner]
+    checks: []
+    weight: debt
   - id: views.scale_per_view
     step: views
     text: >-
@@ -315,6 +346,26 @@ rules:
     sources: [prompt, checks, memory_base]
     checks: [duplicate_dimension, over_dimensioned, dimension_twice]
     weight: blocks
+  - id: dimensions.no_redundant
+    step: dimensions
+    text: >-
+      No dimension is the sum or the difference of others of the same view and axis (the overall length is not given
+      beside the segments that add up to it); the shop gets each measure once, by one chain of independent dimensions.
+    standard: ISO 129-1
+    origin: owner
+    sources: [owner, checks]
+    checks: [dimension_redundant]
+    weight: warns
+  - id: dimensions.never_on_hidden
+    step: dimensions
+    text: >-
+      A hidden line is never dimensioned: no dimension has a hidden edge, or the end of one, as a reference. The
+      feature is dimensioned where it is seen, or in a section.
+    standard: ISO 129-1
+    origin: owner
+    sources: [owner, checks]
+    checks: [dimension_on_hidden]
+    weight: warns
   - id: dimensions.repeated_in_views
     step: dimensions
     text: >-
@@ -407,6 +458,28 @@ rules:
     origin: standard
     requirement: req.keyway
     sources: [requirements, owner]
+    checks: []
+    weight: debt
+  - id: turned.diameter_where_it_reads
+    step: dimensions
+    applies: {features: [revolution_body]}
+    text: >-
+      A diameter dimension sits where it reads best on its own segment, not pushed to an edge of the segment without
+      a reason.
+    origin: owner
+    sources: [owner]
+    checks: []
+    weight: debt
+  - id: keyway.closed_depth
+    step: dimensions
+    applies: {features: [keyway]}
+    text: >-
+      A closed keyway (one that does not run out at a shaft end) gets its depth from the shaft surface, measured with a
+      depth gauge. The value across the shaft (d - t) is only for a keyway that runs out at a shaft end, where a caliper
+      reaches it.
+    standard: DIN 6885-1
+    origin: owner
+    sources: [owner]
     checks: []
     weight: debt
   - id: thread.designation
