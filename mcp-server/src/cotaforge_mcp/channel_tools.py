@@ -40,6 +40,8 @@ from typing import Any
 from cotaforge import paths
 from cotaforge.language import say
 
+from cotaforge_mcp import engineer_words
+from cotaforge_mcp.config import Settings
 from cotaforge_mcp.design_memory import workspace_language
 from cotaforge_mcp.drawing_window import (
     AGENT_RE,
@@ -403,11 +405,11 @@ def _ask(workspace: Path, args: ChannelArgs, name: str) -> Reply:
     return ok(
         f"question {event['q']} recorded (n={event['n']}). Keep drawing what does not depend on it, then "
         f'channel(action="wait", role="drafter", name="{name}", since={event["n"]}) for the reply; if the engineer '
-        f'answers in this session first, record his words with channel(action="reply", by="engineer", q={event["q"]}).'
+        f'answers in this session first, record his words, as he typed them (they are checked), with channel(action="reply", by="engineer", q={event["q"]}).'
     )
 
 
-def _reply(workspace: Path, args: ChannelArgs, name: str) -> Reply:
+def _reply(workspace: Path, args: ChannelArgs, name: str, settings: Settings) -> Reply:
     role = _role(args, ("drafter", "designer"))
     text = _text(args)
     if args.q is None or args.by is None:
@@ -428,6 +430,8 @@ def _reply(workspace: Path, args: ChannelArgs, name: str) -> Reply:
             code="not_allowed",
             field_name="by",
         )
+    if args.by == "engineer":
+        text = engineer_words.require(settings, text, f"the engineer's reply to question {args.q}", "text")
     fields = {"kind": "reply", "via": role, "by": args.by, "q": args.q, "text": text}
     event = _append(workspace, name, fields, _about(args, name))
     return ok(f"reply to {event['q']} recorded (n={event['n']}); the question is answered, not decided.")
@@ -444,7 +448,7 @@ def _dispute(workspace: Path, args: ChannelArgs, name: str) -> Reply:
     return ok(f"objection to {event['q']} recorded (n={event['n']}); the question is held until the engineer decides.")
 
 
-def _decide(workspace: Path, args: ChannelArgs, name: str) -> Reply:
+def _decide(workspace: Path, args: ChannelArgs, name: str, settings: Settings) -> Reply:
     """The engineer's decision, written by the session he said it in. If the question was disputed the objection stays
     next to it, so the record shows that he was told and chose."""
     role = _role(args, ("drafter", "designer"))
@@ -457,7 +461,7 @@ def _decide(workspace: Path, args: ChannelArgs, name: str) -> Reply:
         "via": role,
         "by": "engineer",
         "q": args.q,
-        "text": _text(args),
+        "text": engineer_words.require(settings, _text(args), f"the engineer's decision on question {args.q}", "text"),
         "objection": (args.objection or "").strip(),
     }
     event = _append(workspace, name, fields, _about(args, name))
@@ -663,8 +667,11 @@ def run(
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     host: Host | None = None,
+    settings: Settings | None = None,
 ) -> Reply:
-    """Run one ``channel`` call on the design folder ``workspace``."""
+    """Run one ``channel`` call on the design folder ``workspace``. ``settings``: the server's (the session whose words
+    the engineer's replies and decisions are checked against); without them nothing is accepted in his name."""
+    settings = settings or Settings(workspace=workspace)
     args = args.model_copy(
         update={
             "role": paths.alias_token(args.role) if args.role else args.role,
@@ -685,11 +692,11 @@ def run(
     if args.action == "ask":
         return _ask(workspace, args, name)
     if args.action == "reply":
-        return _reply(workspace, args, name)
+        return _reply(workspace, args, name, settings)
     if args.action == "dispute":
         return _dispute(workspace, args, name)
     if args.action == "decide":
-        return _decide(workspace, args, name)
+        return _decide(workspace, args, name, settings)
     if args.action == "done":
         return _done(workspace, args, name)
     if args.action == "open_drawing":

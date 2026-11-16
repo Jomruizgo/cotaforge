@@ -97,5 +97,6 @@ def count_open(session: "Session") -> int:
 REFUSAL = (
     "{entry} was MEASURED on the model and still fires: {lines}. 'does not apply' (or any answer) is not accepted on "
     "the agent's word. Fix it in the model (the harness measures again and the alert is gone) or, if the ENGINEER "
-    "orders it kept, answer again with by=<his name> and text='does not apply: <his words, quoted>'"
+    "orders it kept, answer again with by=<his name> and text='does not apply: <his words, exactly as he typed them in "
+    "this session: they are checked>'"
 )

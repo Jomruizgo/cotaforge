@@ -1253,12 +1253,12 @@ def line(req: Requirement, language: str = "es") -> list[str]:
     if row.model_only:
         out.append(
             "      no answer on the sheet closes this row: fix the model (the harness measures again), or, if the ENGINEER "
-            "orders it kept, memory(action=answer, id=<the entry above>, by=<his name>, text='does not apply: <his words>')"
+            "orders it kept, memory(action=answer, id=<the entry above>, by=<his name>, text='does not apply: <his words, as he typed them>')"
         )
     elif req.answer is not None and req.refused_answer:
         out.append(
             "      the answer 'does not apply' is NOT accepted: the harness measured it (or the intent file declares it); "
-            "only the engineer's order closes it (by=<him>, reason=<his words>)"
+            "only the engineer's order closes it (by=<him>, reason=<his words, as he typed them>)"
         )
     out.append(f"      ask, one at a time: «{question_of(req, language)}»")
     return out

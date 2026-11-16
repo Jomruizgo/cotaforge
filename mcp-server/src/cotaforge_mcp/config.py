@@ -22,6 +22,8 @@ ENV_VISIBLE = "COTAFORGE_VISIBLE"
 ENV_BASE_MEMORY = "COTAFORGE_BASE_MEMORY"
 ENV_IMPORT_STALL_S = "COTAFORGE_IMPORT_STALL_S"
 ENV_IMPORT_MAX_S = "COTAFORGE_IMPORT_MAX_S"
+ENV_SESSION = "CLAUDE_CODE_SESSION_ID"
+ENV_ENTRYPOINT = "CLAUDE_CODE_ENTRYPOINT"
 
 ADAPTERS = ("freecad", "fake")
 
@@ -62,6 +64,12 @@ class Settings:
     """``COTAFORGE_IMPORT_MAX_S``: seconds an import may take in all (the adapter's default when unset)."""
     cad: str | None = None
     """The key of the running adapter (``Adapter.cad_key``), set by the session: not an environment setting."""
+    session_id: str | None = None
+    """``CLAUDE_CODE_SESSION_ID``: the Claude Code session this server serves (set by Claude Code, not by the user).
+    The engineer's words are checked against what he typed in it (``engineer_words``)."""
+    entrypoint: str | None = None
+    """``CLAUDE_CODE_ENTRYPOINT``: how that session was started (``cli``: a person at the terminal). It decides which
+    turns of the session are a person's (``engineer_words.person_turns``)."""
     library: Path | None = None
     """``COTAFORGE_LIBRARY``: the technical library folder (e.g. a team network folder), not ``<home>/library``."""
 
@@ -86,6 +94,8 @@ class Settings:
             visible=visible,
             base_memory=env.get(ENV_BASE_MEMORY, "1").strip().lower() not in ("0", "false", "no", "off"),
             home=Path(env[ENV_HOME]).expanduser() if env.get(ENV_HOME, "").strip() else None,
+            session_id=env.get(ENV_SESSION, "").strip() or None,
+            entrypoint=env.get(ENV_ENTRYPOINT, "").strip() or None,
             library=Path(env[ENV_LIBRARY]).expanduser() if env.get(ENV_LIBRARY, "").strip() else None,
         )
 

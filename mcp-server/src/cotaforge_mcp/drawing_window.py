@@ -153,6 +153,18 @@ def reopening_prompt(name: str) -> str:
     )
 
 
+def is_harness_prompt(text: str) -> bool:
+    """Whether ``text`` is the first message the harness gives a drawing session (``opening_prompt`` or
+    ``reopening_prompt`` of some drawing): the person did not write it, so it is not kept as his words."""
+    said = " ".join(text.split())
+    mark = "COTAFORGEDRAWINGNAME"
+    for make in (opening_prompt, reopening_prompt):
+        first, *rest = re.escape(make(mark)).split(mark)
+        if re.fullmatch(first + "(?P<name>.+?)" + "(?P=name)".join(rest), said):
+            return True
+    return False
+
+
 def claude_line(host: Host, agent: str, name: str, session_id: str, resume: str | None = None) -> list[str]:
     """The ``claude`` command (behind a ``.cmd`` shim it goes through ``cmd.exe``; the container takes both).
     ``resume``: the id of the conversation to continue (``--resume``) instead of a new one."""

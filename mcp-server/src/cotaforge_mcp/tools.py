@@ -221,7 +221,7 @@ def _run(
     if isinstance(args, MemoryArgs):
         return memory_tools.run(session, args)
     if isinstance(args, ChannelArgs):
-        return channel_tools.run(session.settings.workspace, args, cancelled)
+        return channel_tools.run(session.settings.workspace, args, cancelled, settings=session.settings)
     if isinstance(args, CatalogArgs):
         return parts_tools.run(session.settings, args)
     if isinstance(args, NativeArgs):

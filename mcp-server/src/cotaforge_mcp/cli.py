@@ -4,7 +4,8 @@ Also ``cotaforge plugin register|unregister|status`` (plugin_registry.py), ``cot
 the Windows installer's shortcuts, ``cotaforge new`` and ``cotaforge open`` (``nuevo`` and ``abrir`` still work) (launcher.py).
 
 What a plugin cannot carry is written here, with the paths of this machine: the ``.mcp.json`` that starts the ``cad``
-server with the interpreter that has the product installed, the permissions and the ``run_native`` safety hook in
+server with the interpreter that has the product installed, the permissions, the ``run_native`` safety hook and the
+hook that keeps what the engineer types (``engineer_words``: his orders are checked against it) in
 ``.claude/settings.local.json``, the conduct file (``CLAUDE.md``), an empty ``memory/`` and the language of the project
 (``language`` of ``brief.yaml``).
 
@@ -35,7 +36,7 @@ from cotaforge.language import DEFAULT_LANGUAGE, LANGUAGES, normalize, say
 from cotaforge.native import hook as kernel_hook
 
 import cotaforge_mcp
-from cotaforge_mcp import conduct, design_memory, layout, plugin_registry, register
+from cotaforge_mcp import conduct, design_memory, engineer_words, layout, plugin_registry, register
 from cotaforge_mcp.config import ADAPTERS, ENV_ADAPTER, ENV_FREECAD_ROOT, ENV_VISIBLE, ENV_WORKSPACE
 
 SERVER_NAME = "cad"
@@ -43,6 +44,8 @@ SERVER_MODULE = "cotaforge_mcp"
 HOOK_MODULE = kernel_hook.__name__
 RUN_NATIVE_MATCHER = f"mcp__{SERVER_NAME}__run_native"
 HOOK_TIMEOUT_SECONDS = 10
+WORDS_HOOK_MODULE = engineer_words.__name__
+WORDS_HOOK_EVENT = engineer_words.HOOK_EVENT
 
 TEMPLATE_PARTS = ("data", "design-space")
 CLAUDE_MD = "CLAUDE.md"
@@ -137,9 +140,11 @@ def hook_command(
     windows: bool | None = None,
     short_path: Callable[[str], str | None] | None = None,
     save_methods: Sequence[str] = (),
+    module: str = HOOK_MODULE,
 ) -> str:
     """The shell command of the ``run_native`` hook. ``save_methods`` are the calls that save a document in the CAD
-    (``Adapter.save_methods``): the hook then knows them as well as FreeCAD's.
+    (``Adapter.save_methods``): the hook then knows them as well as FreeCAD's. ``module``: another hook of the product
+    (the one that keeps the engineer's words), run by the same interpreter.
 
     On Windows an interpreter path with a space is replaced by its short form when that exists and has no space, so
     the command is one plain word even if Claude Code runs the hook without Git Bash; otherwise it is quoted for Git
@@ -152,9 +157,9 @@ def hook_command(
         if short and " " not in short:
             word = short.replace("\\", "/")
             if SHORT_PATH_WORD.fullmatch(word):  # "~" is only special at the start of a word: no quotes needed
-                return f"{word} -m {HOOK_MODULE}{flag}"
+                return f"{word} -m {module}{flag}"
             interpreter = short
-    return f"{shell_path(interpreter, windows=windows)} -m {HOOK_MODULE}{flag}"
+    return f"{shell_path(interpreter, windows=windows)} -m {module}{flag}"
 
 
 # --- JSON helpers ---------------------------------------------------------------------------------------------------
@@ -398,6 +403,29 @@ def upsert_hook(settings: dict[str, Any], command: str) -> None:
     entries.append({"matcher": RUN_NATIVE_MATCHER, "hooks": [handler]})
 
 
+def upsert_words_hook(settings: dict[str, Any], command: str) -> None:
+    """Put the hook that keeps what the engineer types (``engineer_words``) in the settings, replacing a previous one
+    of ours and leaving every other hook alone. Without it no order of his is accepted."""
+    hooks = settings.setdefault("hooks", {})
+    entries = hooks.setdefault(WORDS_HOOK_EVENT, []) if isinstance(hooks, dict) else None
+    if not isinstance(entries, list):
+        msg = _say(
+            f"{SETTINGS.as_posix()}: 'hooks.{WORDS_HOOK_EVENT}' no es una lista; corrígelo o bórralo",
+            f"{SETTINGS.as_posix()}: 'hooks.{WORDS_HOOK_EVENT}' is not a list; fix or delete it",
+        )
+        raise InitError(msg)
+    handler = {"type": "command", "command": command, "timeout": HOOK_TIMEOUT_SECONDS}
+    for entry in entries:
+        handlers = entry.get("hooks") if isinstance(entry, dict) else None
+        if not isinstance(handlers, list):
+            continue
+        for index, existing in enumerate(handlers):
+            if isinstance(existing, dict) and WORDS_HOOK_MODULE in str(existing.get("command", "")):
+                handlers[index] = {**existing, **handler}
+                return
+    entries.append({"hooks": [handler]})
+
+
 def inherited_claude_md(folder: Path, home: Path) -> list[str]:
     """Absolute paths of the ``CLAUDE.md`` files that exist above ``folder`` and in ``~/.claude``.
 
@@ -414,11 +442,20 @@ def inherited_claude_md(folder: Path, home: Path) -> list[str]:
 
 
 def build_settings(
-    existing: dict[str, Any], template: dict[str, Any], excludes: list[str], command: str
+    existing: dict[str, Any],
+    template: dict[str, Any],
+    excludes: list[str],
+    command: str,
+    words_command: str | None = None,
 ) -> dict[str, Any]:
+    """The settings of a design space. ``command``: the ``run_native`` hook. ``words_command``: the hook that keeps the
+    engineer's words; not given (a caller written before it existed), it is the same interpreter as ``command``."""
     settings = merge(existing, template)
     settings["claudeMdExcludes"] = merge(settings.get("claudeMdExcludes", []), excludes)
     upsert_hook(settings, command)
+    if words_command is None:
+        words_command = f"{command.split(f' -m {HOOK_MODULE}', 1)[0]} -m {WORDS_HOOK_MODULE}"
+    upsert_words_hook(settings, words_command)
     return settings
 
 
@@ -476,7 +513,11 @@ def init_space(
     template_settings = json.loads((template_root() / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
     excludes = inherited_claude_md(folder, home)
     settings_data = build_settings(
-        load_json_object(settings_path), template_settings, excludes, hook_command(interpreter)
+        load_json_object(settings_path),
+        template_settings,
+        excludes,
+        hook_command(interpreter),
+        hook_command(interpreter, module=WORDS_HOOK_MODULE),
     )
 
     folder.mkdir(parents=True, exist_ok=True)
@@ -494,8 +535,8 @@ def init_space(
         folder,
         settings_data,
         report.say(
-            f"hook de run_native, {len(excludes)} CLAUDE.md excluidos",
-            f"run_native hook, {len(excludes)} CLAUDE.md excluded",
+            f"hook de run_native, hook de las palabras del ingeniero, {len(excludes)} CLAUDE.md excluidos",
+            f"run_native hook, engineer's words hook, {len(excludes)} CLAUDE.md excluded",
         ),
     )
     if language is not None or new:  # an older project that stated none keeps the language it always had

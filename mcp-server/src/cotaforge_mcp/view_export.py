@@ -674,7 +674,7 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                 return ok(drawing_gate.review_choice(session, args.sheet, args.by))
             if action == "review_report":
                 return ok(
-                    drawing_gate.review_report(session, args.sheet, args.by, args.items), limit=REVIEW_REPLY_CHARS
+                    drawing_gate.review_report(session, args.sheet, args.by, args.items, args.reason), limit=REVIEW_REPLY_CHARS
                 )
             return ok(drawing_gate.approve(session, args.sheet, args.by, args.reason))
         session.need("capture_drawing", "drawing capture")

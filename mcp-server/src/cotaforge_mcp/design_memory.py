@@ -28,7 +28,7 @@ from cotaforge.memory import (
     triggered_at_milestone,
 )
 
-from cotaforge_mcp import measured_alerts, rules
+from cotaforge_mcp import engineer_words, measured_alerts, rules
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.reply import ToolError
 
@@ -611,6 +611,8 @@ def record_answer(session: "Session", entry_id: str, text: str, by: str | None =
         )
     if name:
         prefix = next(p for p in (*APPLIES_PREFIXES, *NOT_APPLIES_PREFIXES) if said.lower().startswith(p))
+        what = f"an answer ordered by the engineer (by={name}): the words after '{prefix}'"
+        engineer_words.require(session.settings, said[len(prefix) :], what, "text")
         answer["text"] = f"{said} [ordered by {name}]"
         answer["ordered_by"] = name
         answer["order"] = said[len(prefix) :].strip()
@@ -626,7 +628,7 @@ def _measured_pending(session: "Session", entry_id: str, lines: list[str]) -> st
     return (
         f"- {entry_id} — MEASURED on the model, still fires: {' | '.join(lines)} [{read}]; it closes only when the "
         "model is fixed (the harness measures again) or the ENGINEER orders it kept: memory(action=answer, id, "
-        "by=<his name>, text=\"does not apply: <his words, quoted>\")"
+        "by=<his name>, text=\"does not apply: <his words, exactly as he typed them: they are checked>\")"
     )
 
 

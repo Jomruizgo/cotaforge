@@ -577,7 +577,7 @@ Los valores antiguos en español `ingeniero_o_fabricante`, `fabricante`, `ingeni
 
 Las respuestas viven en la hoja, dentro del `.FCStd`, y sobreviven al guardar y reabrir. Léelas: un "does not apply" sin una razón real es una afirmación falsa hacia ti. **Una respuesta no se imprime en el plano.** Lo que el taller deba leer va en una `note`.
 
-**"Aprobado por" en el cuadro de rotulación es tuyo.** Solo tú lo llenas, con `drawing(action="approve", sheet="Plano", by="Ana", reason="Ana: apruébalo")`. El agente lo llama solo cuando tú lo ordenas, citando tus palabras. Cualquier cambio posterior en la hoja lo vacía otra vez. Aprobar no se salta la revisión.
+**"Aprobado por" en el cuadro de rotulación es tuyo.** Solo tú lo llenas, con `drawing(action="approve", sheet="Plano", by="Ana", reason="apruebo el plano")`. El agente lo llama solo cuando tú lo ordenas, citando tus palabras tal como las escribiste. El servidor las comprueba contra lo que tú escribiste en esa sesión de Claude Code: una orden que no escribiste se rechaza. Lo mismo vale para descartar algo que el arnés midió, cambiar quién revisa el plano, tu informe de revisión, volver a componer la hoja y aprobar una entrada de memoria. Una carpeta preparada con una versión anterior necesita prepararse otra vez (`cotaforge init <carpeta>` o el acceso directo de abrir) para que tus mensajes se registren. Cualquier cambio posterior en la hoja lo vacía otra vez. Aprobar no se salta la revisión.
 
 **No verificado en una sesión real de Claude Code:** que el temporizador en segundo plano despierte al agente y que el agente lance el `fabricator` por sí mismo. El reloj, las puertas y los informes están probados con el servidor real y FreeCAD.
 

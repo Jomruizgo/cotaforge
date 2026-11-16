@@ -577,7 +577,7 @@ The old Spanish values `ingeniero_o_fabricante`, `fabricante`, `ingeniero`, `pro
 
 Answers live in the sheet, inside the `.FCStd`, and survive save and reopen. Read them: a "does not apply" without a real reason is a false statement to you. **An answer is not printed on the drawing.** What the shop must read goes in a `note`.
 
-**"Approved by" in the title block is yours.** Only you fill it, with `drawing(action="approve", sheet="Plano", by="Ana", reason="Ana: approve it")`. The agent calls it only when you order it, quoting your words. Any later change to the sheet empties it again. Approving does not skip the review.
+**"Approved by" in the title block is yours.** Only you fill it, with `drawing(action="approve", sheet="Plano", by="Ana", reason="I approve the drawing")`. The agent calls it only when you order it, quoting your words as you typed them. The server checks them against what you typed in that Claude Code session: an order you did not type is refused. The same holds for dismissing something the harness measured, changing who reviews the drawing, your review report, composing the sheet again and approving a memory entry. A folder prepared with an earlier version must be prepared again (`cotaforge init <folder>` or the open shortcut) so that your messages are recorded. Any later change to the sheet empties it again. Approving does not skip the review.
 
 **Not verified in a real Claude Code session:** that the background timer wakes the agent and that the agent launches the `fabricator` by itself. The clock, the gates and the reports are tested with the real server and FreeCAD.
 
