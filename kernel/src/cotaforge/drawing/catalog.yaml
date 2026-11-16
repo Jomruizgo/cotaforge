@@ -340,7 +340,10 @@ rules:
     step: dimensions
     text: >-
       One dimension per feature and direction; no repeated or chained-closed dimension, and no dimension given
-      twice under different kinds.
+      twice under different kinds. A chain that closes on the overall size is this defect (8 + 44 + 8 on a 60 plate:
+      the locators and the spacing of the holes count like any other length), reported once and holding the export
+      (dimensions.no_redundant does not list it again). The fix keeps the locator from the reference edge with the
+      spacing and drops the dimension at the other end.
     standard: ISO 129-1
     origin: standard
     sources: [prompt, checks, memory_base]
@@ -351,6 +354,8 @@ rules:
     text: >-
       No dimension is the sum or the difference of others of the same view and axis (the overall length is not given
       beside the segments that add up to it); the shop gets each measure once, by one chain of independent dimensions.
+      A loop that closes on the overall size is already reported, and held, by dimensions.once; this row lists the
+      other loops (a difference of two others, a baseline beside a chain) and only warns.
     standard: ISO 129-1
     origin: owner
     sources: [owner, checks]
@@ -360,7 +365,9 @@ rules:
     step: dimensions
     text: >-
       A hidden line is never dimensioned: no dimension has a hidden edge, or the end of one, as a reference. The
-      feature is dimensioned where it is seen, or in a section.
+      feature is dimensioned where it is seen face-on: in a standard view that sees it so, in an aux_view square to its
+      flat face, or in a full section (there is no partial section tool yet). The dimension is moved there with
+      drawing update, not removed.
     standard: ISO 129-1
     origin: owner
     sources: [owner, checks]

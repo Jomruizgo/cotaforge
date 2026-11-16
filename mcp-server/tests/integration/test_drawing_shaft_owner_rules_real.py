@@ -4,8 +4,9 @@
 
 The bench shaft (thread end, two seats, body, Ø22 end with a closed keyway) is drawn the way an agent draws it. The keyway floor is
 seen from the top; from the front it is behind the shaft, so its lines are hidden ones there. A length measured between the ends of
-those lines is flagged. The 125 that the overall 168 and the 43 of the thread already give is flagged. Both are listed, not holding the
-export, because the sheet the harness composes by default breaks them. Without the items that break them the sheet draws
+those lines is flagged. The 125 that the overall 168 and the 43 of the thread already give is flagged ONCE, as ``over_dimensioned``
+(a chain that closes on the overall: it holds the export; ``dimension_redundant`` does not list it again). The hidden-line finding and the
+loops that do not close on the overall are listed, not holding the export, because the sheet the harness composes by default breaks them. Without the items that break them the sheet draws
 the same shaft with neither.
 """
 
@@ -38,6 +39,29 @@ async def test_a_length_between_the_ends_of_hidden_lines_is_flagged(workspace: P
         review = await cad.ok("drawing", action="review")
         print("REVIEW", review)
         assert "dimension_on_hidden" in review and "kw_len" in review
+        assert 'action="remove"' not in review and 'drawing(action="add_view", views=["top"])' in review
+        assert 'drawing(action="update", items=[{"id":"kw_len","view":"top"}])' in review
+
+
+async def test_following_the_message_moves_the_dimension_to_the_view_that_sees_the_keyway_face_on(workspace: Path) -> None:
+    """The way out the finding names, call by call: ``add_view`` of the top view (the keyway floor faces up) is accepted; ``update`` of the
+    dimension to it is NOT refused by any removal gate (nothing is removed, no reason= or by= asked). On the default shaft sheet the harness's
+    own keyway section puts its cutting line across the length of the keyway in the top view, so the edit is refused by the placement guard
+    ("would put kw_len on rq_keyway_sec"), and the error names what to change (side, offset_mm). Placing it clear of that line is NOT
+    verified on real FreeCAD: no side or offset_mm up to 100 mm cleared it on the bench (see the PR)."""
+    async with running_server(workspace, visible=True) as (cad, _):
+        cad.allow("collision", "dimension_gap", "dimension_stack_order", "dimension_crossing")  # the defects are built on purpose
+        await start(cad, workspace)
+        await cad.ok("drawing", action="add", items=[{"type": "view_lines"}, HIDDEN])
+        assert "dimension_on_hidden" in await cad.ok("drawing", action="review")
+        print("ADD_VIEW", await cad.ok("drawing", action="add_view", views=["top"]))
+        reply = await cad("drawing", action="update", items=[{"id": "kw_len", "view": "top"}])
+        print("UPDATE", reply.is_error, reply.text)
+        if reply.is_error:  # refused only by the placement guard, which says what to change: never by a gate the message hides
+            assert "would put kw_len on" in reply.text and "side" in reply.text and "offset_mm" in reply.text, reply.text
+            assert "reason" not in reply.text and "measured_not_dismissable" not in reply.text
+        else:
+            assert "dimension_on_hidden:kw_len" not in await cad.ok("drawing", action="review")
 
 
 async def test_the_125_beside_the_overall_168_and_the_43_is_flagged(workspace: Path) -> None:
@@ -47,7 +71,8 @@ async def test_the_125_beside_the_overall_168_and_the_43_is_flagged(workspace: P
         await cad.ok("drawing", action="add", items=[{"type": "view_lines"}, FROM_END, THREAD_END])
         review = await cad.ok("drawing", action="review")
         print("REVIEW", review)
-        assert "dimension_redundant" in review and "len125" in review
+        assert "over_dimensioned:len125,len43" in review and "BLOCKS EXPORT over_dimensioned" in review
+        assert "dimension_redundant" not in review  # one defect, one finding, one weight
 
 
 async def test_a_shaft_sheet_without_them_raises_neither(workspace: Path) -> None:

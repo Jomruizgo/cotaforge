@@ -2,10 +2,14 @@
 """Two owner rules read off a bench shaft sheet (no FreeCAD): no redundant dimension (``dimension_redundant``) and a hidden line is
 never dimensioned (``dimension_on_hidden``)."""
 
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+
+from cotaforge.contract import drawing_items
+from cotaforge.contract.requests import AnnotateDrawingRequest
 
 WORKER_DIR = Path(__file__).resolve().parents[3] / "src" / "cotaforge" / "adapters" / "freecad" / "worker"
 if str(WORKER_DIR) not in sys.path:
@@ -16,7 +20,9 @@ import sheet_hiddendims as hiddendims  # noqa: E402
 import sheet_review as review  # noqa: E402
 import sheet_viewchecks as viewchecks  # noqa: E402
 
+from .test_sheet_items import hole  # noqa: E402
 from .test_sheet_turned import ring_context  # noqa: E402
+from .test_sheet_views import run_review, views_context  # noqa: E402
 
 # --- the sum or the difference of other dimensions ---------------------------------------------------------------------------
 
@@ -116,3 +122,130 @@ def test_the_finding_names_the_dimension_and_holds_the_export() -> None:
     (row,) = hiddendims.findings([("kw_len", "front", "Edge2"), ("kw_len", "front", "Vertex2")], ctx)
     assert row["code"] == "dimension_on_hidden" and row["items"] == ["kw_len"] and "oculta" in row["message"]
     assert "dimension_on_hidden" in checks.NON_BLOCKING  # listed until the automatic keyway dimensions leave the hidden lines
+
+
+CALL = re.compile(r'drawing\(action="(\w+)", ([^)]*)\)')
+HOLDS_BACK = ("remove", "remove_view", "remove_sheet")  # ``drawing_gate.guard_removal``: an ``rq_`` item comes off only with reason= (and by=)
+
+
+def _messages(item: str, kind: str | None) -> list[str]:
+    out = []
+    for language in ("es", "en"):
+        ctx = ring_context()
+        ctx.language = language
+        ctx.extras["items"] = [{"id": item, "type": kind}] if kind else []
+        out.append(hiddendims.findings([(item, "front", "Edge2")], ctx)[0]["message"])
+    return out
+
+
+def test_the_message_names_only_calls_the_gates_let_the_drafter_make() -> None:
+    """The way out is to MOVE the dimension (``update``) to the standard view that sees the feature face-on, which ``add_view`` puts on
+    the sheet: never a bare ``remove`` (an ``rq_`` item needs reason=, a measured one the engineer's order, and a multi-dimension item
+    loses every dimension), and every call it names takes fields the request really has."""
+    for item, kind in (("rq_keyway_l", "dim"), ("kw_len", None), ("bl", "baseline_dims")):
+        for message in _messages(item, kind):
+            calls = CALL.findall(message)
+            assert calls, message
+            for action, body in calls:
+                assert action in {"add_view", "update"}, message
+                assert action not in HOLDS_BACK
+                if action == "add_view":
+                    assert body == 'views=["top"]'  # what ``view_export.drawing`` turns into ``AnnotateDrawingRequest(action="add_view", view="top")``
+                    AnnotateDrawingRequest(operation_id="drawing", action="add_view", view="top")
+                else:
+                    assert f'"id":"{item}","view":"top"' in body and "view" in drawing_items.ITEM_FIELDS["dim"]
+            assert 'action="remove"' not in message and "ids=" not in message
+
+
+def test_the_message_says_so_when_there_is_no_tool_for_what_it_asks() -> None:
+    """There is no partial (broken-out) section (``section`` is full only) and an ``aux_view`` takes no dimension (an item's ``view`` is a
+    standard view or a section label). The message says so and never offers either as the way."""
+    assert "partial" not in drawing_items.ITEM_FIELDS and "broken" not in " ".join(drawing_items.ITEM_FIELDS)
+    for kind in ("dim", "baseline_dims"):
+        es, en = _messages("d1", kind)
+        assert "no hay corte parcial" in es and "no admite cotas" in es and "no hay herramienta" in es
+        assert "no partial section" in en and "takes no dimensions" in en and "there is no tool" in en
+        assert 'action="add"' not in es and 'action="add"' not in en  # the auxiliary view is mentioned only to say it takes no dimension
+
+
+def test_an_item_of_several_dimensions_is_not_told_to_be_moved_or_removed_whole() -> None:
+    es, en = _messages("bl", "baseline_dims")
+    assert "baseline_dims" in es and "agrupa varias cotas" in es and "groups several dimensions" in en
+    assert '"id":"bl","view"' not in es  # update would carry every dimension of the item to the other view
+
+
+# --- one defect, one finding, one weight ---------------------------------------------------------------------------------------
+
+
+def _finding(code: str, *items: str) -> review.Finding:
+    return review.Finding(code, "warning", "", tuple(items))
+
+
+def test_a_chain_that_closes_on_the_overall_is_listed_once_as_over_dimensioned() -> None:
+    """125 + 43 closing on the overall 168: ``over_dimensioned`` holds the export, so ``dimension_redundant`` (which only warns) stays quiet."""
+    both = [_finding("over_dimensioned", "len125", "len43"), _finding("dimension_redundant", "o1", "len125", "len43")]
+    (left,) = review.one_weight_per_defect(both)
+    assert left.code == "over_dimensioned" and "over_dimensioned" not in checks.NON_BLOCKING
+
+
+def test_a_redundant_loop_over_dimensioned_does_not_report_is_still_listed() -> None:
+    other = _finding("dimension_redundant", "a", "b", "c")  # a difference of two others: no overall involved
+    unrelated = _finding("over_dimensioned", "len125", "len43")
+    assert review.one_weight_per_defect([unrelated, other]) == [unrelated, other]
+    assert review.one_weight_per_defect([other]) == [other]
+    assert review.one_weight_per_defect([_finding("over_dimensioned")]) == [_finding("over_dimensioned")]  # no ids: matches nothing
+
+
+def test_the_catalog_rows_of_the_two_findings_agree_with_it() -> None:
+    from cotaforge.drawing import catalog  # noqa: PLC0415
+
+    rows = {r.id: r for r in catalog.load().rules}
+    assert "over_dimensioned" in rows["dimensions.once"].checks and rows["dimensions.once"].weight == "blocks"
+    assert rows["dimensions.no_redundant"].weight == "warns" and "dimensions.once" in rows["dimensions.no_redundant"].text
+
+
+# --- the plate of the owner: 8 + 44 + 8 closes on 60 -------------------------------------------------------------------------------
+
+
+def _plate_row(item: str, a: float, b: float) -> dict[str, Any]:
+    return {"type": "dim", "id": item, "kind": "distance", "from": {"at": [10, a, 8]}, "to": {"at": [10, b, 8]}, "along": "y", "view": "top"}
+
+
+def _plate_review(*specs: dict[str, Any], language: str = "es") -> list[review.Finding]:
+    """A 100 x 60 plate with four holes on two rows (y = 8 and y = 52), the top view, and the findings of its sheet."""
+    ctx = views_context([hole(0, 10, 8), hole(1, 90, 8), hole(2, 10, 52), hole(3, 90, 52)])
+    ctx.language = language
+    return run_review(ctx, {"type": "overall", "id": "o1"}, *specs)
+
+
+def _closing(found: list[review.Finding]) -> list[review.Finding]:
+    return [f for f in found if f.code in ("over_dimensioned", "dimension_redundant")]
+
+
+def test_8_44_8_on_the_overall_60_is_one_blocking_finding_when_all_are_dim_items() -> None:
+    (one,) = _closing(_plate_review(_plate_row("top8", 0, 8), _plate_row("row44", 8, 52), _plate_row("low8", 52, 60)))
+    assert one.code == "over_dimensioned" and set(one.items) == {"top8", "row44", "low8"}
+    assert "over_dimensioned" not in checks.NON_BLOCKING  # it holds the export
+
+
+def test_8_44_8_on_the_overall_60_is_caught_when_the_spacing_and_the_locator_come_from_the_default_hole_location() -> None:
+    """The default location of the holes (``datum_dims`` auto: the spacing of the group and ONE locator from the nearest edge, 44 and 8)
+    plus a dimension of the other 8 closes on the overall. Develop did not see it: the spacing and the locator are not ``dim`` items,
+    and the loop check reads only the lengths of ``dim`` items and the overall."""
+    (one,) = _closing(_plate_review({"type": "datum_dims", "id": "g", "auto": True}, _plate_row("low8", 52, 60)))
+    assert one.code == "over_dimensioned" and one.items == ("g", "low8")
+    assert "localizador" in one.message and "otro extremo" in one.message
+
+
+def test_the_locator_with_the_spacing_alone_and_a_chain_that_does_not_close_are_not_flagged() -> None:
+    assert _closing(_plate_review({"type": "datum_dims", "id": "g", "auto": True})) == []  # 8 + 44: the far 8 is not given
+    assert _closing(_plate_review(_plate_row("top8", 0, 8), _plate_row("row44", 8, 52))) == []
+
+
+def test_the_fix_the_message_names_is_one_the_gate_lets_through() -> None:
+    """Keep the locator from the reference edge with the spacing and drop the dimension at the other end. The ``remove`` the message
+    names takes ``items`` (not ``ids``) and says that an ``rq_`` id also needs reason= (``drawing_gate.guard_removal``)."""
+    for language, start in (("es", "Deja el localizador"), ("en", "Keep the locator")):
+        (one,) = _closing(_plate_review({"type": "datum_dims", "id": "g", "auto": True}, _plate_row("low8", 52, 60), language=language))
+        assert start in one.message
+        assert one.message.count('drawing(action="remove", items=[') == 1 and "rq_" in one.message and "reason=" in one.message and "ids=" not in one.message

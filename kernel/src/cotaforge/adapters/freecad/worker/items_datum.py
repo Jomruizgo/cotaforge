@@ -23,6 +23,7 @@ from items_common import hole_mark, mark_once
 from items_holes import describe
 from sheet_context import (
     COMMON_FIELDS,
+    MODEL_AXES,
     Context,
     HoleInfo,
     ItemError,
@@ -30,6 +31,7 @@ from sheet_context import (
     Point,
     ViewInfo,
     check_fields,
+    dot,
     model_axis,
     parallel,
     v_bool,
@@ -689,7 +691,23 @@ def _draw_dims(
                     )
                 )
                 values.append(dim.value)
+                _keep_span(ctx, view, horizontal, dim, item)
     return values
+
+
+def _keep_span(ctx: Context, view: ViewInfo, horizontal: bool, dim: _Dim, item: str) -> None:
+    """Keep the span, in model coordinates, that a hole-position dimension (a spacing or a locator) measures: the review adds
+    these to the lengths it chains to see whether they close on the overall size (8 + 44 + 8 = 60 is one dimension too many).
+    Kept apart from ``dim_records``: those say 'the same length twice', which a spacing drawn once per column is not."""
+    unit = view.xdir if horizontal else view.ydir
+    name = model_axis(unit)
+    if name is None:
+        return
+    axis = MODEL_AXES[name]
+    origin = view.x if horizontal else view.y
+    at = dot(view.centre, axis)
+    ends = sorted(round(at + (p - origin) / view.scale * dot(unit, axis), 2) for p in (dim.lo, dim.hi))
+    ctx.extras.setdefault("position_spans", []).append((item, name, ends[0], ends[1]))
 
 
 STANDARD_VIEWS = {  # (direction towards the viewer, x direction) of the standard views, first angle

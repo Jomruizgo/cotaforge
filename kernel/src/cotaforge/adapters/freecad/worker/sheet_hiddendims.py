@@ -89,21 +89,59 @@ def _on_hidden(view: Any, sub: str, edges: list[Any], visible: int, distance: Di
     return any(near[visible:]) and not any(near[:visible])
 
 
+def _kinds(ctx: Any) -> dict[str, str]:
+    """The type of each item of the sheet, by id (empty when the context does not carry the items)."""
+    items = ctx.extras.get("items") or ctx.extras.get("sheet_items") or []
+    return {str(i.get("id")): str(i.get("type")) for i in items if isinstance(i, dict)}
+
+
+def _how_to(ctx: Any, item: str, kind: str | None) -> str:
+    """What to do about the dimension ``item``, in the sheet's language: only calls the gates let the drafter make and that exist."""
+    seen = ctx.say(
+        "Acota el rasgo donde se ve de frente: en la vista estándar que lo mira de frente (top o right; si la hoja no la tiene, "
+        'drawing(action="add_view", views=["top"])). Una vista auxiliar (aux_view) no admite cotas y no hay corte parcial '
+        "(section es solo completo); si ninguna vista estándar lo ve de frente, no hay herramienta: díselo al ingeniero. ",
+        "Dimension the feature where it is seen face-on: in the standard view that looks at it square (top or right; if the "
+        'sheet lacks it, drawing(action="add_view", views=["top"])). An auxiliary view (aux_view) takes no dimensions and there '
+        "is no partial section (section is full only); if no standard view sees it face-on there is no tool: tell the engineer. ",
+    )
+    move = f'drawing(action="update", items=[{{"id":"{item}","view":"top"}}])'
+    if kind in (None, "dim"):
+        return seen + ctx.say(
+            f"Mueve la cota con {move} (si cae sobre otro item, el error pide otro side u offset_mm). No quites el item: uno que "
+            "puso el sistema (rq_) pide reason= y, si el modelo lo midió, la orden del ingeniero (by=).",
+            f"Move the dimension with {move} (if it lands on another item the error asks for another side or offset_mm). Do not "
+            "remove the item: one the harness added (rq_) needs reason= and, if the model measured it, the engineer's order (by=).",
+        )
+    return seen + ctx.say(
+        f"{item} ({kind}) agrupa varias cotas: update lo mueve entero y quitarlo las pierde todas. Si la oculta es una sola "
+        "referencia, cambia con update el campo que la fija para que apunte a una línea visible; no hay herramienta que saque una "
+        "sola cota de un item de varias.",
+        f"{item} ({kind}) groups several dimensions: update moves it whole and removing it drops them all. If the hidden one is "
+        "a single reference, change with update the field that fixes it so that it points at a visible line; no tool takes one "
+        "dimension out of an item of several.",
+    )
+
+
 def findings(rows: list[tuple[str, str, str]], ctx: Any) -> list[dict[str, Any]]:
-    """The review findings of ``rows`` as ``{"code", "severity", "message", "items", "features", "key"}``, one per dimension."""
+    """The review findings of ``rows`` as ``{"code", "severity", "message", "items", "features", "key"}``, one per dimension.
+
+    The way out the message gives is one the gates let through and one that exists: the dimension is MOVED (``update`` of the
+    item) to the standard view that sees the feature face-on, which ``add_view`` puts on the sheet when it lacks it. It is never
+    taken off (removing an ``rq_`` item needs a reason, and an order when the model measured it; removing an item of several
+    dimensions drops all of them), and an ``aux_view`` or a partial section is not offered: the first takes no dimensions (items
+    name only the standard views and the labels of sections) and the second does not exist (``section`` is full only)."""
     out: list[dict[str, Any]] = []
     by_item: dict[str, list[tuple[str, str]]] = {}
     for item, view, sub in rows:
         by_item.setdefault(item, []).append((view, sub))
+    kinds = _kinds(ctx)
     for item, refs in list(by_item.items())[:MAX_ROWS]:
         view = refs[0][0]
         text = ctx.say(
-            f"La cota {item} mide sobre una línea oculta de la vista {view}: una línea oculta no se acota nunca. Acota el rasgo "
-            "en la vista que lo ve de frente o en un corte parcial (drawing action=remove, ids=[...]; luego la cota en esa vista).",
-            f"The dimension {item} measures on a hidden line of the {view} view: a hidden line is never dimensioned. Dimension "
-            "the feature in the view that sees it face-on, or in a partial (broken-out) section (drawing action=remove, "
-            "ids=[...]; then the dimension on that view).",
-        )
+            f"La cota {item} mide sobre una línea oculta de la vista {view}: una línea oculta no se acota nunca. ",
+            f"The dimension {item} measures on a hidden line of the {view} view: a hidden line is never dimensioned. ",
+        ) + _how_to(ctx, item, kinds.get(item))
         out.append(_finding("dimension_on_hidden", text, item))
     return out
 

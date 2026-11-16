@@ -107,7 +107,16 @@ def review(data: ReviewInput) -> list[Finding]:
     import sheet_viewchecks  # noqa: PLC0415 - the three drawing rules of the views and their dimensions
 
     found += sheet_viewchecks.check(data)
-    return sorted(found, key=lambda f: 0 if f.severity == "warning" else 1)
+    return sorted(one_weight_per_defect(found), key=lambda f: 0 if f.severity == "warning" else 1)
+
+
+def one_weight_per_defect(found: list[Finding]) -> list[Finding]:
+    """``found`` without the ``dimension_redundant`` loops that ``over_dimensioned`` already reports. A chain that closes on the
+    overall size (or on the datum ordinates) is one defect: ``over_dimensioned`` holds the export for it, and listing it again
+    as ``dimension_redundant`` (which only warns) would say the same thing with two weights. The loop is the same one when every
+    dimension of the ``over_dimensioned`` finding is among those of the loop (the loop adds the overall that closes it)."""
+    reported = [set(f.items) for f in found if f.code == "over_dimensioned" and f.items]
+    return [f for f in found if not (f.code == "dimension_redundant" and any(r <= set(f.items) for r in reported))]
 
 
 # --- what a shop reader sees at a glance ----------------------------------------------------------------------------------
@@ -772,9 +781,16 @@ def _over_dimensioning(data: ReviewInput) -> list[Finding]:
                 out.append(Finding("over_dimensioned", "warning", text, (table["id"], m.spec["id"])))
     # 3. a chain that closes on the overall size
     if _of(data, "overall"):
+        positional = [
+            _Measured({"id": item}, axis, lo, hi, (set(), set())) for item, axis, lo, hi in ctx.extras.get("position_spans", [])
+        ]
+        pool = [*measured, *positional]
         for axis in AXES:
             overall = _extent(ctx, axis)
-            same = sorted((m for m in measured if m.axis == axis), key=lambda m: m.lo)
+            # the lengths of ``dim`` items and the spacings and locators of hole positions (8 + 44 + 8 = 60 on a plate): a spacing
+            # or a locator never says "the same distance twice", but chained it closes on the overall like any other length
+            same = sorted((m for m in pool if m.axis == axis), key=lambda m: (m.lo, m.hi))
+            same = [m for i, m in enumerate(same) if not any(abs(m.lo - n.lo) < SAME_MM and abs(m.hi - n.hi) < SAME_MM for n in same[:i])]
             if overall is None or len(same) < 2:
                 continue
             chain = [same[0]]
@@ -782,12 +798,16 @@ def _over_dimensioning(data: ReviewInput) -> list[Finding]:
                 if abs(m.lo - chain[-1].hi) < SAME_MM:
                     chain.append(m)
             if len(chain) >= 2 and abs(sum(m.hi - m.lo for m in chain) - overall) < SAME_MM * 2:
-                ids = tuple(m.spec["id"] for m in chain)
+                ids = tuple(dict.fromkeys(str(m.spec["id"]) for m in chain))
                 text = ctx.say(
                     f"Las cotas {', '.join(ids)} forman una cadena que suma la cota total en {axis} "
-                    f"({ctx.num(overall)} mm): sobreacotado; quita una.",
+                    f"({ctx.num(overall)} mm): sobreacotado. Deja el localizador desde el borde de referencia con la separación y "
+                    "quita la cota del otro extremo (drawing(action=\"remove\", items=[\"<su id>\"]); un id que empieza por rq_ "
+                    "pide además reason=).",
                     f"Dimensions {', '.join(ids)} form a chain that adds up to the overall size along {axis} "
-                    f"({ctx.num(overall)} mm): over-dimensioned; remove one.",
+                    f"({ctx.num(overall)} mm): over-dimensioned. Keep the locator from the reference edge together with the spacing "
+                    "and drop the dimension at the other end (drawing(action=\"remove\", items=[\"<its id>\"]); an id that "
+                    "starts with rq_ also needs reason=).",
                 )
                 out.append(Finding("over_dimensioned", "warning", text, ids))
     return out
