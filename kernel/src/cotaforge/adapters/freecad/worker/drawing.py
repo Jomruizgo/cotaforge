@@ -113,10 +113,13 @@ TECHDRAW_PREFS = "User parameter:BaseApp/Preferences/Mod/TechDraw/"
 DEFAULT_PREFS: tuple[tuple[str, str, float], ...] = (
     ("Decorations", "LineGroup", sheet_weights.LINE_GROUP_INDEX),  # TechDraw's own list: "FC 0.35mm" (thick 0.35, thin 0.18), the group of the sheet's table
     ("Dimensions", "FontSize", sheet_native.FONT_MM),  # the 3.5 mm of ISO 3098; TechDraw's own default is 5 mm
+    ("Standards", sheet_native.LINE_STANDARD, sheet_native.LINE_STANDARD_ISO),  # TechDraw's own list: ISO 128-20; unset it paints the ASME line table
 )
 """What a new TechDraw object reads when the engineer adds one by hand to the sheet: the line group and the text size of the
 sheet. Measured in 1.1.3: with the preferences unset a dimension added by hand came out 0.35 mm thick and 5 mm high, next to
-the sheet's own widths and 3.5 mm."""
+the sheet's own widths and 3.5 mm. The line standard is what a line NUMBER paints: with ISO 128-20 the centre line (number 4)
+is the long-dash dotted line (4.32 0.54 0.18 0.54 mm at 0.18 in the PDF); unset, TechDraw paints the ASME table, where it is
+a long and a short dash."""
 
 
 def apply_techdraw_defaults() -> None:
@@ -3789,6 +3792,26 @@ def page_findings(page: Any, ctx: sc.Context) -> list[dict[str, Any]]:
         rows.append({"code": code, "severity": "warning", "message": message, "items": [], "features": [], "key": key})
 
     read = pc.read_page(page, lambda obj: _view_name_of(page, obj))
+    dashed = sheet_native.line_type_problems(page)
+    if dashed:
+        shown = "; ".join(f"{view}: {what}" + (f" ({number})" if number >= 0 else "") for view, what, number in dashed[:4])
+        rows.append(
+            {
+                "code": "centre_line_not_chain",
+                "severity": "warning",
+                "message": ctx.say(
+                    f"Hay {len(dashed)} eje(s) o marca(s) de centro que no son línea de trazo largo y punto (ISO 128, tipo 04; número de línea de TechDraw entre paréntesis): {shown}. "
+                    "Así se leen como aristas ocultas. Los que hizo la hoja se corrigen al actualizarla (compose o cualquier cambio de un elemento); "
+                    "en uno hecho a mano, elige el estilo de línea 4 en el diálogo de la línea de centro.",
+                    f"{len(dashed)} axis or centre mark line(s) are not the long-dash dotted line (ISO 128, type 04; TechDraw's line number in brackets): {shown}. "
+                    "They read as hidden edges. The ones the sheet made are put right when it is updated (compose, or any change of an item); "
+                    "for one made by hand, pick line style 4 in the centre line dialog.",
+                ),
+                "items": [],
+                "features": [],
+                "key": dashed[0][0],
+            }
+        )
     marked = pc.marker_texts(read.texts)
     if marked:
         shown = "; ".join(f"{t.where}: «{t.text}»" for t in marked[:4])

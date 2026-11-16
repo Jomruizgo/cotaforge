@@ -23,6 +23,7 @@ from typing import Any
 
 import FreeCAD as App
 import gui
+import sheet_linetype
 import sheet_notefit
 import sheet_symbols
 import sheet_units as su
@@ -579,10 +580,12 @@ def sync(
 HIDDEN_OWNER = "CotaforgeHidden"  # on a view: the sheet switched its hidden lines on (it switches them off again)
 
 
-def sync_flags(page: Any, units: list[su.Unit]) -> None:
+def sync_flags(page: Any, units: list[su.Unit]) -> bool:
     """Set the properties of the views that items ask for (``NativeFlag``): the hidden lines of the views a ``view_lines``
     item shows them on are TechDraw's own, and go again when the item does. A view whose hidden lines the engineer
-    switched on himself is not touched."""
+    switched on himself is not touched. Returns whether a view changed (its edges are other ones: TechDraw numbers the
+    hidden edges with the visible ones)."""
+    changed = False
     wanted = {n.view for u in units for n in u.natives if isinstance(n, su.NativeFlag) and n.prop == "HardHidden"}
     for name in ("front", "top", "right", "isometric"):
         view = view_object(page, name)
@@ -591,13 +594,16 @@ def sync_flags(page: Any, units: list[su.Unit]) -> None:
         ours = HIDDEN_OWNER in view.PropertiesList
         if name in wanted and not bool(view.HardHidden):
             view.HardHidden = True
+            changed = True
             if not ours:
                 view.addProperty("App::PropertyBool", HIDDEN_OWNER, GROUP, "The sheet switched the hidden lines on")
                 view.setEditorMode(HIDDEN_OWNER, 1)
                 setattr(view, HIDDEN_OWNER, True)
         elif name not in wanted and ours and bool(view.HardHidden):
             view.HardHidden = False
+            changed = True
             view.removeProperty(HIDDEN_OWNER)
+    return changed
 
 
 def flag_problems(page: Any, unit: su.Unit) -> list[str]:
@@ -901,10 +907,17 @@ def sync_views(
     return failed, fresh
 
 
-# --- cosmetic edges: the lines a unit draws ON a view (centre lines and marks, thread arcs, the parting line) ------------
+# --- the lines a unit draws ON a view: centre lines (TechDraw's own centre-line object), centre marks, thread arcs, the
+# --- parting line (cosmetic edges) --------------------------------------------------------------------------------------
 
-PROP_COSMETIC = "CotaforgeCosmetic"  # on a view: the cosmetic edges the sheet made, {unit key: [signature, [geometry...]]}
-ISO_STYLE = {"centre": 4, "thin": 1, "parting": 8, "thick": 1}  # ISO 128-20 line numbers (TechDraw's own list): 04 long dash dot, 01, 08
+PROP_COSMETIC = "CotaforgeCosmetic"  # on a view: the centre lines and cosmetic edges the sheet made, {unit key: [signature, [geometry...]]}
+ISO_STYLE = {"centre": 4, "thin": 1, "parting": 8, "thick": 1}  # the Qt pen style of ``Format`` (4: dash dot); TechDraw paints the LINE NUMBER (``line_number``), not this
+STANDARDS_PREF = "User parameter:BaseApp/Preferences/Mod/TechDraw/Standards"
+LINE_STANDARD = "LineStandard"
+LINE_STANDARD_ISO = sheet_linetype.ISO  # the sheet is an ISO sheet: set when the engineer has no standard of his own
+CENTRE_LINES = "CenterLines"
+COSMETIC_EDGES = "CosmeticEdges"
+CLINE = "cline"  # a stored geometry that is a centre line between two edges of the view
 ISO_WIDTH_MM = {  # the table of ``sheet_weights`` (as the PDF the headless CAD writes)
     "centre": sw.weight(sw.CENTRE),
     "thin": sw.weight(sw.THREAD),
@@ -914,7 +927,19 @@ ISO_WIDTH_MM = {  # the table of ``sheet_weights`` (as the PDF the headless CAD 
 BLACK = (0.0, 0.0, 0.0, 1.0)
 EDGE_TOL = 1e-4
 
-Geometry = tuple[str, tuple[float, ...]]  # ("line", (x1, y1, x2, y2)) or ("circle", (cx, cy, r)), in the view's own units
+# ("line", (x1, y1, x2, y2)) or ("circle", (cx, cy, r)), in the view's own units; ("cline", (x1, y1, x2, y2, edge, edge,
+# mode, extension in page mm, shift)) for a centre line between two edges of the view
+Geometry = tuple[str, tuple[float, ...]]
+
+
+def line_standard() -> int:
+    """The line standard TechDraw paints with (``Standards/LineStandard``; unset is ASME, measured in 1.1.3)."""
+    return int(App.ParamGet(STANDARDS_PREF).GetInt(LINE_STANDARD, sheet_linetype.UNSET_STANDARD))
+
+
+def line_number(style: str) -> int:
+    """TechDraw's line number of a line of kind ``style`` in the standard it paints with: the chain line for ``centre``."""
+    return sheet_linetype.line_number(style, line_standard())
 
 
 def _stored(view: Any) -> dict[str, list[Any]]:
@@ -962,15 +987,59 @@ def _is_edge(cosmetic: Any, geometry: Geometry) -> bool:
     if kind == "line":
         x1, y1, x2, y2 = geometry[1]
         return _close(values, (x1, y1, x2, y2)) or _close(values, (x2, y2, x1, y1))
-    return _close(values, geometry[1])
+    # an arc read back after its list was restored (a file opened again, a line number set) answers its centre with y
+    # mirrored, drawn where it was (measured in 1.1.3): the same edge
+    cx, cy, r = geometry[1]
+    return _close(values, (cx, cy, r)) or _close(values, (cx, -cy, r))
+
+
+def _is_centre_line(line: Any, values: tuple[float, ...]) -> bool:
+    """Whether the centre line ``line`` of a view is the one the sheet made with ``values``: the same two edges, mode, reach
+    and shift (a centre line is known by what it hangs from: its geometry is TechDraw's, redrawn with the model)."""
+    try:
+        edges = [str(e) for e in line.Edges]
+        shift = float(line.HorizShift) if int(values[6]) == sheet_linetype.MODE_HORIZONTAL else float(line.VertShift)
+        return (
+            edges == [f"Edge{int(values[4])}", f"Edge{int(values[5])}"]
+            and int(line.Mode) == int(values[6])
+            and abs(float(line.Extension) - values[7]) < MOVE_TOL_MM
+            and abs(shift - values[8]) < MOVE_TOL_MM
+        )
+    except Exception:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind
+        return False
+
+
+def _hangs_as_made(frame: Frame, values: tuple[float, ...]) -> bool:
+    """Whether the centre line made with ``values`` still hangs from the two sides of its feature: a centre line names its
+    edges by number, and the numbers change when the view shows or hides its hidden edges or the part gets another edge."""
+    pair = sheet_linetype.pair_for(_model_lines(frame), values, MATCH_TOL)
+    return (
+        pair is not None
+        and (pair.a, pair.b, pair.mode) == (int(values[4]), int(values[5]), int(values[6]))
+        and abs(pair.extension * frame.scale - values[7]) < MOVE_TOL_MM
+        and abs(pair.shift - values[8]) < MOVE_TOL_MM
+    )
+
+
+def _listed(view: Any, geometry: Geometry) -> list[Any]:
+    return list(view.CenterLines if geometry[0] == CLINE else view.CosmeticEdges)
+
+
+def _index(view: Any, geometry: Geometry, taken: set[int] | None = None) -> int | None:
+    """Where in its list (``CenterLines`` / ``CosmeticEdges``) the object of ``view`` with ``geometry`` is; ``None``: gone.
+    ``taken``: positions that are another line's (two arcs of one circle have the same centre and radius)."""
+    for index, obj in enumerate(_listed(view, geometry)):
+        if taken is not None and index in taken:
+            continue
+        if _is_centre_line(obj, geometry[1]) if geometry[0] == CLINE else _is_edge(obj, geometry):
+            return index
+    return None
 
 
 def _find(view: Any, geometry: Geometry) -> Any | None:
-    """The cosmetic edge of ``view`` that has ``geometry`` (``None`` when it is gone: deleted by hand)."""
-    for cosmetic in list(view.CosmeticEdges):
-        if _is_edge(cosmetic, geometry):
-            return cosmetic
-    return None
+    """The centre line or cosmetic edge of ``view`` that has ``geometry`` (``None`` when it is gone: deleted by hand)."""
+    index = _index(view, geometry)
+    return None if index is None else _listed(view, geometry)[index]
 
 
 def _drop(view: Any, specs: list[Any]) -> None:
@@ -978,7 +1047,10 @@ def _drop(view: Any, specs: list[Any]) -> None:
         found = _find(view, (kind, tuple(values)))
         if found is not None:
             try:
-                view.removeCosmeticEdge(str(found.Tag))
+                if kind == CLINE:
+                    view.removeCenterLine(str(found.Tag))
+                else:
+                    view.removeCosmeticEdge(str(found.Tag))
             except Exception:  # noqa: BLE001 - the engineer deleted it already
                 pass
 
@@ -992,27 +1064,69 @@ def _local(frame: Frame, n: su.NativeCosmetic) -> Geometry:
     return "circle", (c[0], c[1], n.values[2] / frame.scale)
 
 
+def _format(style: str) -> dict[str, Any]:
+    return {"style": ISO_STYLE[style], "weight": ISO_WIDTH_MM[style], "color": BLACK, "visible": True}
+
+
+def _model_lines(frame: Frame) -> list[tuple[int, float, float, float, float]]:
+    """The straight edges of the part in the view (index, x1, y1, x2, y2, the view's own units): TechDraw lists the edges of
+    the model first, then the cosmetic edges, then the centre lines (measured in 1.1.3)."""
+    cached: list[tuple[int, float, float, float, float]] | None = getattr(frame, "model_lines", None)
+    if cached is None:
+        edges = frame.edges
+        own = len(list(frame.view.CosmeticEdges)) + len(list(frame.view.CenterLines))
+        cached = []
+        for index, e in enumerate(edges[: max(len(edges) - own, 0)]):
+            if type(e.Curve).__name__ != "Line":
+                continue
+            a, b = e.valueAt(e.FirstParameter), e.valueAt(e.LastParameter)
+            cached.append((index, float(a.x), float(a.y), float(b.x), float(b.y)))
+        frame.model_lines = cached  # type: ignore[attr-defined]
+    return cached
+
+
+def _make_centre_line(frame: Frame, values: tuple[float, ...]) -> Geometry | None:
+    """The centre line ``values`` as TechDraw's own centre-line object between the two edges of the view it lies midway
+    between (the sides of the cylinder or of the bore): it is redrawn from them, so it follows the model and the view.
+    ``None`` when the view has no such pair (a hole whose sides the view does not show, a line at an angle)."""
+    pair = sheet_linetype.pair_for(_model_lines(frame), values, MATCH_TOL)
+    if pair is None:
+        return None
+    v = frame.view
+    shift = pair.shift if abs(pair.shift) > EDGE_TOL else 0.0
+    try:
+        line = v.getCenterLine(v.makeCenterLine([f"Edge{pair.a}", f"Edge{pair.b}"], pair.mode))
+        line.Extension = pair.extension * frame.scale
+        if shift and pair.mode == sheet_linetype.MODE_HORIZONTAL:
+            line.HorizShift = shift
+        elif shift:
+            line.VertShift = shift
+        line.Format = _format("centre")
+    except Exception:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind; the line is then a cosmetic one
+        return None
+    return CLINE, (*values, float(pair.a), float(pair.b), float(pair.mode), pair.extension * frame.scale, shift)
+
+
 def _make_cosmetic(frame: Frame, n: su.NativeCosmetic) -> Geometry:
     v = frame.view
     geometry = _local(frame, n)
     values = geometry[1]
+    if n.kind == "line" and n.style == "centre":
+        made = _make_centre_line(frame, values)
+        if made is not None:
+            return made
     if n.kind == "line":
         tag = v.makeCosmeticLine(App.Vector(values[0], values[1], 0), App.Vector(values[2], values[3], 0))
     elif n.kind == "circle":
         tag = v.makeCosmeticCircle(App.Vector(values[0], values[1], 0), values[2])
     else:
         tag = v.makeCosmeticCircleArc(App.Vector(values[0], values[1], 0), values[2], n.values[3], n.values[4])
-    v.getCosmeticEdge(tag).Format = {
-        "style": ISO_STYLE[n.style],
-        "weight": ISO_WIDTH_MM[n.style],
-        "color": BLACK,
-        "visible": True,
-    }
+    v.getCosmeticEdge(tag).Format = _format(n.style)
     return geometry
 
 
 def _reweigh(view: Any, natives: list[su.NativeCosmetic], specs: list[Any]) -> None:
-    """Put the weights of the table on the cosmetic edges the sheet made earlier (a file saved before the table changed)."""
+    """Put the weights of the table on the lines the sheet made earlier (a file saved before the table changed)."""
     for n, (kind, values) in zip(natives, specs, strict=False):
         found = _find(view, (kind, tuple(values)))
         fmt = dict(found.Format) if found is not None else {}
@@ -1020,11 +1134,33 @@ def _reweigh(view: Any, natives: list[su.NativeCosmetic], specs: list[Any]) -> N
             found.Format = {**fmt, "weight": ISO_WIDTH_MM[n.style]}
 
 
+def _number(view: Any, natives: dict[str, list[su.NativeCosmetic]], stored: dict[str, list[Any]]) -> list[str]:
+    """Give every line the sheet made on ``view`` TechDraw's line number of its kind (the chain line for a centre line, the
+    continuous one for a thread arc): ``Format`` cannot, so a new line is the dashed one. Returns why it could not."""
+    wanted: dict[str, dict[int, int]] = {CENTRE_LINES: {}, COSMETIC_EDGES: {}}
+    for key, mine in natives.items():
+        for n, (kind, values) in zip(mine, stored.get(key, ["", []])[1], strict=False):
+            numbers = wanted[CENTRE_LINES if kind == CLINE else COSMETIC_EDGES]
+            index = _index(view, (kind, tuple(values)), set(numbers))
+            if index is not None:
+                numbers[index] = line_number(n.style)
+    problems: list[str] = []
+    for prop, numbers in wanted.items():
+        try:
+            if numbers:
+                sheet_linetype.apply(view, prop, numbers)
+        except Exception as exc:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind
+            problems.append(f"the line type of its {prop} could not be set ({type(exc).__name__}: {exc})")
+    return problems
+
+
 def sync_cosmetics(page: Any, units: list[su.Unit], made: list[str] | None = None) -> dict[str, list[str]]:
-    """Make the cosmetic edges of the views agree with what the units ask: a unit whose edges on a view already carry the
-    signature (and still exist) is left alone, the rest are made again; a unit that is gone takes its edges with it. The edges
-    are the view's own: they move with it and go when it does. Returns, for the units that could not be made, the reasons
-    (those units keep their symbol); ``made`` collects the keys of the units whose edges were made or taken off."""
+    """Make the centre lines and cosmetic edges of the views agree with what the units ask: a unit whose lines on a view
+    already carry the signature (and still exist) is left alone, the rest are made again; a unit that is gone takes its lines
+    with it. A straight centre line is TechDraw's own centre-line object between the two edges it lies midway between
+    (``_make_centre_line``), anything else a cosmetic edge; all of them get the line number of their kind (``_number``). The
+    lines are the view's own: they move with it and go when it does. Returns, for the units that could not be made, the
+    reasons (those units keep their symbol); ``made`` collects the keys of the units whose lines were made or taken off."""
     problems: dict[str, list[str]] = {}
     wanted: dict[str, dict[str, list[su.NativeCosmetic]]] = {}
     for unit in units:
@@ -1053,7 +1189,12 @@ def sync_cosmetics(page: Any, units: list[su.Unit], made: list[str] | None = Non
         for key, natives in mine.items():
             signature = su.cosmetic_signature(natives)
             old = stored.get(key)
-            if old is not None and old[0] == signature and all(_find(view, (k, tuple(v))) is not None for k, v in old[1]):
+            if (
+                old is not None
+                and old[0] == signature
+                and all(_find(view, (k, tuple(v))) is not None for k, v in old[1])
+                and all(_hangs_as_made(frame, tuple(v)) for k, v in old[1] if k == CLINE)
+            ):
                 _reweigh(view, natives, old[1])
                 continue
             if old is not None:
@@ -1076,16 +1217,99 @@ def sync_cosmetics(page: Any, units: list[su.Unit], made: list[str] | None = Non
             touched(key)
         if changed:
             _store(view, stored)
+        _number(view, mine, stored)  # a line whose type could not be set stays on the page: the review reads it and says so
     return problems
+
+
+def _line_ends(edge: Any) -> tuple[float, float, float, float]:
+    a, b = edge.valueAt(edge.FirstParameter), edge.valueAt(edge.LastParameter)
+    return float(a.x), float(a.y), float(b.x), float(b.y)
+
+
+def verify_centre_lines(page: Any) -> list[str]:
+    """After the views were computed: every centre line the sheet made is where the sheet asked for it (TechDraw draws it
+    from its two edges, its reach and its shift). One that is not is taken off and drawn as a cosmetic line of the same
+    type at the place asked, so nothing wrong stays on the page; returns what was replaced (the caller computes again)."""
+    replaced: list[str] = []
+    for name in view_names(page):
+        view = view_object(page, name)
+        stored = _stored(view) if view is not None else {}
+        if not any(spec[0] == CLINE for entry in stored.values() for spec in entry[1]):
+            continue
+        frame = Frame(page, view)
+        count = len(list(view.CenterLines))
+        painted = [_line_ends(e) for e in frame.edges[max(len(frame.edges) - count, 0) :] if type(e.Curve).__name__ == "Line"]
+        numbers: dict[int, int] = {}
+        for key, entry in stored.items():
+            for spec in entry[1]:
+                if spec[0] != CLINE:
+                    continue
+                want = tuple(float(v) for v in spec[1][:4])
+                turned = (want[2], want[3], want[0], want[1])
+                if any(all(abs(p - q) <= MATCH_TOL for p, q in zip(ends, order, strict=True)) for ends in painted for order in (want, turned)):
+                    continue
+                _drop(view, [spec])
+                tag = view.makeCosmeticLine(App.Vector(want[0], want[1], 0), App.Vector(want[2], want[3], 0))
+                view.getCosmeticEdge(tag).Format = _format("centre")
+                spec[0], spec[1] = "line", list(want)
+                index = _index(view, ("line", want))
+                if index is not None:
+                    numbers[index] = line_number("centre")
+                replaced.append(f"{key}: a centre line of the {name} view")
+        if numbers:
+            _store(view, stored)
+            sheet_linetype.apply(view, COSMETIC_EDGES, numbers)
+    return replaced
+
+
+def line_type_problems(page: Any) -> list[tuple[str, str, int]]:
+    """Every centre line of ``page`` that is not the chain line, read from the page's own objects: ``(view, what, line
+    number)`` for TechDraw's centre lines (the engineer's too) and for the cosmetic lines drawn as centre lines. A list that
+    cannot be read is reported with the number -1: it is not known to be right."""
+    chain = line_number("centre")
+    found: list[tuple[str, str, int]] = []
+    for name in view_names(page):
+        view = view_object(page, name)
+        if view is None:
+            continue
+        lists = (
+            (CENTRE_LINES, "centre line", [True for _ in view.CenterLines]),
+            (COSMETIC_EDGES, "cosmetic centre line", [dict(e.Format).get("style") == ISO_STYLE["centre"] for e in view.CosmeticEdges]),
+        )
+        for prop, what, centre in lists:
+            if not any(centre):
+                continue
+            try:
+                numbers = sheet_linetype.numbers_of(view, prop)
+            except Exception:  # noqa: BLE001 - FreeCAD raises plain exceptions of every kind
+                found.append((name, what, -1))
+                continue
+            found += [(name, what, number) for is_centre, number in zip(centre, numbers, strict=False) if is_centre and number != chain]
+    return found
+
+
+def centre_line_segments(view: Any) -> list[tuple[float, float, float, float]]:
+    """The centre lines the sheet made on ``view`` as TechDraw's centre-line objects: x1, y1, x2, y2 in the view's own units."""
+    return [
+        (float(v[0]), float(v[1]), float(v[2]), float(v[3]))
+        for entry in _stored(view).values()
+        for kind, v in entry[1]
+        if kind == CLINE
+    ]
 
 
 def own_cosmetic_count(view: Any) -> int:
     """How many cosmetic edges of ``view`` the sheet made (the rest are the engineer's own)."""
-    return sum(len(entry[1]) for entry in _stored(view).values())
+    return sum(1 for entry in _stored(view).values() for spec in entry[1] if spec[0] != CLINE)
+
+
+def own_centre_count(view: Any) -> int:
+    """How many centre lines of ``view`` the sheet made (the rest are the engineer's own)."""
+    return len(centre_line_segments(view))
 
 
 def cosmetic_problems(page: Any, unit: su.Unit) -> list[str]:
-    """The cosmetic edges ``unit`` asks for that the page does not have (deleted by hand, or never made)."""
+    """The centre lines and cosmetic edges ``unit`` asks for that the page does not have (deleted by hand, or never made)."""
     problems: list[str] = []
     by_view: dict[str, list[su.NativeCosmetic]] = {}
     for n in unit.natives:
@@ -1130,9 +1354,14 @@ def model_edges(view: Any) -> list[Any]:
     too, and the ones the sheet made (centre lines, thread arcs) are not the part's outline: they are left out of what the
     sheet measures and draws from the view."""
     edges = list(view.getVisibleEdges())
+    centre_lines = len(list(getattr(view, "CenterLines", None) or []))
+    if centre_lines:  # TechDraw lists them last, after the cosmetic edges (measured in 1.1.3): none is the part's outline
+        edges = edges[: max(len(edges) - centre_lines, 0)]
     scale = float(view.getScale())
     for entry in _stored(view).values():
         for kind, values in entry[1]:
+            if kind == CLINE:
+                continue
             geometry = (kind, tuple(v * scale for v in values))  # a cosmetic edge is kept unscaled; the view's edges are not
             for index in range(len(edges) - 1, -1, -1):  # cosmetic edges come after the part's own
                 if _same_edge(edges[index], geometry):
@@ -1161,7 +1390,7 @@ def cosmetic_paths(page: Any, key: str) -> list[list[tuple[float, float]]]:
             continue
         frame = Frame(page, view)
         for kind, values in entry[1]:
-            if kind == "line":
+            if kind in ("line", CLINE):
                 a, b = values[0:2], values[2:4]
                 paths.append([(frame.x + a[0] * frame.scale, frame.y + a[1] * frame.scale), (frame.x + b[0] * frame.scale, frame.y + b[1] * frame.scale)])
             else:

@@ -116,8 +116,9 @@ class NativeFlag:
 
 @dataclass(frozen=True)
 class NativeCosmetic:
-    """A cosmetic edge of a TechDraw view (``makeCosmeticLine`` / ``makeCosmeticCircle`` / ``makeCosmeticCircleArc``): the
-    centre lines and marks, the thin arc of a thread, the parting line. It belongs to the view's own cosmetic list, so it
+    """A line TechDraw draws ON a view: a centre line (``makeCenterLine`` between the two edges it lies midway between,
+    where the view has them) or a cosmetic edge (``makeCosmeticLine`` / ``makeCosmeticCircle`` / ``makeCosmeticCircleArc``):
+    the centre marks, the pitch circle, the thin arc of a thread, the parting line. It belongs to the view's own lists, so it
     moves with the view, is edited there line by line and goes when the view does. ``values`` are in page mm (y up): a
     ``line`` is x1, y1, x2, y2; a ``circle`` cx, cy, r; an ``arc`` cx, cy, r, start, end (degrees, counter-clockwise).
     ``style`` is the line kind (``COSMETIC_STYLES``)."""
@@ -150,6 +151,7 @@ class NativeSymbol:
     arrow: bool = True
 
 
+CENTRE_LINE_MARK = "centre-line objects"  # in a cosmetic signature: its straight centre lines are TechDraw's centre-line objects
 COSMETIC_STYLES = {  # the layer the compositor draws on -> the kind of line TechDraw is asked for
     AXES: "centre",
     THREAD: "thin",
@@ -387,9 +389,11 @@ def signature(unit: Unit) -> str:
 
 def cosmetic_signature(natives: Any) -> str:
     """What the cosmetic edges of one view for one unit must be (a view that already carries it is left alone)."""
-    return json.dumps(
-        [[n.kind, [round(v, 2) for v in n.values], n.style] for n in natives], separators=(",", ":")
-    )
+    natives = list(natives)
+    rows: list[Any] = [[n.kind, [round(v, 2) for v in n.values], n.style] for n in natives]
+    if any(n.style == "centre" and n.kind == "line" for n in natives):
+        rows.append(CENTRE_LINE_MARK)  # a view whose centre lines were made as cosmetic edges gets them made again
+    return json.dumps(rows, separators=(",", ":"))
 
 
 def object_count(unit: Unit) -> int:
