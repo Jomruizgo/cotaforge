@@ -96,8 +96,8 @@ class Row:
     the hole operations declared print by themselves), ``view_lines`` (the centre lines), ``intent_note`` (a note with the
     line of the intent file that declares it, in the designer's own words) or ``title`` (the title block ``create`` fills:
     material, general tolerance, scale, projection) or ``keyway`` (the dimensions of a keyway the walls of the part show:
-    width, depth, length, position; its fit class stays a question) or ``parts_list`` (the parts list and a balloon per position on the
-    isometric view of an assembly: both are read from its components) or ``chamfers`` (a callout of every chamfer no dimension gives)
+    width, depth, length, position; its fit class stays a question) or ``parts_list`` (the parts list and a balloon per position, each
+    on the view of the assembly that shows its part best: both are read from its components) or ``chamfers`` (a callout of every chamfer no dimension gives)
     or ``mould`` (the parting line of a moulded part, measured on the model: where the outline of the section is widest, along the
     direction the part is shallowest; the draft, the gate and the ejector zones are decisions, so they stay questions)."""
 
@@ -533,7 +533,6 @@ ROWS: tuple[Row, ...] = (
             "balloon_without_row",
             "parts_list_over_view",
             "instance_hidden",
-            "balloons_off_isometric",
             "balloon_part_hidden",
             "weld_list_missing",
             "item_without_balloon",
@@ -745,6 +744,7 @@ _SECTIONS = {
     "dimensions": ("dimensions", "cotas"),
     "relations": ("functional relations", "relaciones funcionales"),
     "sheet": ("sheet", "hoja"),
+    "quantity": ("quantity", "cantidad"),
 }
 _KEYWAY_WORDS = re.compile(r"chavetero|keyway|key\s*seat|key\s*slot|chaveta|ranura\s+de\s+chaveta", re.I)
 _KEYWAY_CLASS = re.compile(r"(?<![A-Za-z0-9])(P9|N9|JS9|D10|H9)(?![A-Za-z0-9])", re.I)
@@ -1103,7 +1103,7 @@ def plan_additions(
 ) -> list[Addition]:
     """What the harness adds to the sheet for the DETERMINED rows that are not met: callouts of every hole when the part has
     threaded or fitted holes nobody called out (the thread and the fit come from the hole operations), the centre lines (of an
-    assembly without hidden lines), the parts list and a balloon per position on the isometric view of an assembly (both read
+    assembly without hidden lines), the parts list and a balloon per position, spread over the views of an assembly (both read
     the components of the model), and a note carrying the line of the intent file that declares what the row asks for. A row
     that was answered (the item was removed with a reason) is never added again, and the agent's own items come first:
     callouts are not added while the sheet has a ``hole_dim`` of its own, nor a list while it has a ``parts_list``. With
@@ -1135,11 +1135,10 @@ def plan_additions(
                     "the parts list: one row per distinct part with its quantity, read from the components of the model",
                 )
             if "balloons" not in kinds and BALLOONS_ID not in have:
-                view = "isometric" if "isometric" in views or not views else views[0]
                 out[BALLOONS_ID] = Addition(
                     (row.id,),
-                    {"type": "balloons", "id": BALLOONS_ID, "view": view},
-                    f"a balloon per position on the {view} view, numbered as the list",
+                    {"type": "balloons", "id": BALLOONS_ID},
+                    "a balloon per position, numbered as the list, each on the view that shows its part best",
                 )
             continue
         item_id = auto_item_id(row)

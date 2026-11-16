@@ -21,7 +21,6 @@ WORKER_DIR = Path(__file__).resolve().parents[3] / "src" / "cotaforge" / "adapte
 if str(WORKER_DIR) not in sys.path:
     sys.path.append(str(WORKER_DIR))
 
-import items_assembly as asm  # noqa: E402
 import sheet_checks as checks  # noqa: E402
 import sheet_context as sc  # noqa: E402
 import sheet_items as items  # noqa: E402
@@ -301,24 +300,15 @@ def test_view_lines_draws_the_axis_of_a_sleeve_once_where_the_view_shows_it() ->
 # --- the balloons of an assembly (finding 4) ----------------------------------------------------------------------------------
 
 
-def test_balloons_default_to_the_isometric_view_and_the_review_flags_the_ones_that_are_not() -> None:
+def test_nothing_asks_the_balloons_onto_the_isometric() -> None:
+    """The owner's rule is the opposite: balloons spread over all the views. The review used to flag the ones off the isometric."""
     ctx = front_context([])
-    assert asm._view_name(ctx, {}) == "front"
-    ctx.extras["views_extra"] = {"isometric": object()}
-    assert asm._view_name(ctx, {}) == "isometric"
-    assert asm._view_name(ctx, {"view": "top"}) == "top"
-    ctx.extras["views_extra"] = {"isometric": object(), "exploded": object()}
-    assert asm._view_name(ctx, {}) == "exploded"
-
     ctx.extras["views_extra"] = {"isometric": object()}
     ctx.assembly = sc.Assembly([sc.PartGroup(1, "plate", "plate", "", "S355", "", ["comp:1"])])
     ctx.extras["balloons"] = {"drawn": {1}, "hidden": {}, "view": {1: "front"}}
     ctx.extras["parts_list"] = {"rect": (0, 0, 1, 1), "positions": [1]}
     data = review.ReviewInput([{"id": "pl", "type": "parts_list"}, {"id": "bal", "type": "balloons"}], {"pl": sc.ItemResult("pl", "parts_list", "ok", ""), "bal": sc.ItemResult("bal", "balloons", "ok", "")}, ctx, ctx.sheet)
-    codes = [f.code for f in review._assembly_lists(data)]
-    assert "balloons_off_isometric" in codes
-    ctx.extras["balloons"]["view"] = {1: "isometric"}
-    assert "balloons_off_isometric" not in [f.code for f in review._assembly_lists(data)]
+    assert [f.code for f in review._assembly_lists(data) if "balloon" in f.code] == []
 
 
 # --- a view with nothing in it (finding 2): the check does fire on a section, the gate used to accept the agent's answer ---------

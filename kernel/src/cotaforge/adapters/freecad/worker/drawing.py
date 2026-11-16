@@ -1597,8 +1597,6 @@ def _sync_auto_items(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None)
     standard = [v for v in views_of(spec) if v != "iso"]
     assembly = _is_assembly(doc, spec.get("body"))
     wanted: dict[str, dict[str, Any]] = {}
-    if assembly and LiveGeometry(doc, _shapes(doc, spec.get("body"), op), op).assembly_holes():
-        wanted[AUTO_HOLES_ID] = {"id": AUTO_HOLES_ID, "type": "hole_positions", "auto": True}
     found_holes = [] if assembly else hole_infos(doc, spec.get("body"), op)
     if found_holes:
         wanted[AUTO_LOCATE_ID] = {"id": AUTO_LOCATE_ID, "type": "datum_dims", "auto": True}

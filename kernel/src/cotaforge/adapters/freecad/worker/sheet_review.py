@@ -20,7 +20,6 @@ from typing import Any
 
 import sheet_callout
 import sheet_checks
-import sheet_interface
 import sheet_isoview
 import sheet_thread
 import sheet_turned
@@ -92,7 +91,6 @@ def review(data: ReviewInput) -> list[Finding]:
         _layout,
         _assembly_lists,
         _weldment_lists,
-        _assembly_holes,
         _assembly_joints,
         _hidden_instances,
         _marks_run_over_themselves,
@@ -1062,26 +1060,6 @@ def _assembly_joints(data: ReviewInput) -> list[Finding]:
     return [Finding("assembly_not_joined", "warning", text)]
 
 
-def _assembly_holes(data: ReviewInput) -> list[Finding]:
-    """A through hole of the assembly is located only by a dimension that is ON THE SHEET (its centre distance and its
-    distance from the edge of the plate): a hole that the model has and the sheet does not position is a finding."""
-    ctx = data.ctx
-    out: list[Finding] = []
-    for key, label, missing in sheet_interface.unlocated(ctx):
-        along = {"x": "en x", "y": "en y", "xy": "en x e y"}[missing]
-        along_en = {"x": "along x", "y": "along y", "xy": "along x and y"}[missing]
-        text = ctx.say(
-            f"Agujero pasante {label} del conjunto sin posición {along} en la hoja: ninguna cota dibujada da su distancia entre "
-            "centros ni su distancia a un borde de la placa. Una vista que lo vea como círculo (superior) y el item overall "
-            "las dibujan; o acota con dim distance desde una arista de la placa.",
-            f"Through hole {label} of the assembly has no position {along_en} on the sheet: no dimension drawn gives its centre "
-            "distance or its distance from an edge of the plate. A view that sees it as a circle (the top one) and the overall "
-            "item draw them; or dimension it with dim distance from an edge of the plate.",
-        )
-        out.append(Finding("hole_not_located", "warning", text, (), (), key))
-    return out
-
-
 def _weldment_lists(data: ReviewInput) -> list[Finding]:
     """The sheet of a welded part carries its cut list and a balloon per body, numbered as the list (``sheet_weldrules``), and
     every position has the designation (profile and size) the designer gave: the harness never guesses it."""
@@ -1302,16 +1280,6 @@ def _assembly_lists(data: ReviewInput) -> list[Finding]:
                 f"Balloons without a row in the parts list: {shown}.",
             )
             out.append(Finding("balloon_without_row", "warning", text, (*list_ids, *balloon_ids)))
-    shown_in = {str(v) for v in book.get("view", {}).values()}
-    pictorial = {n for n in ctx.extras.get("views_extra", {}) if n in ("isometric", "exploded")}
-    if balloons and pictorial and shown_in and not shown_in & pictorial:
-        text = ctx.say(
-            f"Los globos están en la vista {', '.join(sorted(shown_in))} y la hoja tiene {' y '.join(sorted(pictorial))}: los "
-            f"globos van en la vista isométrica, donde se ve cada pieza (balloons con view={sorted(pictorial)[0]}).",
-            f"The balloons are on the {', '.join(sorted(shown_in))} view and the sheet has a {' and '.join(sorted(pictorial))} "
-            f"view: balloons go on the pictorial view, where each part is seen (balloons with view={sorted(pictorial)[0]}).",
-        )
-        out.append(Finding("balloons_off_isometric", "warning", text, balloon_ids))
     thin = {n: s for n, s in sorted(book.get("share", {}).items()) if n in drawn and s < sheet_isoview.VISIBLE_MIN}
     if thin:
         labels = {g.position: g.label for g in ctx.assembly.groups}

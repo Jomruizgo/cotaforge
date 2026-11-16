@@ -231,6 +231,47 @@ def test_one_balloon_per_visible_position_numbered_like_the_list_and_the_hidden_
     assert ctx.extras["balloons"]["drawn"] == {1, 2, 3} and 4 in ctx.extras["balloons"]["hidden"]
 
 
+class SharedGeometry(AssemblyGeometry):
+    """Each view shows a share of each part: ``shares[view direction][instance]`` (a part a view does not list is hidden there)."""
+
+    def __init__(self, shares: dict[tuple[float, ...], dict[str, float]]) -> None:
+        super().__init__()
+        self.shares = shares
+
+    def instance_anchors(self, instances: list[str], frame: Any, offsets: dict[str, sc.Vec3], margin_mm: float, outward: bool = False) -> dict[str, list[sc.Vec3]]:
+        seen = self.shares.get(tuple(frame[2]), {})
+        return {c: [VISIBLE[c]] if c in seen and c in VISIBLE else [] for c in instances}
+
+    def visible_share(self, instances: list[str], frame: Any, offsets: dict[str, sc.Vec3]) -> dict[str, float]:
+        return {c: self.shares.get(tuple(frame[2]), {}).get(c, 0.0) for c in instances}
+
+
+def test_balloons_with_no_view_given_spread_over_the_views_each_position_once_where_its_part_is_best_seen() -> None:
+    """The owner's practice. It used to put every balloon on the isometric (or the front view)."""
+    ctx = context()
+    front, top = tuple(ctx.views["front"].direction), tuple(ctx.views["top"].direction)
+    ctx.geometry = SharedGeometry(
+        {
+            front: {"comp:1": 0.3, "comp:2": 1.0, "comp:3": 1.0},  # the bracket is clearest from the front
+            top: {"comp:1": 1.0, "comp:2": 0.4, "comp:4": 0.9},  # the plate and the shaft from above
+        }
+    )
+    [res] = draw(ctx, {"type": "balloons"})
+    where = ctx.extras["balloons"]["view"]
+    assert where == {1: "top", 2: "front", 3: "top"}, where
+    assert sorted(e.text for e in ctx.sheet.entities if isinstance(e, model.Text) and e.height == asm.BALLOON_TEXT_MM) == ["1", "2", "3"]
+    assert "front view" in res.detail and "top view" in res.detail and "4 (pasador)" in res.detail  # no view shows the pin: reported
+
+
+def test_balloons_take_the_positions_they_are_given_so_the_drafter_can_place_each_part_on_its_view() -> None:
+    ctx = context()
+    draw(ctx, {"type": "balloons", "view": "front", "positions": [2]}, {"type": "balloons", "view": "top", "positions": [1, 3]})
+    assert ctx.extras["balloons"]["view"] == {2: "front", 1: "top", 3: "top"}
+    assert len(balloon_circles(ctx)) == 3  # each position once
+    with pytest.raises(ValueError, match="positions"):
+        asm.check_balloons({"positions": []})
+
+
 def test_identical_instances_get_one_balloon_and_the_first_visible_one_is_used() -> None:
     ctx = context()
     geometry = ctx.geometry

@@ -289,7 +289,16 @@ BALLOON_VIEWS = ("front", "top", "right", "isometric", "exploded")
 NATIVE_VIEWS = ("front", "top", "right", "isometric")  # the views that are TechDraw's own (a balloon hangs on one)
 SIDES = ("above", "below", "left", "right")
 
-BALLOON_CHECKS = {"view": v_enum(*BALLOON_VIEWS), "side": v_enum(*SIDES)}
+SPREAD_MARGIN = 0.05  # a later view takes a position only when it shows this much more of its part
+
+
+def v_positions(value: Any) -> list[int]:
+    if not isinstance(value, list) or not value or not all(isinstance(n, int) and not isinstance(n, bool) and n > 0 for n in value):
+        raise ValueError("positions is a list of position numbers of the parts list, like [1, 3]")
+    return value
+
+
+BALLOON_CHECKS = {"view": v_enum(*BALLOON_VIEWS), "side": v_enum(*SIDES), "positions": v_positions}
 
 
 def check_balloons(spec: dict[str, Any]) -> dict[str, Any]:
@@ -427,11 +436,29 @@ def place_balloons(
     return placed, failed, crossing
 
 
-def _view_name(ctx: Context, spec: dict[str, Any]) -> str:
-    if spec.get("view"):
-        return spec["view"]
-    extra = ctx.extras.get("views_extra", {})  # the pictorial views: the balloons read best on them (ISO 6433 practice)
-    return "exploded" if "exploded" in extra else "isometric" if "isometric" in extra else "front"
+def _view_names(ctx: Context) -> list[str]:
+    """The views of the sheet a balloon can hang on, the standard ones first (a tie goes to them, not to the isometric)."""
+    extra = ctx.extras.get("views_extra", {})
+    return [n for n in NATIVE_VIEWS if n in ctx.views or n in extra]
+
+
+def spread(ctx: Context, assembly: Assembly, names: list[str]) -> dict[str, set[int]]:
+    """Each position on ONE view: the one that shows most of its part (the owner's practice: balloons spread over all the
+    views, never all on the isometric). A view later in ``names`` takes a position only when it shows clearly more of it."""
+    best: dict[int, tuple[float, str]] = {}
+    for name in names:
+        view = ctx.any_view(name)
+        shown, _ = visible_dots(ctx, assembly, view, {})
+        pointed = {n: first for n, (first, _) in shown.items()}
+        shares = ctx.geometry.visible_share(list(pointed.values()), (view.centre, view.xdir, view.direction), {}) if pointed else {}
+        for number, instance in pointed.items():
+            share = float(shares.get(instance, 0.0))
+            if number not in best or share > best[number][0] + SPREAD_MARGIN:
+                best[number] = (share, name)
+    out: dict[str, set[int]] = {}
+    for number, (_, name) in best.items():
+        out.setdefault(name, set()).add(number)
+    return out
 
 
 def visible_dots(
@@ -462,31 +489,54 @@ def visible_dots(
 
 def draw_balloons(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     assembly = _assembly(ctx, "the balloons")
-    name = _view_name(ctx, spec)
-    view = ctx.any_view(name)
-    offsets = ctx.extras.get("explosion", {}).get("offsets", {}) if name == "exploded" else {}
-    shown, hidden = visible_dots(ctx, assembly, view, offsets)
-    dots = {n: p for n, (_, p) in shown.items()}
-    placed, failed, crossing = place_balloons(ctx, view, dots, spec.get("side"))
-    entities: list[Entity] = []
-    for number, centre in placed.items():
-        entities += _balloon(centre, dots[number], str(number))
-        if name in NATIVE_VIEWS:  # TechDraw's own balloon on its view (the entities are the headless sheet)
-            ctx.native(NativeBalloon(str(spec["id"]), name, str(number), centre, dots[number]))
-    ctx.add(entities)
+    only = set(spec["positions"]) if spec.get("positions") else None
+    plan: dict[str, set[int] | None]
+    if spec.get("view"):
+        plan = {spec["view"]: only}
+    elif "exploded" in ctx.extras.get("views_extra", {}):
+        plan = {"exploded": only}  # an exploded view shows every part apart: it carries them all
+    else:
+        names = _view_names(ctx) or ["front"]
+        plan = dict(spread(ctx, assembly, names)) or {names[0]: only}
+        if only is not None:
+            plan = {name: wanted & only for name, wanted in plan.items() if wanted and wanted & only}
     book = ctx.extras.setdefault("balloons", {"drawn": set(), "hidden": {}, "view": {}})
-    book["drawn"] |= set(placed)
-    book["hidden"].update({n: (w, name) for n, w in hidden.items()})
-    for number in placed:
-        book["view"][number] = name
-    pointed = {n: first for n, (first, _) in shown.items()}
-    shares = ctx.geometry.visible_share(list(pointed.values()), (view.centre, view.xdir, view.direction), offsets) if pointed else {}
-    book.setdefault("share", {}).update({n: shares[i] for n, i in pointed.items() if i in shares})  # how much of each part the view shows
+    labels = {g.position: g.label for g in assembly.groups}
+    done: list[str] = []
+    failed: list[int] = []
+    crossing: list[int] = []
+    total: set[int] = set()
+    entities: list[Entity] = []
+    for name, wanted in plan.items():
+        view = ctx.any_view(name)
+        offsets = ctx.extras.get("explosion", {}).get("offsets", {}) if name == "exploded" else {}
+        shown, _ = visible_dots(ctx, assembly, view, offsets)
+        shown = {n: found for n, found in shown.items() if wanted is None or n in wanted}
+        dots = {n: p for n, (_, p) in shown.items()}
+        placed, missed, crossed = place_balloons(ctx, view, dots, spec.get("side"))
+        for number, centre in placed.items():
+            entities += _balloon(centre, dots[number], str(number))
+            if name in NATIVE_VIEWS:  # TechDraw's own balloon on its view (the entities are the headless sheet)
+                ctx.native(NativeBalloon(str(spec["id"]), name, str(number), centre, dots[number]))
+            book["view"][number] = name
+        pointed = {n: first for n, (first, _) in shown.items()}
+        shares = ctx.geometry.visible_share(list(pointed.values()), (view.centre, view.xdir, view.direction), offsets) if pointed else {}
+        book.setdefault("share", {}).update({n: shares[i] for n, i in pointed.items() if i in shares})  # how much of each part the view shows
+        total |= set(placed)
+        failed += missed
+        crossing += crossed
+        done.append(f"{len(placed)} in the {name} view")
+    ctx.add(entities)
+    book["drawn"] |= total
+    asked = set(labels) if only is None else only & set(labels)
+    hidden = {n: labels[n] for n in sorted(asked - total - set(failed))}
+    where = ", ".join(plan)
+    book["hidden"].update({n: (w, where) for n, w in hidden.items()})
     problems = []
     if hidden:
-        listed = ", ".join(f"{n} ({w})" for n, w in sorted(hidden.items()))
+        listed = ", ".join(f"{n} ({w})" for n, w in hidden.items())
         problems.append(
-            f"no balloon for position(s) {listed}: the {name} view shows no instance of them; choose a view that does"
+            f"no balloon for position(s) {listed}: the {where} view shows no instance of them; choose a view that does"
         )
     if failed:
         problems.append(
@@ -497,7 +547,7 @@ def draw_balloons(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             f"the leader of position(s) {', '.join(str(n) for n in sorted(crossing))} crosses a dimension or a text: "
             "no cleaner place was free (side= or another view may help)"
         )
-    detail = f"{len(placed)} balloon(s) in the {name} view"
+    detail = f"{len(total)} balloon(s) in the {where} view" if len(plan) == 1 else f"{len(total)} balloon(s): " + ", ".join(done)
     if problems:
         return "warning", f"{detail}; " + "; ".join(problems)
     return "ok", detail
