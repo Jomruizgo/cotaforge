@@ -11,7 +11,9 @@ import mcp.types as types
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from tests.conftest import process_entry
+from cotaforge_mcp import engineer_words
+from cotaforge_mcp.config import Settings
+from tests.conftest import SESSION_ID, engineer_says, process_entry
 
 ENTRY = {
     "id": "ajuste-ejes",
@@ -30,6 +32,8 @@ async def running_server(workspace: Path, home: Path) -> AsyncIterator[tuple[Cli
         "COTAFORGE_WORKSPACE": str(workspace),
         "COTAFORGE_HOME": str(home),  # never the real ~/.cotaforge
         "COTAFORGE_BASE_MEMORY": "0",  # the base set would make the memory section non-empty
+        engineer_words.ENV_SESSION: SESSION_ID,  # Claude Code gives it to the servers it starts
+        engineer_words.ENV_ENTRYPOINT: engineer_words.TERMINAL_ENTRYPOINT,
         "HOME": str(home),
         "USERPROFILE": str(home),
     }
@@ -69,7 +73,7 @@ async def test_memory_over_stdio_and_the_index_reaches_the_next_server(tmp_path:
         statement = {"source": "user_statement", "reference": "his words", "by": "Ana", "date": "2026-10-27"}
         is_error, text = await call(session, action="save", entry={**ENTRY, "provenance": statement}, scope="user")
         assert not is_error and "note: the project entry with the same id wins" in text
-        is_error, text = await call(session, action="approve", id="ajuste-ejes", by="Ana", text="Ana: apruebala")
+        is_error, text = await call(session, action="approve", id="ajuste-ejes", by="Ana", text=engineer_says(Settings(home=home, session_id=SESSION_ID), "apruebala"))
         assert not is_error and text.startswith("approved: ajuste-ejes")
 
         unproven = process_entry()

@@ -20,6 +20,9 @@ from cotaforge.adapters.freecad.rpc import _binaries
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from cotaforge_mcp import engineer_words
+from tests.conftest import claude_code_prompt
+
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     here = Path(__file__).parent
@@ -63,14 +66,28 @@ PENDING_BLOCKING = re.compile(r"^  BLOCKS EXPORT (\S+?)(?: \[[^\]]*\])?(?: \(row
 ANSWERED = re.compile(r"^  - ([a-z_]+(?:[:#]\S*)?): (?:APPLIES|DOES NOT APPLY)", re.M)
 
 
+SESSION_ID = "integration-session"
+"""The Claude Code session the server of a test believes it serves (Claude Code gives a real one its id)."""
+
+
 class Cad:
-    def __init__(self, session: ClientSession, looks: bool = True) -> None:
+    def __init__(self, session: ClientSession, looks: bool = True, home: Path | None = None) -> None:
         self.session = session
+        self.home = home
+        """The data folder of the server (``COTAFORGE_HOME``): where what the engineer types is kept."""
         self.built = False  # a sheet was built (created or composed) in this test: its review runs when the test ends
         self.allowed: set[str] = set()
         self.looks = looks
         """Look at the sheet before an export of it, like the agent does (export waits for a capture taken after the last
         change of the sheet): the tests of the export are about something else; the ones about the look pass ``looks=False``."""
+
+    def says(self, text: str) -> str:
+        """The engineer types ``text`` in the session: the hook Claude Code runs for each of his messages records
+        it, as in a real session. Returns the text, to quote it in an order (an order he did not type is refused)."""
+        assert self.home is not None
+        payload = claude_code_prompt(self.home, SESSION_ID, text)
+        assert engineer_words.hook(payload, {engineer_words.ENV_HOME: str(self.home)}) is not None
+        return text
 
     def allow(self, *codes: str) -> None:
         """This test builds a defect on purpose: these codes may stand on its sheets."""
@@ -127,11 +144,14 @@ async def running_server(
         "COTAFORGE_WORKSPACE": str(workspace),
         "COTAFORGE_VISIBLE": "1" if visible else "0",
         "COTAFORGE_FREECAD_ISOLATED": "1",  # a FreeCAD profile of its own: never the engineer's recent files or recovery data
+        engineer_words.ENV_SESSION: SESSION_ID,
+        engineer_words.ENV_ENTRYPOINT: engineer_words.TERMINAL_ENTRYPOINT,
     }
+    env.setdefault(engineer_words.ENV_HOME, str(workspace.parent / "home"))  # never the real data folder
     params = StdioServerParameters(command=sys.executable, args=["-m", "cotaforge_mcp"], env=env)
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
         init = await session.initialize()
-        cad = Cad(session)
+        cad = Cad(session, home=Path(env[engineer_words.ENV_HOME]))
         yield cad, init
         if cad.built:  # no test sheet without a review: reached only when the test body ended without an error
             await cad.assert_sheet_clean()
@@ -139,9 +159,16 @@ async def running_server(
 
 FINDING_LINE = re.compile(r"^  (?:warning|info|BLOCKS EXPORT)(?: \(does not block export\))? (\S+?)(?: \[[^\]]*\])?(?: \(row [^)]*\))?: ", re.M)
 ROW_LINE = re.compile(r"^  \[(?:MISSING|NEEDS AN ANSWER)\] (req\.\S+) ", re.M)
-ORDER = {"by": "la prueba", "reason": "la prueba trata de otra cosa que este punto; el ingeniero lo ordena así"}
-"""What an engineer who orders a point closed says: a test about something else than the finished drawing plays him, so
-the measured points (which an agent may not dismiss on its own word) close like the rest."""
+ORDER_WORDS = "esta prueba trata de otra cosa: ordeno cerrar este punto"
+
+
+def order(cad: Cad) -> dict[str, str]:
+    """The order of an engineer who closes a point: a test about something else than the finished drawing plays him.
+    He types it first (the server accepts an order only with words he typed in the session), then it is quoted, so
+    the measured points (which an agent may not dismiss on its own word) close like the rest."""
+    return {"by": "Ana", "reason": cad.says(ORDER_WORDS)}
+
+
 QUESTION_LINE = re.compile(r"^  (q\.\S+): ", re.M)
 MEMORY_LINE = re.compile(r"^  (\S+) — recognize: ", re.M)
 
@@ -166,7 +193,7 @@ async def finish_drawing(
     that is about something else than the finished drawing (the export of a sheet is refused until this is done): the
     project reviews its drawings itself (``propio``, the engineer's words quoted), so the points are the agent's own.
     Memory entries are read first, as the server requires. Returns how many points it answered."""
-    await cad.ok("memory", action="brief", drawing_review="propio", text="la prueba trata de otra cosa que la revisión")
+    await cad.ok("memory", action="brief", drawing_review="propio", text=cad.says("esta prueba trata de otra cosa que la revisión"))
     arguments = {"sheet": sheet} if sheet else {}
     total = 0
     for _ in range(4):  # answering opens the next points (the memory entries of the drawing ops, the rows that follow)
@@ -177,7 +204,7 @@ async def finish_drawing(
         for entry in memory:
             await cad.ok("memory", action="get", id=entry)
         for point in [*findings, *questions, *memory, *rows]:
-            await cad.ok("drawing", action="answer", id=point, text=reason, **ORDER, **arguments)
+            await cad.ok("drawing", action="answer", id=point, text=reason, **order(cad), **arguments)
         total += len(findings) + len(questions) + len(memory) + len(rows)
     return total
 
@@ -214,7 +241,7 @@ async def close_findings(
     rows = await pending_rows(cad, sheet)
     arguments = {"sheet": sheet} if sheet else {}
     for point in [*findings, *rows]:
-        await cad.ok("drawing", action="answer", id=point, text=reason, **ORDER, **arguments)
+        await cad.ok("drawing", action="answer", id=point, text=reason, **order(cad), **arguments)
     return len(findings) + len(rows)
 
 

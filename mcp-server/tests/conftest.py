@@ -1,5 +1,7 @@
 """Shared fixtures: a session over the fake adapter, a direct tool caller and fake variants with fewer capabilities."""
 
+import json
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -8,6 +10,7 @@ import pytest
 from cotaforge.adapters.fake import FakeAdapter
 from cotaforge.contract import TOOL_REGISTRY, Capabilities
 
+from cotaforge_mcp import engineer_words
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.reply import Reply
 from cotaforge_mcp.server import make_session
@@ -347,9 +350,7 @@ class DrawingFake(FakeAdapter):
         )
 
     def capture_drawing(self, request: Any) -> Any:
-        from cotaforge.contract import CaptureDrawingResult
-
-        from cotaforge.contract import SheetCrop
+        from cotaforge.contract import CaptureDrawingResult, SheetCrop
 
         self.captured.append(request)
         Path(request.path).write_bytes(PNG)
@@ -515,10 +516,58 @@ def fake_without(*tools: str) -> FakeAdapter:
     return Reduced()
 
 
+SESSION_ID = "unit-session"
+ENTRYPOINT = "cli"
+"""The session of a test is one a person types in at the terminal, as the engineer's is."""
+TURN_SOURCES = {"human": "typed", "sdk": "sdk"}
+
+
+def claude_code_prompt(home: Path, session_id: str, text: str, turn: str = "human") -> dict[str, str]:
+    """What Claude Code does when a message starts a turn, as far as the harness sees it (measured on Claude Code
+    2.1.323): the message goes into the session's transcript with who started the turn (``human``: typed at the
+    terminal; ``sdk``: given by a program; ``task_notification``: the result of a background task), and the
+    ``UserPromptSubmit`` hook is run with the payload returned here."""
+    transcript = home / "claude-code" / f"{session_id}.jsonl"
+    transcript.parent.mkdir(parents=True, exist_ok=True)
+    prompt_id = str(uuid.uuid4())
+    entry = {
+        "type": "user",
+        "promptId": prompt_id,
+        "promptSource": TURN_SOURCES.get(turn, "system"),
+        "turnOrigin": turn,
+        "message": {"role": "user", "content": text},
+    }
+    with transcript.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return {
+        "hook_event_name": engineer_words.HOOK_EVENT,
+        "session_id": session_id,
+        "prompt_id": prompt_id,
+        "transcript_path": str(transcript),
+        "prompt": text,
+    }
+
+
+def engineer_says(settings: Settings, text: str, turn: str = "human") -> str:
+    """The engineer types ``text`` in the session of ``settings``: Claude Code writes it to the transcript and runs
+    the hook, which records it, exactly as in a real session. Returns the text, to quote it in an order. ``turn``:
+    another origin of the message, for the tests of what is NOT his."""
+    assert settings.home is not None and settings.session_id
+    payload = claude_code_prompt(settings.home, settings.session_id, text, turn)
+    written = engineer_words.hook(payload, {engineer_words.ENV_HOME: str(settings.home)})
+    assert written is not None, "the hook recorded nothing"
+    return text
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     return Settings(
-        adapter="fake", workspace=tmp_path, home=tmp_path / "home", base_memory=False
+        adapter="fake",
+        workspace=tmp_path,
+        home=tmp_path / "home",
+        base_memory=False,
+        session_id=SESSION_ID,
+        entrypoint=ENTRYPOINT,
     )  # never the real ~/.cotaforge
 
 
@@ -554,6 +603,10 @@ class Caller:
             call_tool(self.session, "drawing", {"action": "capture", "sheet": arguments.get("sheet")})
         self.last = call_tool(self.session, tool, arguments)
         return self.last
+
+    def says(self, text: str) -> str:
+        """The engineer types ``text`` (see ``engineer_says``)."""
+        return engineer_says(self.session.settings, text)
 
     def ok(self, tool: str, **arguments: Any) -> str:
         reply = self(tool, **arguments)

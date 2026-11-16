@@ -12,13 +12,13 @@ from cotaforge.adapters.fake import FakeAdapter
 from cotaforge_mcp import bearing_seats, design_memory, measured_alerts, pocket_corners, turned_ends
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.server import make_session
-from tests.conftest import Caller, DrawingFake, declare
+from tests.conftest import SESSION_ID, Caller, DrawingFake, declare
 from tests.unit.test_drawing_finished import drawing_session
 from tests.unit.test_drawing_requirements import PLATE
 from tests.unit.test_memory_v2 import PRINCIPLE
 from tests.unit.test_pocket_corners import SLOT, _block, _pocket, _rect
 
-WORDS = "Ana: deja las esquinas como están, el taller las hace por electroerosión"
+WORDS = "deja las esquinas como están, el taller las hace por electroerosión"
 ORDERED = f"does not apply: {WORDS}"
 SHEET_ORDER = {"by": "Ana", "reason": WORDS}
 PLAIN = "does not apply: the shop makes it by EDM"
@@ -27,7 +27,7 @@ Fix = Callable[[Caller], None]
 
 @pytest.fixture
 def base_call(tmp_path: Path) -> Caller:
-    settings = Settings(adapter="fake", workspace=tmp_path, home=tmp_path / "home", base_memory=True)
+    settings = Settings(adapter="fake", workspace=tmp_path, home=tmp_path / "home", base_memory=True, session_id=SESSION_ID, entrypoint="cli")
     return Caller(make_session(settings, FakeAdapter()))
 
 
@@ -85,7 +85,7 @@ def test_the_review_holds_the_open_violation_with_what_was_measured(base_call: C
     entry, _ = scenario(base_call)
     refused = base_call.err("memory", action="review", stage="detail")
     assert "pending_answers" in refused and f"- {entry} — MEASURED on the model, still fires" in refused
-    assert "by=<his name>" in refused and "<his words, quoted>" in refused
+    assert "by=<his name>" in refused and "<his words, exactly as he typed them" in refused
 
 
 @pytest.mark.parametrize("scenario", CASES)
@@ -107,11 +107,11 @@ def test_fixed_closes_it(base_call: Caller, scenario: Any) -> None:
 def test_an_order_with_his_words_closes_it_and_the_review_shows_who_and_what(base_call: Caller, scenario: Any) -> None:
     entry, _ = scenario(base_call)
     read(base_call, entry)
-    done = base_call.ok("memory", action="answer", id=entry, text=ORDERED, by="Ana")
+    done = base_call.ok("memory", action="answer", id=entry, text=f"does not apply: {base_call.says(WORDS)}", by="Ana")
     assert f"answered: {entry}" in done and "ordered by Ana" in done
     ready = base_call.ok("memory", action="review", stage="detail")
     assert "ready - 1 entry answered" in ready and f"- {entry}: ORDERED KEPT, measured:" in ready
-    assert "[ordered by Ana]" in ready and "Ana: deja las esquinas como están" in ready
+    assert "[ordered by Ana]" in ready and "deja las esquinas como están" in ready
     assert measured_alerts.open_now(base_call.session) == {}
 
 
@@ -143,7 +143,7 @@ def test_an_order_needs_his_name_and_words_that_are_not_a_yes(base_call: Caller,
 def test_the_order_is_kept_with_the_document_state(base_call: Caller, scenario: Any) -> None:
     entry, _ = scenario(base_call)
     read(base_call, entry)
-    base_call.ok("memory", action="answer", id=entry, text=ORDERED, by="Ana")
+    base_call.ok("memory", action="answer", id=entry, text=f"does not apply: {base_call.says(WORDS)}", by="Ana")
     state = base_call.session.mem.to_json()["answers"][entry]
     assert state["ordered_by"] == "Ana" and state["order"] == WORDS and state["measured"].startswith("memory: ")
     assert measured_alerts.covered(state, measured_alerts.live(base_call.session)[entry])
@@ -156,7 +156,7 @@ def test_a_new_violation_after_the_order_is_open_again(base_call: Caller) -> Non
     call = base_call
     entry, _ = pocket_open(call)
     read(call, entry)
-    call.ok("memory", action="answer", id=entry, text=ORDERED, by="Ana")
+    call.ok("memory", action="answer", id=entry, text=f"does not apply: {call.says(WORDS)}", by="Ana")
     assert "ready" in call.ok("memory", action="review", stage="detail")
     call.ok(
         "op",
@@ -257,7 +257,7 @@ def test_the_row_is_closed_by_his_order_given_in_memory(settings: Settings) -> N
     _the_plate_pocket(call)
     _answer_the_rest(call)
     read(call, pocket_corners.ENTRY_ID)
-    call.ok("memory", action="answer", id=pocket_corners.ENTRY_ID, text=ORDERED, by="Ana")
+    call.ok("memory", action="answer", id=pocket_corners.ENTRY_ID, text=f"does not apply: {call.says(WORDS)}", by="Ana")
     assert "exported pdf" in call.ok("export", action="pdf")
 
 
@@ -265,6 +265,7 @@ def test_no_answer_on_the_sheet_closes_the_row_not_even_with_his_words(settings:
     call, fake = _drawing(settings)
     _the_plate_pocket(call)
     _answer_the_rest(call)
+    call.says(WORDS)  # even with words he really typed
     for extra in ({}, SHEET_ORDER):
         text = call.err("drawing", action="answer", id="req.measured_alerts", text="met: it is fine here", **extra)
         assert "measured_not_dismissable" in text and "memory(action=answer" in text

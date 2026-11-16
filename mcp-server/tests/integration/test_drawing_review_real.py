@@ -55,7 +55,7 @@ async def test_the_manufacturer_review_gates_the_export(workspace: Path, tmp_pat
     lines: list[str] = []
     async with running_server(workspace, visible=True) as (cad, _):
         await clean_plate_sheet(cad)
-        await cad.ok("memory", action="brief", drawing_review="fabricante", text="Ana: que la revise el fabricante")
+        await cad.ok("memory", action="brief", drawing_review="fabricante", text=cad.says("que la revise el fabricante"))
         listing = await cad.ok("drawing", action="list")
         assert "printed on the sheet" in listing and "Material: AISI 1045" in listing  # what the manufacturer reads
         await close_findings(cad)  # the CAD's own findings hold the export in every mode but ninguno
@@ -150,6 +150,7 @@ async def test_the_engineer_chooses_or_the_manufacturer_is_assumed(workspace: Pa
             action="review_report",
             sheet="Drawing",
             by="engineer",
+            reason=cad.says("Falta el número de plano"),
             items=[
                 {"kind": "other", "where": "rótulo", "text": "Falta el número de plano", "fix": "Llenar drawing_number"}
             ],
@@ -164,12 +165,12 @@ async def test_the_engineer_chooses_or_the_manufacturer_is_assumed(workspace: Pa
 async def test_propio_asks_the_agent_and_ninguno_asks_nothing(workspace: Path) -> None:
     async with running_server(workspace, visible=True) as (cad, _):
         await clean_plate_sheet(cad)
-        await cad.ok("memory", action="brief", drawing_review="propio", text="Ana: lo revisa el agente")
+        await cad.ok("memory", action="brief", drawing_review="propio", text=cad.says("lo revisa el agente"))
         review = await cad.ok("drawing", action="review")
         assert "drawing review mode: own" in review and "q.callouts" in review and "q.views" not in review
         assert "drawing_unfinished" in await cad.err("export", action="pdf", path="c.pdf")
         await cad.ok(
-            "memory", action="brief", drawing_review="ninguno", text="Ana: sin revisión, es un borrador de prueba"
+            "memory", action="brief", drawing_review="ninguno", text=cad.says("sin revisión, es un borrador de prueba")
         )
         listed = await cad.ok("drawing", action="review")
         assert "export of this sheet is open: the project asks no review" in listed

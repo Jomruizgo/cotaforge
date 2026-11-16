@@ -24,7 +24,10 @@ from cotaforge.adapters.freecad import find_freecad_root
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from tests.conftest import claude_code_prompt
+
 ENV_FREECAD_ROOT = "COTAFORGE_FREECAD_ROOT"
+SESSION_ID = "acceptance-session"
 ARGS_WIDTH = 140
 REPLY_WIDTH = 220
 
@@ -104,7 +107,36 @@ class Space:
 
     def environment(self) -> dict[str, str]:
         """What the child processes inherit: this process' environment with every profile folder redirected."""
-        return {**os.environ, "COTAFORGE_HOME": str(self.home), "COTAFORGE_BASE_MEMORY": "0", "HOME": str(self.home), "USERPROFILE": str(self.home)}
+        return {
+            **os.environ,
+            "COTAFORGE_HOME": str(self.home),
+            "COTAFORGE_BASE_MEMORY": "0",
+            "HOME": str(self.home),
+            "USERPROFILE": str(self.home),
+            "CLAUDE_CODE_SESSION_ID": SESSION_ID,  # Claude Code gives it to the server and to the hooks
+            "CLAUDE_CODE_ENTRYPOINT": "cli",  # a person at the terminal
+            "CLAUDE_PROJECT_DIR": str(self.workspace),
+        }
+
+    def says(self, text: str) -> str:
+        """The engineer types ``text``: the ``UserPromptSubmit`` hook that ``cotaforge init`` wrote into the design space
+        is run the way Claude Code runs it (its command through a shell, the message as JSON on standard input).
+        Returns the text, to quote it in an order."""
+        (entry,) = self.settings["hooks"]["UserPromptSubmit"]
+        (handler,) = entry["hooks"]
+        payload = {**claude_code_prompt(self.home, SESSION_ID, text), "cwd": str(self.workspace)}
+        done = subprocess.run(  # noqa: S602 - the command init generated, as Claude Code runs it
+            handler["command"],
+            shell=True,
+            input=json.dumps(payload).encode("utf-8"),
+            env=self.environment(),
+            cwd=self.workspace,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        assert done.returncode == 0 and not done.stdout, (done.stdout, done.stderr)  # a prompt hook prints nothing
+        return text
 
     def server_parameters(self) -> StdioServerParameters:
         """The server exactly as the generated ``.mcp.json`` declares it."""

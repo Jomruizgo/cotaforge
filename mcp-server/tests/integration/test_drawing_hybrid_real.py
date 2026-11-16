@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from tests.integration.conftest import ORDER, Cad, running_server
+from tests.integration.conftest import Cad, order, running_server
 from tests.integration.test_drawing_compose_real import compose_the_rest, in_one_order
 from tests.integration.test_drawing_requirements_real import TOP, XY, make_plate
 
@@ -93,7 +93,7 @@ async def hybrid(cad: Cad, shots: Path, tag: str, decisions: dict[str, Any], kee
     assert "composed sheet" in composed and "update" in composed.split("next:")[-1], composed
     await capture(cad, shots, f"{tag}_composed")
     # a second compose for a local fix is refused and changes nothing
-    refused = await cad.err("drawing", action="compose", decisions={**decisions, "notes": ["otra nota"]}, **ORDER)
+    refused = await cad.err("drawing", action="compose", decisions={**decisions, "notes": ["otra nota"]}, **order(cad))
     print("REFUSED", tag, refused)
     assert "already composed" in refused and "nothing was changed" in refused, refused
     measured = await only_this_changes(cad, shots, tag, item, patch)

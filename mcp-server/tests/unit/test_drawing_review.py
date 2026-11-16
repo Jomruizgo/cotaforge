@@ -55,7 +55,7 @@ def session_in(settings: Settings, mode: str, wait: int | None = None) -> tuple[
     fake = DrawingFake()
     call = Caller(
         make_session(
-            Settings(adapter="fake", workspace=settings.workspace, home=settings.home, base_memory=False), fake
+            Settings(adapter="fake", workspace=settings.workspace, home=settings.home, session_id=settings.session_id, entrypoint=settings.entrypoint, base_memory=False), fake
         )
     )
     plate(call)
@@ -64,7 +64,9 @@ def session_in(settings: Settings, mode: str, wait: int | None = None) -> tuple[
 
 
 def report(call: Caller, by: str, *items: dict[str, str]) -> str:
-    return call.ok("drawing", action="review_report", sheet="Drawing", by=by, items=list(items))
+    said = " / ".join(item["text"] for item in items) or "sin observaciones"
+    words = {"reason": call.says(said)} if by == "engineer" else {}  # his report carries what he typed
+    return call.ok("drawing", action="review_report", sheet="Drawing", by=by, items=list(items), **words)
 
 
 # --- the setting ----------------------------------------------------------------------------------------------------------
@@ -82,10 +84,10 @@ def test_the_setting_is_kept_in_the_brief_next_to_the_sector_and_needs_the_engin
     refused = call.err("memory", action="brief", drawing_review="own")
     assert "engineer's decision" in refused and "text" in refused
     assert "drawing review own" in call.ok(
-        "memory", action="brief", drawing_review="own", text="Ana: revisa tú el plano"
+        "memory", action="brief", drawing_review="own", text=call.says("revisa tú el plano")
     )
     data = yaml.safe_load((settings.workspace / "brief.yaml").read_text(encoding="utf-8"))
-    assert data["drawing_review"] == "own" and data["drawing_review_said"] == "Ana: revisa tú el plano"
+    assert data["drawing_review"] == "own" and data["drawing_review_said"] == "revisa tú el plano"
     assert data["sector"] == "chapa y soldadura"  # a new setting does not lose the old ones
     call.ok("memory", action="brief", sector="mecanizado")
     assert design_memory.load_brief(settings).drawing_review == "own"  # nor does a later sector

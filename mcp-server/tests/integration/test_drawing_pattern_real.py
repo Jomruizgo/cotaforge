@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from tests.integration.conftest import ORDER, Cad, Reply, running_server
+from tests.integration.conftest import Cad, Reply, running_server
 from tests.integration.test_drawing_compose_real import compose_the_rest, in_one_order
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="the visible FreeCAD window is exercised on Windows")
@@ -132,4 +132,3 @@ async def test_sheet_mode_dimensions_the_pattern_from_its_axis(workspace: Path, 
         review = await cad.ok("drawing", action="review")
         print("REVIEW", which, review)
         assert "pd1" in listed and "pattern_not_polar" not in review, review + listed
-        assert ORDER  # the engineer the test plays orders the answers; nothing is asked of him about the pattern

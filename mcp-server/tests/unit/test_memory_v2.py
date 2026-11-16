@@ -116,7 +116,7 @@ def test_a_proposed_entry_is_not_pushed_and_approving_it_starts_the_push(call: C
     call.ok("doc", action="new", name="plate")
     call.ok("op", name="sketch", params=PLATE_SKETCH)
     assert "memoria:" not in call.ok("op", name="extrude", params={"sketch": "s1", "depth_mm": 8})
-    call.ok("memory", action="approve", id="precision-del-ensamble", by="Ana", text="Ana: apruébala")
+    call.ok("memory", action="approve", id="precision-del-ensamble", by="Ana", text=call.says("apruébala"))
     assert "memory: precision-del-ensamble" in call.ok("op", name="extrude", params={"sketch": "s1", "depth_mm": 4})
 
 
@@ -289,8 +289,8 @@ def test_user_scope_is_proposed_whatever_the_provenance(call: Caller) -> None:
 def test_approve_is_the_engineers_gate(call: Caller, settings: Settings) -> None:
     call.ok("memory", action="save", entry=PRINCIPLE)
     assert "approve is the engineer's gate" in call.err("memory", action="approve", id="precision-del-ensamble")
-    done = call.ok("memory", action="approve", id="precision-del-ensamble", by="Ana", text="Ana: sí, es regla")
-    assert done.startswith("approved: precision-del-ensamble in project memory by Ana (Ana: sí, es regla)")
+    done = call.ok("memory", action="approve", id="precision-del-ensamble", by="Ana", text=call.says("sí, es regla"))
+    assert done.startswith("approved: precision-del-ensamble in project memory by Ana (sí, es regla)")
     assert "not_proposed" in call.err(
         "memory", action="approve", id="precision-del-ensamble", by="Ana", text="otra vez"
     )
@@ -316,7 +316,7 @@ def test_the_brief_is_kept_in_the_design_space(call: Caller, settings: Settings)
 
 
 def test_the_base_set_is_listed_pushed_and_deactivated_by_id(make: MakeSession, settings: Settings) -> None:
-    on = Settings(adapter="fake", workspace=settings.workspace, home=settings.home, base_memory=True)
+    on = Settings(adapter="fake", workspace=settings.workspace, home=settings.home, session_id=settings.session_id, entrypoint=settings.entrypoint, base_memory=True)
     from cotaforge.adapters.fake import FakeAdapter
 
     from cotaforge_mcp.server import make_session
@@ -343,7 +343,7 @@ def test_a_base_principle_is_pushed_at_its_op_and_required_at_the_milestone(sett
 
     from cotaforge_mcp.server import make_session
 
-    on = Settings(adapter="fake", workspace=settings.workspace, home=settings.home, base_memory=True)
+    on = Settings(adapter="fake", workspace=settings.workspace, home=settings.home, session_id=settings.session_id, entrypoint=settings.entrypoint, base_memory=True)
     call = Caller(make_session(on, FakeAdapter()))
     welded_plate(call)
     refused = call.err("memory", action="review", stage="detail")

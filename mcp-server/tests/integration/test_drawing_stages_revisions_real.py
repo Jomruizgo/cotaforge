@@ -116,7 +116,7 @@ async def release_then_change(cad: Cad, workspace: Path, shots: Path, tag: str) 
     cad.allow("view_adds_nothing")  # the plate sheet in A3 shows a side view the test is not about
     entry = "machining-turned-end-chamfer"  # a measured alert of the plate the engineer, played by the test, orders kept
     await cad.ok("memory", action="get", id=entry)
-    await cad.ok("memory", action="answer", id=entry, by="la prueba", text="no aplica: la prueba trata de la revisión de la hoja, no del borde del agujero")
+    await cad.ok("memory", action="answer", id=entry, by="Ana", text="no aplica: " + cad.says("esta prueba trata de la revisión de la hoja, no del borde del agujero"))
     await finish_drawing(cad)
     await shot(cad, shots, f"{tag}_0_first_issue")
     await cad("drawing", action="capture")
@@ -153,7 +153,7 @@ async def test_a_hole_changed_after_the_first_export_is_a_revision_item_by_item(
     shots = shots_dir(tmp_path)
     async with running_server(workspace, visible=True) as (cad, _):
         await make_plate(cad)
-        await cad.ok("memory", action="brief", drawing_review="propio", text="la prueba trata de otra cosa")
+        await cad.ok("memory", action="brief", drawing_review="propio", text=cad.says("esta prueba trata de otra cosa"))
         print("CREATED", await cad.ok("drawing", action="create", title="Placa"))
         await cad.ok("drawing", action="add", items=[{"type": "hole_dim", "id": "hd", "all": True}])
         await release_then_change(cad, workspace, shots, "plate_step")
