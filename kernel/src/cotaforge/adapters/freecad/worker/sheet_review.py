@@ -444,19 +444,22 @@ def _located_holes(data: ReviewInput) -> set[int]:
 
 def ask_reference(ctx: Context, indexes: set[int]) -> str:
     """What to add to a finding about holes whose position the default location could not reference: the axes with no
-    reference (the part is not symmetric across them and no datum item faces across them) and who decides."""
+    reference (the part has no flat face a caliper reaches across them -- a round outline, a rounded end -- and no datum item
+    faces across them) and who decides."""
     missing = ctx.extras.get("loc_missing", {})
     axes = sorted({a for i in indexes for a in missing.get(i, ())})
     if not axes:
         return ""
     where = ", ".join(axes)
     return ctx.say(
-        f" Falta una referencia en {where}: la pieza no es simétrica en ese sentido y ningún datum la cubre. Pregunta al "
-        "ingeniero desde qué cara o arista se cuentan esas posiciones, declárala con un ítem datum (face) y la ubicación "
-        "por defecto la usa.",
-        f" No reference along {where}: the part is not symmetric across it and no datum covers it. Ask the engineer which "
-        "face or edge those positions are counted from, declare it with a datum item (face) and the default location "
-        "uses it.",
+        f" Falta una referencia en {where}: la pieza no tiene ahí una cara plana, vista de canto, desde la que un calibre pueda "
+        "medir (contorno redondo, extremo redondeado) y ningún datum la cubre. Pregunta al ingeniero desde qué cara, arista o eje "
+        "se cuentan esas posiciones (un círculo de agujeros se ubica con pattern_dim); si es una cara, declárala con un ítem "
+        "datum (face) y la ubicación por defecto la usa.",
+        f" No reference along {where}: the part has no flat face seen edge-on there that a caliper can be set against (a round "
+        "outline, a rounded end) and no datum covers it. Ask the engineer which face, edge or axis those positions are counted "
+        "from (a circle of holes is located with pattern_dim); if it is a face, declare it with a datum item (face) and the "
+        "default location uses it.",
     )
 
 

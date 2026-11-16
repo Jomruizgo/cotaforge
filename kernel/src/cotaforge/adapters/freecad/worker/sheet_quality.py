@@ -275,7 +275,25 @@ def _edge_located(data: ReviewInput) -> dict[int, set[str]]:
     if any(i.get("type") == "datum_dims" and i.get("auto") and _ok(data, i) for i in data.items):
         for index, axes in ctx.extras.get("loc_edge", {}).items():
             edged.setdefault(index, set()).update(axes)
+    _chain_edge(data, edged)
     return edged
+
+
+def _chain_edge(data: ReviewInput, edged: dict[int, set[str]]) -> None:
+    """A hole dimensioned from another hole that is itself located from an edge along the same axis is located from that edge
+    through it (a screw spaced from a dowel that stands 15 from the left face is 15 + the spacing from it): the chain goes on
+    until nothing more follows, across groups of different diameter, and along a row the centres of which share the other
+    coordinate (``_aligned_centres``)."""
+    links = [(m.axis, a, b) for m in _measure(data) for a in m.holes[0] for b in m.holes[1] if a != b]
+    changed = True
+    while changed:
+        before = sum(len(v) for v in edged.values())
+        for axis, a, b in links:
+            for source, target in ((a, b), (b, a)):
+                if axis in edged.get(source, ()):
+                    edged.setdefault(target, set()).add(axis)
+        _aligned_centres(data, edged, set())
+        changed = sum(len(v) for v in edged.values()) > before
 
 
 def _group_locators(data: ReviewInput) -> list[Finding]:
@@ -321,6 +339,7 @@ def _group_locators(data: ReviewInput) -> list[Finding]:
             "a dimension from an edge or a face of the part to the nearest hole of the group is missing. A caliper measures "
             "from an edge; the spacing alone does not say where the group is on the part.",
         )
+        text += ask_reference(ctx, indexes)  # no flat face a caliper reaches there: the designer says what it is counted from
         items = tuple(dict.fromkeys(i for index in indexes for i in ids.get(index, [])))
         out.append(Finding("hole_group_no_locator", "warning", text, items, key=f"{sheet_checks.hole_key(first)}:{where}"))
     return out
@@ -329,24 +348,42 @@ def _group_locators(data: ReviewInput) -> list[Finding]:
 SPECIAL_TOOLS = {
     "position": r"posici.n|position",
     "concentricity": r"concentric|coaxial",
-    "coaxiality": r"concentric|coaxial",
     "symmetry": r"simetr|symmetr",
-    "runout": r"alabeo|oscilaci|runout|excentric|run-out",
-    "total_runout": r"alabeo|oscilaci|runout|excentric|run-out",
     "profile_line": r"perfil|profile",
     "profile_surface": r"perfil|profile",
     "cylindricity": r"cilindric",
     "circularity": r"circularidad|redondez|roundness|circularity",
 }
-"""The geometric tolerances no caliper, micrometer or height gauge can check (a CMM for a position, a roundness tester, a
-profile projector, a runout indicator between centres): the word each is called by in a note."""
+"""The geometric tolerances no caliper, micrometer, height gauge or dial indicator can check (a CMM for a position, a roundness
+tester, a profile projector): the word each is called by in a note. A runout or a coaxiality is not here: the lathe shop checks
+them with the dial indicator between centres or on V-blocks, an instrument every shop has."""
 _HOW_MEASURED = re.compile(r"verific|medir|medici|comprob|inspecc|calibre pasa|galga|verify|measure|inspect|gauge|check", re.I)
+
+
+def _feature_numbers(data: ReviewInput, spec: dict[str, Any]) -> set[str]:
+    """How a note names the feature a frame is on: the diameters of what its callout says (``Ø6`` of ``4× Ø6 H7``) or, for a
+    dimension, its value. Empty when the frame has no dimension to read them from (the frame is on a face)."""
+    found: set[str] = set()
+    for native in data.ctx.extras.get("natives", {}).get(str(spec.get("on", "")), []):
+        text = getattr(native, "text", None)
+        if text:
+            found |= {m.replace(",", ".") for m in re.findall(r"Ø\s*(\d+(?:[.,]\d+)?)", str(text))}
+        elif getattr(native, "expected", None) is not None:
+            found.add(f"{native.expected:g}")
+    return found
+
+
+def _names_feature(note: str, numbers: set[str]) -> bool:
+    flat = note.replace(",", ".")
+    return any(re.search(rf"(?<![\d.A-Za-z]){re.escape(n)}(?!\d|\.\d)", flat) for n in numbers)
 
 
 def _special_measurement(data: ReviewInput) -> list[Finding]:
     """A tolerance only a special instrument can verify (see ``SPECIAL_TOOLS``) with no note that says how it is measured: the
-    shop assumes the general tools (caliper, micrometer, depth gauge, height gauge, thread and plug gauges), so what needs
-    another one says which, and the shop gets it or the part goes elsewhere (``Posición de los 4× Ø6 H7: verificar en MMC``)."""
+    shop assumes the general tools (caliper, micrometer, depth gauge, height gauge, dial indicator, thread and plug gauges), so
+    what needs another one says which, and the shop gets it or the part goes elsewhere (``Posición de los 4× Ø6 H7: verificar
+    en MMC``). The note is for THAT feature: it names it (the diameter of the holes the frame is on), so one loose "check
+    position" does not close the frame of every other feature."""
     ctx = data.ctx
     notes = sheet_checks._notes(data)  # noqa: SLF001
     out: list[Finding] = []
@@ -355,16 +392,20 @@ def _special_measurement(data: ReviewInput) -> list[Finding]:
         words = SPECIAL_TOOLS.get(char)
         if words is None:
             continue
-        if any(_HOW_MEASURED.search(n) and re.search(words, n, re.I) for n in notes):
+        numbers = _feature_numbers(data, spec)
+        if any(
+            _HOW_MEASURED.search(n) and re.search(words, n, re.I) and (not numbers or _names_feature(n, numbers))
+            for n in notes
+        ):
             continue
         text = ctx.say(
-            f"{spec['id']} ({char}): esta tolerancia no se verifica con el calibre, el micrómetro ni el gramil de un taller "
-            "general (hace falta una máquina de medir por coordenadas, un comprobador de redondez, un proyector de perfiles o un "
-            "comparador entre puntos) y la hoja no dice cómo medirla. Añade una nota, p. ej. «Posición de los 4× Ø6 H7: "
+            f"{spec['id']} ({char}): esta tolerancia no se verifica con el calibre, el micrómetro, el gramil ni el comparador de un "
+            "taller general (hace falta una máquina de medir por coordenadas, un comprobador de redondez o un proyector de perfiles) "
+            "y la hoja no dice cómo medirla en esa característica. Añade una nota que la nombre, p. ej. «Posición de los 4× Ø6 H7: "
             "verificar en MMC»; el taller consigue el medio o la pieza se hace en otro.",
-            f"{spec['id']} ({char}): this tolerance cannot be checked with the caliper, micrometer or height gauge of a general "
-            "shop (it needs a coordinate measuring machine, a roundness tester, a profile projector or an indicator between "
-            "centres) and the sheet does not say how to measure it. Add a note, e.g. 'Position of the 4× Ø6 H7: verify on a "
+            f"{spec['id']} ({char}): this tolerance cannot be checked with the caliper, micrometer, height gauge or dial indicator "
+            "of a general shop (it needs a coordinate measuring machine, a roundness tester or a profile projector) and the sheet "
+            "does not say how to measure it on this feature. Add a note that names it, e.g. 'Position of the 4× Ø6 H7: verify on a "
             "CMM'; the shop gets the tool or the part is made elsewhere.",
         )
         out.append(Finding("measurement_unstated", "warning", text, (str(spec["id"]),), key=str(spec["id"])))
