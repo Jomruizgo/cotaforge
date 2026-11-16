@@ -603,12 +603,6 @@ ANCHOR_DIRECTIONS = {  # (direction towards the viewer, x direction) of the one 
     "right": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
 }
 ISO_LABEL_CLEAR_MM = 14.0  # free paper kept under the scale label of the isometric view (below its baseline): no view starts there
-ROW_FIRST_MM = 15.0  # the first baseline row: 10 mm from the view, and its text above the line
-ROW_STEP_MM = 7.0  # each further row
-CALLOUT_SPACING_MM = 34.0  # between the front view and the top / right ones when the part has holes (a callout fits)
-CALLOUT_ROOM_MM = (
-    24.0  # beside the views of a part with holes: where the leaders of their callouts end and their text goes
-)
 IN_PLACE_ROOM_MM = 34.0  # beside the section that stands in the main view: four diameter lines stack there, before the isometric view
 
 
@@ -666,13 +660,22 @@ def _section_room(
     return {"below_mm" if third else "above_mm": room}
 
 
+ROOM_PASSES = 6  # the room is counted again at the scale chosen, as many times as the scale keeps going down
+
+
 def _dimension_room(
-    doc: reg.DocumentRec, spec: dict[str, Any], shown: tuple[str, ...], third: bool, op: str | None
+    doc: reg.DocumentRec,
+    spec: dict[str, Any],
+    shown: tuple[str, ...],
+    third: bool,
+    op: str | None,
+    scale: float = 1.0,
 ) -> dict[str, float]:
-    """The room (mm of paper) the baseline dimensions of the holes need beyond the views, so the layout reserves it before
-    it picks the scale: ``below_mm`` / ``above_mm`` for the rows of x values, ``left_mm`` for the rows of y values. One row
-    per distinct coordinate (holes that share one share its dimension), ``ROW_STEP_MM`` apart. An assembly keeps the room
-    of its section."""
+    """The room (mm of paper) the dimensions of the holes need beyond the views, so the layout reserves it before it picks the
+    scale: ``below_mm`` / ``above_mm`` for the rows of x values, ``left_mm`` for the rows of y values. The default location of
+    the holes is counted as it will be drawn at ``scale`` (``items_datum.row_plan``): the dimensions that do not touch share a
+    row, the rest take ``sheet_layout.ROW_STEP_MM`` each, and the ones that cannot stand on the usual side go to the opposite one. An assembly
+    keeps the room of its section."""
     if _is_assembly(doc, spec.get("body")):
         return _section_room(doc, spec, shown, third, op)
     if "front" in sheet_turned.hidden_views(spec.get("items", [])):  # the diameters of the section stack beside it
@@ -688,39 +691,22 @@ def _dimension_room(
     far_y = 0
     import items_datum  # noqa: PLC0415 - the default location of the holes: where its dimensions stand
 
+    geometry = LiveGeometry(doc, _shapes(doc, spec.get("body"), op), op) if box is not None else None
     for name, ((ix, iy), direction) in axes.items():
         if name not in shown:
             continue
         mine = [h for h in found if sc.parallel(h.direction, direction)]
-        if mine:
+        if not mine:
+            continue
+        if box is None:
             rows_x[name] = _distinct([h.centre[ix] for h in mine])
             rows_y = max(rows_y, _distinct([h.centre[iy] for h in mine]))
-            if box is not None:  # the dimensions that cannot stand on the usual side go to the opposite one (items_datum._split)
-                near_far = items_datum.far_rows(mine, name, (tuple(box["min"]), tuple(box["max"])))
-                far_x[name], far_y = near_far[0], max(far_y, near_far[1])
+            continue
+        corners = (tuple(box["min"]), tuple(box["max"]))
+        (near_x, far_x[name]), (near_y, far) = items_datum.row_plan(mine, name, corners, scale, geometry)  # type: ignore[arg-type]
+        rows_x[name], rows_y, far_y = near_x, max(rows_y, near_y), max(far_y, far)
 
-    def room(rows: int, extra: int = 0) -> float:
-        return ROW_FIRST_MM + ROW_STEP_MM * (rows - 1 + extra) if rows else 0.0
-
-    out: dict[str, float] = {
-        "left_mm": room(rows_y),
-        "right_mm": CALLOUT_ROOM_MM + ROW_STEP_MM * far_y if found else 0.0,
-        "spacing_mm": CALLOUT_SPACING_MM + ROW_STEP_MM * far_x["top"] if found else 0.0,  # between the views: callouts and the far rows of the top view go there
-        "need_right_mm": room(far_y),  # what the far rows take whatever the callouts
-        "need_spacing_mm": room(far_x["top"]) if "front" in shown else 0.0,
-    }
-    standing_alone = "front" not in shown  # no other view on the far side of the top view: the room is the paper's
-    if third:  # the top view hangs above the front one: its rows go above it
-        out["above_mm"] = room(rows_x["top"])
-        out["below_mm"] = room(rows_x["front"], 1)
-        if standing_alone:
-            out["below_mm"] = room(far_x["top"])
-    else:  # the top view hangs below the front one: its rows go below it; the front one's go above (next to the overall)
-        out["below_mm"] = room(rows_x["top"])
-        out["above_mm"] = room(rows_x["front"], 1)
-        if standing_alone:
-            out["above_mm"] = room(far_x["top"], 1)
-    return {k: v for k, v in out.items() if v}
+    return sheet_layout.rows_room(rows_x, far_x, rows_y, far_y, shown, third, bool(found))
 
 
 def views_of(spec: dict[str, Any]) -> tuple[str, ...]:
@@ -797,26 +783,38 @@ def _build(
         spec.pop("turned", None)
     else:
         spec["turned"] = turned  # the view is turned, so the layout arranges length x diameter, not the part's own box
-    room = _dimension_room(doc, spec, shown, third, op)
     across, up = {"front": (width, height), "top": (width, depth), "right": (depth, height)}[anchor]
     lay_w, lay_d, lay_h = (
         sheet_turned.layout_sizes(turned["length"], turned["diameter"]) if turned else (width, depth, height)
     )
-    layout = sheet_layout.plan(
-        across if anchor != "front" else lay_w,
-        lay_d if anchor == "front" else 0.0,
-        up if anchor != "front" else lay_h,
-        page_w,
-        page_h,
-        float(requested) if requested else None,
-        reserve,
-        with_iso,
-        "top" in shown and anchor == "front",
-        "right" in shown and anchor == "front",
-        third=third,
-        iso_dims=(lay_d, lay_w, lay_h) if _iso_quarter_turned(spec) else (lay_w, lay_d, lay_h),
-        **room,
-    )
+
+    def plan_for(room: dict[str, float]) -> sheet_layout.Layout:
+        return sheet_layout.plan(
+            across if anchor != "front" else lay_w,
+            lay_d if anchor == "front" else 0.0,
+            up if anchor != "front" else lay_h,
+            page_w,
+            page_h,
+            float(requested) if requested else None,
+            reserve,
+            with_iso,
+            "top" in shown and anchor == "front",
+            "right" in shown and anchor == "front",
+            third=third,
+            iso_dims=(lay_d, lay_w, lay_h) if _iso_quarter_turned(spec) else (lay_w, lay_d, lay_h),
+            **room,
+        )
+
+    # the rows of the default location depend on the scale (a short dimension at a small scale takes a row of its own), and the
+    # scale on the room the rows take: start from the scale the part would have with no rows and go down until the rows
+    # counted at the scale chosen are the ones the room was kept for
+    guess = float(requested) if requested else plan_for({}).scale
+    layout = plan_for(_dimension_room(doc, spec, shown, third, op, guess))
+    for _ in range(ROOM_PASSES):
+        if requested or layout.scale >= guess - 1e-9:
+            break
+        guess = layout.scale
+        layout = plan_for(_dimension_room(doc, spec, shown, third, op, guess))
     warnings: list[str] = []
     if not layout.standard:
         warnings.append(f"no standard scale fits the sheet: drawn at {model.fmt_scale(layout.scale)}; try A3")

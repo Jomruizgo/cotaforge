@@ -276,9 +276,11 @@ rules:
   - id: dimensions.for_the_instrument
     step: dimensions
     text: >-
-      The scheme follows the instrument the shop measures with (caliper by default): spacing within each hole group
-      plus one locator from a reachable edge; never an unstated symmetry. A measurement that needs a special instrument
-      gets a note.
+      The scheme follows the instrument the shop measures with (caliper by default; micrometer, depth gauge, height
+      gauge and dial indicator are general): spacing within each hole group plus one locator from a real flat face the
+      caliper reaches, never from the box of a round outline; never an unstated symmetry. A measurement that needs a
+      special instrument (CMM, roundness tester, profile projector) gets a note that names the feature; no word of the
+      agent closes it, only the note or the engineer's order.
     origin: owner
     sources: [owner, prompt, checks]
     checks: [measurement_unstated]
@@ -287,8 +289,8 @@ rules:
     step: dimensions
     applies: {features: [hole_group]}
     text: >-
-      A group of holes that receives screws is located by its function, the first from the edge and the others
-      from the first, centre to centre.
+      A group of holes that receives screws is located by its function, the first from the edge (directly, or from
+      another hole that is itself located) and the others from the first, centre to centre.
     origin: owner
     sources: [prompt, checks]
     checks: [hole_group_no_locator]
