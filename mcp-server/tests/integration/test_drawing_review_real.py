@@ -129,7 +129,7 @@ async def test_the_engineer_chooses_or_the_manufacturer_is_assumed(workspace: Pa
 
         assert "nobody has been asked who reviews" in await cad.err("export", action="pdf", path="a.pdf")
         asked = await cad.ok("drawing", action="request_review", sheet="Drawing")
-        assert "¿Revisas tú la hoja Drawing o la revisa el agente fabricante?" in asked and "sleep 0" in asked
+        assert "¿Revisas tú la hoja Drawing o la revisa el agente fabricante?" in asked and 'drawing(action="wait_review", sheet="Drawing")' in asked
         # no answer from the engineer and no wait: the manufacturer is assumed
         assumed = await cad.err("export", action="pdf", path="a.pdf")
         assert "the engineer did not choose within 0 min: the manufacturer review counts" in assumed
