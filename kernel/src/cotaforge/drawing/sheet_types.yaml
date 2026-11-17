@@ -1,0 +1,138 @@
+# The method of each type of sheet: what is particular to that type at each step of the work sequence.
+#
+# The rules are NOT here: they live once in catalog.yaml, and the plan (plan.py) gives, at each step, the ones that
+# apply to the drawing at hand. This file only says how a drafter goes about a sheet of this type: who reads it, in
+# which order to decide, what changes with the process or the kind of joint, and what the sheet never carries.
+# `drawing(action=plan)` serves the text of a step together with that step's rules.
+
+part:
+  title: manufacturing drawing of one part
+  reader: the operator of each machine and the inspector
+  steps:
+    purpose: |
+      Read the Process section of the intent file before anything else. The process says who holds the sheet:
+      machining (lathe, mill, grinder): the operator of each machine and the inspector | laser, plasma, waterjet: the
+      CAM programmer and the cutting operator, who cut from the DXF and read the sheet for material, thickness and
+      what happens after the cut | wire EDM: its programmer and operator | sinker EDM: its operator | casting: the
+      pattern maker and the foundry, then the machinist | hand tools: the fitter, who marks out from edges | a mix:
+      each operator, who looks only for his own stage.
+      Say to yourself in one line who reads this sheet and what they measure with. Every later choice is checked
+      against that line.
+    views: |
+      Start from the fewest views and add one only when you can name the feature it is for. First: is it a plate, or
+      an all-coaxial part of revolution? Then the rule gives the view set. Next: what is not coaxial or not through
+      (a pitch circle, a flat, a keyway, a blind pocket)? Each earns a view, a section or a removed section.
+      Laser, plasma, waterjet: the cut face seen face-on is the main view; it is the outline the DXF carries.
+      Turning plus grinding or wire EDM: no extra view per stage, the stages share the views.
+      Casting: ask the engineer whether the raw and the machined state go on one sheet or two.
+    references: |
+      Take the datums from the Datums section of the intent file. They are the faces or holes the part locates on in
+      its assembly, not the faces that are convenient to dimension from: on a located plate normally its two dowel
+      holes, on a turned part the axis of its main seat. Missing, or more than one reading possible: ask the
+      designer, with your proposal.
+      Hand tools: the fitter marks out from two finished edges; ask which two.
+    dimensions: |
+      Work in this order, and stop to ask when the intent file is silent:
+      1. the functional dimensions (Functional relations section), each where its two features are both seen;
+      2. the hole groups and patterns, each by its own rule;
+      3. what is left of size and position, from the references of step 3;
+      4. last, each dimension against the reader's instrument: can he put a caliper, a micrometer or a depth gauge on
+         those two surfaces? If not, change the scheme or add the measuring note.
+      Never ask the shop which instruments it has.
+      Several processes on one size: the route and every stage size are the engineer's; you propose, he confirms.
+      Laser, plasma, waterjet: the outline comes from the DXF, so the sheet dimensions what the operator checks after
+      the cut (overall size, functional spacings, holes finished later) and what is done afterwards (threads, reamed
+      holes, bends).
+    tolerances: |
+      None of these values is yours. A fit, a tolerance, a geometric tolerance or a roughness comes from the intent
+      file or from what the model declares; otherwise it is a question with your proposal. What you decide is where
+      each one sits, and that nothing the function depends on is left to the general tolerance.
+      A part whose precision is in its form (seats, bores, mounting faces): every seat is controlled to the
+      functional datum before you leave this step; a size tolerance alone is not enough there.
+      Grinding: the ground faces carry their finish, and the tolerance belongs to the final stage only.
+      Laser, plasma, waterjet: a hole with a fit is not finished by the cut; show the finishing operation.
+    notes: |
+      Every note row has an explicit "none" answer (no heat treatment, no coating, not marked). A blank is never the
+      answer: the reader cannot tell "none" from "forgotten". A mix of processes: the process note names the route in
+      order.
+    deliverables: |
+      Always the PDF of the sheet. Laser, plasma, waterjet, wire EDM: also the 1:1 DXF of the cut outline, one part
+      per file. A mix: the sum of what each process needs. Line weights come set by the harness; do not change them.
+    review: |
+      Before asking for the review, take the reader of step 1 and go through the part as he would make it, operation
+      by operation. Does he find the stock (material, starting form, thickness or bar size)? For each operation, his
+      target size and where to measure it from, without adding or subtracting? Is there a feature he would have to
+      guess (a radius, a depth, a thread length, an edge)? Can the inspector check every toleranced size with the
+      general instruments, or does a note say how? Is there a view or a dimension nobody on that route would look
+      at? Remove it.
+  never:
+    - a second dimension for something already dimensioned, in any form
+    - a view kept for looks (only the isometric may stand without a dimension)
+    - assembly information (the mating part's sizes, tightening torques, where this part sits in its assembly)
+    - a feature machined after welding or after assembly drawn as finished (the sheet shows the part as it leaves its own route, with the allowance)
+    - a tolerance, a fit or a finish nobody declared
+
+assembly:
+  title: assembly drawing
+  reader: the fitter, sometimes also whoever installs the assembly and the buyer of its commercial parts
+  steps:
+    purpose: |
+      The fitter already has every part, made from its own sheet or bought. He needs to know which part goes where,
+      which way round, how it is joined, and what he sets or checks once it is together. The sheet does not say how
+      any part is made. Find in the intent file who else receives it (the installer, the buyer); if it does not say,
+      ask.
+      The process that matters here is how the parts are joined. Read it in the intent file (Mating faces, Fits,
+      Process) and note it per joint: screwed (which screw in which hole, and the tightening) | located by dowels
+      (which two dowels locate which part) | pressed or shrunk (which part into which, from which side, to which
+      stop) | bonded or sealed (which product, on which faces) | adjusted at assembly (the value to reach and where
+      it is measured) | machined at assembly (the operation, drawn here and nowhere else). A joint the intent file
+      does not describe is a question to the designer.
+      Parts joined by welding: stop and tell the engineer this is a welded sheet, another type.
+    views: |
+      Choose the views by the joints, not by the outline. Every position of the parts list is seen clearly in at
+      least one view; a part no view shows needs a section, not hidden lines. One section through each kind of joint
+      that cannot be read from outside (a screw in its counterbore, a bearing on its seat, a dowel through two
+      plates). On this type a view earns its place with a balloon or an assembly dimension. Before you place a
+      section, name the parts its plane runs along.
+      Pressed, shrunk or bonded: the section shows the two parts in their final position against their stop.
+      Machined at assembly: a view where that operation is seen in full, since this is its only sheet.
+    references: |
+      The references of an assembly are the faces or holes by which it mounts on whatever receives it (a base plate
+      face, two dowel holes, a shaft axis). Take them from the intent file; the assembly dimensions are counted from
+      them. If the assembly stands alone and mounts on nothing, say so in the answer; do not invent a reference.
+    dimensions: |
+      Few dimensions, each something the fitter sets or checks with the parts together, in this order:
+      1. the functional dimensions between parts the intent file declares (a gap, a stroke, a distance between faces
+         of two different parts);
+      2. what is adjusted at assembly, with the value to reach;
+      3. what is machined at assembly, fully dimensioned as on a part sheet;
+      4. the overall size and the mounting interface, for whoever installs it.
+      For each one: can the fitter reach both surfaces with a general instrument when the assembly is closed? If not,
+      say at which stage of assembly it is checked.
+      No hole positions and no other form dimension of a part that has its own sheet. A part with no sheet of its own
+      is not detailed here by default: ask the engineer whether it gets one.
+    tolerances: |
+      Only what is reached at assembly carries a tolerance here: a set gap, an alignment, a runout measured with the
+      assembly together, the size of what is machined at assembly. Every value comes from the intent file or is asked.
+      The fits of the individual parts are on their own sheets; this sheet names the fit of each joint.
+    notes: |
+      Place the balloons after the views are final, part by part: for each position pick the one view where that part
+      is clearest. A commercial part is one row with its standard designation or supplier reference, so the buyer can
+      order from the list alone. The notes are instructions to the fitter, in the order he works: what to tighten and
+      to what, thread locker, sealant or lubricant, a press fit with its side and stop. A note about how a part is
+      made does not belong here; a value the intent file does not give (a torque) is asked.
+    deliverables: |
+      The PDF of the sheet. No cut DXF: that belongs to the sheets of the parts. If the assembly does not fit one
+      sheet legibly, take a larger paper; an exploded view is a separate drawing. Line weights come set by the
+      harness; do not change them.
+    review: |
+      Before asking for the review, put the assembly together in your head from the sheet alone, with the parts on
+      the bench. Can you find every part of the list on a view, and tell which way round it goes? For every screw, pin
+      and commercial part: which one, how many, where? Is there a joint where you would have to guess the order, the
+      side or the stop? Do you know what to tighten and to what, and what to measure when it is closed? Is there a
+      dimension you could only use to make a part? Remove it.
+  never:
+    - the material, heat treatment, coating, roughness or edge state of the parts (they are on each part's sheet; the list names the part)
+    - hidden lines to show an inner part
+    - a view with no balloon and no assembly dimension
+    - weld symbols or an exploded view (other types of sheet)

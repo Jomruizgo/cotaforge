@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 CATALOG_PATH = Path(__file__).with_name("catalog.yaml")
 
-Weight = Literal["blocks", "warns", "debt"]
+Weight = Literal["blocks", "warns", "gate", "debt"]
 Origin = Literal["standard", "owner", "harness"]
 Source = Literal["prompt", "guide", "requirements", "checks", "memory_base", "owner"]
 
@@ -43,10 +43,17 @@ class Rule(BaseModel):
     checks: tuple[str, ...] = ()
     requirement: str = ""
     sources: tuple[Source, ...] = ()
+    gate: str = ""
+    """A rule no review finding stands for but a tool refuses to break (a call that needs the engineer's order): what
+    the tool does, in a few words. Such a rule weighs ``gate``."""
 
     @model_validator(mode="after")
     def _debt_has_no_check(self) -> Rule:
-        if (self.weight == "debt") != (not self.checks):
+        if (self.weight == "gate") != bool(self.gate):
+            raise ValueError(f"{self.id}: weight 'gate' exactly when the rule names its gate")
+        if self.gate and self.checks:
+            raise ValueError(f"{self.id}: a gate rule has no review check")
+        if self.weight != "gate" and (self.weight == "debt") != (not self.checks):
             raise ValueError(f"{self.id}: weight 'debt' exactly when the rule has no check")
         return self
 

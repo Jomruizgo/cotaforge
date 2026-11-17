@@ -27,11 +27,11 @@ def plan(facts: dict[str, int], findings: tuple = (), items: list | None = None,
 # --- the parts list and the balloons of an assembly -------------------------------------------------------------------------
 
 
-def test_an_assembly_gets_its_parts_list_and_one_balloon_per_position_on_the_isometric_view() -> None:
+def test_an_assembly_gets_its_parts_list_and_one_balloon_per_position_with_no_view_fixed() -> None:
     added = plan(ASSEMBLY, (finding("no_parts_list"),))
     by_id = {a.item["id"]: a.item for a in added}
     assert by_id[dr.PARTS_LIST_ID] == {"type": "parts_list", "id": dr.PARTS_LIST_ID}
-    assert by_id[dr.BALLOONS_ID] == {"type": "balloons", "id": dr.BALLOONS_ID, "view": "isometric"}
+    assert by_id[dr.BALLOONS_ID] == {"type": "balloons", "id": dr.BALLOONS_ID}  # no view: the CAD spreads them over the views
     assert all(a.rows == ("req.parts_list",) for a in added)
 
 
@@ -46,11 +46,6 @@ def test_no_list_is_added_to_a_sheet_that_is_not_an_assembly_or_that_was_answere
     answered = {"req.parts_list": SimpleNamespace(verdict="applies", ordered_by="")}
     found = list(dr.evaluate(ASSEMBLY, (finding("no_parts_list"),), answered, dr.Intent()))
     assert dr.plan_additions(found, [], assembly=True, views=("front", "isometric")) == []
-
-
-def test_the_balloons_go_on_the_first_view_when_the_sheet_has_no_isometric() -> None:
-    added = plan(ASSEMBLY, (finding("no_parts_list"),), views=("front", "top"))
-    assert {a.item["id"]: a.item for a in added}[dr.BALLOONS_ID]["view"] == "front"
 
 
 def test_the_items_the_harness_added_for_the_list_belong_to_its_row() -> None:

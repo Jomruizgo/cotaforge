@@ -324,6 +324,10 @@ class DrawingResult(BaseModel, frozen=True):
     layout_unplaced: tuple[str, ...] = ()  # ``layout``: what it could not place ("id: why"), never dropped silently
     layout_fits: bool = True  # ``layout``: whether the views and the room their annotations need fit the area
     layout_needed: tuple[float, float] = (0.0, 0.0)  # ``layout``: the width and height (mm) they need
+    page_state: "DrawingSheetInfo | None" = None
+    """An add / update / remove: the sheet as the step left it, read from the sheet the step has just composed (no
+    second compose, no review): its facts and measures, its answers and the review state, and as findings only the step's
+    own checks. The per-step line of the reply is built from it; a full ``review`` lists the rest."""
 
 
 class DrawingItemInfo(BaseModel, frozen=True):
@@ -517,6 +521,9 @@ class DrawingSheetInfo(BaseModel, frozen=True):
     composed: dict[str, Any] = {}
     """What the order that composed the sheet recorded (``signature``: the decisions that affect the whole sheet) and
     the items edited in place since (``pinned``). Empty: the sheet was not composed in one order."""
+
+
+DrawingResult.model_rebuild()
 
 
 class DescribeDrawingResult(BaseModel, frozen=True):

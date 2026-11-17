@@ -44,6 +44,9 @@ ORDERS: list[tuple[str, dict[str, Any], str]] = [
     ("drawing", {"action": "review_choice", "sheet": "Plano", "by": "engineer"}, "review_choice"),
     ("drawing", {"action": "review_choice", "sheet": "Plano", "by": "fabricator"}, "review_choice"),
     ("drawing", {"action": "approve", "sheet": "Plano", "by": "Ana", "reason": "apruebo el plano"}, "approve_sheet"),
+    ("drawing", {"action": "create", "fresh": True, "by": "Ana", "reason": "empieza la hoja de nuevo"}, "fresh_sheet"),
+    ("drawing", {"action": "remove_sheet", "sheet": "Plano", "by": "Ana", "reason": "esta hoja sobra"}, "remove_sheet"),
+    ("drawing", {"action": "answer", "id": "plan.process", "text": "applies: torneado", "by": "Ana", "reason": "se tornea desde barra"}, "answer"),
     ("drawing", {"action": "compose", "decisions": {"notes": ["x"]}, "recompose": True, "by": "Ana", "reason": "hazlo de nuevo"}, "compose"),
     ("drawing", {"action": "compose", "decisions": {"answers": {"req.thread": "no aplica: x"}}, "by": "Ana", "reason": "no lleva rosca"}, "compose"),
     ("memory", {"action": "answer", "id": "machining-inner-corners", "by": "Ana", "text": "does not apply: déjalas vivas"}, "keep_alert"),
@@ -59,6 +62,9 @@ NOT_ORDERS: list[tuple[str, dict[str, Any]]] = [
     ("drawing", {"action": "review_report", "sheet": "Plano", "by": "fabricator", "items": []}),  # the manufacturer agent's
     ("drawing", {"action": "add", "items": [{"type": "note", "text": "x"}]}),
     ("drawing", {"action": "export"}),
+    ("drawing", {"action": "create", "fresh": True}),  # no order in it: the server refuses it, he is not asked
+    ("drawing", {"action": "create", "by": "Ana", "reason": "una hoja nueva"}),  # a plain create is not destructive
+    ("drawing", {"action": "remove_sheet", "sheet": "Plano"}),
     ("memory", {"action": "answer", "id": "x", "text": "applies: here"}),
     ("memory", {"action": "brief"}),
     ("memory", {"action": "brief", "language": "en"}),

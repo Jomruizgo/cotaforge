@@ -18,6 +18,7 @@ from typing import Any
 
 import sheet_checks
 import sheet_joints
+import sheet_pattern
 import sheet_review
 import sheet_weldplan
 import sheet_weldreview
@@ -69,6 +70,10 @@ FACT_NAMES = (
     "parts_lists",
     "balloons",
     "chamfers",
+    "hole_groups",
+    "circular_patterns",
+    "flats",
+    "sections",
 )
 
 THREAD_PRINTED = re.compile(r"(?<![A-Za-z0-9])M\s?\d{1,3}(?:\s?[x×]\s?\d+(?:[.,]\d+)?)?|UN[CF]\b|\bNPT\b|\bBSP\b|\bG\s?\d/\d", re.I)
@@ -233,6 +238,25 @@ def _mould(data: Any) -> dict[str, int]:
     }
 
 
+def _groups(data: Any, stacks: list[list[Any]]) -> dict[str, int]:
+    """The holes of the part by how they are dimensioned: the circular patterns, and the groups of two or more equal holes
+    along one direction that are in no pattern (an assembly has neither: its holes are its parts')."""
+    if data.ctx.assembly is not None:
+        return {"hole_groups": 0, "circular_patterns": 0}
+    try:
+        patterns = [p for p in sheet_pattern.patterns_of(data.ctx) if not p.lone]
+    except Exception:  # noqa: BLE001 - a part whose patterns cannot be told has none counted
+        patterns = []
+    in_pattern = {i for p in patterns for i in p.indexes}
+    equal: dict[tuple[Any, ...], int] = {}
+    for stack in stacks:
+        if stack[0].index in in_pattern:
+            continue
+        key = (sheet_pattern._canonical(stack[0].direction), sheet_pattern._signature(stack))
+        equal[key] = equal.get(key, 0) + 1
+    return {"hole_groups": sum(1 for n in equal.values() if n >= 2), "circular_patterns": len(patterns)}
+
+
 def facts(data: Any) -> dict[str, int]:
     """The counts of ``FACT_NAMES`` for the sheet ``data`` (a ``sheet_review.ReviewInput``)."""
     ctx = data.ctx
@@ -291,5 +315,8 @@ def facts(data: Any) -> dict[str, int]:
         "parts_lists": len(sheet_review._of(data, "parts_list")),
         "balloons": len(sheet_review._of(data, "balloons")),
         "chamfers": sum(1 for f in data.features if f.kind == "chamfer"),
+        **_groups(data, stacks),
+        "flats": len(part.flats) if part is not None else 0,
+        "sections": len(sheet_review._of(data, "section")),
     }
     return out
