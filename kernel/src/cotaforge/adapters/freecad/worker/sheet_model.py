@@ -30,7 +30,9 @@ ISO_SHADE = "ISO_COLOR"  # the shaded picture under the lines of the isometric v
 PARTING = "PARTICION"  # the parting line of a moulded part: thick, its own line type (long dash, two short ones)
 ZONE = "ZONAS"  # the permitted zones of a moulded part (gate, ejector marks) and their symbols
 
-CENTRE_OVERSHOOT_MM = 2.5  # a centre line goes this far past the feature it marks, at EVERY end (ISO 128-24)
+CENTRE_OVERSHOOT_MM = 3.0  # a centre line goes this far PAST the feature it marks (on paper), at EVERY end (ISO 128-24)
+CENTRE_OVERSHOOT_MIN_MM = 2.0  # ... a correct overhang is 2 to 5 mm on paper: shorter is trimmed by a dimension, longer is flagged
+CENTRE_OVERSHOOT_MAX_MM = 5.0
 CENTRE_CLEAR_MM = 1.0  # ... and stops this far short of a dimension line or a dimension text (it never reaches one)
 
 

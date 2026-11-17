@@ -30,7 +30,7 @@ pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="the visible Fre
 VIEWS = ["front", "top", "right", "iso"]  # what the agent of the owner's session drew: the right view of a plate adds nothing
 LOC = re.compile(r"loc datum_dims \w+: \d+ hole\(s\) in the top view; x ([\d, ]+); y ([\d, ]+) \(mm")
 OWNER_X = {12, 36, 50, 28, 76}  # the locators of the dowels, the counterbores and the M6, and the spacings of the dowels and the counterbores
-OWNER_Y = {8, 44}  # the locator of the dowels from the edge and their spacing (the counterbores add 30, the M6 its 8 from the other edge)
+OWNER_Y = {8, 44}  # the locator of the dowels from the edge and their spacing (the counterbores add 30; the M6 stand on a row the dowels locate)
 
 
 def shot(shots: Path, name: str, reply: Reply) -> None:
@@ -48,7 +48,7 @@ def scheme_of(listed: str) -> tuple[list[int], list[int]]:
 def assert_the_owners_scheme(listed: str, review: str) -> None:
     x, y = scheme_of(listed)
     assert OWNER_X <= set(x) and len(x) == 5, x  # 12, 36, 50 from the left edge, 76 and 28 between the holes: five, each once
-    assert OWNER_Y <= set(y) and sorted(y) == [8, 8, 30, 44], y  # 8 from the edge (dowels and M6), 44 between the dowels, 30 of the counterbores
+    assert OWNER_Y <= set(y) and sorted(y) == [8, 30, 44], y  # 8 from the edge (the dowels' row, which the M6 shares), 44 between the dowels, 30 of the counterbores: the second 8 would close 8 + 44 + 8 on the overall 60
     for corner in (15, 85, 52, 64, 88):  # a baseline from one datum would say these
         assert corner not in x + y, (corner, x, y)
     for finding in ("hole_not_located", "hole_partly_located", "hole_no_reference", "hole_group_no_locator", "dimension_crossing", "dimension_stack_order"):

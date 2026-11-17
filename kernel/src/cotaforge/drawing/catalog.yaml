@@ -171,8 +171,11 @@ rules:
     text: >-
       Every hole and round feature carries its centre mark or centre line, drawn as the thin long-dash dotted line
       (ISO 128 line type 04.1, a chain line), never as a dashed one, which reads as a hidden edge; one continuous centre
-      line per axis, not crossing text, not overlong. The chain check judges only the lines the harness made: the ones the
-      engineer draws himself carry his own line style.
+      line per axis, not crossing text, not overlong. A centre line (and the cross of a hole or of the end arc of a
+      keyway) runs 2 to 5 mm past the outline of its feature at every end, measured on paper (the harness gives 3 mm,
+      set through TechDraw's own extension of the line); the one that is longer without a reason is flagged. The chain
+      check judges only the lines the harness made: the ones the engineer draws himself carry his own line style and
+      his own extension.
     standard: ISO 128
     origin: standard
     requirement: req.centre_lines
@@ -195,12 +198,15 @@ rules:
     step: views
     applies: {features: [keyway]}
     text: >-
-      A keyway is best dimensioned in the view that looks at it face-on, when that view has nothing more important to
-      show. If it must appear in another view, it is shown there in a partial (broken-out) section.
+      A turned part with a keyway has ONE axial view, and the part is rolled about its axis in it so that the keyway faces
+      the viewer: the diameters, the lengths, the keyway's length and its locator stand there, never on hidden lines. A view is never added only for the keyway: the sheet is the axial
+      view, the keyway's removed section and the isometric view. The end arcs of the keyway carry their centre cross.
+      A keyway no standard view looks at (it opens towards the back, the bottom or the left) has no tool: the engineer
+      is told.
     origin: owner
-    sources: [owner]
-    checks: []
-    weight: debt
+    sources: [owner, checks]
+    checks: [dimension_on_hidden]
+    weight: blocks
   - id: thread.end_line_native
     step: views
     applies: {features: [thread]}
@@ -376,8 +382,9 @@ rules:
       One dimension per feature and direction; no repeated or chained-closed dimension, and no dimension given
       twice under different kinds. A chain that closes on the overall size is this defect (8 + 44 + 8 on a 60 plate:
       the locators and the spacing of the holes count like any other length), reported once and holding the export
-      (dimensions.no_redundant does not list it again). The fix keeps the locator from the reference edge with the
-      spacing and drops the dimension at the other end.
+      (dimensions.no_redundant does not list it again). The default hole location gives, per direction, ONE locator from
+      the reference edge and the spacings that tie every group to it, so it never closes by itself; where the chain is
+      the engineer's, the fix keeps the locator with the spacing and drops the dimension at the other end.
     standard: ISO 129-1
     origin: standard
     sources: [prompt, checks, memory_base]
@@ -388,25 +395,28 @@ rules:
     text: >-
       No dimension is the sum or the difference of others of the same view and axis (the overall length is not given
       beside the segments that add up to it); the shop gets each measure once, by one chain of independent dimensions.
-      A loop that closes on the overall size is already reported, and held, by dimensions.once; this row lists the
-      other loops (a difference of two others, a baseline beside a chain) and only warns.
+      A loop that closes on the overall size is already reported, and held, by dimensions.once; this row holds the
+      other loops (a difference of two others, a baseline beside a chain, the overall beside a baseline that already
+      reaches both ends). The defaults never make one: the hole location is a forest, the overall is left out when the
+      other dimensions chain both ends, and a dimension equal to half of another is only given when the intent declares
+      the symmetry.
     standard: ISO 129-1
     origin: owner
     sources: [owner, checks]
     checks: [dimension_redundant]
-    weight: warns
+    weight: blocks
   - id: dimensions.never_on_hidden
     step: dimensions
     text: >-
       A hidden line is never dimensioned: no dimension has a hidden edge, or the end of one, as a reference. The
-      feature is dimensioned where it is seen face-on: in a standard view that sees it so, in an aux_view square to its
-      flat face, or in a full section (there is no partial section tool yet). The dimension is moved there with
-      drawing update, not removed.
+      feature is dimensioned where it is seen face-on: in the standard view that looks at it square (add_view puts it
+      on the sheet) or in a full section (an aux_view takes no dimensions and there is no partial section tool). The
+      dimension is moved there with drawing update, not removed.
     standard: ISO 129-1
     origin: owner
     sources: [owner, checks]
     checks: [dimension_on_hidden]
-    weight: warns
+    weight: blocks
   - id: dimensions.repeated_in_views
     step: dimensions
     text: >-
@@ -493,8 +503,10 @@ rules:
     step: dimensions
     applies: {features: [keyway]}
     text: >-
-      A keyway carries its width with the tolerance class, its depth, its length and its position; on a shaft in a
-      removed section.
+      A keyway carries its width with the tolerance class, its depth, its length and its position; on a shaft the width
+      and the depth in a removed section. The default length is the distance between the centres of the two end arcs
+      (the travel of the end mill) with the locator from the shoulder to the first centre; the overall length of the
+      keyway with its locator from the shoulder is as correct, and no check blocks either form.
     standard: DIN 6885-1
     origin: standard
     requirement: req.keyway
@@ -516,8 +528,9 @@ rules:
     applies: {features: [keyway]}
     text: >-
       A closed keyway (one that does not run out at a shaft end) gets its depth from the shaft surface, measured with a
-      depth gauge. The value across the shaft (d - t) is only for a keyway that runs out at a shaft end, where a caliper
-      reaches it.
+      depth gauge (t1): from the keyway bottom up to the tangent line of the shaft, the theoretical outline of the
+      cylinder over the slot, never from the edge the slot leaves. The value across the shaft (d - t1) is only for a
+      keyway that runs out at a shaft end, where a caliper reaches it. The default keyway dimensions give it so.
     standard: DIN 6885-1
     origin: owner
     sources: [owner]

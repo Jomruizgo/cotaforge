@@ -369,3 +369,13 @@ def test_the_bore_on_the_axis_is_located_by_the_axis_and_a_bush_needs_no_view_li
     assert review._view_lines(data) == []  # noqa: SLF001
     ctx.holes = [hole(0, 80, 30, 9.0, 8.0)]  # a hole off the axis still needs its position
     assert review._bores_on_axis(ctx) == set()  # noqa: SLF001
+
+
+def test_the_main_view_can_be_rolled_about_the_axis_so_a_side_faces_the_viewer() -> None:
+    """The keyway of a shaft opens towards +z: the front view of the turned part looks from there (the axis stays along the page)."""
+    direction, xdirection = turned.frame((1.0, 0.0, 0.0), False, (0.0, 0.0, 1.0))
+    assert direction == (0.0, 0.0, 1.0) and xdirection == (1.0, 0.0, 0.0)
+    assert turned.frame((1.0, 0.0, 0.0), True, (0.0, 0.0, 1.0)) == ((0.0, 0.0, 1.0), (-1.0, 0.0, 0.0))  # flipped: the other end on the right
+    assert turned.frame((1.0, 0.0, 0.0)) == ((0.0, -1.0, 0.0), (1.0, 0.0, 0.0))  # nothing facing: the usual front view
+    iso, _ = turned.iso_frame((1.0, 0.0, 0.0), False, (0.0, 0.0, 1.0))
+    assert iso[2] > 0  # the isometric view looks from the keyway's side too

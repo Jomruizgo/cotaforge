@@ -103,11 +103,13 @@ def test_a_closed_keyway_is_dimensioned_by_width_depth_length_and_position() -> 
     cylinders, flats = keyed_shaft()
     (slot,) = kw.find_slots(cylinders, flats)
     dims = by_id(kw.dimension_specs(slot, "rq_keyway", ("front", "top")))
-    assert set(dims) == {"rq_keyway_w", "rq_keyway_t", "rq_keyway_l", "rq_keyway_p"}
+    assert set(dims) == {"rq_keyway_w", "rq_keyway_t"}  # the keyway opens towards +y: no standard view looks at it, so no length or position on hidden lines
     width = dims["rq_keyway_w"]
     assert {width["from"]["face"], width["to"]["face"]} == {"face:a", "face:b"} and width["along"] == "x" and width["view"] == "top"
-    depth = dims["rq_keyway_t"]  # d - t1: from the bottom to the opposite side of the shaft
-    assert depth["from"] == {"face": "face:bottom"} and depth["to"] == {"at": [0.0, -15.0, 35.0]} and depth["along"] == "y"
+    depth = dims["rq_keyway_t"]  # closed: t1, from the bottom up to the surface (a depth gauge), not across the shaft
+    assert depth["from"] == {"face": "face:bottom"} and depth["to"] == {"at": [0.0, 15.0, 35.0]} and depth["along"] == "y"  # up to the surface of the shaft
+    assert kw.face_view(slot) is None and kw.is_closed(slot)
+    dims = by_id(kw.dimension_specs(slot, "rq_keyway"))  # no views given: nothing is known of the sheet, the lengths are made
     length = dims["rq_keyway_l"]
     assert {length["from"]["face"], length["to"]["face"]} == {"face:end_lo", "face:end_hi"} and length["along"] == "z"
     position = dims["rq_keyway_p"]
@@ -118,6 +120,7 @@ def test_a_keyway_open_through_the_end_has_a_length_to_that_end_and_no_position(
     cylinders, flats = keyed_shaft(closed=False)
     (slot,) = kw.find_slots(cylinders, flats)
     dims = by_id(kw.dimension_specs(slot, "k"))
+    assert not kw.is_closed(slot) and dims["k_t"]["to"] == {"at": [0.0, -15.0, 65.0]}  # runs out at the end: d - t1, a caliper reaches it
     assert set(dims) == {"k_w", "k_t", "k_l"}
     assert {dims["k_l"]["from"]["face"], dims["k_l"]["to"]["face"]} == {"face:end_lo", "face:cap1"}
     assert "view" not in dims["k_w"]  # the sheet has no view that looks along the axis: the default one

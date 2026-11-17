@@ -10,9 +10,8 @@
 * ``leader_not_on_chamfer``: the leader of a chamfer callout not on the chamfer's line, not from outside or not perpendicular;
 * ``view_redundant``: a view that only carries a cutting line, or whose dimensions another view repeats;
 * ``dimension_twice``: the same measure given by two dimensions of one view (stacked, the same size twice); it HOLDS an export;
-* ``dimension_redundant``: lengths of one view along one axis that close a loop (one is the sum or difference of others); listed for now: the sheet defaults still
-  break it (``sheet_checks.NON_BLOCKING``);
-* ``dimension_on_hidden``: a dimension of the page that measures on a hidden line (``sheet_hiddendims``); listed for now, the same way;
+* ``dimension_redundant``: lengths of one view along one axis that close a loop (one is the sum or difference of others); it holds the export;
+* ``dimension_on_hidden``: a dimension of the page that measures on a hidden line (``sheet_hiddendims``); it holds the export;
 * ``text_over_text``: two lines of text of the TechDraw page printed one on the other (the lines of a note); it HOLDS an export;
 * ``view_duplicate``: two views that draw the same thing (the same direction, or two sides of a part of revolution: the profile
   twice); it HOLDS an export;
@@ -100,11 +99,11 @@ def _duplicate_views(data: ReviewInput) -> list[Finding]:
     for name, keep in repeats.items():
         text = ctx.say(
             f"La vista {name} repite la vista {keep}: dibujan lo mismo (una pieza de revolución con todos sus rasgos coaxiales "
-            "se ve igual desde cualquier lado del eje). Quítala (drawing action=remove_view, "
-            f"view={name}) y pon sus cotas en {keep}; solo se queda si el ingeniero lo ordena con su razón (by=, reason=).",
+            "se ve igual desde cualquier lado del eje). Quítala con "
+            f"drawing(action=\"remove_view\", views=[\"{name}\"]) y pon sus cotas en {keep}; solo se queda si el ingeniero lo ordena con su razón (by=, reason=).",
             f"The {name} view repeats the {keep} view: they draw the same thing (a part of revolution with every feature coaxial "
-            "looks the same from any side of its axis). Drop it (drawing action=remove_view, "
-            f"view={name}) and put its dimensions on {keep}; it stays only if the engineer orders it with his reason (by=, reason=).",
+            "looks the same from any side of its axis). Drop it with "
+            f"drawing(action=\"remove_view\", views=[\"{name}\"]) and put its dimensions on {keep}; it stays only if the engineer orders it with his reason (by=, reason=).",
         )
         out.append(Finding("view_duplicate", "warning", text, (name,), key=name))
     return out
@@ -134,9 +133,13 @@ def _dimension_twice(data: ReviewInput) -> list[Finding]:
         )
         text = ctx.say(
             f"{what} está dada dos veces en la vista {view} ({', '.join(ids)}): el lector ve la misma cota repetida y no sabe cuál "
-            "manda. Quita una (drawing action=remove, ids=[...]).",
+            "manda. Quita la que sobra con drawing(action=\"remove\", items=[\"<su id>\"]) (un id que empieza por rq_ pide además "
+            "reason=, y by= si lo midió el modelo); si las dos son del mismo item de varias cotas no hay herramienta que saque una sola: "
+            "cambia ese item con update.",
             f"{what} is given twice in the {view} view ({', '.join(ids)}): the reader sees the same dimension repeated and cannot "
-            "tell which one rules. Remove one (drawing action=remove, ids=[...]).",
+            "tell which one rules. Remove the surplus one with drawing(action=\"remove\", items=[\"<its id>\"]) (an id that starts "
+            "with rq_ also needs reason=, and by= if the model measured it); if both belong to one item of several dimensions there is "
+            "no tool that takes a single one out: change that item with update.",
         )
         out.append(Finding("dimension_twice", "warning", text, ids, key=f"{view}/" + "/".join(str(k) for k in key)))
     return out
@@ -177,8 +180,9 @@ def _dimension_redundant(data: ReviewInput) -> list[Finding]:
     """Lengths of one view along one axis that close a loop: a dimension that is the sum or the difference of others (the overall
     length given with the segments that add up to it; 125 beside 168 and the 43 of the thread). Take each length as a link between
     the two places it spans: a set of independent dimensions is a forest, and a link that closes a loop is a measure the others
-    already give (ISO 129-1: no redundant dimension). The same length twice is ``dimension_twice``; one item's own links are not
-    a choice the agent can undo, so a loop of a single item is left alone. Part sheets only: on an assembly two parts share
+    already give (ISO 129-1: no redundant dimension). The same length twice is ``dimension_twice``; the defaults of the sheet never
+    close a loop by themselves (the hole location is a forest, the overall is left out when the others chain both ends), so a loop
+    is always a choice somebody made and holds the export. Part sheets only: on an assembly two parts share
     coordinates by chance. A process stage, a diameter and a hole position are other records and never enter."""
     ctx = data.ctx
     if ctx.assembly is not None or ctx.weldment is not None:
@@ -199,7 +203,7 @@ def _dimension_redundant(data: ReviewInput) -> list[Finding]:
             around = _path(links, a, b)
             if around is not None:
                 ids = tuple(dict.fromkeys([*around, item]))
-                if len(ids) >= 2:  # noqa: PLR2004 - a loop of one item is not the agent's to undo
+                if ids:
                     text = ctx.say(
                         f"Las cotas {', '.join(ids)} de la vista {view} cierran un lazo a lo largo de {axis}: una es la suma o la "
                         "diferencia de las otras y sobra. Quita la que el taller no necesita.",

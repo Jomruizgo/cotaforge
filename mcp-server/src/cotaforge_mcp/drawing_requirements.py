@@ -415,7 +415,7 @@ ROWS: tuple[Row, ...] = (
         title=("Chavetero", "Keyway"),
         must=(
             "el chavetero lleva su ancho con la clase de tolerancia, su profundidad (d - t1 en el eje, d + t2 en el cubo), su longitud y su posición",
-            "a keyway carries its width with the tolerance class, its depth (d - t1 on a shaft, d + t2 in a hub), its length and its position",
+            "a keyway carries its width with the tolerance class, its depth (t1 from the surface where it is closed, d - t1 where it runs out at a shaft end, d + t2 in a hub), its length and its position",
         ),
         standard="DIN 6885-1, ISO 773",
         question=(
@@ -1188,7 +1188,7 @@ def plan_additions(
             what = "a callout (size x angle) of every chamfer, measured on the model, on the view that shows it in profile"
         elif row.auto == "keyway":
             item = {"type": "keyway_dims", "id": item_id, **({"fit": keyway_fit} if keyway_fit else {})}
-            what = "the width, the depth (d - t1 / d + t2), the length and the position of the keyway, measured on the model"
+            what = "the width, the depth (t1 from the surface when closed; d - t1 / d + t2 where a caliper reaches it), the length and the position of the keyway, measured on the model"
         else:
             item = {"type": "note", "id": item_id, "text": r.intent_line}
             what = f"a note with the intent file's own words: «{r.intent_line}»"

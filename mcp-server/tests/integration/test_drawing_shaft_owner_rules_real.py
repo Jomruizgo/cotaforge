@@ -4,18 +4,17 @@
 
 The bench shaft (thread end, two seats, body, Ø22 end with a closed keyway) is drawn the way an agent draws it. The keyway floor is
 seen from the top; from the front it is behind the shaft, so its lines are hidden ones there. A length measured between the ends of
-those lines is flagged. The 125 that the overall 168 and the 43 of the thread already give is flagged ONCE, as ``over_dimensioned``
-(a chain that closes on the overall: it holds the export; ``dimension_redundant`` does not list it again). The hidden-line finding and the
-loops that do not close on the overall are listed, not holding the export, because the sheet the harness composes by default breaks them. Without the items that break them the sheet draws
-the same shaft with neither.
+those lines is flagged (both findings hold the export). The 125 that the overall 168 and the 43 of the thread already give is flagged
+ONCE, as ``over_dimensioned`` (a chain that closes on the overall: it holds the export; ``dimension_redundant`` does not list it
+again). The sheet the harness composes by default breaks neither: its one axial view is the top one (the keyway faces the viewer), its
+overall is left out where a datum baseline reaches both ends.
 """
-
 import sys
 from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import Cad, order, running_server
+from tests.integration.conftest import Cad, running_server
 from tests.integration.test_drawing_shaft_sheet_real import DIAMETERS, shaft
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="the visible FreeCAD window is exercised on Windows")
@@ -25,16 +24,19 @@ FROM_END = {"type": "dim", "id": "len125", "kind": "distance", "from": {"at": [0
 THREAD_END = {"type": "dim", "id": "len43", "kind": "distance", "from": {"at": [125, 0, -11]}, "to": {"at": [168, 5, 0]}, "along": "x", "view": "front", "side": "below"}
 
 
-async def start(cad: Cad, workspace: Path) -> None:
+async def start(cad: Cad, workspace: Path, views: tuple[str, ...] | None = None) -> None:
+    """The sheet of the shaft: the harness's own default (one axial view, the one that looks at the keyway), or the views named (the
+    tests that build a dimension on a hidden line of the front view ask for it)."""
     await cad.ok("memory", action="brief", drawing_review="propio", text=cad.says("el agente revisa el plano por su cuenta"))
     await shaft(cad, workspace)
-    await cad.ok("drawing", action="create", title="Eje de transmision", template="A3", language="es")
+    extra = {"views": list(views)} if views else {}
+    await cad.ok("drawing", action="create", title="Eje de transmision", template="A3", language="es", **extra)
 
 
 async def test_a_length_between_the_ends_of_hidden_lines_is_flagged(workspace: Path) -> None:
     async with running_server(workspace, visible=True) as (cad, _):
         cad.allow("collision", "dimension_gap", "dimension_stack_order", "dimension_crossing")  # the defects are built on purpose
-        await start(cad, workspace)
+        await start(cad, workspace, ("front", "top", "iso"))
         await cad.ok("drawing", action="add", items=[{"type": "view_lines"}, HIDDEN])
         review = await cad.ok("drawing", action="review")
         print("REVIEW", review)
@@ -51,7 +53,7 @@ async def test_following_the_message_moves_the_dimension_to_the_view_that_sees_t
     verified on real FreeCAD: no side or offset_mm up to 100 mm cleared it on the bench (see the PR)."""
     async with running_server(workspace, visible=True) as (cad, _):
         cad.allow("collision", "dimension_gap", "dimension_stack_order", "dimension_crossing")  # the defects are built on purpose
-        await start(cad, workspace)
+        await start(cad, workspace, ("front", "iso"))
         await cad.ok("drawing", action="add", items=[{"type": "view_lines"}, HIDDEN])
         assert "dimension_on_hidden" in await cad.ok("drawing", action="review")
         print("ADD_VIEW", await cad.ok("drawing", action="add_view", views=["top"]))
@@ -64,27 +66,31 @@ async def test_following_the_message_moves_the_dimension_to_the_view_that_sees_t
             assert "dimension_on_hidden:kw_len" not in await cad.ok("drawing", action="review")
 
 
-async def test_the_125_beside_the_overall_168_and_the_43_is_flagged(workspace: Path) -> None:
+@pytest.mark.parametrize("order", [(FROM_END, THREAD_END), (THREAD_END, FROM_END)], ids=["125 first", "43 first"])
+async def test_the_125_and_the_43_that_chain_both_ends_leave_the_overall_168_out(workspace: Path, order: tuple[dict, dict]) -> None:
+    """The 125 and the 43 reach both ends of the shaft, whichever is added first: the overall 168 would be their sum, a measure the
+    shop gets twice, so the sheet does not give it (``o1`` says so), the review does not take it for given (nothing closes on it) and
+    no loop is left."""
     async with running_server(workspace, visible=True) as (cad, _):
-        cad.allow("collision", "dimension_gap", "dimension_stack_order", "dimension_crossing")  # the defects are built on purpose
-        await start(cad, workspace)
-        await cad.ok("drawing", action="add", items=[{"type": "view_lines"}, FROM_END, THREAD_END])
+        cad.allow("collision", "dimension_gap", "dimension_stack_order", "dimension_crossing")  # the dimensions are put where they fall
+        await start(cad, workspace, ("front", "top", "iso"))
+        await cad.ok("drawing", action="add", items=[{"type": "view_lines"}, *order])
         review = await cad.ok("drawing", action="review")
         print("REVIEW", review)
-        assert "over_dimensioned:len125,len43" in review and "BLOCKS EXPORT over_dimensioned" in review
-        assert "dimension_redundant" not in review  # one defect, one finding, one weight
+        assert "not drawn: width 168 (the dimensions of the sheet chain both ends" in review
+        assert "over_dimensioned" not in review and "dimension_redundant" not in review and "duplicate_dimension" not in review
+        listed = await cad.ok("drawing", action="list")
+        assert "len125" in listed and "len43" in listed  # both are on the sheet: what is left out is the sum
 
 
-async def test_a_shaft_sheet_without_them_raises_neither(workspace: Path) -> None:
-    """What the harness composes by default for this shaft breaks both rules (the automatic overall stands beside the datum baseline, the
-    automatic keyway length and position stand on the hidden lines of the front view): both findings are listed for the default sheet, and
-    gone once those items are removed."""
+async def test_the_default_shaft_sheet_raises_neither(workspace: Path) -> None:
+    """What the harness composes by default for this shaft breaks neither rule: the keyway length and position stand in the top view
+    that looks at the keyway (no hidden line), and the overall is left out where the datum baseline reaches both ends. Both findings
+    hold the export now, so the defaults must not raise them."""
     async with running_server(workspace, visible=True) as (cad, _):
         await start(cad, workspace)
         await cad.ok("drawing", action="add", items=[{"type": "baseline_dims", "from": "face:6", "view": "front", "side": "below"}, *DIAMETERS, {"type": "view_lines"}])
-        default = await cad.ok("drawing", action="review")
-        print("DEFAULT", default)
-        await cad.ok("drawing", action="remove", items=["o1", "rq_keyway_l", "rq_keyway_p"], **order(cad))
         review = await cad.ok("drawing", action="review")
         print("REVIEW", review)
-        assert "dimension_on_hidden" not in review and "dimension_redundant" not in review
+        for code in ("dimension_on_hidden", "dimension_redundant", "over_dimensioned", "duplicate_dimension"):
+            assert code not in review, code
