@@ -14,7 +14,7 @@ What the page holds:
   (``drawing._sync_template_fields``); the overall dimensions are TechDraw dimension objects (``makeExtentDim``) and the
   views of a ``techdraw`` sheet are its own view objects: all native;
 * everything an item draws -- callouts with their leader and shelf, dimension lines (we decide how they stack), GD&T
-  frames, datum and finish symbols, tables, the section hatch, thread arcs -- is a ``DrawViewSymbol`` whose SVG is that
+  frames, datum and finish symbols, tables, the section hatch -- is a ``DrawViewSymbol`` whose SVG is that
   item's own drawing (``sheet_svg.fragment``), centred where the drawing sits on the page. TechDraw has dimension and
   leader objects, but they place their own lines and text, so the window would show something other than the PDF;
 

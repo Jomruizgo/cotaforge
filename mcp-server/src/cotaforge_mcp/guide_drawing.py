@@ -211,7 +211,8 @@ ITEM_LINES = (
     "face=<face>, view?, side? -> symbol with 'Ra 1.6' (standing on the outline if the face looks up, otherwise "
     "with a leader). general=true, ra: the sheet's general symbol 'Ra 3.2 (✓)' near the title block. Threads (ISO "
     "6410): a hole with a thread declared by the hole operation carries ONLY the thin 3/4 arc at the major diameter "
-    "in the view where it shows as a circle (THREADS layer), with no item.",
+    "in the view where it shows as a circle (THREADS layer), with no item. Thread lines are cosmetic edges of their view "
+    "(a thread drawn by hand counts; one the engineer deletes stays deleted).",
     "note: text (numbered in a NOTAS block at the bottom left; at_mm puts it elsewhere; the sheet's own notes -- "
     'thickness -- is numbered in the same block); view="A-A" writes it, unnumbered, under that section '
     "view (else beside it). "

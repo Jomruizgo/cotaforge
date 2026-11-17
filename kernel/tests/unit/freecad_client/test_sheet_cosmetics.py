@@ -63,6 +63,20 @@ def test_arcs_circles_and_polylines_become_cosmetic_edges() -> None:
     assert kinds == [("arc", "thin"), ("circle", "centre"), ("line", "parting"), ("line", "parting")]
 
 
+def test_the_external_thread_of_a_shaft_leaves_no_picture_behind() -> None:
+    """The thin lines at the minor diameter, the arc of the end view and the wide line that ends the thread are all cosmetic edges
+    of their view (what TechDraw's cosmetic thread commands make): nothing of the unit stays a symbol."""
+    sides = [model.Line(100, 130 + s * 9.08, 150, 130 + s * 9.08, model.THREAD) for s in (1, -1)]
+    end = model.Line(100, 120, 100, 140, model.THREAD_END)
+    arc = model.Arc(250, 130, 9.08, 90.0, 360.0, model.THREAD)
+    right = (230.0, 100.0, 270.0, 160.0)
+    (done,) = su.with_cosmetics([unit_of("threads", *sides, end, arc, kind=su.KIND_EXTRA)], {"top": TOP, "right": right}, [])
+    got = [(n.view, n.kind, n.style) for n in done.natives]
+    assert got == [("top", "line", "thin"), ("top", "line", "thin"), ("top", "line", "thick"), ("right", "arc", "thin")]
+    assert done.residue == ()
+    assert done.natives[2].values == (100, 120, 100, 140)  # the end line spans the major diameter: 20 mm
+
+
 def test_the_same_line_drawn_twice_is_one_edge_and_both_are_covered() -> None:
     a = model.Line(150, 95, 150, 165, model.AXES)
     b = model.Line(150, 95, 150, 165, model.AXES)

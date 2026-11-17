@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from sheet_context import Context, ThreadInfo, dot, parallel, sub, unit
-from sheet_model import CONTOUR, THREAD, Arc, Entity, Line
+from sheet_model import THREAD, THREAD_END, Arc, Entity, Line
 
 _SIZE = re.compile(r"^M(\d+(?:\.\d+)?)")
 
@@ -161,8 +161,10 @@ def external_callout(ctx: Context, threads: list[ThreadInfo]) -> list[str]:
 
 def external_entities(ctx: Context) -> list[Entity]:
     """ISO 6410 for a thread on a shaft: in a view across the axis the thin line at the minor diameter along the thread
-    (the thick lines at the major diameter are the cylinder, TechDraw draws them); in a view along the axis the thin arc of
-    about three quarters of a circle at the minor diameter."""
+    (the thick lines at the major diameter are the cylinder, TechDraw draws them) and the wide line that ends the thread; in
+    a view along the axis the thin arc of about three quarters of a circle at the minor diameter. Every one of them is a
+    cosmetic edge of its view on the page (``sheet_units.with_cosmetics``), the kind TechDraw's own *cosmetic thread*
+    commands make."""
     out: list[Entity] = []
     for t in ctx.threads:
         end = (
@@ -184,8 +186,9 @@ def external_entities(ctx: Context) -> list[Entity]:
                 for sign in (1.0, -1.0):
                     n = (-u[1] * sign * r, u[0] * sign * r)
                     out.append(Line(a[0] + n[0], a[1] + n[1], b[0] + n[0], b[1] + n[1], THREAD))
-                # where the full thread ends: a transverse line across the whole shaft, wide like the outline (ISO 6410: the
-                # limit of the useful thread length is a continuous wide line; the text of the standard was not opened here)
+                # where the full thread ends: a transverse line across the major diameter and no further, wide like the outline
+                # (ISO 6410: the limit of the useful thread length is a continuous wide line; the text of the standard was not
+                # opened here). Its own layer, so that the view takes it as a cosmetic edge of its own and not as a picture.
                 nx, ny = -u[1] * t.major / 2 * view.scale, u[0] * t.major / 2 * view.scale
-                out.append(Line(b[0] + nx, b[1] + ny, b[0] - nx, b[1] - ny, CONTOUR))
+                out.append(Line(b[0] + nx, b[1] + ny, b[0] - nx, b[1] - ny, THREAD_END))
     return out

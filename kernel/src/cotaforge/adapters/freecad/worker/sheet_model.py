@@ -24,6 +24,7 @@ TITLE_BLOCK = "ROTULO"
 AXES = "EJES"
 HATCH = "SOMBREADO"
 THREAD = "ROSCAS"
+THREAD_END = "ROSCA_FIN"  # ISO 6410: the line that ends the useful length of a thread, wide, across the whole major diameter
 FLAT_FACES = "CARAS_PLANAS"  # the diagonals of a flat face of a turned part: a layer no native object draws
 ISO_SHADE = "ISO_COLOR"  # the shaded picture under the lines of the isometric view (``Sheet.underlay``), never DXF
 PARTING = "PARTICION"  # the parting line of a moulded part: thick, its own line type (long dash, two short ones)
@@ -63,6 +64,7 @@ LAYERS: dict[str, LayerStyle] = {
     AXES: LayerStyle(1, "CENTER", sw.weight(sw.CENTRE), (6.0, 0.75, 0.125, 0.75)),
     HATCH: LayerStyle(9, "CONTINUOUS", sw.weight(sw.HATCH)),
     THREAD: LayerStyle(3, "CONTINUOUS", sw.weight(sw.THREAD)),  # ISO 6410: the thin arc at the major diameter
+    THREAD_END: LayerStyle(7, "CONTINUOUS", sw.weight(sw.VISIBLE)),  # colour 7: wide like the outline it ends on
     FLAT_FACES: LayerStyle(3, "CONTINUOUS", sw.weight(sw.DIMENSION)),  # the diagonals of a flat face seen face-on
     PARTING: LayerStyle(7, "PHANTOM", sw.weight(sw.VISIBLE), (12.0, 3.0, 1.5, 3.0, 1.5, 3.0)),  # colour 7
     ZONE: LayerStyle(3, "CONTINUOUS", sw.weight(sw.DIMENSION)),

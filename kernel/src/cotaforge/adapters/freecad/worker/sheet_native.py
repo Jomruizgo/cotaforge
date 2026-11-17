@@ -1165,13 +1165,40 @@ def _make_cosmetic(frame: Frame, n: su.NativeCosmetic) -> Geometry:
     return geometry
 
 
-def _reweigh(view: Any, natives: list[su.NativeCosmetic], specs: list[Any]) -> None:
-    """Put the weights of the table on the lines the sheet made earlier (a file saved before the table changed)."""
-    for n, (kind, values) in zip(natives, specs, strict=False):
+UNKNOWN_WEIGHT = -1.0  # a line of a file saved before the sheet kept the weight it set
+
+
+def _set_weights(entry: list[Any]) -> list[float]:
+    """The weights the sheet set on the lines of the stored ``entry``, parallel to its specs (``UNKNOWN_WEIGHT`` for an entry saved
+    before they were kept; ``entry`` is completed in place)."""
+    _set_numbers(entry)
+    if len(entry) < 4 or not isinstance(entry[3], list):  # noqa: PLR2004 - [signature, specs, numbers, weights]
+        entry[3:] = [[UNKNOWN_WEIGHT] * len(entry[1])]
+    weights: list[float] = entry[3]
+    weights += [UNKNOWN_WEIGHT] * (len(entry[1]) - len(weights))
+    return weights
+
+
+def _reweigh(view: Any, natives: list[su.NativeCosmetic], entry: list[Any]) -> bool:
+    """Put the weights of the table on the lines the sheet made earlier (a file saved before the table changed): only a line that
+    still has the weight the sheet gave it, or one of a file that did not tell. A line whose weight is not the one the sheet set
+    was given another by the engineer: his choice, never touched. Returns whether the stored entry changed."""
+    weights = _set_weights(entry)
+    changed = False
+    for i, (n, (kind, values)) in enumerate(zip(natives, entry[1], strict=False)):
         found = _find(view, (kind, tuple(values)))
         fmt = dict(found.Format) if found is not None else {}
-        if fmt and abs(float(fmt.get("weight", 0.0)) - ISO_WIDTH_MM[n.style]) > 1e-6:
-            found.Format = {**fmt, "weight": ISO_WIDTH_MM[n.style]}
+        if not fmt:
+            continue
+        wanted = ISO_WIDTH_MM[n.style]
+        have = float(fmt.get("weight", 0.0))
+        if abs(have - wanted) <= 1e-6:
+            if weights[i] != wanted:
+                weights[i], changed = wanted, True
+        elif weights[i] == UNKNOWN_WEIGHT or abs(have - weights[i]) <= 1e-6:
+            found.Format = {**fmt, "weight": wanted}
+            weights[i], changed = wanted, True
+    return changed
 
 
 def _number(view: Any, natives: dict[str, list[su.NativeCosmetic]], stored: dict[str, list[Any]]) -> list[str]:
@@ -1256,7 +1283,8 @@ def sync_cosmetics(page: Any, units: list[su.Unit], made: list[str] | None = Non
                 and old[0] == signature
                 and all(_hangs_as_made(frame, tuple(v)) for k, v in old[1] if k == CLINE and [k, v] not in lost)
             ):
-                _reweigh(view, natives, old[1])
+                if _reweigh(view, natives, old):
+                    changed = True
                 continue
             if old is not None:
                 _drop(view, old[1])
@@ -1277,7 +1305,7 @@ def sync_cosmetics(page: Any, units: list[su.Unit], made: list[str] | None = Non
                 )
                 changed = True
                 continue
-            stored[key] = [signature, specs, [NOT_SET] * len(specs)]
+            stored[key] = [signature, specs, [NOT_SET] * len(specs), [ISO_WIDTH_MM[n.style] for n in natives]]
             changed = True
             touched(key)
         if changed:
@@ -1532,3 +1560,24 @@ def cosmetic_paths(page: Any, key: str) -> list[list[tuple[float, float]]]:
                     ]
                 )
     return paths
+
+
+def cosmetic_circles(page: Any) -> list[tuple[str, float, float, float]]:
+    """Every cosmetic circle and arc of the views of ``page`` -- the sheet's and the engineer's own (a thread he drew with
+    TechDraw's *Cosmetic thread* commands is one) -- as ``(view, x, y, r)`` in page mm (y up). An arc read back after its list
+    was restored answers its centre with y mirrored (measured in 1.1.3), so the arc is listed at both: the check that reads them
+    asks whether a circle is concentric with a hole, and a mirrored twin only matters where another circle already lies."""
+    found: list[tuple[str, float, float, float]] = []
+    for name in view_names(page):
+        view = view_object(page, name)
+        if view is None:
+            continue
+        frame = Frame(page, view)
+        for edge in view.CosmeticEdges:
+            kind, values = _cosmetic_geometry(edge)
+            if kind != "circle":
+                continue
+            cx, cy, r = values
+            for sign in (1.0, -1.0):
+                found.append((name, frame.x + cx * frame.scale, frame.y + sign * cy * frame.scale, r * frame.scale))
+    return found

@@ -306,6 +306,24 @@ def test_a_threaded_hole_no_view_sees_square_on_has_no_thread_representation() -
     assert found("thread_no_representation", run_review(ctx, {"type": "overall"})) == []
 
 
+def test_a_thread_arc_the_engineer_drew_by_hand_on_the_page_is_a_representation() -> None:
+    """TechDraw's *Cosmetic thread* command leaves a cosmetic arc concentric with the hole and wider than it: the check reads the
+    page, so such an arc counts, and a circle of the hole's own size, one far too wide or one off the hole does not."""
+    ctx = views_context([hole(0, 10.0, 10.0, 5.0, thread=("M6", 8.0))])
+    (threaded,) = ctx.holes
+    top = ctx.views["top"]
+    cx, cy = top.project(threaded.centre)
+    r = threaded.diameter / 2 * top.scale
+    assert found("thread_no_representation", run_review(ctx, {"type": "overall"}))  # nothing drawn: the finding
+    for circle in ((cx, cy, r), (cx, cy, 3 * r), (cx + 5.0, cy, r / 0.85)):
+        ctx.extras["page_circles"] = [("top", *circle)]
+        assert found("thread_no_representation", run_review(ctx, {"type": "overall"}))
+    ctx.extras["page_circles"] = [("front", cx, cy, r / 0.85)]  # in a view that does not look along the hole
+    assert found("thread_no_representation", run_review(ctx, {"type": "overall"}))
+    ctx.extras["page_circles"] = [("top", cx, cy, r / 0.85)]  # what the command draws
+    assert found("thread_no_representation", run_review(ctx, {"type": "overall"})) == []
+
+
 # --- ids and the questions ----------------------------------------------------------------------------------------------------------
 
 

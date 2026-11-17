@@ -191,7 +191,7 @@ def test_a_diameter_dim_on_a_plain_cylinder_does_not_remove_the_overall_diameter
 def test_the_side_view_of_an_external_thread_has_a_wide_line_where_the_full_thread_ends() -> None:
     ctx = shaft_context()
     entities = sheet_thread.external_entities(ctx)
-    wide = [e for e in entities if isinstance(e, model.Line) and e.layer == CONTOUR]
+    wide = [e for e in entities if isinstance(e, model.Line) and e.layer == model.THREAD_END]
     thin = [e for e in entities if isinstance(e, model.Line) and e.layer == model.THREAD]
     assert len(thin) == 2 and len(wide) == 1
     (end,) = wide

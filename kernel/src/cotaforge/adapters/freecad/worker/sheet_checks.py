@@ -389,6 +389,8 @@ def _rounds(data: Any) -> list[Any]:
 # --- centre marks and axes ------------------------------------------------------------------------------------------------
 
 MARK_TOL_MM = 0.3
+HAND_ARC_OVER = 0.02  # a thread arc is wider than the hole it marks by at least this fraction of its radius ...
+HAND_ARC_RATIO = 1.6  # ... and by less than this multiple of it (TechDraw's own command draws it at 1/0.85 of the circle picked)
 
 
 def _axis_segments(data: Any) -> list[sheet_collide.Segment]:
@@ -804,10 +806,13 @@ def _hidden_features(data: Any) -> list[Any]:
 
 def _threads(data: Any) -> list[Any]:
     """A threaded hole is drawn with its thread arc in the view that sees it as a circle: no view looks along it, no
-    representation."""
+    representation. The arc is the sheet's own (``thread_entities``) or one the page holds, whoever drew it: a cosmetic arc
+    concentric with the hole and wider than it, as TechDraw's own *Cosmetic thread* command makes (a thread the engineer drew
+    by hand is represented; one of the sheet's that he deleted is his call, ``line_deleted_by_hand`` says so)."""
     ctx = data.ctx
     out: list[Any] = []
     arcs = [e for e in data.sheet.entities if isinstance(e, Arc) and e.layer == THREAD]
+    page_circles = ctx.extras.get("page_circles", [])
     for stack in _stack_list(ctx):
         threaded = next((h for h in stack if h.thread is not None), None)
         if threaded is None:
@@ -816,7 +821,15 @@ def _threads(data: Any) -> list[Any]:
             v
             for v in ctx.views.values()
             if v.looks_along(threaded.direction)
-            and any(math.dist((a.cx, a.cy), v.project(threaded.centre)) < MARK_TOL_MM for a in arcs)
+            and (
+                any(math.dist((a.cx, a.cy), v.project(threaded.centre)) < MARK_TOL_MM for a in arcs)
+                or any(
+                    name == v.name
+                    and math.dist((x, y), v.project(threaded.centre)) < MARK_TOL_MM
+                    and threaded.diameter / 2 * v.scale * (1 + HAND_ARC_OVER) < r < threaded.diameter / 2 * v.scale * HAND_ARC_RATIO
+                    for name, x, y, r in page_circles
+                )
+            )
         ]
         if not shown:
             name = " + ".join(sheet_review._label(h, ctx) for h in stack)
