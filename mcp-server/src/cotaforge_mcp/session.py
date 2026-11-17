@@ -268,6 +268,9 @@ class Session:
         self.sheet_looks: dict[tuple[str, str], Any] = {}
         """The last whole-sheet capture of each sheet this session took (drawing_look): export waits for one taken after the
         last change of the sheet."""
+        self.sheet_reviews: dict[tuple[str, str], Any] = {}
+        """The last FULL review of each sheet this session read, as the sheet info it returned (drawing_plan): the quick step
+        line of an add, an update or a remove carries what that review left open (the step's own rules read a few findings)."""
         self.mem = design_memory.MemState()
         """Roles, stage and the answers given at milestones: kept in the document and in the record."""
         self._aliases: dict[str, FeatureHandle] = {}

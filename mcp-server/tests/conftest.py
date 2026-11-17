@@ -140,7 +140,7 @@ class DrawingFake(FakeAdapter):
             warnings=warnings,
             changed=changed,
             window="1 new" if changed else "",
-            page_state=self._info(name, True, self.step_rows) if state and name in self.drawings else None,
+            page_state=self._info(name, True, self.step_rows, quick=True) if state and name in self.drawings else None,
             **(rebuilt or {}),
         )
 
@@ -285,8 +285,9 @@ class DrawingFake(FakeAdapter):
             self.on_add(self, [i for i in sheet["items"] if i["id"] in added])
         return self._drawing_result(name, refused=tuple(refused), changed=tuple(added), state=True)
 
-    def _info(self, n: str, review: bool, findings: tuple[Any, ...] | None = None) -> Any:
-        """One sheet as a describe states it (``findings``: those it lists with a review, default every finding of the fake)."""
+    def _info(self, n: str, review: bool, findings: tuple[Any, ...] | None = None, quick: bool = False) -> Any:
+        """One sheet as a describe states it (``findings``: those it lists with a review, default every finding of the
+        fake; ``quick``: the sheet as a step left it, which ran only the step's own rules: ``STEP_CODES``)."""
         from cotaforge.contract import (
             DrawingItemInfo,
             DrawingQuestion,
@@ -323,6 +324,7 @@ class DrawingFake(FakeAdapter):
             review_request=None if r is None else DrawingReviewRequest(at=r["at"]),
             review_choice=c["who"] if c is not None else "",
             composed=dict(sheet.get("composed", {})),
+            checked_codes=STEP_CODES if quick else (),
             printed=("Fabrication notes", "19 de espesor"),
             items=tuple(
                 DrawingItemInfo(id=i["id"], type=i["type"], status="ok", detail="drawn", spec=i) for i in sheet["items"]
@@ -506,6 +508,8 @@ def fake_without(*tools: str) -> FakeAdapter:
     return Reduced()
 
 
+STEP_CODES = ("view_adds_nothing", "view_duplicate", "dimension_crossing", "sheet_underused")
+"""The rules the worker's step runs (``sheet_viewchecks.STEP_CODES``): the page state of a step names them as checked."""
 SESSION_ID = "unit-session"
 REJECTED = "The user doesn't want to proceed with this tool use. The tool use was rejected"
 """What Claude Code tells the agent when the person rejects a permission dialog."""

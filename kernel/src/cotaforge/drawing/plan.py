@@ -105,6 +105,9 @@ class Plan:
     steps: tuple[Step, ...]
     layout: tuple[RuleStatus, ...] = ()
     method: SheetType | None = field(default=None, compare=False)
+    reviewed: bool = True
+    """Whether a full review of the sheet stands behind the statuses. ``False``: they come from the checks of a step only, so
+    which step the sheet is at cannot be known."""
 
     @property
     def current(self) -> Step:
@@ -112,7 +115,15 @@ class Plan:
 
     def line(self, quick: bool = False) -> str:
         """The one line every drawing reply ends with: the step the sheet is at and what it still lacks. ``quick``: read
-        from the checks of the step just taken, not from the whole review (an add, an update, a remove): it says so."""
+        from the checks of the step just taken and the last full review, not from a whole review (an add, an update, a
+        remove): it says so; what the earlier full review left open is still in it. With no full review behind it, it does
+        not claim a step."""
+        if quick and not self.reviewed:
+            return (
+                f"step unknown (?/{len(self.steps)}): the sheet has had no full review yet, so what is open in it is not known"
+                ' | step checks only: drawing(action="review") runs the whole review'
+                ' | drawing(action="plan") gives the sequence'
+            )
         step = self.current
         missing = step.open
         layout = [s for s in self.layout if s.holds]
@@ -160,9 +171,11 @@ def build(
     open_codes: Mapping[str, int] | None = None,
     rows: Mapping[str, RowState] | None = None,
     review_pending: tuple[str, ...] = (),
+    reviewed: bool = True,
 ) -> Plan:
     """The plan of the sheet ``context`` describes. ``open_codes``: the review findings not closed on the page, by code;
-    ``rows``: the requirement rows that apply, by id; ``review_pending``: what the independent review still waits for."""
+    ``rows``: the requirement rows that apply, by id; ``review_pending``: what the independent review still waits for;
+    ``reviewed``: a full review stands behind ``open_codes`` (see ``Plan.reviewed``)."""
     codes, states = open_codes or {}, rows or {}
     method = sheet_types().get(context.sheet_type)
     by_step: dict[str, list[RuleStatus]] = {}
@@ -181,7 +194,7 @@ def build(
         )
         for number, (key, title) in enumerate(SEQUENCE, start=1)
     )
-    return Plan(context, steps, tuple(by_step.get("layout", ())), method)
+    return Plan(context, steps, tuple(by_step.get("layout", ())), method, reviewed)
 
 
 def _rule_line(status: RuleStatus, text: bool) -> str:
@@ -205,8 +218,9 @@ def _summary(s: Step) -> str:
     many it has."""
     held = [r.rule.id for r in s.rules if r.holds]
     asked = [f"ask {q.id}" for q in s.questions]
-    shown = [*asked, *held][:SUMMARY_OPEN]
-    more = len(asked) + len(held) - len(shown)
+    named = [*asked, *held, *(f"wait: {p}" for p in s.pending)]  # the review wait is an open item too: it is named, never blank
+    shown = named[:SUMMARY_OPEN]
+    more = len(named) - len(shown)
     state = f"{len(s.open)} open: {', '.join(shown)}{f' +{more}' if more > 0 else ''}" if s.open else "nothing open"
     return f"STEP {s.number} {s.title.upper()} ({state}; {len(s.rules)} rules)"
 

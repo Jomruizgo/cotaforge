@@ -638,6 +638,7 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
             if action == "remove" and args.reason:
                 drawing_gate.record_removal(session, args.sheet, auto_rows, [_item_id(i) for i in items], args.reason, args.by)
             if result.removed:
+                drawing_plan.forget_review(session, result.sheet)
                 return ok(f"drawing {result.sheet}: sheet removed; sheets left: {', '.join(result.sheets) or 'none'}")
             lines = [
                 *_sheet_summary(result, brief=action != "update" or edit),
@@ -671,7 +672,7 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                     lines += _sheet_as_read(sheet)
                 return ok("\n".join(lines), limit=REVIEW_REPLY_CHARS)
             added: dict[str, list[Any]] = {}
-            tail = ""
+            step_lines: list[str] = []
             if action == "review":  # what the harness is sure of goes on the sheet before the agent reads the review
                 determined = []
                 for sheet in described.sheets:
@@ -701,8 +702,10 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                 if action == "review":
                     lines += drawing_gate.added_lines(added.get(sheet.sheet, []))
                     lines += drawing_gate.review_lines(session, sheet)
-                    tail = drawing_plan.step_line(session, sheet)
-            return ok("\n".join(lines), limit=REVIEW_REPLY_CHARS, tail=tail)
+                    line = drawing_plan.step_line(session, sheet)
+                    if line:  # one per sheet, each named when there are several
+                        step_lines.append(f"sheet {sheet.sheet}: {line}" if len(described.sheets) > 1 else line)
+            return ok("\n".join(lines), limit=REVIEW_REPLY_CHARS, tail="\n".join(step_lines))
         if action in ("answer", "approve", "request_review", "review_choice", "review_report"):
             session.need("annotate_drawing", f"drawing {action}")
             seen_sheet: list[Any] = []  # the sheet as the answer reviewed it, the answer put on it: the step line reads it
@@ -716,7 +719,14 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                 said = drawing_gate.review_report(session, args.sheet, args.by, args.items, args.append)
             else:
                 said = drawing_gate.approve(session, args.sheet, args.by, args.reason)
-            line = drawing_plan.step_line(session, seen_sheet[0] if seen_sheet else None)
+            # the line comes from a review this call already has (``answer``: the one that guards it), or, for an answer to a
+            # memory entry (it changes nothing of the sheet), from the last full review: never from a review of its own. The
+            # review-process actions (approve, request_review, review_choice, review_report) carry none: they change what the
+            # review step waits for, which no review already read says
+            line = ""
+            if action == "answer":
+                known = seen_sheet[0] if seen_sheet else drawing_plan.last_review(session, args.sheet)
+                line = drawing_plan.step_line(session, known)
             return ok(said, limit=REVIEW_REPLY_CHARS, tail=line)
         session.need("capture_drawing", "drawing capture")
         region = _region(args.region)
@@ -1032,7 +1042,10 @@ def export(session: Session, args: ExportArgs) -> Reply:
             if args.action == "pdf":
                 released = drawing_gate.record_release(session, sheet)  # the next export of this sheet is compared with what it stated now
                 wrote += "".join(f"\n{note}" for note in getattr(session, "revision_notes", []))
-                line = drawing_plan.step_line(session, released)  # the sheet the gate reviewed for this export: not reviewed again
+            else:  # the dxf of a sheet writes no release record; the line reads the sheet the gate reviewed for it all the same
+                released = getattr(session, "gate_info", None)
+                session.gate_info = None
+            line = drawing_plan.step_line(session, released)  # the sheet the gate reviewed for this export: not reviewed again
         elif args.action == "step":
             session.adapter.export_step(ExportRequest(operation_id="export", path=str(target)))
         elif args.action == "parasolid":

@@ -3330,14 +3330,13 @@ def _result(
     step: list[str] = []
     page_state: dict[str, Any] | None = None
     if rules or state:
-        data = _review_data(doc, page, spec, (sheet, results, ctx))
-        standing = step_rows(data)
-        if rules:
-            step = step_findings(page, standing)
         try:
-            page_state = _page_state(page, spec, (sheet, results, ctx), data, standing)
-        except Exception as exc:  # noqa: BLE001 - the line of the reply is help: the step itself stands, and the reply says why it has none
-            warnings = [*warnings, f"the step line could not be read from the sheet ({type(exc).__name__}: {exc})"]
+            step, page_state = _step_state((sheet, results, ctx), doc, page, spec, rules)
+        except Exception as exc:  # noqa: BLE001 - the line is help: the step is already written and stands, the reply says why
+            step, page_state = [], None
+            where = _where(exc)
+            warnings = [*warnings, f"the step line could not be read from the sheet ({type(exc).__name__}: {exc} at {where})"]
+            App.Console.PrintWarning(f"cotaforge: the step line of sheet {spec.get('sheet', '?')} could not be built: {exc!r}\n")
     return {
         "step_findings": step,
         "page_state": page_state,
@@ -3360,6 +3359,21 @@ def _result(
         "warnings": warnings,
         "angle": key_angle(spec["template"]),
     }
+
+
+def _step_state(
+    drawn: tuple[model.Sheet, list[sc.ItemResult], sc.Context],
+    doc: reg.DocumentRec,
+    page: Any,
+    spec: dict[str, Any],
+    rules: bool,
+) -> tuple[list[str], dict[str, Any]]:
+    """What the reply of a step adds about the sheet: the blocking findings the step brought (``rules``) and the sheet as the step
+    left it (``page_state``), both read from the sheet ``drawn``. All of it is help: the caller guards the whole block."""
+    data = _review_data(doc, page, spec, drawn)
+    standing = step_rows(data)
+    step = step_findings(page, standing) if rules else []
+    return step, _page_state(page, spec, drawn, data, standing)
 
 
 def _where(exc: BaseException) -> str:
@@ -3660,6 +3674,9 @@ def _page_state(
     row["questions"] = []
     row["facts"] = sheet_reqfacts.facts(data)
     row.update(sheet_reqfacts.measures(data))
+    import sheet_viewchecks  # noqa: PLC0415 - the rules the step runs: the findings of every other code are not read here
+
+    row["checked_codes"] = list(sheet_viewchecks.STEP_CODES)
     return row
 
 

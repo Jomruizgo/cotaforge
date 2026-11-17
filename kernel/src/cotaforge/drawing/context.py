@@ -20,16 +20,23 @@ PROCESS_WORDS: dict[str, str] = {
     "milling": r"fresa|\bmill(?:ed|ing)?\b",
     "grinding": r"rectific|\bgrind|\bground\b",
     "laser_plasma_water": r"laser|plasma|chorro de agua|water\s?jet|oxicorte",
-    "wire_edm": r"\bhilo\b|wire[\s-]*(?:cut|edm)|\bwedm\b",
+    "wire_edm": r"(?:cort\w*|erosion\w*|\bedm)\s+(?:por|con|de|a)\s+hilo\b|wire[\s-]*(?:cut|edm)|\bwedm\b",
     "sinker_edm": r"penetracion|sinker|die[\s-]*sink",
     "casting": r"\bfundi|\bcast(?:ing)?\b",
-    "hand_tools": r"(?<!soldadura )(?<!welding )\bmanual(?!\s+(?:welding|weld|soldadura))|a mano\b|\blima(?:do)?\b|by hand|hand tools?",
-    "sheet_metal_bending": r"dobl|plega|\bbend|\bbent\b|\bfold",
+    "hand_tools": r"\bmanual|\ba mano\b|\blima(?:do)?\b|by hand|hand tools?",
+    "sheet_metal_bending": r"\bdobl(?:ad(?:o|a|or|ora)s?|ar|ando|ez|eces)\b|\bdobla\b|\bdoblo\b|plega|\bbend|\bbent\b|\bfold",
     "welding": r"solda|\bweld",
     "injection_moulding": r"inyec|injection|mo(?:u)?ld(?:ed|ing)",
     "machining": r"mecaniza|machin|taladr|\bdrill|escaria|\bream|rosca|\btap(?:ped|ping)?\b",
 }
-"""The words of the process section that name each catalog process (matched on unaccented lower case)."""
+"""The words of the process section that name each catalog process (matched on unaccented lower case, blanks collapsed)."""
+_FILLER = r"(?:\s+(?!(?:y|e|o|u|and|or|luego|then)\b)[\w-]+)"
+_MANUAL_WELD = re.compile(
+    rf"(?:solda\w*|\bweld\w*){_FILLER}{{0,3}}?\s+(?:manual\w*|a mano|by hand)\b|\bmanual\s+(?:welding|weld|soldadura)\b"
+)
+"""A hand weld ("soldadura a mano", "soldadura MIG manual", "manual welding"): welding the shop does with a torch is not hand
+work, so these phrases are taken out before the words of ``hand_tools`` are looked for (up to three words may stand between
+the weld and "manual"; a conjunction ends the phrase: "soldadura y limado a mano" still names the hand filing)."""
 QUESTION_PREFIX = "plan."
 """The id of an open question of the context starts with it (``plan.process``): the sheet keeps its answer."""
 QUESTION_KEYS = ("type", "process", "material", "quantity", "datums", "relations", "fits")
@@ -84,8 +91,9 @@ class SheetContext:
 
 def processes_in(text: str) -> tuple[str, ...]:
     """The catalog processes a process section names, in catalog order; a specific machining process implies machining."""
-    plain = _plain(text)
-    found = {name for name, words in PROCESS_WORDS.items() if re.search(words, plain)}
+    plain = " ".join(_plain(text).split())  # one blank between words, however it was typed
+    by_hand = _MANUAL_WELD.sub(" ", plain)
+    found = {name for name, words in PROCESS_WORDS.items() if re.search(words, by_hand if name == "hand_tools" else plain)}
     if found & MACHINING:
         found.add("machining")
     return tuple(name for name in PROCESS_WORDS if name in found)
