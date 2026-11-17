@@ -21,7 +21,7 @@ box.Length, box.Width, box.Height = 60, 40, 20
 doc.recompute()
 page = doc.addObject("TechDraw::DrawPage", "Plano")
 template = doc.addObject("TechDraw::DrawSVGTemplate", "PlanoTemplate")
-template.Template = os.path.join(App.getResourceDir(), "Mod", "TechDraw", "Templates", "A3_Landscape_blank.svg")
+template.Template = os.path.join(App.getResourceDir(), "Mod", "TechDraw", "Templates", "ISO", "A3_Landscape_blank.svg")
 page.Template = template
 doc.recompute()
 doc.saveAs(r"{path}")
@@ -29,6 +29,7 @@ App.closeDocument("manual")
 """
 
 
+@pytest.mark.expected_findings("view_adds_nothing")  # the sheet that is made again is bare: this test is about the refusal
 async def test_a_page_made_by_hand_is_refused_a_create_and_kept_until_the_engineer_orders_it_thrown_away(workspace: Path) -> None:
     script = workspace.parent / "make_manual.py"
     target = workspace / "manual.FCStd"
