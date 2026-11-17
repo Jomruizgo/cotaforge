@@ -287,7 +287,7 @@ def test_the_guide_topic_explains_the_gate_and_stays_whole(settings: Settings) -
         "engineer_or_fabricator",
         "review_choice",
         "review_report",
-        "run_in_background=true",
+        "wait_review",
         "One drawing = one sheet = one file",
         "cannot prove WHO",
     ):

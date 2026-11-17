@@ -533,6 +533,13 @@ SHEET_NEXT = (
 )
 
 
+def wait_review(session: Session, args: DrawingArgs, cancelled: Any = None) -> Reply:
+    """``drawing(action=wait_review)``: the one call that waits for the review. It is not under the CAD lock (it would hold the
+    CAD for minutes): the gate takes the lock only to read the sheet."""
+    session.need("describe_drawing", "drawing wait_review")
+    return ok(drawing_gate.wait_review(session, args.sheet, cancelled))
+
+
 def drawing(session: Session, args: DrawingArgs) -> Reply:
     with session.lock:
         session.require_executor()

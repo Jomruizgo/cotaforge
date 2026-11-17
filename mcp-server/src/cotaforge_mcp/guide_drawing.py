@@ -313,14 +313,14 @@ DONE_LINES = (
     "fabricator: the manufacturer agent | engineer: the engineer, no time limit | own: you ask yourself (below) | "
     "none: nobody (the blocking findings of the CAD are not asked either).",
     "THE FLOW of engineer_or_fabricator. (1) drawing(action=request_review, sheet): records the time and tells you to ask "
-    "the engineer ONE question: «¿Revisas tú la hoja X o la revisa el agente fabricante?», and to start a background "
-    "timer right after: Bash `sleep <wait min x 60>` with run_in_background=true (PowerShell: Start-Sleep -Seconds N in the "
-    "background); Claude Code wakes you when it ends. Then keep working on other things: NEVER end the turn to wait. "
+    "the engineer ONE question: «¿Revisas tú la hoja X o la revisa el agente fabricante?». Ask it, tell him what he types is "
+    "read within a minute (Esc: at once) and, in the same message, call drawing(action=wait_review, sheet): 1 min per call, "
+    "call it again if it says so; never poll (export, doc status). "
     "(2) «yo»: drawing(action=review_choice, sheet, by=engineer); no time limit; he tells you his remarks in the chat "
     "(or «sin observaciones») and you record them with drawing(action=review_report, sheet, by=engineer, items=[...]), "
     "zero items allowed; what he selects on the sheet you read with view(action=selection) and put in `where`. (3) "
     "«manufacturer», or no answer in time: review_choice by=fabricator (if he said it) and launch the agent `fabricator` "
-    "for that sheet. If the timer wakes you and he already answered, ignore it (the server keeps the clock). The choice "
+    "for that sheet (the server keeps the clock). The choice "
     "belongs to the SHEET: once made "
     "(or the manufacturer assumed) it stays through the changes of the sheet; asking again only says who reviews.",
     "THE FABRICATOR AGENT is a machinist / welder / assembler who gets ONLY the drawing (the sheet image, the texts it "

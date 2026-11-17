@@ -177,6 +177,7 @@ class DrawingArgs(Strict):
         "request_review",
         "review_choice",
         "review_report",
+        "wait_review",
         "plan",
         "compose",
     ]
@@ -447,6 +448,7 @@ def _drawing_actions(session: "Session") -> list[str]:
     found = [action for tool, actions in pairs if tool in t for action in actions]
     if "describe_drawing" in t:
         found.append("plan")  # the work sequence of this sheet and the rules of each step, in both flows
+        found.append("wait_review")  # waits for the review in one call, on the server: polling costs a turn each time
     if sheet_flow(session) and {"create_drawing", "annotate_drawing", "describe_drawing"} <= set(t):
         found.append("compose")  # the default flow; a project that chose drawing_flow=steps does not see it
     return found
@@ -548,11 +550,12 @@ TOOLS: tuple[ToolDef, ...] = (
         "their status on the page; the reply of create, add, update, remove, review, requirements, answer, compose and "
         "export(pdf|dxf) ends with the step you are at) | "
         "answer (id, text; by, reason: the engineer's order) | request_review, review_choice, review_report (by, items: who reviews it) | approve (the "
-        "ENGINEER's gate: by, reason). export(pdf|dxf) writes ONE sheet, refused until its review is done. Items, "
+        "ENGINEER's gate: by, reason). export(pdf|dxf) writes ONE sheet, refused until its review is done; wait_review is the ONE "
+        "call that waits for the review (blocks on the server, 1 min per call), never poll. Items, "
         'finishing: cad_guide(topic="drawing" | "drawing:done").',
         DrawingArgs,
         "drawing(action=create|add|remove|remove_sheet|update|add_view|remove_view|list|read|review|requirements|plan|capture|"
-        "answer|approve|request_review|review_choice|review_report, step?, "
+        "answer|approve|request_review|review_choice|review_report|wait_review, step?, "
         "sheet?, items?, template?, angle?, title?, author?, date?, material?, scale?, language?, drawing_number?, "
         "revision?, general_tolerances?, company?, title_block?, body?, isometric?, views?, symmetry?, "
         "region?, id?, text?, by?, reason?, append?)",

@@ -563,7 +563,7 @@ The old Spanish values `ingeniero_o_fabricante`, `fabricante`, `ingeniero`, `pro
 
 **The default flow.**
 
-1. The agent calls `drawing(action="request_review", sheet)`, which notes the time on the sheet. It asks you one question: will you review the sheet or should the fabricator? It starts a background timer so Claude Code wakes it at the deadline, and carries on meanwhile.
+1. The agent calls `drawing(action="request_review", sheet)`, which notes the time on the sheet. It asks you one question: will you review the sheet or should the fabricator? It then waits with one call, `drawing(action="wait_review")`, which blocks on the server one minute at a time until you answer or the deadline passes, and it tells you that what you type is read within about a minute (or at once if you press Esc).
 2. If you say "me", the agent records it (`review_choice`, `by="engineer"`) and waits for your report with no time limit. You dictate observations in chat (or "no observations"). What you point at on the sheet it reads with `view` `selection`. It records them with `review_report`, `by="engineer"`.
 3. If you say "fabricator", or do not answer in time, the agent launches the `fabricator` at that moment.
 4. Before export, every point of the latest report that counts is answered. The agent fixes the sheet and answers with `drawing(action="answer", id="fab1.1", text="fixed: what changed")`, or answers `does not apply: why`. If you reviewed, even after the fabricator, your latest report counts.
@@ -584,7 +584,7 @@ Answers live in the sheet, inside the `.FCStd`, and survive save and reopen. Rea
 **You confirm your own orders, in Claude Code's permission dialog.** When the agent is about to record an order of yours (approving, dismissing something the harness measured, your review report, who reviews, composing the sheet again, the project's sector and processes), Claude Code shows you the phrase and everything it closes, whole (an order too long to show is refused and the agent splits it), and you accept or reject; without your confirmation the server does not record it.
 The dialog appears only right after you write. If you leave at that moment it waits for you, like any of Claude Code's own permission dialogs (it has no timeout). If you have typed nothing for more than 2 minutes (`order_presence_min` in `brief.yaml`, in minutes; at most 10, a larger or invalid value counts as 10 or 2) you are not asked: the order waits, the agent goes on with the rest and asks you when you are back. With nobody to answer (`claude -p`, `bypassPermissions` mode) none is recorded. A folder prepared with an earlier version is prepared again with `cotaforge init <folder>`.
 
-**Not verified in a real Claude Code session:** that the background timer wakes the agent and that the agent launches the `fabricator` by itself. The clock, the gates and the reports are tested with the real server and FreeCAD.
+**Not verified in a real Claude Code session:** that Esc interrupts `wait_review` and that the agent launches the `fabricator` by itself when the wait ends. The clock, the gates and the reports are tested with the real server and FreeCAD.
 
 The agent's guide for this is `cad_guide` with `topic="drawing:done"`.
 
