@@ -85,7 +85,7 @@ SHEET_WINDOW_LINE = (
 COMPOSE_LINES = (
     "PLAN: drawing(action=plan, sheet?) draws no annotation: it makes the views and the title block when the document has "
     "no sheet (the facts are measured on it) and lists (1) what the harness puts on by itself: views, paper and scale, "
-    "overall sizes, the positions of the holes for the caliper (spacing per group and one locator from an edge), callouts with the thread and "
+    "overall sizes, the positions of the holes for the caliper (one locator per direction from an edge and the spacings), callouts with the thread and "
     "the fit the model declares, axes, chamfers, keyway, parts list and balloons, notes with the intent file's own words, "
     "title block; (2) the decisions it needs, each with its question and the key that answers it. Ask the engineer "
     "those questions one at a time, with the proposal the plan gives; when he is present show him the plan and wait for "
@@ -166,8 +166,8 @@ ITEM_LINES = (
     "line of the cut: the extension line starts at its end), kind=diameter (a shaft or boss seen from the side) and "
     "kind=angle; a section has no TechDraw view, so its dimensions are the sheet's own drawing like a callout's.",
     "datum_dims: where the holes are, counted from two datum edges of one view (default top): the scheme of a shop with "
-    "a height gauge or a CMM. Every sheet with holes already carries the item loc (auto=true: the spacing per group "
-    "and a locator from the nearest edge, for a caliper), see drawing:quality. mode=ordinate (default: "
+    "a height gauge or a CMM. Every sheet with holes already carries the item loc (auto=true: one locator per direction "
+    "from the nearest edge and the spacings, for a caliper), see drawing:quality. mode=ordinate (default: "
     "baseline dimensions from the datum edge to each hole centre, one line per distinct position, TechDraw's own "
     "dimensions: FreeCAD has no ordinate dimension) or table (numbered holes and a table of X, Y and the callout). "
     'x_from / y_from: a face id (a plane seen edge-on, perpendicular to that direction) or "min" / "max" (the '
@@ -374,9 +374,9 @@ QUALITY_LINES = (
     "projection symbol); scale, sheet number and the revision rows are the sheet's own. A logo is not supported.",
     "LOCATION OF THE HOLES: a sheet whose part has holes carries the item loc (datum_dims with auto=true) from "
     "create on, for the tools every shop has (caliper, micrometer, depth gauge, height gauge, dial indicator, thread and "
-    "plug gauges: never ask about them). Per GROUP of equal holes: the spacing between its holes (76 and 44 for the "
-    "dowels) and ONE locator from the nearest REAL flat face seen edge-on (12, 36, 50 from the left edge) or from the "
-    "datum you declared; a row at one pitch says it once ('3×20': only the 3× is text). Never from one datum baseline "
+    "plug gauges: never ask about them). Per direction ONE locator from the nearest REAL flat face seen edge-on (12 from the left edge) or from the "
+    "datum you declared, and the spacings (76 and 44 for the dowels; a group not tied to the rest gets one more to the nearest "
+    "column), so it never closes on the overall size (8 + 44 + 8) and never gives a half of another dimension; a row at one pitch says it once ('3×20': only the 3× is text). Never from one datum baseline "
     "(a height gauge: x_from / y_from), the box corner or symmetry; a bore on a turned part's axis, or a radial hole "
     "through it, has the axis. No flat face a caliper reaches (a disc): no locator, the review asks the engineer (a circle "
     "of holes: pattern_dim). Dimensions that do not touch share a row. review: hole_group_no_locator. A tolerance that "
@@ -457,9 +457,9 @@ BASELINE_LINE = (
 
 KEYWAY_LINE = (
     "keyway_dims (fit?, depth_tol?, section?, letter?): the dimensions of the keyways the walls of the part show -- width, depth "
-    "as the standards give it (d - t1 on a shaft, d + t2 in a hub), length, position -- as dim items <id>_w, _t, _l, _p. The "
+    "from the SURFACE when the keyway is closed (t1: a depth gauge; d - t1 only where it runs out at a shaft end, d + t2 in a hub), length, position -- as dim items <id>_w, _t, _l, _p. The "
     "width and the depth go on a REMOVED section across the keyway (a section item with removed=true, <id>_sec, placed on the "
-    "extension of its cutting line: no end view is made for a keyway); the length and the position, on the long view. fit is the "
+    "extension of its cutting line: no end view is made for a keyway); the length and the position, in the standard view that looks at the keyway face-on (the default sheet has it; never on hidden lines). fit is the "
     "ISO 286 class of the width (P9, N9: the harness takes it from the intent file's keyway line, else it is asked, never assumed; the length runs end to end of the keyway, a half circle included, and the position from the shoulder), depth_tol [upper, lower] the deviations of the depth, section=false "
     "keeps the old end view dimensions, letter the letter of the section. The harness adds them "
     "itself (rq_keyway); only the width's fit class is asked. chamfer_dims (no fields): a callout (size x angle) of every "

@@ -141,6 +141,15 @@ def with_rounds(slot: Slot, candidates: list[Round]) -> Slot:
     return Slot(c, slot.wall_a, slot.wall_b, slot.bottom, slot.ends, slot.caps, slot.up, slot.width, slot.reach, (found[0], found[-1]))
 
 
+def round_centre(slot: Slot, end: Round) -> Vec3:
+    """The centre of a rounded end of the keyway: the point of its axis half way down the wall (a point of the arc's own axis, inside the
+    box of its face, so a dimension can start from it)."""
+    c = slot.cylinder
+    along = _dot(end.centre, c.axis) - _dot(c.point, c.axis)
+    depth = (slot.reach + c.radius) / 2 if slot.reach is not None else c.radius
+    return tuple(round(c.point[i] + c.axis[i] * along + slot.up[i] * depth, 4) for i in range(3))  # type: ignore[return-value]
+
+
 def round_tip(slot: Slot, end: Round, outward: float) -> Vec3:
     """The point of the wall at the farthest reach of a rounded end along the axis of the shaft (``outward``: -1 the low end, +1 the
     high one), half way down the slot: a point OF the part, so a dimension can start from it."""
@@ -211,15 +220,45 @@ AXIS_NAMES = (("x", (1.0, 0.0, 0.0)), ("y", (0.0, 1.0, 0.0)), ("z", (0.0, 0.0, 1
 PROFILE_VIEW = {"x": "right", "y": "front", "z": "top"}  # the standard view that looks along each model axis
 
 
+FACE_ON = {"top": (0.0, 0.0, 1.0), "front": (0.0, -1.0, 0.0), "right": (1.0, 0.0, 0.0)}  # the direction each standard view looks FROM
+
+
+SECTION_VERTICAL = {"top": "y", "front": "z"}
+"""The model axis that stands upright on the page in a removed section hosted by that view: the cutting line runs along it (in the top
+view the cut across a shaft along x is a line along y, in the front view along z) and the section is drawn on its extension. The
+keyway's section is hosted by the front view (the main view of a turned part): the top view, where the keyway is seen face-on, carries
+its length and position."""
+
+
+def face_view(slot: Slot) -> str | None:
+    """The standard view that looks at the keyway face-on (the way it opens towards: the walls and the ends are seen as lines, the
+    length and the position as they are), or ``None`` when no standard view does (it opens towards the back, the bottom or the left)."""
+    return next((name for name, d in FACE_ON.items() if _dot(slot.up, d) > 1.0 - 1e-3), None)
+
+
+def is_closed(slot: Slot) -> bool:
+    """Whether the keyway is closed at both ends (it does not run out through an end of the shaft): a rounded end or a plane at each."""
+    if slot.rounds:
+        return True
+    inside = _dot(slot.wall_a.centre, slot.cylinder.axis)
+    along = [_dot(f.centre, slot.cylinder.axis) for f in slot.ends]
+    return any(a < inside for a in along) and any(a > inside for a in along)
+
+
 def axis_name(v: Vec3) -> str | None:
     """``x``, ``y`` or ``z`` when ``v`` lies along that model axis (a dimension is measured along one), else ``None``."""
     return next((name for name, a in AXIS_NAMES if abs(abs(_dot(v, a)) - 1.0) < 1e-3), None)
 
 
 def middle_of(slot: Slot) -> Vec3:
-    """The point of the axis of the cylinder halfway along the keyway (where a section across it is cut)."""
+    """The point of the axis of the cylinder where a section across the keyway is cut: halfway along it; in a keyway closed by two arcs a
+    quarter of the way between their centres, so that the letter of the cutting line stands inside the extension lines of the length
+    (they are at the centres) and not on one of them."""
     c = slot.cylinder
     along = _dot(slot.wall_a.centre, c.axis) - _dot(c.point, c.axis)
+    if len(slot.rounds) == 2:  # noqa: PLR2004
+        low, high = (_dot(r.centre, c.axis) - _dot(c.point, c.axis) for r in slot.rounds)
+        along = min(low, high) + abs(high - low) / 4
     return (c.point[0] + c.axis[0] * along, c.point[1] + c.axis[1] * along, c.point[2] + c.axis[2] * along)
 
 
@@ -233,35 +272,56 @@ def dimension_specs(
     along_side: str | None = None,
 ) -> list[dict[str, object]]:
     """The ``dim`` items that say a keyway to the shop, measured on the model: the width (between the walls), the depth as
-    the standards give it (``d - t1`` on a shaft, ``d + t2`` in a hub: from the bottom to the opposite side of the cylinder),
-    the length (between the planes that end it; out through the end of the shaft: to that end) and the position (from the end
-    of the shaft to the first plane that ends it). A dimension whose faces are not found, or that does not lie along a model
+    the standards give it (``d - t1`` across a shaft where the keyway runs out at its end, ``d + t2`` in a hub: from the bottom to the
+    opposite side of the cylinder; a keyway closed at both ends gets its depth from the bottom up to the surface of the shaft, a depth gauge: ``t1``),
+    the length (between the planes that end it, or the centres of its two end arcs, the travel of the end mill: the overall length is as correct and no check blocks either; out through the end of the shaft: to that end) and the position (from the end
+    of the shaft to the first plane that ends it), both in the standard view that looks at the keyway face-on (``face_view``; when the
+    sheet lacks it they are left out: the caller says so). A dimension whose faces are not found, or that does not lie along a model
     axis, is left out: nothing is guessed. ``section`` is the label of the removed section across the keyway (``A-A``): the
     width and the depth go on it, with the width's class (``fit``) and the depth's deviations (``depth_tol``: upper, lower);
     without one they go in the view of the sheet that looks along the axis of the cylinder, when it has it. ``along_side`` is the side of
     the view the length and the position stand on (``above`` on a turned part: its lengths stack below, and a dimension nothing
     pins is moved by the layout into that stack, across the ends of the keyway)."""
     c, out = slot.cylinder, []
+    face_on = face_view(slot)
+    face = {"view": face_on} if face_on in views else {}  # the length and the position go where the keyway is seen face-on, never on its hidden lines
     profile = PROFILE_VIEW.get(axis_name(c.axis) or "")
     view = {"view": section} if section else {"view": profile} if profile in views else {}
+    # in the removed section the two small dimensions stand where a draughtsman puts them (the planner cannot read an ink this short):
+    # the width above the slot, the depth beside the circle
+    place_w: dict[str, object] = {}
+    place_t: dict[str, object] = {}
+    main = next((v for v in views if v != "iso"), None)  # the main (only axial) view hosts the section
+    vertical = SECTION_VERTICAL.get(main or "") if section else None  # the model axis standing upright in the section
+    if vertical is not None:
+        for name, axis_of, place in (("w", axis_name(slot.wall_a.normal), place_w), ("t", axis_name(slot.up), place_t)):
+            side = "left" if axis_of == vertical else "above"  # the caption of the section stands below it; the notch opens to the right, towards the dimensions of the view
+            place.update({"side": side, "offset_mm": 9.0 if name == "w" else 20.0})  # the depth stands farther out: the width's class and deviations stack beside the notch
     across = axis_name(slot.wall_a.normal)
     if across is not None and slot.wall_a.face_id and slot.wall_b.face_id:
         out.append(
             {"type": "dim", "kind": "distance", "id": f"{prefix}_w", "from": {"face": slot.wall_a.face_id},
-             "to": {"face": slot.wall_b.face_id}, "along": across, **view, **({"fit": fit} if fit else {})}
+             "to": {"face": slot.wall_b.face_id}, "along": across, **view, **place_w, **({"fit": fit} if fit else {})}
         )  # fmt: skip
     deep = axis_name(slot.up)
     if deep is not None and slot.bottom is not None and slot.bottom.face_id:
         along_axis = _dot(slot.bottom.centre, c.axis)
-        opposite = tuple(c.point[i] + c.axis[i] * (along_axis - _dot(c.point, c.axis)) - slot.up[i] * c.radius for i in range(3))
+        # a CLOSED keyway in a shaft is measured from the surface (a depth gauge across the slot); the value across the shaft
+        # (d - t1) is only for one that runs out at an end of the shaft, where a caliper reaches it, and for a hub (d + t2)
+        base = tuple(c.point[i] + c.axis[i] * (along_axis - _dot(c.point, c.axis)) for i in range(3))
+        # the surface of the shaft over a closed keyway is the top of its cylinder (the slot took it away there; ``on_part`` accepts it)
+        sign = 1.0 if is_closed(slot) and not c.concave else -1.0
+        opposite = tuple(base[i] + sign * slot.up[i] * c.radius for i in range(3))
         out.append(
             {"type": "dim", "kind": "distance", "id": f"{prefix}_t", "from": {"face": slot.bottom.face_id},
-             "to": {"at": [round(v, 4) for v in opposite]}, "along": deep, **view, **({"tol": list(depth_tol)} if depth_tol else {})}
+             "to": {"at": [round(v, 4) for v in opposite]}, "along": deep, **view, **place_t, **({"tol": list(depth_tol)} if depth_tol else {})}
         )  # fmt: skip
+    if views and face_on not in views:
+        return out  # no view of the sheet sees the keyway face-on: its length and position would land on hidden lines (never dimensioned)
     lengthwise = axis_name(c.axis)
     if lengthwise is None:
         return out
-    side = {"side": along_side} if along_side else {}
+    side = {"side": along_side, **face} if along_side else dict(face)
     inside = _dot(slot.wall_a.centre, c.axis)
     ends = sorted(slot.ends, key=lambda f: _dot(f.centre, c.axis))
     caps = sorted(slot.caps, key=lambda f: _dot(f.centre, c.axis))
@@ -269,9 +329,9 @@ def dimension_specs(
     last = next((f for f in reversed(ends) if _dot(f.centre, c.axis) > inside), None)
     cap_low = caps[0] if caps and _dot(caps[0].centre, c.axis) < inside else None
     cap_high = caps[-1] if caps and _dot(caps[-1].centre, c.axis) > inside else None
-    if slot.rounds:  # closed by two half circles: the length runs between the farthest points of the walls, the position from the shoulder to the near one
+    if slot.rounds:  # closed by two half circles: the length runs between the CENTRES of the two arcs (the travel of the end mill), the position from the shoulder to the first one
         low_end, high_end = slot.rounds
-        p_low, p_high = ({"at": list(round_tip(slot, low_end, -1.0))}, {"at": list(round_tip(slot, high_end, 1.0))})
+        p_low, p_high = ({"at": list(round_centre(slot, low_end))}, {"at": list(round_centre(slot, high_end))})
         out.append({"type": "dim", "kind": "distance", "id": f"{prefix}_l", "from": p_low, "to": p_high, "along": lengthwise, **side})
         near = cap_low if cap_low is not None else cap_high
         if near is not None and near.face_id:

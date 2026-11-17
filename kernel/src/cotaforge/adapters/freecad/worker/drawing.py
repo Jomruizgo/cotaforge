@@ -1020,11 +1020,18 @@ def _views_for_part(doc: reg.DocumentRec, body: Any, op: str | None) -> tuple[li
     if bored:
         along = ("right", "front", "top")[index]
         return [along], True, f"revolved about {name} with a bore: the {along} view and a section A-A through the axis"
-    wants_end = bool(sheet_facts.collect(doc, _bodies(doc, body, op)).keyways)
+    slots = sheet_facts.collect(doc, _bodies(doc, body, op)).keyway_slots
+    wants_end = bool(slots)
     views = sheet_turned.views_for(wants_end)
+    # ONE axial view, and it is the one that looks at the keyway face-on (the part is drawn turned so that the keyway faces the viewer:
+    # its length and position stand there, never on hidden lines); a view is never added only for the keyway
+    face_on = next((v for v in (sheet_keyway.face_view(sl) for sl in slots) if v is not None), None)
+    if face_on is not None:
+        views = [face_on]
     why = (
-        f"revolved about {name}: the main view with its axis horizontal (as it is machined) and the isometric view; the "
-        "keyway is shown in a removed section across it (keyway_dims), not in an end view"
+        f"revolved about {name}: ONE main view with its axis horizontal (as it is machined)"
+        + (f", the {face_on} view, because it looks at the keyway face-on (its length and position, the diameters and the lengths stand there)" if face_on else "")
+        + " and the isometric view; the keyway's width and depth go in a removed section across it (keyway_dims), not in an end view"
         if wants_end
         else f"revolved about {name}: ONE main view with its axis horizontal (as it is machined); it carries the "
         "diameters, the lengths, the thread and the chamfers, an end view would repeat circles; plus the isometric view"
@@ -1395,6 +1402,10 @@ def _expand_thread_dims(
     return out
 
 
+_KEYWAY_NOTES: list[str] = []
+"""What ``_expand_keyway_dims`` left out and why (a keyway no view of the sheet sees face-on has no length or position: they would
+stand on hidden lines), for the warnings of the ``add`` that asked for them."""
+
 _KEYWAY_FALLBACK: dict[str, list[dict[str, Any]]] = {}
 """The width and the depth of a keyway as plain dimensions, by the id of the removed section that was to carry them: a section that
 finds no room on the sheet is refused and its dimensions go where the sheet has a place for them (``add`` puts them back)."""
@@ -1406,6 +1417,7 @@ def _expand_keyway_dims(
     """``keyway_dims`` is not an item of its own: it is the dimensions of the keyways of the part (width, depth as the
     standards give it, length, position), made now from the faces of the model as ``dim`` items with their own ids
     (``<id>_w``, ``_t``, ``_l``, ``_p``), so the sheet keeps plain dimensions that follow the normal rules."""
+    _KEYWAY_NOTES.clear()
     if not any(isinstance(i, dict) and i.get("type") == "keyway_dims" for i in requested):
         return requested
     import items_views  # noqa: PLC0415 - the letters of the views
@@ -1450,11 +1462,24 @@ def _expand_keyway_dims(
                 ]
                 made.append(
                     {"type": "section", "id": f"{name}_sec", "at": [round(v, 4) for v in sheet_keyway.middle_of(slot)],
-                     "normal": list(slot.cylinder.axis), "letter": section[0], "removed": True}
+                     "normal": list(slot.cylinder.axis), "letter": section[0], "removed": True,
+                     **({"view": main} if (main := next((v for v in shown if v != "iso"), None)) is not None else {})}
                 )  # fmt: skip
             elif section:
                 dims = sheet_keyway.dimension_specs(slot, name, shown, None, item.get("fit"), depth_tol, along_side)
             made += dims
+            face_on = sheet_keyway.face_view(slot)
+            if shown and face_on not in shown and slot.ends + slot.rounds:  # (ONE axial view: the sheet is never given a view only for a keyway)
+                _KEYWAY_NOTES.append(
+                    f"{name}: length and position not given -- "
+                    + (
+                        f"the keyway looks towards the {face_on} view and the sheet does not draw the part in it: make that view the main one "
+                        f"(drawing(action=add_view, views=[\"{face_on}\"]), then drawing(action=remove_view, views=[\"front\"])) and ask for keyway_dims again"
+                        if face_on is not None
+                        else "no standard view looks at it face-on (it opens towards the back, the bottom or the left) and a hidden line is never "
+                        "dimensioned: tell the engineer"
+                    )
+                )
         if not made:
             raise invalid_request("the part has no keyway whose walls can be dimensioned (keyway_dims)", op)
         out.extend(made)
@@ -1969,6 +1994,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     asked_threads = any(isinstance(i, dict) and i.get("type") == "thread_dims" for i in requested)
     requested = _expand_thread_dims(doc, items, requested, op)
     requested, routed = _route_title_block_notes(spec, requested, op, material_of(fc_doc))
+    routed = [*routed, *_KEYWAY_NOTES]
     if not requested and routed:
         write_spec(page, spec)
         _sync_template_fields(fc_doc, op)
@@ -2574,8 +2600,31 @@ class LiveGeometry(drawing_assembly.AssemblyRays, drawing_assembly.WeldJoints, s
             return None
         distance, solutions, _ = self._boundary.distToShape(Part.Vertex(g.fcvec(p)))
         if distance > sc.POSITION_TOL_MM:
-            return None
+            return p if self._on_cut_surface(p) else None
         return g.vec(solutions[0][0])
+
+    def _on_cut_surface(self, p: sc.Vec3) -> bool:
+        """Whether ``p`` lies on the cylinder a cut interrupts (the top of a shaft over its keyway: a depth is counted up to the surface
+        of the shaft, which the slot took away there) or on the axis of an arc of the part (the centre of the end of a keyway): on the
+        cylinder of a face of the part, or on its axis, and inside the face's own box."""
+        point = g.fcvec(p)
+        for face in self._boundary.Faces:
+            if g.surface_kind(face) != "cylinder":
+                continue
+            box, tol = face.BoundBox, sc.POSITION_TOL_MM
+            if not (
+                box.XMin - tol <= point.x <= box.XMax + tol
+                and box.YMin - tol <= point.y <= box.YMax + tol
+                and box.ZMin - tol <= point.z <= box.ZMax + tol
+            ):
+                continue
+            surf = face.Surface
+            axis = surf.Axis
+            offset = point - surf.Center
+            radial = (offset - axis * offset.dot(axis)).Length
+            if abs(radial - float(surf.Radius)) <= sc.POSITION_TOL_MM or radial <= sc.POSITION_TOL_MM:
+                return True  # the cylinder itself, or its axis (the centre of an arc of the part: an end of a keyway)
+        return False
 
     # --- a moulded part (ISO 10135): the pull direction and the parting plane are proposed from these ---
     def _key(self, *parts: Any) -> tuple[Any, ...]:

@@ -15,6 +15,7 @@ from typing import Any
 import sheet_centre
 import sheet_flats
 import sheet_hatch
+import sheet_keyway
 import sheet_section
 import sheet_seen
 from items_common import VIEW_ORDER, hole_mark, mark_once
@@ -985,6 +986,14 @@ def draw_lines(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
                     ctx.used_view(view.name)
                     axes += 1
         facts = ctx.extras.get("facts")  # the whole cylinders of the part (pins, shafts, bosses) get theirs too
+        for slot in facts.keyway_slots if facts is not None else ():  # the end arcs of a keyway: each gets its centre cross
+            for end in slot.rounds:
+                for view in ctx.views.values():
+                    if view.looks_along(slot.up):
+                        c = view.project(sheet_keyway.round_centre(slot, end))
+                        if mark_once(ctx, view, c):
+                            ctx.add(centre_mark(c[0], c[1], end.radius * view.scale))
+                            marks += 1
         for boss in facts.bosses if facts is not None else ():
             d = unit(boss.axis_dir)
             hidden_behind = facts.assembly  # the cylinders of an assembly: only where the view really shows them
@@ -1004,6 +1013,7 @@ def draw_lines(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
                     pb = view.project(tuple(p + u * half for p, u in zip(boss.axis_point, d, strict=True)))  # type: ignore[arg-type]
                     if math.dist(pa, pb) < 0.5:
                         continue
+                    pa, pb = sheet_centre.reach_outline(ctx, view, pa, pb)  # the overhang is counted from the outline of the part
                     drawn = ctx.extras.setdefault("axis_lines", set())
                     key = (view.name, *sorted(((round(pa[0], 1), round(pa[1], 1)), (round(pb[0], 1), round(pb[1], 1)))))
                     if key in drawn:
