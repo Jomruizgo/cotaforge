@@ -34,6 +34,7 @@ ENTRY = {
     "not_when": "Ejes sin carga",
 }
 APPROVE = {"action": "approve", "id": "ajuste-ejes", "by": "Ana", "text": "apruébala como regla"}
+COMPOSE_FRESH = {"action": "compose", "sheet": "Plano", "decisions": {"notes": ["x"]}, "fresh": True, "by": "Ana", "reason": "tírala y empieza"}
 
 ORDERS: list[tuple[str, dict[str, Any], str]] = [
     # every place that records the engineer's word: (tool, a call that carries his order, its kind)
@@ -49,6 +50,7 @@ ORDERS: list[tuple[str, dict[str, Any], str]] = [
     ("drawing", {"action": "answer", "id": "plan.process", "text": "applies: torneado", "by": "Ana", "reason": "se tornea desde barra"}, "answer"),
     ("drawing", {"action": "compose", "decisions": {"notes": ["x"]}, "recompose": True, "by": "Ana", "reason": "hazlo de nuevo"}, "compose"),
     ("drawing", {"action": "compose", "decisions": {"answers": {"req.thread": "no aplica: x"}}, "by": "Ana", "reason": "no lleva rosca"}, "compose"),
+    ("drawing", COMPOSE_FRESH, "compose"),
     ("memory", {"action": "answer", "id": "machining-inner-corners", "by": "Ana", "text": "does not apply: déjalas vivas"}, "keep_alert"),
     ("memory", APPROVE, "approve_entry"),
     ("memory", {"action": "brief", "drawing_review": "own", "text": "revisa tú"}, "brief"),
@@ -80,6 +82,7 @@ INCOMPLETE: list[tuple[str, dict[str, Any]]] = [
     ("drawing", {"action": "approve", "sheet": "Plano", "by": "Ana"}),
     ("drawing", {"action": "answer", "id": "req.thread", "text": "no aplica: x", "by": "Ana"}),
     ("drawing", {"action": "compose", "decisions": {}, "recompose": True}),
+    ("drawing", {"action": "compose", "decisions": {}, "fresh": True}),
     ("memory", {"action": "approve", "id": "x"}),
     ("channel", {"action": "decide", "role": "drafter", "name": "soporte", "q": 1}),
 ]
@@ -120,6 +123,15 @@ def test_a_call_that_records_the_engineers_word_is_an_order(tool: str, arguments
 @pytest.mark.parametrize(("tool", "arguments"), [*NOT_ORDERS, *INCOMPLETE])
 def test_a_call_of_the_agents_own_is_not_an_order(tool: str, arguments: dict[str, Any]) -> None:
     assert engineer_orders.order_of(tool, arguments) is None
+
+
+def test_a_compose_that_throws_the_sheet_away_says_so_in_the_dialog() -> None:
+    order = engineer_orders.order_of("drawing", COMPOSE_FRESH)
+    assert order is not None and order.kind == "compose"
+    assert order.closes("es") == "tirar la hoja y empezarla de nuevo (fresh) en la hoja Plano"
+    assert order.closes("en") == "throwing the sheet away and starting it again (fresh) on sheet Plano"
+    both = engineer_orders.order_of("drawing", {**COMPOSE_FRESH, "recompose": True, "decisions": {"answers": {"req.thread": "no aplica: x"}}})
+    assert both is not None and "volver a componer la hoja entera" in both.closes("es") and "tirar la hoja" in both.closes("es")
 
 
 def test_the_order_says_his_phrase_and_what_it_closes() -> None:

@@ -173,13 +173,16 @@ def _drawing(args: Mapping[str, Any]) -> Order | None:
         listed_es = f"{len(items)} observaciones: {points}" if items else "sin observaciones"
         listed_en = f"{len(items)} remarks: {points}" if items else "no remarks"
         return Order("review_report", reason, f"tu informe de revisión{on_es}, {listed_es}", f"your review report{on_en}, {listed_en}")
-    if action == "compose" and (args.get("recompose") or by):
+    if action == "compose" and (args.get("recompose") or args.get("fresh") is True or by):
         if not (by and reason):
             return None
         decisions = args.get("decisions") if isinstance(args.get("decisions"), dict) else {}
         answers = decisions.get("answers") if isinstance(decisions.get("answers"), dict) else {}
         parts_es = ["volver a componer la hoja entera"] if args.get("recompose") else []
         parts_en = ["composing the whole sheet again"] if args.get("recompose") else []
+        if args.get("fresh") is True:  # compose can throw the sheet away too: he must read that in the dialog
+            parts_es.append("tirar la hoja y empezarla de nuevo (fresh)")  # the sheet is named once, at the end
+            parts_en.append("throwing the sheet away and starting it again (fresh)")
         if answers:
             parts_es.append(f"las respuestas {_short(answers)}")
             parts_en.append(f"the answers {_short(answers)}")
