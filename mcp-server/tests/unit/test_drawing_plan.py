@@ -8,9 +8,10 @@ import pytest
 
 from cotaforge_mcp import drawing_gate
 from cotaforge_mcp.config import Settings
-from tests.conftest import DrawingFake
+from tests.conftest import Caller, DrawingFake, declare
 from tests.unit.test_drawing_auto import shaft_session
 from tests.unit.test_drawing_compose import choose_steps
+from tests.unit.test_drawing_finished import PROJECT_PRINCIPLE, drawing_session
 from tests.unit.test_drawing_requirements import finding
 
 SHAFT_INTENT = """# Eje
@@ -152,6 +153,47 @@ def test_every_reply_that_changes_or_reviews_the_sheet_ends_with_the_step_line(s
     assert "step " not in call.ok("drawing", action="list").splitlines()[-1]  # a plain look at the sheet reviews nothing
 
 
+def test_a_multi_sheet_review_gives_one_line_per_sheet(settings: Settings) -> None:
+    choose_steps(settings)
+    with_intent(settings)
+    call, fake = shaft_session(settings)
+    call.ok("drawing", action="create")
+    call.ok("drawing", action="create", sheet="Second")
+    text = call.ok("drawing", action="review")
+    lines = [line for line in text.splitlines() if line.startswith("sheet ") and "step " in line]
+    assert [line.split(":")[0] for line in lines] == ["sheet Drawing", "sheet Second"] and all('drawing(action="plan")' in line for line in lines)
+    assert call.ok("drawing", action="review", sheet="Second").splitlines()[-1].startswith("step ")  # one sheet: the plain line
+
+
+def test_the_answer_to_a_memory_entry_and_the_dxf_of_a_sheet_end_with_the_step_line(settings: Settings) -> None:
+    declare(settings, PROJECT_PRINCIPLE)
+    call, fake = drawing_session(settings, base=True)
+    fake.facts = {"sheet": 1, "part": 1}  # the CAD reports facts, so the plan can be read
+    assert call.ok("drawing", action="review").splitlines()[-1].startswith("step ")
+    call.ok("memory", action="get", id="plano-del-taller")
+    before = len(fake.described)
+    answered = call.ok("drawing", action="answer", id="plano-del-taller", text="applies: el plano dice todo lo esencial")
+    assert answered.splitlines()[-1].startswith("step ") and "step checks only" not in answered.splitlines()[-1]
+    assert len(fake.described) == before  # no review of its own: the line comes from the last full one
+    # the review-process actions change what the review step waits for, which no review already read says: no line (the docs say so)
+    for reply in (
+        call.ok("drawing", action="request_review"),
+        call.ok("drawing", action="review_report", sheet="Drawing", by="fabricator", items=[]),
+    ):
+        assert not reply.splitlines()[-1].startswith("step ")
+
+
+def test_the_dxf_of_a_sheet_ends_with_the_step_line_like_the_pdf(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    call, fake = drawing_session(settings)
+    fake.facts = {"sheet": 1, "part": 1}  # the CAD reports facts, so the plan can be read
+    monkeypatch.setattr(drawing_gate, "sheet_requirements", lambda *_a, **_k: [])  # the export is not about the rows here
+    before = len(fake.described)
+    for action, path in (("dxf", "sheet.dxf"), ("pdf", "sheet.pdf")):
+        written = call.ok("export", action=action, path=path)
+        assert written.splitlines()[-1].startswith("step ") and 'drawing(action="plan")' in written.splitlines()[-1], action
+    assert reviews(fake, before) == 2  # the review of each export's own gate, none more for the line
+
+
 def test_the_step_line_builds_from_the_state_a_step_returns_the_facts_and_its_own_findings(settings: Settings) -> None:
     choose_steps(settings)
     with_intent(settings)
@@ -166,6 +208,100 @@ def test_the_step_line_builds_from_the_state_a_step_returns_the_facts_and_its_ow
     fake.step_rows = (finding("view_adds_nothing", "La vista derecha no lleva cota", blocking=False),)  # a note, not a block
     quiet = call.ok("drawing", action="add", items=[{"type": "note", "text": "Otra"}]).splitlines()[-1]
     assert "view_adds_nothing" not in quiet and "views.each_view_shows_its_own" not in quiet
+
+
+def test_a_rule_the_last_full_review_left_open_stays_in_the_line_of_an_unrelated_step(settings: Settings) -> None:
+    choose_steps(settings)
+    with_intent(settings)
+    call, fake = shaft_session(settings)
+    call.ok("drawing", action="create")
+    fake.findings = (*fake.findings, finding("cylinder_no_axis", "Cilindro sin eje"))
+    full = call.ok("drawing", action="review").splitlines()[-1]
+    assert full.startswith("step 2/8 views") and "views.centre_lines (" in full and "cylinder_no_axis" in full
+    before = len(fake.described)
+    for line in (
+        call.ok("drawing", action="add", items=[{"type": "note", "text": "Sin tratamiento"}]).splitlines()[-1],
+        call.ok("drawing", action="update", items=[{"id": "o1", "offset_mm": 12}]).splitlines()[-1],
+        call.ok("drawing", action="remove", items=["o1"]).splitlines()[-1],
+    ):
+        assert line.startswith("step 2/8 views") and "views.centre_lines (" in line and "cylinder_no_axis" in line and "step checks only" in line, line
+    assert len(fake.described) == before  # still no read of the sheet for the line
+    # the step's own rules say their word fresh each time: one that is gone is gone, one that stands joins what the review left
+    fake.step_rows = (finding("view_adds_nothing", "La vista derecha no lleva cota"),)
+    both = call.ok("drawing", action="add", items=[{"type": "note", "text": "Otra"}]).splitlines()[-1]
+    assert "2 open" in both and "views.centre_lines" in both and "views.each_view_shows_its_own" in both
+    fake.step_rows = ()
+    one = call.ok("drawing", action="add", items=[{"type": "note", "text": "Y otra"}]).splitlines()[-1]
+    assert "views.each_view_shows_its_own" not in one and "cylinder_no_axis" in one
+    # the requirement rows read the same findings: the row of the axes is not closed by the step's partial list
+    fake.findings = tuple(f for f in fake.findings if f.code != "cylinder_no_axis")
+    clean = call.ok("drawing", action="review").splitlines()[-1]
+    assert "cylinder_no_axis" not in clean
+    assert "cylinder_no_axis" not in call.ok("drawing", action="add", items=[{"type": "note", "text": "Ultima"}]).splitlines()[-1]
+
+
+def test_with_no_full_review_behind_it_the_quick_line_does_not_claim_a_step(settings: Settings) -> None:
+    choose_steps(settings)
+    with_intent(settings)
+    call, fake = shaft_session(settings)
+    call.ok("drawing", action="create")
+    call.session.sheet_reviews.clear()  # this session has read no full review of the sheet (it was reopened)
+    line = call.ok("drawing", action="add", items=[{"type": "note", "text": "Sin tratamiento"}]).splitlines()[-1]
+    assert line.startswith("step unknown") and "no full review" in line and "step 8" not in line and "nothing open" not in line
+    reviewed = call.ok("drawing", action="review").splitlines()[-1]
+    assert reviewed.startswith("step ") and "unknown" not in reviewed
+    after = call.ok("drawing", action="add", items=[{"type": "note", "text": "Otra"}]).splitlines()[-1]
+    assert after.startswith("step ") and "unknown" not in after  # the review the session just read stands behind the next ones
+
+
+def read_one_sheet(settings: Settings) -> tuple[Caller, DrawingFake]:
+    choose_steps(settings)
+    with_intent(settings)
+    call, fake = shaft_session(settings)
+    call.ok("drawing", action="create")
+    call.ok("drawing", action="review")
+    assert call.session.sheet_reviews, "the review is kept"
+    return call, fake
+
+
+def test_what_a_review_said_is_forgotten_when_the_sheet_is_thrown_away_or_removed(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    from cotaforge_mcp import drawing_plan
+
+    forgotten: list[str | None] = []
+    real = drawing_plan.forget_review
+    monkeypatch.setattr(drawing_plan, "forget_review", lambda session, sheet: (forgotten.append(sheet), real(session, sheet))[1])
+    call, _ = read_one_sheet(settings)
+    call.ok("drawing", action="create", sheet="Drawing", fresh=True, by="Ana", reason=call.says("empieza de nuevo"))
+    assert forgotten == ["Drawing"]
+    call.ok("drawing", action="review")
+    assert call.session.sheet_reviews
+    call.ok("drawing", action="remove_sheet", sheet="Drawing", by="Ana", reason=call.says("esta hoja sobra"))
+    assert forgotten[1:] and not call.session.sheet_reviews
+
+
+def test_what_a_review_said_is_forgotten_when_the_document_is_reopened_or_reloaded(settings: Settings) -> None:
+    call, _ = read_one_sheet(settings)
+    suffix = call.session.adapter.suffix_for(call.session.require_executor().plan.kind)
+    call.ok("doc", action="save", path=f"plate{suffix}")
+    call.ok("doc", action="reload")
+    assert not call.session.sheet_reviews
+    call.ok("drawing", action="review")
+    assert call.session.sheet_reviews
+    call.ok("doc", action="close")
+    assert not call.session.sheet_reviews
+    call.ok("doc", action="open", path=f"plate{suffix}")
+    assert not call.session.sheet_reviews
+
+
+def test_a_stale_review_is_not_carried_into_the_line_of_a_reopened_document(settings: Settings) -> None:
+    call, fake = read_one_sheet(settings)
+    fake.findings = (*fake.findings, finding("cylinder_no_axis", "Cilindro sin eje"))
+    assert "cylinder_no_axis" in call.ok("drawing", action="review").splitlines()[-1]
+    suffix = call.session.adapter.suffix_for(call.session.require_executor().plan.kind)
+    call.ok("doc", action="save", path=f"plate{suffix}")
+    call.ok("doc", action="reload")
+    line = call.ok("drawing", action="add", items=[{"type": "note", "text": "Sin tratamiento"}]).splitlines()[-1]
+    assert line.startswith("step unknown") and "cylinder_no_axis" not in line
 
 
 def test_a_finding_that_does_not_block_is_not_an_open_rule_of_the_line(settings: Settings) -> None:

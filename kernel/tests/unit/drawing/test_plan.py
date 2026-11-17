@@ -93,6 +93,28 @@ def test_a_manual_weld_is_welding_and_no_hand_tool_work() -> None:
     assert "hand_tools" in context.processes_in("soldadura manual y limado de los cordones")  # the file is the hand work here
 
 
+def test_a_hand_weld_is_never_hand_tool_work_however_it_is_worded_or_spaced() -> None:
+    for text in ("soldadura a mano", "soldadura MIG manual", "soldadura eléctrica manual", "Soldadura  manual", "Soldadura\tMAG  a  mano"):
+        assert context.processes_in(text) == ("welding",), text
+    assert "hand_tools" in context.processes_in("soldadura y limado a mano")  # a conjunction ends the weld phrase
+    assert "hand_tools" in context.processes_in("herramienta manual")
+
+
+def test_double_is_not_bending() -> None:
+    assert "sheet_metal_bending" not in context.processes_in("doble chaflán")
+    assert "sheet_metal_bending" not in context.processes_in("hilera doble")
+    assert "sheet_metal_bending" not in context.processes_in("Doble  hilera de agujeros")
+    for text in ("doblado de la chapa", "plegado", "doblez a 90", "dobladora"):
+        assert "sheet_metal_bending" in context.processes_in(text), text
+
+
+def test_a_thread_is_not_a_wire_cut_but_cutting_by_wire_is() -> None:
+    assert "wire_edm" not in context.processes_in("hilo M8")
+    assert "wire_edm" not in context.processes_in("hilo de la rosca")
+    for text in ("corte por hilo", "electroerosión por hilo", "Corte  por  hilo", "wire cut", "wire-EDM"):
+        assert "wire_edm" in context.processes_in(text), text
+
+
 def test_the_design_facts_of_the_plan_are_named() -> None:
     assert set(context.DESIGN_KEYS) == {"process", "fits", "relations"} and set(context.DESIGN_KEYS) <= set(context.QUESTION_KEYS)
 
@@ -189,6 +211,22 @@ def test_the_line_of_a_quick_read_says_it_is_the_step_checks_only() -> None:
     assert "nothing open in the plan |" in made.line() and "step checks only" not in made.line()
     quick = made.line(quick=True)
     assert "nothing open in the plan so far" in quick and 'step checks only: drawing(action="review")' in quick
+
+
+def test_a_quick_line_with_no_full_review_behind_it_does_not_claim_a_step() -> None:
+    made = plan.build(context.build(SHAFT_FACTS, SHAFT_INTENT), catalog.load(), reviewed=False)
+    line = made.line(quick=True)
+    assert line.startswith("step unknown (?/8)") and "no full review" in line and 'drawing(action="review")' in line
+    assert "step 8/8" not in line and "nothing open" not in line
+    assert made.line().startswith("step ") and "unknown" not in made.line()  # a full read is never unknown
+
+
+def test_a_step_whose_only_open_item_is_the_review_wait_names_it_in_its_summary() -> None:
+    made = plan.build(context.build(SHAFT_FACTS, SHAFT_INTENT), catalog.load(), review_pending=("read the sheet as the shop, then ask for the review",))
+    summary = next(line for line in plan.render(made, step=1) if line.startswith("STEP 8 "))
+    assert "(1 open: wait: read the sheet as the shop, then ask for the review;" in summary and "open: ;" not in summary
+    many = plan.build(context.build(SHAFT_FACTS, SHAFT_INTENT), catalog.load(), review_pending=("a", "b", "c", "d"))
+    assert "(4 open: wait: a, wait: b, wait: c +1;" in next(line for line in plan.render(many, step=1) if line.startswith("STEP 8 "))
 
 
 def test_a_rule_a_tool_gate_enforces_is_clear_not_read_and_says_its_gate() -> None:

@@ -521,6 +521,9 @@ class DrawingSheetInfo(BaseModel, frozen=True):
     composed: dict[str, Any] = {}
     """What the order that composed the sheet recorded (``signature``: the decisions that affect the whole sheet) and
     the items edited in place since (``pinned``). Empty: the sheet was not composed in one order."""
+    checked_codes: tuple[str, ...] = ()
+    """The finding codes this read ran, when it is the sheet as a step left it (``DrawingResult.page_state``: only the
+    step's own rules run). Empty: a full review, whose findings are all of them."""
 
 
 DrawingResult.model_rebuild()
