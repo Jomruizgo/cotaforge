@@ -563,7 +563,7 @@ Los valores antiguos en español `ingeniero_o_fabricante`, `fabricante`, `ingeni
 
 **El flujo por defecto.**
 
-1. El agente llama a `drawing(action="request_review", sheet)`, que anota la hora en la hoja. Te hace una pregunta: ¿revisarás la hoja tú o que lo haga el fabricator? Inicia un temporizador en segundo plano para que Claude Code lo despierte en el plazo, y mientras tanto sigue.
+1. El agente llama a `drawing(action="request_review", sheet)`, que anota la hora en la hoja. Te hace una pregunta: ¿revisarás la hoja tú o que lo haga el fabricator? Después espera con una sola llamada, `drawing(action="wait_review")`, que bloquea en el servidor de minuto en minuto hasta que respondas o venza el plazo, y te avisa de que lo que escribas lo lee en un minuto como máximo (o al instante si pulsas Esc).
 2. Si dices "yo", el agente lo registra (`review_choice`, `by="engineer"`) y espera tu informe sin límite de tiempo. Dictas observaciones en el chat (o "sin observaciones"). Lo que señales en la hoja lo lee con `view` `selection`. Las registra con `review_report`, `by="engineer"`.
 3. Si dices "fabricator", o no respondes a tiempo, el agente lanza el `fabricator` en ese momento.
 4. Antes de exportar, todos los puntos del último informe que cuenta están respondidos. El agente corrige la hoja y responde con `drawing(action="answer", id="fab1.1", text="fixed: what changed")`, o responde `does not apply: why`. Si revisaste tú, incluso después del fabricator, cuenta tu último informe.
@@ -584,7 +584,7 @@ Las respuestas viven en la hoja, dentro del `.FCStd`, y sobreviven al guardar y 
 **Tus órdenes las confirmas tú, en el diálogo de permiso de Claude Code.** Cuando el agente va a registrar una orden tuya (aprobar, descartar algo que el arnés midió, tu informe de revisión, quién revisa, volver a componer la hoja, el sector y los procesos del proyecto), Claude Code te muestra la frase y todo lo que cierra, completo (una orden demasiado larga para mostrarla se rechaza y el agente la divide), y tú aceptas o rechazas; sin tu confirmación el servidor no la registra.
 El diálogo aparece solo justo después de que escribes. Si te vas en ese momento, te espera, como cualquier diálogo de permiso de Claude Code (no tiene tiempo límite). Si llevas más de 2 minutos sin escribir (`order_presence_min` en `brief.yaml`, en minutos; máximo 10: uno mayor cuenta como 10 y uno inválido como 2) no se te pregunta: la orden queda pendiente, el agente sigue con lo demás y te la pregunta cuando vuelvas. Sin nadie que conteste (`claude -p`, modo `bypassPermissions`) no se registra ninguna. Una carpeta preparada con una versión anterior se prepara otra vez con `cotaforge init <carpeta>`.
 
-**No verificado en una sesión real de Claude Code:** que el temporizador en segundo plano despierte al agente y que el agente lance el `fabricator` por sí mismo. El reloj, las puertas y los informes están probados con el servidor real y FreeCAD.
+**No verificado en una sesión real de Claude Code:** que Esc interrumpa `wait_review` y que el agente lance el `fabricator` por sí mismo al terminar la espera. El reloj, las puertas y los informes están probados con el servidor real y FreeCAD.
 
 La guía del agente para esto es `cad_guide` con `topic="drawing:done"`.
 

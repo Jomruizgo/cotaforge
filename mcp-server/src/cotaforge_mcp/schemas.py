@@ -549,7 +549,7 @@ TOOLS: tuple[ToolDef, ...] = (
         "their status on the page; every reply ends with the step you are at) | "
         "answer (id, text; by, reason: the engineer's order) | request_review, review_choice, review_report (by, items: who reviews it) | approve (the "
         "ENGINEER's gate: by, reason). export(pdf|dxf) writes ONE sheet, refused until its review is done; wait_review is the ONE "
-        "call that waits for the review (blocks on the server, 5 min per call), never poll. Items, "
+        "call that waits for the review (blocks on the server, 1 min per call), never poll. Items, "
         'finishing: cad_guide(topic="drawing" | "drawing:done").',
         DrawingArgs,
         "drawing(action=create|add|remove|remove_sheet|update|add_view|remove_view|list|read|review|requirements|plan|capture|"

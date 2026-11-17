@@ -101,6 +101,8 @@ def _fitted(session: Session, name: str, lines: list[str], limit: int) -> Reply:
 
 def _doc(session: Session, args: DocArgs, progress: Reporter | None = None) -> Reply:
     action = args.action
+    if action in ("new", "open", "reload", "close", "import"):
+        drawing_gate.forget_waits(session)  # the waits noted were of the sheets of the document that goes
     if action == "new":
         if not args.name:
             raise ToolError(

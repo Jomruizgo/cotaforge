@@ -75,18 +75,28 @@ REPORT_USAGE = (
 )
 CHOICE_USAGE = 'drawing(action="review_choice", sheet, by="engineer" | "fabricator")'
 MAX_SHOWN_REMARKS = 12
-WAIT_CHUNK_S = 300.0
-"""How long one ``wait_review`` call blocks at most. The engineer can answer in the chat meanwhile (his message reaches the
-agent when the call returns) or press Esc (the call is given up at once); Claude Code drops a stdio call only after 30
-silent minutes, so the bound is ours: a few calls cover the whole wait of the engineer's choice."""
+WAIT_CHUNK_S = 60.0
+"""How long one ``wait_review`` call blocks at most. An answer the engineer types meanwhile reaches the agent only when the
+call returns (so within about a minute) or when he presses Esc (the call is given up at once): the chunk is short for that,
+and still ~15 calls cover the 15 minutes where polling made ~120."""
 WAIT_SLICE_S = 0.5
 
 
 ENGINEER_WAIT = (
-    "He reviews at his own pace and has no time limit: tell him in your message that the sheet is ready for his review, "
-    "and end your turn; his remarks come as his next message. Never poll (export, doc status) to pass the time: nothing "
-    "changes until he speaks"
+    "He reviews at his own pace and has no time limit: tell him in your message that the sheet is ready for his review; his "
+    "remarks come as his next message. If a question to the designer is open (`channel`) or other work on the sheet remains, "
+    "go on with that (and `channel` wait): only when nothing else is pending, end your turn. Never poll (export, doc status) "
+    "to pass the time: nothing changes until he speaks"
 )
+
+
+def latency_note(language: str = "es") -> str:
+    """What the engineer is told when a wait starts: when his typed answer is read. He reads it word for word."""
+    return say(
+        language,
+        "Lo que escribas lo leo en un minuto como máximo; si quieres que lo lea ya, pulsa Esc.",
+        "I read what you type within about a minute; press Esc and I read it right away.",
+    )
 
 
 def wait_call(sheet: str) -> str:
@@ -275,7 +285,8 @@ def review_status(mode: str, wait_min: int, info: DrawingSheetInfo, now: float, 
         miss.next_steps.append(
             f"if you have not asked him, ask exactly: «{review_question(sheet, language)}» in your message; when he answers "
             f"record it with {CHOICE_USAGE}. When the sheet needs nothing else, the ONE call that waits is {wait_call(sheet)}: "
-            f"it blocks up to {int(WAIT_CHUNK_S // 60)} min per call (he can answer in the chat meanwhile, or press Esc), and "
+            f"it blocks up to {int(WAIT_CHUNK_S)} s per call (what he types is read when it returns, or at once if he presses Esc: "
+            f"tell him so, in his language: «{latency_note(language)}»), and "
             f"when the {wait_min} min pass without an answer the manufacturer is assumed and it tells you to launch it. "
             "Exporting or asking doc(status) does not shorten the wait"
         )
@@ -775,9 +786,10 @@ def require_finished(
 
 def _wait_instruction(sheet: str, minutes: int) -> str:
     return (
-        f"WAIT WITH ONE CALL, never by polling: {wait_call(sheet)} blocks on the server (up to {int(WAIT_CHUNK_S // 60)} min per "
+        f"WAIT WITH ONE CALL, never by polling: {wait_call(sheet)} blocks on the server (up to {int(WAIT_CHUNK_S)} s per "
         f"call; call it again if it says so) until the {minutes} min pass, and then tells you to launch the manufacturer. "
-        "The engineer can answer in the chat meanwhile or press Esc. The server's clock is the source of truth"
+        "What the engineer types is read when the call returns, or at once if he presses Esc. The server's clock is the "
+        "source of truth"
     )
 
 
@@ -800,6 +812,7 @@ def request_review(session: Session, sheet: str | None) -> str:
     if mode == "fabricator":
         return f"drawing review mode is fabricator: {_launch(name)}. Then answer every remark of its report."
     if mode == "engineer":
+        _note_wait(session, name, Missing(waiting="engineer"), reset=True)
         return (
             f"drawing review mode is engineer: ask the engineer to review sheet {name} in the CAD window and to tell "
             f"you his remarks (or «{_words(brief.lang)[2]}»). {ENGINEER_WAIT}. When he does: "
@@ -840,7 +853,7 @@ def request_review(session: Session, sheet: str | None) -> str:
     return (
         f"review requested for sheet {name}{left}. NOW ask the engineer exactly one question, in your message: «{review_question(name, brief.lang)}» "
         f"and say that if he does not answer within {wait} min the manufacturer review counts. If the sheet needs nothing else, "
-        f"in that same message call {wait_call(name)}: it waits for you.\n"
+        f"in that same message add, in his language: «{latency_note(brief.lang)}», and call {wait_call(name)}: it waits for you.\n"
         f"- {_wait_instruction(name, wait)}\n"
         f'- He answers «{_words(brief.lang)[0]}»: drawing(action="review_choice", sheet="{name}", by="engineer"), '
         f"then he tells you his remarks (or «{_words(brief.lang)[2]}»): {_engineer_report(name, brief.lang)}. There is no time limit once he chose.\n"
@@ -908,9 +921,15 @@ def _only_waiting(session: Session, sheet: str, miss: Missing, action: str) -> s
         )
     return (
         f"export {action} refused AGAIN, for the same reason: sheet {sheet} waits for the engineer's remarks and he has no "
-        "time limit. Nothing on the sheet is missing. Tell him it is ready for his review and end your turn: do not export "
-        "or ask doc(status) again; his remarks come as his next message."
+        "time limit. Nothing on the sheet is missing. Tell him it is ready for his review; do not export or ask doc(status) "
+        "again. If other work on the sheet or an open `channel` question remains, go on with that; only when nothing else "
+        "is pending, end your turn: his remarks come as his next message."
     )
+
+
+def forget_waits(session: Session) -> None:
+    """A document was created, opened, reloaded or closed: what was noted of the waits of the sheets of the old one is gone."""
+    _waits(session).clear()
 
 
 def wait_notice(session: Session) -> list[str]:
@@ -923,7 +942,7 @@ def wait_notice(session: Session) -> list[str]:
         if found.until is None:
             lines.append(
                 f"review wait: sheet {sheet} waits for the engineer's remarks (no time limit). Nothing changes until he "
-                "speaks: tell him it is ready and end your turn; do not poll."
+                "speaks: go on with whatever else is pending (the sheet, the `channel`) and, if nothing is, end your turn; do not poll."
             )
         elif found.until > now:
             lines.append(
