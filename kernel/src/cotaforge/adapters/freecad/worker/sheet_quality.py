@@ -30,7 +30,7 @@ from items_common import view_segments
 from items_dims import AXES
 from sheet_collide import Segment, ink_of, segments_cross
 from sheet_context import Context, HoleInfo, ItemError
-from sheet_model import CENTRE_OVERSHOOT_MM
+from sheet_model import CENTRE_OVERSHOOT_MAX_MM, CENTRE_OVERSHOOT_MM
 from sheet_review import Finding, ReviewInput, _hole_of_ref, _measure, _of, ask_reference
 
 OUTLINE_SLACK_MM = 0.5  # a dimension this close to the outline is on it, not inside it
@@ -152,17 +152,17 @@ def _centre_lines(data: ReviewInput) -> list[Finding]:
         where = f"{rec.item} ({rec.view})" if rec.item else rec.view
         if why == "crosses":
             text = ctx.say(
-                f"Un eje de {where} cruza una cota o su texto: un eje sobrepasa el rasgo {CENTRE_OVERSHOOT_MM:g} mm como mucho y no llega a ninguna cota "
+                f"Un eje de {where} cruza una cota o su texto: un eje sobrepasa el rasgo de 2 a {CENTRE_OVERSHOOT_MAX_MM:g} mm y no llega a ninguna cota "
                 "(acorta el eje con extend_mm o aleja la cota con offset_mm).",
-                f"A centre line of {where} goes through a dimension or its text: a centre line passes its feature by {CENTRE_OVERSHOOT_MM:g} mm at most and "
+                f"A centre line of {where} goes through a dimension or its text: a centre line passes its feature by 2 to {CENTRE_OVERSHOOT_MAX_MM:g} mm and "
                 "never reaches a dimension (shorten it with extend_mm or move the dimension with offset_mm).",
             )
             out.append(Finding("centre_line_crosses", "warning", text, (rec.item,) if rec.item else (), key=f"{rec.item}:{rec.view}:{rec.line.x1:.1f},{rec.line.y1:.1f}"))
         else:
             text = ctx.say(
-                f"Un eje de {where} sobrepasa su rasgo {max(first, last):.1f} mm (lo fijado es {CENTRE_OVERSHOOT_MM:g} mm) sin decir por qué: "
+                f"Un eje de {where} sobrepasa su rasgo {max(first, last):.1f} mm (lo correcto son 2 a {CENTRE_OVERSHOOT_MAX_MM:g} mm; el eje trae {CENTRE_OVERSHOOT_MM:g}) sin decir por qué: "
                 "añade reason a la línea o acórtalo.",
-                f"A centre line of {where} passes its feature by {max(first, last):.1f} mm (the set overshoot is {CENTRE_OVERSHOOT_MM:g} mm) "
+                f"A centre line of {where} passes its feature by {max(first, last):.1f} mm (2 to {CENTRE_OVERSHOOT_MAX_MM:g} mm is correct; the harness gives {CENTRE_OVERSHOOT_MM:g}) "
                 "without saying why: add reason to the line or shorten it.",
             )
             out.append(Finding("centre_line_long", "warning", text, (rec.item,) if rec.item else (), key=f"{rec.item}:{rec.view}:{rec.line.x1:.1f},{rec.line.y1:.1f}"))

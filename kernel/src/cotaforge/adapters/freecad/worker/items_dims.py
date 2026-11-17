@@ -236,6 +236,46 @@ def _record_overall(ctx: Context, view: ViewInfo, horizontal: bool, diameter: fl
         ctx.record_dimension(("dia", round(diameter, 2), OVERALL), view.name)
 
 
+SNAP_MM = 0.02  # two places along an axis closer than this are the same place
+
+
+def given_by_dimensions(ctx: Context, axis: str | None, view: str) -> bool:
+    """Whether the ``dim`` items of the sheet already join the two ends of the part along the model axis ``axis`` by a chain of
+    lengths (a datum baseline from a shoulder out to both ends, a chain of steps): the overall size is then the sum or the
+    difference of what stands (ISO 129-1: a redundant dimension), and the sheet does not give it twice. A dimension of another view
+    does not count."""
+    box = ctx.extras.get("model_box")
+    if axis is None or box is None or ctx.assembly is not None or ctx.weldment is not None:  # parts only: two parts of an assembly share coordinates by chance
+        return False
+    index = "xyz".index(axis)
+    ends = [box[0][index], box[1][index]]
+    if ends[1] - ends[0] <= SNAP_MM:
+        return False
+    links: list[tuple[float, float]] = []
+    for spec in ctx.extras.get("items", []):
+        if spec.get("type") != "dim" or spec.get("kind") != "distance" or spec.get("view") not in (None, view):
+            continue
+        try:
+            a, b = resolve_ref(ctx, spec["from"]), resolve_ref(ctx, spec["to"])
+            name = _along(ctx, a, b, spec.get("along"))
+            if name != axis:
+                continue
+            ca, cb = coordinate(a, AXES[name], name), coordinate(b, AXES[name], name)
+        except ItemError:
+            continue
+        links.append((ca, cb))
+    reached = {round(ends[0], 2)}
+    changed = True
+    while changed:
+        changed = False
+        for ca, cb in links:
+            for here, there in ((ca, cb), (cb, ca)):
+                if any(abs(here - r) <= SNAP_MM for r in reached) and not any(abs(there - r) <= SNAP_MM for r in reached):
+                    reached.add(round(there, 2))
+                    changed = True
+    return any(abs(ends[1] - r) <= SNAP_MM for r in reached)
+
+
 def draw_overall(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     """Width and height on the front view, depth on the top view: measured on the projected geometry. A body of
     revolution gets its diameter ONCE, as ``Ø`` on the first view that shows it across (front, else top); the other
@@ -277,6 +317,9 @@ def draw_overall(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             below = toward[1] > 0  # the Ø goes at the plain end, away from the thread callout (axis along the page y)
         if by_thread_w:
             skipped.append(f"width Ø{ctx.num(width)} (the thread callout carries it)")
+        elif not w_round and given_by_dimensions(ctx, model_axis(primary.xdir), name):
+            ctx.extras.setdefault("overall_skipped", set()).add(model_axis(primary.xdir))  # the review must not take it for given
+            skipped.append(f"width {ctx.num(width)} (the dimensions of the sheet chain both ends: it would be given twice)")
         else:
             dist = ctx.stack_distance(name, "below" if below else "above", offset)
             shown = f"Ø{ctx.num(width)}" if w_round else ctx.num(width)
@@ -294,6 +337,9 @@ def draw_overall(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
                 skipped.append(f"height Ø{ctx.num(height)} (the diameter dimension of its step carries it)")
             elif by_thread_h:
                 skipped.append(f"height Ø{ctx.num(height)} (the thread callout carries it)")
+            elif not h_round and given_by_dimensions(ctx, model_axis(primary.ydir), name):
+                ctx.extras.setdefault("overall_skipped", set()).add(model_axis(primary.ydir))
+                skipped.append(f"height {ctx.num(height)} (the dimensions of the sheet chain both ends: it would be given twice)")
             else:
                 left = h_round and toward is not None and toward[0] > 0  # thread at the right end: the Ø goes at the plain left one
                 dist = ctx.stack_distance(name, "left" if left else "right", offset)

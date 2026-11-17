@@ -44,7 +44,7 @@ def test_a_through_hole_centre_line_goes_the_same_short_way_past_both_faces() ->
     (line,) = _vertical_axes(ctx)
     below, above = _reaches(line)
     assert math.isclose(below, OVER, abs_tol=1e-6) and math.isclose(above, OVER, abs_tol=1e-6), (below, above)
-    assert 2.0 <= OVER <= 3.0  # ISO 128-24
+    assert 2.0 <= OVER <= 5.0  # ISO 128-24: a centre line passes its feature by 2 to 5 mm on paper
 
 
 def test_a_blind_hole_centre_line_goes_the_same_way_past_the_entry_face_and_past_the_drill_point() -> None:
@@ -118,7 +118,10 @@ def test_the_review_flags_a_long_centre_line_that_crosses_a_dimension_and_one_th
     assert "centre_line_crosses" in codes(found)  # 9 mm past the part goes through the dimension line 3 mm over it
     ctx = views_context()
     found = run_review(ctx, {"type": "line", "axis": ["face:fillet"], "view": "front", "extend_mm": 6.0})
-    assert "centre_line_long" in codes(found) and "centre_line_crosses" not in codes(found)
+    assert "centre_line_long" in codes(found) and "centre_line_crosses" not in codes(found)  # over 5 mm: overlong
+    ctx = views_context()
+    found = run_review(ctx, {"type": "line", "axis": ["face:fillet"], "view": "front", "extend_mm": 4.0})
+    assert "centre_line_long" not in codes(found)  # 2 to 5 mm is a correct overhang
     ctx = views_context()
     found = run_review(ctx, {"type": "line", "axis": ["face:fillet"], "view": "front", "extend_mm": 6.0, "reason": "the shaft is a datum axis"})
     assert not {"centre_line_long", "centre_line_crosses"} & set(codes(found))
@@ -127,3 +130,29 @@ def test_the_review_flags_a_long_centre_line_that_crosses_a_dimension_and_one_th
 def test_a_clean_sheet_has_no_centre_line_finding() -> None:
     found = run_review(views_context([hole(0, 10, 10)]), {"type": "overall", "offset_mm": 10.0}, {"type": "view_lines"})
     assert not {"centre_line_long", "centre_line_crosses"} & set(codes(found))
+
+
+# --- the overhang is counted from the outline of the part ---------------------------------------------------------------------------
+
+
+def test_the_centre_line_of_a_cylinder_that_stops_short_of_the_outline_by_its_chamfer_is_carried_to_the_outline() -> None:
+    """The thread end of the bench shaft starts at x = 1.5 (a 1.5 x 45 chamfer) and the pulley end stops at 167 (1 x 45): TechDraw
+    measures its extension from the straight sides, so the line passed the outline by 1 and 1.5 mm and its last dash vanished. The
+    ends are carried to the outline (x = 0 and 168) and the overhang counted from there (2 to 5 mm, ISO 128)."""
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    view = SimpleNamespace(project=lambda p: (p[0], p[1]), box=(0.0, 0.0, 168.0, 32.0))
+    ctx = SimpleNamespace(extras={"model_box": ((0.0, 0.0, 0.0), (168.0, 32.0, 32.0))})
+    assert centre.reach_outline(ctx, view, (1.5, 16.0), (28.0, 16.0)) == ((0.0, 16.0), (28.0, 16.0))  # the thread end reaches the outline, the shoulder stays
+    assert centre.reach_outline(ctx, view, (118.0, 16.0), (167.0, 16.0)) == ((118.0, 16.0), (168.0, 16.0))
+    assert centre.reach_outline(ctx, view, (43.0, 16.0), (103.0, 16.0)) == ((43.0, 16.0), (103.0, 16.0))  # a body inside the part: untouched
+    assert centre.reach_outline(ctx, view, (1.5, 16.0), (167.0, 17.0)) == ((1.5, 16.0), (167.0, 17.0))  # not a horizontal or vertical axis
+    first, last = centre.overshoots(centre.CentreLine(model.Line(-3.0, 16.0, 31.0, 16.0, model.AXES), (0.0, 16.0), (28.0, 16.0), "front", "view_lines"))
+    assert (first, last) == (3.0, 3.0) and model.CENTRE_OVERSHOOT_MIN_MM <= first <= model.CENTRE_OVERSHOOT_MAX_MM
+
+
+def test_the_centre_mark_of_a_circle_goes_the_set_overhang_past_it() -> None:
+    import sheet_draw  # noqa: PLC0415
+
+    horizontal = sheet_draw.centre_mark(10.0, 20.0, 4.0)[0]
+    assert math.isclose(horizontal.x2 - 10.0 - 4.0, model.CENTRE_OVERSHOOT_MM) and 2.0 <= model.CENTRE_OVERSHOOT_MM <= 5.0

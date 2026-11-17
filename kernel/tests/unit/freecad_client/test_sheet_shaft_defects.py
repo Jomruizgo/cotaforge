@@ -168,10 +168,12 @@ def keyway_slot() -> kw.Slot:
 def test_a_keyway_closed_by_half_circles_is_dimensioned_from_the_shoulder_to_its_first_point_and_over_its_whole_length() -> None:
     slot = keyway_slot()
     assert [r.face_id for r in slot.rounds] == ["face:14", "face:16"]
-    specs = {s["id"]: s for s in kw.dimension_specs(slot, "kw", ("front",), "A-A", "P9")}
+    specs = {s["id"]: s for s in kw.dimension_specs(slot, "kw", ("front", "top"), "A-A", "P9")}
     assert specs["kw_w"]["fit"] == "P9" and specs["kw_w"]["view"] == "A-A"
-    assert specs["kw_l"]["from"] == {"at": [122.0, 0.0, 9.25]} and specs["kw_l"]["to"] == {"at": [147.0, 0.0, 9.25]}  # 25 long, end to end
-    assert specs["kw_p"]["from"] == {"face": "face:10"} and specs["kw_p"]["to"] == {"at": [122.0, 0.0, 9.25]}  # 4 from the shoulder
+    assert specs["kw_l"]["view"] == specs["kw_p"]["view"] == "top"  # where the keyway is seen face-on, never on its hidden lines
+    assert specs["kw_t"]["to"] == {"at": [135.0, 0.0, 11.0]}  # closed: t1, counted up to the surface of the shaft (3.5), not across it (18.5)
+    assert specs["kw_l"]["from"] == {"at": [125.0, 0.0, 9.25]} and specs["kw_l"]["to"] == {"at": [144.0, 0.0, 9.25]}  # 19 between the centres of the arcs
+    assert specs["kw_p"]["from"] == {"face": "face:10"} and specs["kw_p"]["to"] == {"at": [125.0, 0.0, 9.25]}  # 7 from the shoulder to the first centre
     assert specs["kw_l"]["along"] == specs["kw_p"]["along"] == "x"
 
 
@@ -187,7 +189,7 @@ def test_a_keyway_a_plane_ends_keeps_its_planes() -> None:
     ]
     (slot,) = kw.find_slots([cylinder], flats)
     assert kw.with_rounds(slot, [kw.Round("face:14", (125.0, 0.0, 9.0), (0.0, 0.0, 1.0), 3.0)]).rounds == ()
-    ids = {s["id"] for s in kw.dimension_specs(slot, "kw", ("front",))}
+    ids = {s["id"] for s in kw.dimension_specs(slot, "kw", ("front", "top"))}
     assert {"kw_l", "kw_p"} <= ids
 
 
@@ -272,9 +274,9 @@ def test_a_hole_counted_about_the_axis_draws_its_pitch_circle_and_is_located_by_
 
 def test_the_length_and_the_position_of_a_keyway_stand_on_the_side_a_turned_part_leaves_them_not_in_its_stack_of_lengths() -> None:
     slot = keyway_slot()
-    plain = {s["id"]: s for s in kw.dimension_specs(slot, "kw", ("front",))}
+    plain = {s["id"]: s for s in kw.dimension_specs(slot, "kw", ("front", "top"))}
     assert "side" not in plain["kw_l"] and "side" not in plain["kw_p"]
-    pinned = {s["id"]: s for s in kw.dimension_specs(slot, "kw", ("front",), None, None, None, "above")}
+    pinned = {s["id"]: s for s in kw.dimension_specs(slot, "kw", ("front", "top"), None, None, None, "above")}
     assert pinned["kw_l"]["side"] == pinned["kw_p"]["side"] == "above" and "side" not in pinned["kw_w"]
 
 
@@ -288,3 +290,51 @@ def test_the_arc_of_a_lone_hole_stands_beyond_the_arc_of_the_ring_so_their_texts
     assert len(radii) == 2 and radii[1] - radii[0] >= 6.0, radii
     boxes = [sheet_collide.text_box(e) for e in ctx.sheet.entities if isinstance(e, model.Text) and "°" in e.text]
     assert len(boxes) == 2 and (boxes[0][2] <= boxes[1][0] or boxes[1][2] <= boxes[0][0] or boxes[0][3] <= boxes[1][1] or boxes[1][3] <= boxes[0][1])
+
+
+# --- the owner's keyway defaults: ONE axial view that looks at it, centre of the end arcs, no length on a hidden line ----------------------
+
+
+def test_the_bench_keyway_6_by_25_on_the_shaft_of_22_gets_its_length_and_locator_in_the_view_that_faces_it() -> None:
+    slot = keyway_slot()
+    assert kw.face_view(slot) == "top" and kw.is_closed(slot)  # opens towards +z: the top view looks at it
+    sheet = {s["id"]: s for s in kw.dimension_specs(slot, "kw", ("top", "iso"), "A-A")}  # ONE axial view and the isometric one
+    assert sheet["kw_l"]["view"] == sheet["kw_p"]["view"] == "top"
+    assert sheet["kw_l"]["from"] == {"at": [125.0, 0.0, 9.25]} and sheet["kw_l"]["to"] == {"at": [144.0, 0.0, 9.25]}  # 19 between the centres of the end arcs
+    assert sheet["kw_p"]["to"] == {"at": [125.0, 0.0, 9.25]}  # 7 from the shoulder to the first centre
+    assert kw.middle_of(slot) == (129.75, 0.0, 0.0)  # the cut a quarter of the way between the centres: its letter clears the extension lines
+    assert sheet["kw_t"]["to"] == {"at": [135.0, 0.0, 11.0]}  # 3.5: from the bottom up to the tangent line of the shaft, not 18.5 across it
+    assert sheet["kw_t"]["side"] == "above" and sheet["kw_w"]["side"] == "left"  # the section is hosted by the top view: y stands upright in it
+
+
+def test_a_sheet_without_the_view_that_looks_at_the_keyway_gets_no_length_on_its_hidden_lines() -> None:
+    slot = keyway_slot()
+    ids = {s["id"] for s in kw.dimension_specs(slot, "kw", ("front", "iso"), "A-A")}
+    assert ids == {"kw_w", "kw_t"}  # the front view sees the keyway as hidden lines: a hidden line is never dimensioned
+
+
+def test_the_end_arcs_of_the_keyway_have_a_centre_in_the_middle_of_the_wall() -> None:
+    slot = keyway_slot()
+    low, high = slot.rounds
+    assert kw.round_centre(slot, low) == (125.0, 0.0, 9.25) and kw.round_centre(slot, high) == (144.0, 0.0, 9.25)  # half way down the slot, on the arc's axis
+
+
+def test_the_main_view_turned_to_the_keyway_gets_its_length_in_it_and_the_section_hosted_by_it() -> None:
+    """The one axial view looks along +z (the keyway faces it): the length and the locator stand there, and in the section the width
+    (y) is upright and the depth (z) horizontal, whichever view hosts it."""
+    slot = keyway_slot()
+    specs = {s["id"]: s for s in kw.dimension_specs(slot, "kw", ("front", "iso"), "A-A", face_on="front", vertical="y")}
+    assert specs["kw_l"]["view"] == specs["kw_p"]["view"] == "front"
+    assert specs["kw_w"]["side"] == "left" and specs["kw_t"]["side"] == "above"
+
+
+def test_without_a_section_the_depth_goes_in_a_view_that_shows_its_axis_and_is_never_asked_of_one_that_looks_along_it() -> None:
+    """The fallback of a section that found no room: the depth runs along z, the direction the turned main view looks along, so that view
+    cannot carry it (TechDraw refuses it): a view that shows z does, and when the sheet has none the depth is left out, said by the caller."""
+    slot = keyway_slot()
+    only_front = {"front": ("x", "y")}
+    specs = {s["id"]: s for s in kw.dimension_specs(slot, "kw", ("front", "iso"), None, face_on="front", plane_axes=only_front)}
+    assert specs["kw_w"]["view"] == "front" and "kw_t" not in specs
+    with_end = {"front": ("x", "y"), "right": ("y", "z")}
+    specs = {s["id"]: s for s in kw.dimension_specs(slot, "kw", ("front", "right", "iso"), None, face_on="front", plane_axes=with_end)}
+    assert specs["kw_t"]["view"] == "right" and specs["kw_w"]["view"] == "front"

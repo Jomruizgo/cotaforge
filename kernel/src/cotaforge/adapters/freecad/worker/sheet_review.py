@@ -329,8 +329,8 @@ def _view_without_job(ctx: Context, name: str, is_section: bool, owner: str) -> 
     view = ctx.views.get(name)
     if is_section and owner:
         how = ctx.say(
-            f"quita su elemento {owner} (drawing action=remove, ids=[{owner}])",
-            f"remove its item {owner} (drawing action=remove, ids=[{owner}])",
+            f"quita su elemento {owner} (drawing(action=\"remove\", items=[\"{owner}\"]); un id que empieza por rq_ pide además reason=)",
+            f"remove its item {owner} (drawing(action=\"remove\", items=[\"{owner}\"]); an id that starts with rq_ also needs reason=)",
         )
     else:
         how = ctx.say(
@@ -738,9 +738,12 @@ def _over_dimensioning(data: ReviewInput) -> list[Finding]:
                     f"{m.spec['id']} and {n.spec['id']}.",
                 )
                 out.append(Finding("duplicate_dimension", "warning", text, (m.spec["id"], n.spec["id"])))
-    # 1b. a dimension that repeats an overall extent
+    # 1b. a dimension that repeats an overall extent (an axis the overall left out, because the others chain it, is not given)
+    left_out = ctx.extras.get("overall_skipped", set())
     for overall in _of(data, "overall"):
         for m in measured:
+            if m.axis in left_out:
+                continue
             extent = _extent(ctx, m.axis)
             if extent is not None and abs((m.hi - m.lo) - extent) < SAME_MM * 2:
                 text = ctx.say(
@@ -784,6 +787,8 @@ def _over_dimensioning(data: ReviewInput) -> list[Finding]:
         ]
         pool = [*measured, *positional]
         for axis in AXES:
+            if axis in left_out:  # the overall item did not draw this axis: there is no size to close on
+                continue
             overall = _extent(ctx, axis)
             # the lengths of ``dim`` items and the spacings and locators of hole positions (8 + 44 + 8 = 60 on a plate): a spacing
             # or a locator never says "the same distance twice", but chained it closes on the overall like any other length
@@ -796,9 +801,7 @@ def _over_dimensioning(data: ReviewInput) -> list[Finding]:
                 if abs(m.lo - chain[-1].hi) < SAME_MM:
                     chain.append(m)
             ids = tuple(dict.fromkeys(str(m.spec["id"]) for m in chain))
-            # a chain made by ONE item (the default hole location of two groups of holes) is that item's own composition: the
-            # drafter has no tool to take one dimension out of it, so it is not a finding it could ever clear
-            if len(chain) >= 2 and len(ids) >= 2 and abs(sum(m.hi - m.lo for m in chain) - overall) < SAME_MM * 2:  # noqa: PLR2004
+            if len(chain) >= 2 and abs(sum(m.hi - m.lo for m in chain) - overall) < SAME_MM * 2:  # noqa: PLR2004
                 text = ctx.say(
                     f"Las cotas {', '.join(ids)} forman una cadena que suma la cota total en {axis} "
                     f"({ctx.num(overall)} mm): sobreacotado. Deja el localizador desde el borde de referencia con la separación y "

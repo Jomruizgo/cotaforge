@@ -644,7 +644,36 @@ def turned_of(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None) -> dic
         start, direction, length = record["start"], record["direction"], float(record["length_mm"])
         middles.append(float(start[index]) + float(direction[index]) * length / 2)
     flip = sheet_turned.thread_end_flip(axis, (low, high), middles)
-    return {"axis": [float(c) for c in axis], "flip": flip, "length": high - low, "diameter": float(diameter)}
+    facing = [float(c) for c in spec["facing"]] if spec.get("facing") else None  # the side the keyway is on, turned towards the viewer
+    return {"axis": [float(c) for c in axis], "flip": flip, "length": high - low, "diameter": float(diameter), "facing": facing}
+
+
+def _facing_of(turned: dict[str, Any]) -> tuple[float, float, float] | None:
+    """The side of a turned part that faces the viewer in its main view (the one its keyway is on), or ``None``: the usual frame."""
+    facing = turned.get("facing")
+    return None if not facing else (float(facing[0]), float(facing[1]), float(facing[2]))
+
+
+def _view_frames(turned: dict[str, Any] | None) -> tuple[dict[str, tuple[float, float, float]], dict[str, tuple[str, str]]]:
+    """For the views of a sheet, the direction each looks FROM and the two model axes its page shows (across, up): the standard ones, and
+    the front view of a turned part as its frame says (axis along the page, a side turned to the viewer)."""
+    directions = {"front": (0.0, -1.0, 0.0), "top": (0.0, 0.0, 1.0), "right": (1.0, 0.0, 0.0)}
+    planes = {"front": ("x", "z"), "top": ("x", "y"), "right": ("y", "z")}
+    if turned is not None:
+        d, x = sheet_turned.frame(tuple(turned["axis"]), bool(turned["flip"]), _facing_of(turned))  # type: ignore[arg-type]
+        up = (d[1] * x[2] - d[2] * x[1], d[2] * x[0] - d[0] * x[2], d[0] * x[1] - d[1] * x[0])
+        directions["front"] = d
+        planes["front"] = (sheet_keyway.axis_name(x) or "x", sheet_keyway.axis_name(up) or "z")
+    return directions, planes
+
+
+def _keyway_facing(doc: reg.DocumentRec, body: Any, op: str | None) -> tuple[float, float, float] | None:
+    """The side the first keyway of a turned part opens towards, when it is a model axis (the part is then drawn turned about its
+    axis so that side faces the viewer), else ``None``."""
+    for slot in sheet_facts.collect(doc, _bodies(doc, body, op)).keyway_slots:
+        if sheet_keyway.axis_name(slot.up) is not None:
+            return (round(slot.up[0]), round(slot.up[1]), round(slot.up[2]))  # type: ignore[return-value]
+    return None
 
 
 SECTION_ROOM_MM = 42.0  # the label (9), the clear space round the view (8), the hole dimensions and the gaps
@@ -872,7 +901,7 @@ def _build(
                     added.Direction = App.Vector(*ANCHOR_DIRECTIONS[anchor][0])
                     added.XDirection = App.Vector(*ANCHOR_DIRECTIONS[anchor][1])
                 elif view_name == "Front" and turned:  # a turned part: its axis along the page, as it is machined
-                    direction, xdirection = sheet_turned.frame(tuple(turned["axis"]), bool(turned["flip"]))  # type: ignore[arg-type]
+                    direction, xdirection = sheet_turned.frame(tuple(turned["axis"]), bool(turned["flip"]), _facing_of(turned))  # type: ignore[arg-type]
                     added.Direction = App.Vector(*direction)
                     added.XDirection = App.Vector(*xdirection)
         for item in group.Views:  # the names the page keeps for its views (contract of ``sheet_native``)
@@ -888,7 +917,7 @@ def _build(
             sheet_native.tag_view(iso, "view:isometric", name)
             iso.Source = sources
             iso_direction, iso_xdirection = (
-                sheet_turned.iso_frame(tuple(turned["axis"]), bool(turned["flip"]))  # type: ignore[arg-type]
+                sheet_turned.iso_frame(tuple(turned["axis"]), bool(turned["flip"]), _facing_of(turned))  # type: ignore[arg-type]
                 if turned
                 else (
                     tuple(spec["iso_frame"][0]), tuple(spec["iso_frame"][1])
@@ -946,7 +975,7 @@ def _name_for(fc_doc: Any, wanted: str | None, op: str | None) -> str:
 
 
 CARRIED_KEYS = (
-    "declined", "answers", "review_choice", "review_request", "reports", "report_n", "symmetry", "iso_frame", "composed",
+    "declined", "answers", "review_choice", "review_request", "reports", "report_n", "symmetry", "iso_frame", "composed", "facing",
 )  # fmt: skip
 # what a sheet remembers beyond its items, and a rebuild keeps: the defaults the engineer took off, the answers to the
 # review, who he chose to review it, the reports of the reviewers
@@ -1023,8 +1052,9 @@ def _views_for_part(doc: reg.DocumentRec, body: Any, op: str | None) -> tuple[li
     wants_end = bool(sheet_facts.collect(doc, _bodies(doc, body, op)).keyways)
     views = sheet_turned.views_for(wants_end)
     why = (
-        f"revolved about {name}: the main view with its axis horizontal (as it is machined) and the isometric view; the "
-        "keyway is shown in a removed section across it (keyway_dims), not in an end view"
+        f"revolved about {name}: ONE main view with its axis horizontal (as it is machined), turned about its axis so that the keyway "
+        "faces the viewer (its length and locator, the diameters and the lengths stand there, never on hidden lines) and the isometric "
+        "view; the keyway's width and depth go in a removed section across it (keyway_dims), not in an end view"
         if wants_end
         else f"revolved about {name}: ONE main view with its axis horizontal (as it is machined); it carries the "
         "diameters, the lengths, the thread and the chamfers, an end view would repeat circles; plus the isometric view"
@@ -1186,6 +1216,10 @@ def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         picked = _views_for_part(doc, body, op) if not assembly else None  # noqa: E501
         if picked is not None:
             spec["views"], section_wanted, why = picked
+            if picked[0] == ["front"] and picked[1] is False:  # a solid turned part: its main view looks at its keyway
+                facing = _keyway_facing(doc, body, op)
+                if facing is not None:
+                    spec["facing"] = list(facing)
             spec["views"] = [*spec["views"], "iso"] if params.get("isometric") is not False else spec["views"]
             if params.get("isometric") is False:
                 spec["isometric"] = False
@@ -1418,6 +1452,10 @@ def _expand_thread_dims(
     return out
 
 
+_KEYWAY_NOTES: list[str] = []
+"""What ``_expand_keyway_dims`` left out and why (a keyway no view of the sheet sees face-on has no length or position: they would
+stand on hidden lines), for the warnings of the ``add`` that asked for them."""
+
 _KEYWAY_FALLBACK: dict[str, list[dict[str, Any]]] = {}
 """The width and the depth of a keyway as plain dimensions, by the id of the removed section that was to carry them: a section that
 finds no room on the sheet is refused and its dimensions go where the sheet has a place for them (``add`` puts them back)."""
@@ -1429,14 +1467,17 @@ def _expand_keyway_dims(
     """``keyway_dims`` is not an item of its own: it is the dimensions of the keyways of the part (width, depth as the
     standards give it, length, position), made now from the faces of the model as ``dim`` items with their own ids
     (``<id>_w``, ``_t``, ``_l``, ``_p``), so the sheet keeps plain dimensions that follow the normal rules."""
+    _KEYWAY_NOTES.clear()
     if not any(isinstance(i, dict) and i.get("type") == "keyway_dims" for i in requested):
         return requested
     import items_views  # noqa: PLC0415 - the letters of the views
 
     _KEYWAY_FALLBACK.clear()
-    along_side = "above" if turned_of(doc, spec, op) is not None else None  # a turned part's lengths stack below: the keyway's stand above
+    turned = turned_of(doc, spec, op)
+    along_side = "above" if turned is not None else None  # a turned part's lengths stack below: the keyway's stand above
     slots =sheet_facts.collect(doc, _bodies(doc, spec.get("body"), op)).keyway_slots
     shown = tuple(views_of(spec))
+    directions, planes = _view_frames(turned)
     views_made = [i for i in [*spec.get("items", ()), *requested] if isinstance(i, dict) and i.get("type") in ("section", "detail", "aux_view")]
     taken = {str(i["letter"]) for i in views_made if i.get("letter")}
     auto = sum(1 for i in views_made if not i.get("letter"))  # views that take the next free letters when they are drawn
@@ -1465,19 +1506,44 @@ def _expand_keyway_dims(
                 free = [letter for letter in items_views.LETTERS if letter not in taken]
                 letter = str(item.get("letter") or free[min(auto, len(free) - 1)])
                 section = f"{letter}-{letter}"
-            dims = sheet_keyway.dimension_specs(slot, name, shown, section, item.get("fit"), depth_tol, along_side)
+            face_on = next((v for v in shown if v in directions and sum(a * b for a, b in zip(directions[v], slot.up, strict=True)) > 0.999), None)  # noqa: PLR2004
+            main = next((v for v in shown if v != "iso"), None)
+            across = {"section": section, "fit": item.get("fit"), "depth_tol": depth_tol, "along_side": along_side, "face_on": face_on, "plane_axes": {v: planes[v] for v in shown if v in planes}}
+            vertical = planes[main][1] if main in planes else None
+            dims = sheet_keyway.dimension_specs(slot, name, shown, vertical=vertical, **across)
             if section and any(d.get("view") == section for d in dims):  # no width or depth to carry: no section
                 taken.add(section[0])
                 _KEYWAY_FALLBACK[f"{name}_sec"] = [
-                    d for d in sheet_keyway.dimension_specs(slot, name, shown, None, item.get("fit"), depth_tol, along_side) if str(d["id"]).endswith(("_w", "_t"))
+                    d for d in sheet_keyway.dimension_specs(slot, name, shown, **{**across, "section": None}) if str(d["id"]).endswith(("_w", "_t"))
                 ]
                 made.append(
                     {"type": "section", "id": f"{name}_sec", "at": [round(v, 4) for v in sheet_keyway.middle_of(slot)],
-                     "normal": list(slot.cylinder.axis), "letter": section[0], "removed": True}
+                     "normal": list(slot.cylinder.axis), "letter": section[0], "removed": True,
+                     **({"view": main} if main is not None else {})}
                 )  # fmt: skip
             elif section:
-                dims = sheet_keyway.dimension_specs(slot, name, shown, None, item.get("fit"), depth_tol, along_side)
+                dims = sheet_keyway.dimension_specs(slot, name, shown, **{**across, "section": None})
             made += dims
+            given = {str(d["id"]) for d in dims}
+            if not section and shown:  # a width or a depth along the direction every view looks along is not given: said, never dropped in silence
+                for suffix, what in (("_w", "width"), ("_t", "depth")):
+                    if f"{name}{suffix}" not in given:
+                        _KEYWAY_NOTES.append(
+                            f"{name}: the {what} is not given -- no view of the sheet shows the keyway {what} in its plane and the section found no room: "
+                            "make room for the section (a smaller scale or a larger paper) and ask for keyway_dims again"
+                        )
+            toward = sheet_keyway.face_view(slot)
+            if shown and face_on is None and slot.ends + slot.rounds:  # (ONE axial view: the sheet is never given a view only for a keyway)
+                _KEYWAY_NOTES.append(
+                    f"{name}: length and position not given -- "
+                    + (
+                        f"the keyway looks towards the {toward} view and the sheet does not draw the part in it: turn the main view to it "
+                        f"(drawing(action=add_view, views=[\"{toward}\"]), then drawing(action=remove_view, views=[\"front\"])) and ask for keyway_dims again"
+                        if toward is not None
+                        else "no standard view looks at it face-on (it opens towards the back, the bottom or the left) and a hidden line is never "
+                        "dimensioned: tell the engineer"
+                    )
+                )
         if not made:
             raise invalid_request("the part has no keyway whose walls can be dimensioned (keyway_dims)", op)
         out.extend(made)
@@ -1992,6 +2058,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     asked_threads = any(isinstance(i, dict) and i.get("type") == "thread_dims" for i in requested)
     requested = _expand_thread_dims(doc, items, requested, op)
     requested, routed = _route_title_block_notes(spec, requested, op, material_of(fc_doc))
+    routed = [*routed, *_KEYWAY_NOTES]
     if not requested and routed:
         write_spec(page, spec)
         _sync_template_fields(fc_doc, op)
@@ -2597,8 +2664,35 @@ class LiveGeometry(drawing_assembly.AssemblyRays, drawing_assembly.WeldJoints, s
             return None
         distance, solutions, _ = self._boundary.distToShape(Part.Vertex(g.fcvec(p)))
         if distance > sc.POSITION_TOL_MM:
-            return None
+            return p if self._on_cut_surface(p) else None
         return g.vec(solutions[0][0])
+
+    def _on_cut_surface(self, p: sc.Vec3) -> bool:
+        """Whether ``p`` lies on the cylinder a cut interrupts (the top of a shaft over its keyway: a depth is counted up to the surface
+        of the shaft, which the slot took away there) or on the axis of an arc of the part (the centre of the end of a keyway): on the
+        cylinder of a face of the part, or on its axis, and inside the face's own box."""
+        point = g.fcvec(p)
+        for face in self._boundary.Faces:
+            if g.surface_kind(face) != "cylinder":
+                continue
+            box, tol = face.BoundBox, sc.POSITION_TOL_MM
+            if not (
+                box.XMin - tol <= point.x <= box.XMax + tol
+                and box.YMin - tol <= point.y <= box.YMax + tol
+                and box.ZMin - tol <= point.z <= box.ZMax + tol
+            ):
+                continue
+            surf = face.Surface
+            axis = surf.Axis
+            offset = point - surf.Center
+            radial = (offset - axis * offset.dot(axis)).Length
+            along = offset.dot(axis)
+            v0, v1 = face.ParameterRange[2], face.ParameterRange[3]  # the trimmed extent of the face along its axis
+            if not min(v0, v1) - sc.POSITION_TOL_MM <= along <= max(v0, v1) + sc.POSITION_TOL_MM:
+                continue
+            if abs(radial - float(surf.Radius)) <= sc.POSITION_TOL_MM or radial <= sc.POSITION_TOL_MM:
+                return True  # the cylinder itself, or its axis (the centre of an arc of the part: an end of a keyway)
+        return False
 
     # --- a moulded part (ISO 10135): the pull direction and the parting plane are proposed from these ---
     def _key(self, *parts: Any) -> tuple[Any, ...]:

@@ -10,6 +10,7 @@ import math
 import sheet_weights as sw
 from sheet_model import (
     AXES,
+    CENTRE_OVERSHOOT_MM,
     DIMENSIONS,
     TEXT,
     TITLE_BLOCK,
@@ -183,8 +184,8 @@ def leader(tip: Point, elbow: Point, lines: list[str], side: str, height: float 
 
 
 def centre_mark(cx: float, cy: float, r: float) -> list[Entity]:
-    """The cross of a circle's centre lines, reaching 2 mm beyond the circle."""
-    reach = r + 2.0
+    """The cross of a circle's centre lines, reaching ``CENTRE_OVERSHOOT_MM`` (3 mm on paper) beyond the circle."""
+    reach = r + CENTRE_OVERSHOOT_MM
     return [Line(cx - reach, cy, cx + reach, cy, AXES), Line(cx, cy - reach, cx, cy + reach, AXES)]
 
 
