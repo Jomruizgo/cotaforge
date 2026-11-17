@@ -10,6 +10,9 @@
 * ``leader_not_on_chamfer``: the leader of a chamfer callout not on the chamfer's line, not from outside or not perpendicular;
 * ``view_redundant``: a view that only carries a cutting line, or whose dimensions another view repeats;
 * ``dimension_twice``: the same measure given by two dimensions of one view (stacked, the same size twice); it HOLDS an export;
+* ``dimension_redundant``: lengths of one view along one axis that close a loop (one is the sum or difference of others); listed for now: the sheet defaults still
+  break it (``sheet_checks.NON_BLOCKING``);
+* ``dimension_on_hidden``: a dimension of the page that measures on a hidden line (``sheet_hiddendims``); listed for now, the same way;
 * ``text_over_text``: two lines of text of the TechDraw page printed one on the other (the lines of a note); it HOLDS an export;
 * ``view_duplicate``: two views that draw the same thing (the same direction, or two sides of a part of revolution: the profile
   twice); it HOLDS an export;
@@ -51,6 +54,7 @@ def check(data: ReviewInput) -> list[Finding]:
         *_redundant(data),
         *_duplicate_views(data),
         *_dimension_twice(data),
+        *_dimension_redundant(data),
         *_text_over_text(data),
         *_hatches(data),
         *_underused(data),
@@ -135,6 +139,78 @@ def _dimension_twice(data: ReviewInput) -> list[Finding]:
             "tell which one rules. Remove one (drawing action=remove, ids=[...]).",
         )
         out.append(Finding("dimension_twice", "warning", text, ids, key=f"{view}/" + "/".join(str(k) for k in key)))
+    return out
+
+
+SNAP_MM = 0.02  # two places of one axis closer than this are the same place
+
+
+def _snap(values: list[float]) -> dict[float, int]:
+    """Number the places of one axis: values within ``SNAP_MM`` of each other get one number."""
+    numbers: dict[float, int] = {}
+    last: float | None = None
+    count = -1
+    for v in sorted(set(values)):
+        if last is None or v - last > SNAP_MM:
+            count += 1
+        numbers[v] = count
+        last = v
+    return numbers
+
+
+def _path(links: dict[int, list[tuple[int, str]]], start: int, goal: int) -> list[str] | None:
+    """The items of the dimensions that join place ``start`` to place ``goal`` in the forest ``links`` (``None``: not joined)."""
+    seen = {start}
+    queue: list[tuple[int, list[str]]] = [(start, [])]
+    while queue:
+        node, items = queue.pop(0)
+        if node == goal:
+            return items
+        for nxt, item in links.get(node, []):
+            if nxt not in seen:
+                seen.add(nxt)
+                queue.append((nxt, [*items, item]))
+    return None
+
+
+def _dimension_redundant(data: ReviewInput) -> list[Finding]:
+    """Lengths of one view along one axis that close a loop: a dimension that is the sum or the difference of others (the overall
+    length given with the segments that add up to it; 125 beside 168 and the 43 of the thread). Take each length as a link between
+    the two places it spans: a set of independent dimensions is a forest, and a link that closes a loop is a measure the others
+    already give (ISO 129-1: no redundant dimension). The same length twice is ``dimension_twice``; one item's own links are not
+    a choice the agent can undo, so a loop of a single item is left alone. Part sheets only: on an assembly two parts share
+    coordinates by chance. A process stage, a diameter and a hole position are other records and never enter."""
+    ctx = data.ctx
+    if ctx.assembly is not None or ctx.weldment is not None:
+        return []
+    spans: dict[tuple[str, str], list[tuple[str, float, float]]] = {}
+    for item, view, key in ctx.extras.get("dim_records", []):
+        if item and len(key) == 4 and key[0] == "len":  # noqa: PLR2004 - ("len", axis, lo, hi)
+            spans.setdefault((view, str(key[1])), []).append((item, float(key[2]), float(key[3])))
+    out: list[Finding] = []
+    for (view, axis), rows in spans.items():
+        number = _snap([v for _, lo, hi in rows for v in (lo, hi)])
+        links: dict[int, list[tuple[int, str]]] = {}
+        joined: set[tuple[int, int]] = set()
+        for item, lo, hi in sorted(rows, key=lambda r: (r[1], r[2], r[0])):
+            a, b = number[lo], number[hi]
+            if a == b or (a, b) in joined:  # a zero length; the same length twice (``dimension_twice``)
+                continue
+            around = _path(links, a, b)
+            if around is not None:
+                ids = tuple(dict.fromkeys([*around, item]))
+                if len(ids) >= 2:  # noqa: PLR2004 - a loop of one item is not the agent's to undo
+                    text = ctx.say(
+                        f"Las cotas {', '.join(ids)} de la vista {view} cierran un lazo a lo largo de {axis}: una es la suma o la "
+                        "diferencia de las otras y sobra. Quita la que el taller no necesita.",
+                        f"Dimensions {', '.join(ids)} of the {view} view close a loop along {axis}: one is the sum or the "
+                        "difference of the others and is redundant. Remove the one the shop does not need.",
+                    )
+                    out.append(Finding("dimension_redundant", "warning", text, ids, key=f"{view}/{axis}/" + "/".join(sorted(ids))))
+                continue  # the loop-closing link is not added: what stands stays a forest
+            links.setdefault(a, []).append((b, item))
+            links.setdefault(b, []).append((a, item))
+            joined.add((a, b))
     return out
 
 
