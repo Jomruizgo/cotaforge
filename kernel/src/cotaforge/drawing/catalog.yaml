@@ -198,9 +198,8 @@ rules:
     step: views
     applies: {features: [keyway]}
     text: >-
-      A turned part with a keyway has ONE axial view, and it is the standard view that looks at the keyway face-on: the
-      part is drawn turned so that the keyway faces the viewer, and the diameters, the lengths, the keyway's length and
-      its locator stand there, never on hidden lines. A view is never added only for the keyway: the sheet is the axial
+      A turned part with a keyway has ONE axial view, and the part is rolled about its axis in it so that the keyway faces
+      the viewer: the diameters, the lengths, the keyway's length and its locator stand there, never on hidden lines. A view is never added only for the keyway: the sheet is the axial
       view, the keyway's removed section and the isometric view. The end arcs of the keyway carry their centre cross.
       A keyway no standard view looks at (it opens towards the back, the bottom or the left) has no tool: the engineer
       is told.

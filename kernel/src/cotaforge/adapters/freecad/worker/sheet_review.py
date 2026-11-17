@@ -738,9 +738,12 @@ def _over_dimensioning(data: ReviewInput) -> list[Finding]:
                     f"{m.spec['id']} and {n.spec['id']}.",
                 )
                 out.append(Finding("duplicate_dimension", "warning", text, (m.spec["id"], n.spec["id"])))
-    # 1b. a dimension that repeats an overall extent
+    # 1b. a dimension that repeats an overall extent (an axis the overall left out, because the others chain it, is not given)
+    left_out = ctx.extras.get("overall_skipped", set())
     for overall in _of(data, "overall"):
         for m in measured:
+            if m.axis in left_out:
+                continue
             extent = _extent(ctx, m.axis)
             if extent is not None and abs((m.hi - m.lo) - extent) < SAME_MM * 2:
                 text = ctx.say(
@@ -784,6 +787,8 @@ def _over_dimensioning(data: ReviewInput) -> list[Finding]:
         ]
         pool = [*measured, *positional]
         for axis in AXES:
+            if axis in left_out:  # the overall item did not draw this axis: there is no size to close on
+                continue
             overall = _extent(ctx, axis)
             # the lengths of ``dim`` items and the spacings and locators of hole positions (8 + 44 + 8 = 60 on a plate): a spacing
             # or a locator never says "the same distance twice", but chained it closes on the overall like any other length

@@ -72,7 +72,11 @@ def hidden_references(page: Any, names: dict[str, str], item_prop: str, distance
 
 
 def _edges_of(view: Any) -> tuple[list[Any], int]:
-    visible, hidden = len(view.getVisibleEdges()), len(view.getHiddenEdges())
+    """The edges of the part in ``view`` (the visible ones first, then the hidden ones) and how many are visible. TechDraw counts the
+    cosmetic edges and the centre lines among the visible ones and lists them AFTER every edge of the part: they are not the part, so
+    they are left out (a centre mark through the end arc of a keyway is not a hidden line)."""
+    own = len(list(getattr(view, "CosmeticEdges", None) or [])) + len(list(getattr(view, "CenterLines", None) or []))
+    visible, hidden = max(len(view.getVisibleEdges()) - own, 0), len(view.getHiddenEdges())
     return [view.getEdgeByIndex(i) for i in range(visible + hidden)], visible
 
 

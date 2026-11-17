@@ -547,7 +547,8 @@ def _direction_dims(
     for group in groups:
         own = sorted({round(p[i] / scale, 2) for _, p in group})
         gaps = [round(b - a, 2) for a, b in zip(own, own[1:], strict=False)]
-        if len(gaps) >= 2 and max(gaps) - min(gaps) <= 0.011:  # a row at one pitch: the pitch once, with how many
+        if len(gaps) >= 2 and max(gaps) - min(gaps) <= 0.011 and not tree.joined(own[0], own[-1]):  # noqa: PLR2004
+            # a row at one pitch: the pitch once, with how many -- unless its two ends are tied already (60 beside 3 x 20 is a loop)
             pairs, repeats = [(own[0], own[1])], len(own) - 1
         else:
             pairs, repeats = list(zip(own, own[1:], strict=False)), 0
@@ -557,6 +558,7 @@ def _direction_dims(
                 once("space", dim)
             elif repeats or not tree.joined(ka, kb):  # the others already fix a spacing that would close a loop
                 once("space", dim)
+                tree.union(ka, kb)  # tied at once: the next spacing of the row is judged against it
         for k in own[1:]:
             tree.union(own[0], k)  # the spacings of a group tie all its columns
         if not edges:

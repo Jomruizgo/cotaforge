@@ -34,9 +34,15 @@ def axis_index(axis: Vec3) -> int:
     return max(range(3), key=lambda i: abs(axis[i]))
 
 
-def frame(axis: Vec3, flip: bool = False) -> tuple[Vec3, Vec3]:
+def frame(axis: Vec3, flip: bool = False, facing: Vec3 | None = None) -> tuple[Vec3, Vec3]:
     """``(direction, xdirection)`` of the front view of a part turned about ``axis``: the axis runs along the page's x. With
-    ``flip`` its negative end is on the right (the view is seen from the other side, so nothing is mirrored)."""
+    ``flip`` its negative end is on the right (the view is seen from the other side, so nothing is mirrored). ``facing`` (a unit
+    vector across the axis) rolls the part about it so that side faces the viewer: the keyway of a shaft is seen face-on in the one
+    axial view of the sheet."""
+    if facing is not None:
+        unit = [0.0, 0.0, 0.0]
+        unit[axis_index(axis)] = -1.0 if flip else 1.0
+        return (float(facing[0]), float(facing[1]), float(facing[2])), (unit[0], unit[1], unit[2])
     direction, xdirection = _FRAMES[axis_index(axis)]
     if flip:
         direction = (-direction[0], -direction[1], -direction[2])
@@ -44,11 +50,11 @@ def frame(axis: Vec3, flip: bool = False) -> tuple[Vec3, Vec3]:
     return direction, xdirection
 
 
-def iso_frame(axis: Vec3, flip: bool = False) -> tuple[Vec3, Vec3]:
+def iso_frame(axis: Vec3, flip: bool = False, facing: Vec3 | None = None) -> tuple[Vec3, Vec3]:
     """``(direction, xdirection)`` of the isometric view of a turned part: the standard one (looking from the front, the right
     and above) seen in the frame of the turned main view, so the axis runs along the page the way it does in the main view
     instead of standing up."""
-    d, r = frame(axis, flip)
+    d, r = frame(axis, flip, facing)
     u = (d[1] * r[2] - d[2] * r[1], d[2] * r[0] - d[0] * r[2], d[0] * r[1] - d[1] * r[0])
     direction = (r[0] + d[0] + u[0], r[1] + d[1] + u[1], r[2] + d[2] + u[2])
     xdirection = (r[0] - d[0], r[1] - d[1], r[2] - d[2])

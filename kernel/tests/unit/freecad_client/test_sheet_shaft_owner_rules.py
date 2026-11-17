@@ -302,3 +302,25 @@ def test_a_centre_hole_designation_is_a_leader_note_and_never_a_dimension_on_a_h
     page = _page([("note", "Edge2")], hidden=True)
     page.Views[1].TypeId = "TechDraw::DrawLeaderLine"
     assert hiddendims.hidden_references(page, {"View_front": "front"}, "Item", _near) == []
+
+
+def test_a_centre_mark_of_the_view_is_not_a_hidden_line_the_dimension_to_the_centre_of_an_end_arc_stands_on() -> None:
+    """TechDraw counts the cosmetic edges and the centre lines of a view among its visible edges and lists them after the edges of the
+    part: the cross through the centre of the end arc of a keyway (and the centre line under it) was read as a hidden line, and the
+    length between the two centres was flagged."""
+    outline, floor, cross = _edge(0, -6, 100, -6), _edge(30, 4, 30, 7), _edge(40, -6, 40, 6)  # part: one visible, one hidden; then the mark
+    edges = [outline, floor, cross]
+    vertices = [SimpleNamespace(X=40.0, Y=0.0)]
+    view = SimpleNamespace(
+        Name="View_front", Label="Front",
+        getVisibleEdges=lambda: [outline, cross],  # the mark counted as visible
+        getHiddenEdges=lambda: [floor],
+        getEdgeByIndex=lambda i: edges[i],
+        getVertexByIndex=lambda i: vertices[i],
+        CosmeticEdges=[object()], CenterLines=[],
+    )  # fmt: skip
+    dim = SimpleNamespace(TypeId="TechDraw::DrawViewDimension", Label="l", Name="l", Item="rq_keyway_l", References2D=[(view, ["Vertex0"])])
+    page = SimpleNamespace(Views=[view, dim])
+    assert hiddendims.hidden_references(page, {"View_front": "front"}, "Item", _near) == []
+    view.CosmeticEdges = []  # without the count the mark IS read as the hidden edge (the old behaviour this test guards against)
+    assert hiddendims.hidden_references(page, {"View_front": "front"}, "Item", _near) != []

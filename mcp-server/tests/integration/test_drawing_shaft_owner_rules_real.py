@@ -66,18 +66,21 @@ async def test_following_the_message_moves_the_dimension_to_the_view_that_sees_t
             assert "dimension_on_hidden:kw_len" not in await cad.ok("drawing", action="review")
 
 
-async def test_the_125_and_the_43_that_chain_both_ends_leave_the_overall_168_out(workspace: Path) -> None:
-    """The 125 and the 43 reach both ends of the shaft: the overall 168 would be their sum, a measure the shop gets twice, so the sheet
-    does not give it (``o1`` says so) and nothing is left over: no loop, no chain that closes on a dimension that is there."""
+@pytest.mark.parametrize("order", [(FROM_END, THREAD_END), (THREAD_END, FROM_END)], ids=["125 first", "43 first"])
+async def test_the_125_and_the_43_that_chain_both_ends_leave_the_overall_168_out(workspace: Path, order: tuple[dict, dict]) -> None:
+    """The 125 and the 43 reach both ends of the shaft, whichever is added first: the overall 168 would be their sum, a measure the
+    shop gets twice, so the sheet does not give it (``o1`` says so), the review does not take it for given (nothing closes on it) and
+    no loop is left."""
     async with running_server(workspace, visible=True) as (cad, _):
         cad.allow("collision", "dimension_gap", "dimension_stack_order", "dimension_crossing")  # the dimensions are put where they fall
         await start(cad, workspace, ("front", "top", "iso"))
-        await cad.ok("drawing", action="add", items=[{"type": "view_lines"}, FROM_END, THREAD_END])
+        await cad.ok("drawing", action="add", items=[{"type": "view_lines"}, *order])
         review = await cad.ok("drawing", action="review")
         print("REVIEW", review)
         assert "not drawn: width 168 (the dimensions of the sheet chain both ends" in review
-        assert "over_dimensioned" not in review and "dimension_redundant" not in review
-        assert "BLOCKS EXPORT duplicate_dimension" not in review
+        assert "over_dimensioned" not in review and "dimension_redundant" not in review and "duplicate_dimension" not in review
+        listed = await cad.ok("drawing", action="list")
+        assert "len125" in listed and "len43" in listed  # both are on the sheet: what is left out is the sum
 
 
 async def test_the_default_shaft_sheet_raises_neither(workspace: Path) -> None:
@@ -85,9 +88,8 @@ async def test_the_default_shaft_sheet_raises_neither(workspace: Path) -> None:
     that looks at the keyway (no hidden line), and the overall is left out where the datum baseline reaches both ends. Both findings
     hold the export now, so the defaults must not raise them."""
     async with running_server(workspace, visible=True) as (cad, _):
-        cad.allow("collision")  # drawn in the top view (the keyway faces it) the planner leaves the thread callout over the Ø25 k6: also so on develop with views=["top", "iso"]
         await start(cad, workspace)
-        await cad.ok("drawing", action="add", items=[{"type": "baseline_dims", "from": "face:6", "view": "top", "side": "below"}, *DIAMETERS, {"type": "view_lines"}])
+        await cad.ok("drawing", action="add", items=[{"type": "baseline_dims", "from": "face:6", "view": "front", "side": "below"}, *DIAMETERS, {"type": "view_lines"}])
         review = await cad.ok("drawing", action="review")
         print("REVIEW", review)
         for code in ("dimension_on_hidden", "dimension_redundant", "over_dimensioned", "duplicate_dimension"):

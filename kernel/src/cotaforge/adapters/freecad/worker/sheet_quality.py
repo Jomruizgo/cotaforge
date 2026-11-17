@@ -152,9 +152,9 @@ def _centre_lines(data: ReviewInput) -> list[Finding]:
         where = f"{rec.item} ({rec.view})" if rec.item else rec.view
         if why == "crosses":
             text = ctx.say(
-                f"Un eje de {where} cruza una cota o su texto: un eje sobrepasa el rasgo {CENTRE_OVERSHOOT_MM:g} mm como mucho y no llega a ninguna cota "
+                f"Un eje de {where} cruza una cota o su texto: un eje sobrepasa el rasgo de 2 a {CENTRE_OVERSHOOT_MAX_MM:g} mm y no llega a ninguna cota "
                 "(acorta el eje con extend_mm o aleja la cota con offset_mm).",
-                f"A centre line of {where} goes through a dimension or its text: a centre line passes its feature by {CENTRE_OVERSHOOT_MM:g} mm at most and "
+                f"A centre line of {where} goes through a dimension or its text: a centre line passes its feature by 2 to {CENTRE_OVERSHOOT_MAX_MM:g} mm and "
                 "never reaches a dimension (shorten it with extend_mm or move the dimension with offset_mm).",
             )
             out.append(Finding("centre_line_crosses", "warning", text, (rec.item,) if rec.item else (), key=f"{rec.item}:{rec.view}:{rec.line.x1:.1f},{rec.line.y1:.1f}"))

@@ -230,6 +230,9 @@ keyway's section is hosted by the front view (the main view of a turned part): t
 its length and position."""
 
 
+AUTO = object()  # ``dimension_specs(face_on=AUTO)``: the standard view that looks at the keyway
+
+
 def face_view(slot: Slot) -> str | None:
     """The standard view that looks at the keyway face-on (the way it opens towards: the walls and the ends are seen as lines, the
     length and the position as they are), or ``None`` when no standard view does (it opens towards the back, the bottom or the left)."""
@@ -270,6 +273,9 @@ def dimension_specs(
     fit: str | None = None,
     depth_tol: tuple[float, float] | None = None,
     along_side: str | None = None,
+    face_on: object = AUTO,
+    vertical: str | None = None,
+    plane_axes: dict[str, tuple[str, str]] | None = None,
 ) -> list[dict[str, object]]:
     """The ``dim`` items that say a keyway to the shop, measured on the model: the width (between the walls), the depth as
     the standards give it (``d - t1`` across a shaft where the keyway runs out at its end, ``d + t2`` in a hub: from the bottom to the
@@ -283,28 +289,40 @@ def dimension_specs(
     the view the length and the position stand on (``above`` on a turned part: its lengths stack below, and a dimension nothing
     pins is moved by the layout into that stack, across the ends of the keyway)."""
     c, out = slot.cylinder, []
-    face_on = face_view(slot)
+    if face_on is AUTO:
+        face_on = face_view(slot)  # the standard view that looks at it; the caller says which view does when the main view is turned to face it
     face = {"view": face_on} if face_on in views else {}  # the length and the position go where the keyway is seen face-on, never on its hidden lines
     profile = PROFILE_VIEW.get(axis_name(c.axis) or "")
     view = {"view": section} if section else {"view": profile} if profile in views else {}
+
+    def seen_in(axis_of: str | None) -> dict[str, str] | None:
+        """The view that shows ``axis_of`` in its plane, for a dimension that is not in the section: ``None`` when no view of the sheet does
+        (a view cannot be dimensioned along the direction it looks along), and then the dimension is left out."""
+        if plane_axes is None or section or axis_of is None:
+            return view
+        name = next((v for v, axes in plane_axes.items() if axis_of in axes), None)
+        return None if name is None else {"view": name}
+
     # in the removed section the two small dimensions stand where a draughtsman puts them (the planner cannot read an ink this short):
     # the width above the slot, the depth beside the circle
     place_w: dict[str, object] = {}
     place_t: dict[str, object] = {}
     main = next((v for v in views if v != "iso"), None)  # the main (only axial) view hosts the section
-    vertical = SECTION_VERTICAL.get(main or "") if section else None  # the model axis standing upright in the section
+    vertical = (vertical or SECTION_VERTICAL.get(main or "")) if section else None  # the model axis standing upright in the section
     if vertical is not None:
         for name, axis_of, place in (("w", axis_name(slot.wall_a.normal), place_w), ("t", axis_name(slot.up), place_t)):
             side = "left" if axis_of == vertical else "above"  # the caption of the section stands below it; the notch opens to the right, towards the dimensions of the view
             place.update({"side": side, "offset_mm": 9.0 if name == "w" else 20.0})  # the depth stands farther out: the width's class and deviations stack beside the notch
     across = axis_name(slot.wall_a.normal)
-    if across is not None and slot.wall_a.face_id and slot.wall_b.face_id:
+    where_w = seen_in(across)
+    if across is not None and slot.wall_a.face_id and slot.wall_b.face_id and where_w is not None:
         out.append(
             {"type": "dim", "kind": "distance", "id": f"{prefix}_w", "from": {"face": slot.wall_a.face_id},
-             "to": {"face": slot.wall_b.face_id}, "along": across, **view, **place_w, **({"fit": fit} if fit else {})}
+             "to": {"face": slot.wall_b.face_id}, "along": across, **where_w, **place_w, **({"fit": fit} if fit else {})}
         )  # fmt: skip
     deep = axis_name(slot.up)
-    if deep is not None and slot.bottom is not None and slot.bottom.face_id:
+    where_t = seen_in(deep)
+    if deep is not None and slot.bottom is not None and slot.bottom.face_id and where_t is not None:
         along_axis = _dot(slot.bottom.centre, c.axis)
         # a CLOSED keyway in a shaft is measured from the surface (a depth gauge across the slot); the value across the shaft
         # (d - t1) is only for one that runs out at an end of the shaft, where a caliper reaches it, and for a hub (d + t2)
@@ -314,7 +332,7 @@ def dimension_specs(
         opposite = tuple(base[i] + sign * slot.up[i] * c.radius for i in range(3))
         out.append(
             {"type": "dim", "kind": "distance", "id": f"{prefix}_t", "from": {"face": slot.bottom.face_id},
-             "to": {"at": [round(v, 4) for v in opposite]}, "along": deep, **view, **place_t, **({"tol": list(depth_tol)} if depth_tol else {})}
+             "to": {"at": [round(v, 4) for v in opposite]}, "along": deep, **where_t, **place_t, **({"tol": list(depth_tol)} if depth_tol else {})}
         )  # fmt: skip
     if views and face_on not in views:
         return out  # no view of the sheet sees the keyway face-on: its length and position would land on hidden lines (never dimensioned)

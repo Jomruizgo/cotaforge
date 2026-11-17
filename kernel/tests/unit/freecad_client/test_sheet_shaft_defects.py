@@ -317,3 +317,24 @@ def test_the_end_arcs_of_the_keyway_have_a_centre_in_the_middle_of_the_wall() ->
     slot = keyway_slot()
     low, high = slot.rounds
     assert kw.round_centre(slot, low) == (125.0, 0.0, 9.25) and kw.round_centre(slot, high) == (144.0, 0.0, 9.25)  # half way down the slot, on the arc's axis
+
+
+def test_the_main_view_turned_to_the_keyway_gets_its_length_in_it_and_the_section_hosted_by_it() -> None:
+    """The one axial view looks along +z (the keyway faces it): the length and the locator stand there, and in the section the width
+    (y) is upright and the depth (z) horizontal, whichever view hosts it."""
+    slot = keyway_slot()
+    specs = {s["id"]: s for s in kw.dimension_specs(slot, "kw", ("front", "iso"), "A-A", face_on="front", vertical="y")}
+    assert specs["kw_l"]["view"] == specs["kw_p"]["view"] == "front"
+    assert specs["kw_w"]["side"] == "left" and specs["kw_t"]["side"] == "above"
+
+
+def test_without_a_section_the_depth_goes_in_a_view_that_shows_its_axis_and_is_never_asked_of_one_that_looks_along_it() -> None:
+    """The fallback of a section that found no room: the depth runs along z, the direction the turned main view looks along, so that view
+    cannot carry it (TechDraw refuses it): a view that shows z does, and when the sheet has none the depth is left out, said by the caller."""
+    slot = keyway_slot()
+    only_front = {"front": ("x", "y")}
+    specs = {s["id"]: s for s in kw.dimension_specs(slot, "kw", ("front", "iso"), None, face_on="front", plane_axes=only_front)}
+    assert specs["kw_w"]["view"] == "front" and "kw_t" not in specs
+    with_end = {"front": ("x", "y"), "right": ("y", "z")}
+    specs = {s["id"]: s for s in kw.dimension_specs(slot, "kw", ("front", "right", "iso"), None, face_on="front", plane_axes=with_end)}
+    assert specs["kw_t"]["view"] == "right" and specs["kw_w"]["view"] == "front"

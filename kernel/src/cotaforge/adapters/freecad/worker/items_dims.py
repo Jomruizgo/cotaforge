@@ -245,7 +245,7 @@ def given_by_dimensions(ctx: Context, axis: str | None, view: str) -> bool:
     difference of what stands (ISO 129-1: a redundant dimension), and the sheet does not give it twice. A dimension of another view
     does not count."""
     box = ctx.extras.get("model_box")
-    if axis is None or box is None:
+    if axis is None or box is None or ctx.assembly is not None or ctx.weldment is not None:  # parts only: two parts of an assembly share coordinates by chance
         return False
     index = "xyz".index(axis)
     ends = [box[0][index], box[1][index]]
@@ -318,6 +318,7 @@ def draw_overall(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         if by_thread_w:
             skipped.append(f"width Ø{ctx.num(width)} (the thread callout carries it)")
         elif not w_round and given_by_dimensions(ctx, model_axis(primary.xdir), name):
+            ctx.extras.setdefault("overall_skipped", set()).add(model_axis(primary.xdir))  # the review must not take it for given
             skipped.append(f"width {ctx.num(width)} (the dimensions of the sheet chain both ends: it would be given twice)")
         else:
             dist = ctx.stack_distance(name, "below" if below else "above", offset)
@@ -337,6 +338,7 @@ def draw_overall(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             elif by_thread_h:
                 skipped.append(f"height Ø{ctx.num(height)} (the thread callout carries it)")
             elif not h_round and given_by_dimensions(ctx, model_axis(primary.ydir), name):
+                ctx.extras.setdefault("overall_skipped", set()).add(model_axis(primary.ydir))
                 skipped.append(f"height {ctx.num(height)} (the dimensions of the sheet chain both ends: it would be given twice)")
             else:
                 left = h_round and toward is not None and toward[0] > 0  # thread at the right end: the Ø goes at the plain left one

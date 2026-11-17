@@ -87,11 +87,10 @@ DIAMETERS = [
 async def test_shaft_in_steps_mode(workspace: Path, tmp_path: Path) -> None:
     shots = Path(os.environ.get("COTAFORGE_TEST_SHOTS") or tmp_path / "shots")
     async with running_server(workspace, visible=True) as (cad, _):
-        cad.allow("collision")  # drawn in the top view (the keyway faces it) the planner leaves the thread callout over the Ø25 k6: also so on develop with views=["top", "iso"]
         await cad.ok("memory", action="brief", drawing_review="propio", text=cad.says("el agente revisa el plano por su cuenta"))
         await shaft(cad, workspace)
         print("CREATE", await cad.ok("drawing", action="create", title="Eje de transmision", template="A3", language="es"))
-        print("ADD", await cad.ok("drawing", action="add", items=[{"type": "baseline_dims", "from": "face:6", "view": "top", "side": "below"}, *DIAMETERS, {"type": "view_lines"}]))
+        print("ADD", await cad.ok("drawing", action="add", items=[{"type": "baseline_dims", "from": "face:6", "view": "front", "side": "below"}, *DIAMETERS, {"type": "view_lines"}]))
         listed = await cad.ok("drawing", action="list")
         print("LIST", listed)
         shot(shots, "steps_shaft", await cad("drawing", action="capture"))
@@ -102,12 +101,11 @@ async def test_shaft_in_steps_mode(workspace: Path, tmp_path: Path) -> None:
 async def test_shaft_in_sheet_mode(workspace: Path, tmp_path: Path) -> None:
     shots = Path(os.environ.get("COTAFORGE_TEST_SHOTS") or tmp_path / "shots")
     async with running_server(workspace, visible=True) as (cad, _):
-        cad.allow("collision")  # drawn in the top view (the keyway faces it) the planner leaves the thread callout over the Ø25 k6: also so on develop with views=["top", "iso"]
         await in_one_order(cad)
         await shaft(cad, workspace)
         decisions = {
             "sheet": {"title": "Eje de transmision", "template": "A3", "language": "es"},
-            "relations": [{"type": "baseline_dims", "from": "face:6", "view": "top", "side": "below"}, DIAMETERS[0], DIAMETERS[2]],
+            "relations": [{"type": "baseline_dims", "from": "face:6", "view": "front", "side": "below"}, DIAMETERS[0], DIAMETERS[2]],
             "fits": [DIAMETERS[1], DIAMETERS[3], DIAMETERS[4]],
             "notes": ["Cantidad 10. Proceso: torneado, rectificado de los asientos, fresado del chavetero y roscado."],
         }
@@ -168,12 +166,11 @@ async def test_the_shaft_prints_the_numbers_a_shop_reads_right(workspace: Path, 
     visible = os.environ.get("COTAFORGE_TEST_HEADLESS") != "1"
     shots = Path(os.environ.get("COTAFORGE_TEST_SHOTS") or tmp_path / "shots")
     async with running_server(workspace, visible=visible) as (cad, _):
-        cad.allow("collision")  # drawn in the top view (the keyway faces it) the planner leaves the thread callout over the Ø25 k6: also so on develop with views=["top", "iso"]
         await in_one_order(cad)
         await shaft(cad, workspace)
         decisions = {
             "sheet": {"title": "Eje de transmision", "template": "A3", "language": "es"},
-            "relations": [{"type": "baseline_dims", "from": "face:6", "view": "top", "side": "below"}, DIAMETERS[0], DIAMETERS[2]],
+            "relations": [{"type": "baseline_dims", "from": "face:6", "view": "front", "side": "below"}, DIAMETERS[0], DIAMETERS[2]],
             "fits": [DIAMETERS[1], DIAMETERS[3], DIAMETERS[4]],
             "notes": ["Cantidad 10. Proceso: torneado, rectificado de los asientos, fresado del chavetero y roscado."],
         }
