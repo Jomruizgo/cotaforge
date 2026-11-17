@@ -353,7 +353,15 @@ def test_the_drafter_and_the_guide_open_with_what_a_drawing_is_for() -> None:
     from cotaforge_mcp.guide_drawing import QUALITY_LINES
 
     assert QUALITY_LINES[0].startswith("WHAT A DRAWING IS FOR")
+    assert "only thing the shop" in drafting.lower() and "only thing the shop" in QUALITY_LINES[0].lower()
+    # the rules are not in the prompt any more: it sends the drafter to the plan, and the catalog the plan serves
+    # holds them, each once
+    assert 'action="plan"' in drafting and "the step you are at" in drafting
+    from cotaforge.drawing import catalog
+
+    served = " ".join(" ".join(rule.text.split()) for rule in catalog.load().rules).lower()
     for words in ("only thing the shop", "isometric may carry no dimension", "mostly empty"):
-        assert words in drafting.lower() and words in QUALITY_LINES[0].lower(), words
+        assert words in served and words in QUALITY_LINES[0].lower(), words
+    assert len(drafting.splitlines()) <= 50, "the drafter prompt stays short: a rule goes in the catalog, not here"
     fabricating = (PLUGIN / "agents" / "fabricator.md").read_text(encoding="utf-8")
     assert "What is there for nothing" in fabricating

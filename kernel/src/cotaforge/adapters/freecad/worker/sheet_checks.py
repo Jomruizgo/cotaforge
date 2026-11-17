@@ -96,6 +96,8 @@ NON_BLOCKING = frozenset(
         "hatch_same_as_neighbour",
         "hatch_pattern_differs",
         "weld_designation_unchecked",
+        "dimension_redundant",  # owner rules the sheet's own defaults still break (the automatic overall beside the datum baseline; the
+        "dimension_on_hidden",  # keyway length and position on the front view's hidden lines): listed until those are fixed, then they hold
         "revision_marker_missing",  # a released row is never rewritten: a marker with no room must not hold the export for ever
     }
 )

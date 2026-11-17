@@ -191,6 +191,15 @@ def _drawing(args: Mapping[str, Any]) -> Order | None:
         )
     if not (by and reason):
         return None
+    if action == "create" and args.get("fresh") is True:
+        return Order(
+            "fresh_sheet",
+            reason,
+            f"tirar la hoja{on_es} y empezarla de nuevo (fresh)",
+            f"throwing the sheet{on_en} away and starting it again (fresh)",
+        )
+    if action == "remove_sheet":
+        return Order("remove_sheet", reason, f"quitar la hoja entera{on_es}", f"removing the whole sheet{on_en}")
     if action == "answer":
         point, said = _text(args.get("id")), _short(args.get("text") or "")
         return Order("answer", reason, f"{point}{on_es} («{said}»)", f"{point}{on_en} («{said}»)")

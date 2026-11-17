@@ -5,7 +5,6 @@ the isometric view; the hatching of touching parts. No FreeCAD."""
 
 import sys
 from pathlib import Path
-from typing import Any
 
 WORKER_DIR = Path(__file__).resolve().parents[3] / "src" / "cotaforge" / "adapters" / "freecad" / "worker"
 if str(WORKER_DIR) not in sys.path:
@@ -63,20 +62,10 @@ def test_hole_positions_of_an_assembly_draws_the_diameter_the_centre_distance_an
     assert "hole_not_located" not in codes(findings), [f.message for f in findings if f.code == "hole_not_located"]
 
 
-def test_a_through_hole_the_sheet_does_not_dimension_is_not_located_and_blocks_the_export() -> None:
-    """Fails with the sheet of before: the holes were in the model and nowhere on the sheet, and no check looked at them."""
-    ctx = with_holes()
-    findings = reviewed(ctx)  # no overall item: nothing positions the holes
-    flagged = [f for f in findings if f.code == "hole_not_located"]
-    assert len(flagged) == 2 and all("sin posición" in f.message for f in flagged), codes(findings)
-    assert {f.key for f in flagged} == {"@20,30,6", "@80,30,6"} or len({f.key for f in flagged}) == 2
-
-
-def test_a_hole_is_located_only_by_what_was_drawn_not_by_an_item_that_drew_nothing() -> None:
-    ctx = with_holes()
-    del ctx.views["top"]  # hole_positions has no view that sees the holes as circles: it draws no position for them
-    findings = reviewed(ctx, {"type": "hole_positions"})
-    assert codes(findings).count("hole_not_located") == 2
+def test_an_assembly_sheet_asks_no_position_of_the_holes_of_its_parts() -> None:
+    """The owner's rule: a part with a sheet of its own is not dimensioned again on the assembly sheet, so the review of an
+    assembly asks for no hole position (it used to hold the export for every through hole)."""
+    assert "hole_not_located" not in codes(reviewed(with_holes()))
 
 
 def test_an_assembly_without_holes_gets_no_hole_finding() -> None:

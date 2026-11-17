@@ -223,7 +223,8 @@ ITEM_LINES = (
     "changed with the PREVIOUS value, who asked for it, the date) and the markers, and never rewrites an earlier row; give "
     "export(action=pdf, revision_by=<who asked>, revision_reason=<why>) when the engineer told you. The new row is a change: "
     "look at the sheet again (capture) before the export goes. overall: the three overall dimensions (made by create; remove it and add "
-    "it back to change it). hole_positions (assembly, auto): Ø, centre and edge distances of the through holes.",
+    "it back to change it). hole_positions (assembly): Ø, centre and edge distances of the through holes; never added by the harness: an "
+    "assembly sheet does not repeat the form of a part that has its own sheet, so use it only for a part the engineer says has none.",
     "view_lines: hidden edges (dashed, layer OCULTAS) and centre lines (layer EJES) in the standard views. hidden? "
     '(true = front and right, false, or a list like ["front","top"]), centres? (default true: a cross on every hole '
     "or whole cylinder seen as a circle and a centre line along every one seen from the side; thin diagonals on flats "
@@ -274,8 +275,8 @@ ITEM_LINES = (
     "TEXTO por posicion: [{component:'comp:3', name?, reference?, material?, remarks?}]); las posiciones y cantidades "
     "se calculan (un componente = un archivo de pieza; las instancias iguales son UNA fila con su cantidad); nombre, "
     "n. de plano, material salen de la pieza, y una pieza importada muestra su archivo de origen y 'comprado'. Va "
-    "sobre el rotulo (ISO 7573), cabecera abajo. balloons (ISO 6433): view? (front|top|right|isometric|exploded; por "
-    "defecto exploded si la hoja la tiene, si no isometric, si no front), side?; un globo por posicion, la guia acaba en un punto sobre "
+    "sobre el rotulo (ISO 7573), cabecera abajo. balloons (ISO 6433): view? (front|top|right|isometric|exploded), positions? ([1,3]: solo esas posiciones), side?; sin view los globos "
+    "se REPARTEN entre las vistas, cada posicion una vez, en la vista que mejor muestra su pieza (nunca todos en la isometrica; con exploded van en ella); un globo por posicion, la guia acaba en un punto sobre "
     "una cara visible de UNA instancia; un componente que la vista no muestra se informa (warning) y no se dibuja: "
     "elige otra vista. exploded: view? (isometric por defecto|front|top|right), mode? radial (cada componente se "
     "aleja del base) | axis (+ axis=[x,y,z]), factor? (0-5, def. 0.6), base? (componente que no se mueve; def. el "
@@ -463,9 +464,9 @@ KEYWAY_LINE = (
     "keeps the old end view dimensions, letter the letter of the section. The harness adds them "
     "itself (rq_keyway); only the width's fit class is asked. chamfer_dims (no fields): a callout (size x angle) of every "
     "chamfer no dimension gives yet, flat or on a round edge (a shaft end), as dim items kind=chamfer; the harness adds it "
-    "itself (rq_chamfers). Assemblies: the harness also adds the parts list and a balloon per position on the isometric "
-    "view (rq_parts_list, rq_balloons), and the axis lines of the sleeves and pins the views show side-on (rq_view_lines, "
-    "without hidden lines); review flags cylinder_no_axis (also in a section), balloons_off_isometric and view_adds_nothing "
+    "itself (rq_chamfers). Assemblies: the harness also adds the parts list and a balloon per position, each on the view that "
+    "shows its part best (rq_parts_list, rq_balloons), and the axis lines of the sleeves and pins the views show side-on (rq_view_lines, "
+    "without hidden lines); review flags cylinder_no_axis (also in a section) and view_adds_nothing "
     "(a view with no dimension: only the engineer's order lets it stay)."
 )
 

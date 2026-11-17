@@ -180,14 +180,14 @@ class DrawingArgs(Strict):
         "plan",
         "compose",
     ]
-    sheet: str | None = Field(default=None, description="sheet (default first)")
+    sheet: str | None = Field(default=None, description="default: first")
     template: Literal["A4", "A3", "A2", "A1", "A0", "Letter"] = "A4"  # create: landscape paper
     angle: Literal["first", "third"] = "first"  # create: projection angle
     title: str | None = None  # title block fields (create): the guide has them
     author: str | None = None
     date: str | None = None
     material: str | None = None
-    scale: str | None = Field(default=None, description="create: 1:2, 2:1 (default largest)")
+    scale: str | None = Field(default=None, description="create: 1:2 (default largest)")
     language: str | None = None  # create: es | en, default the project's (memory brief)
     drawing_number: str | None = None
     revision: str | None = None
@@ -202,17 +202,19 @@ class DrawingArgs(Strict):
     fresh: bool = Field(default=False, description="create: start over")
     symmetry: bool | None = None  # create, update: only when the design intent declares the part symmetric
     items: list[Any] | None = Field(default=None, description="add: items; remove: ids; review_report: remarks")
-    append: bool = Field(default=False, description="review_report: add items to the report, not replace it")
-    region: list[float] | None = Field(default=None, description="capture: zoom x0,y0,x1,y1 mm")
+    append: bool = Field(default=False, description="review_report: add")
+    region: list[float] | None = Field(default=None, description="capture: zoom x0,y0,x1,y1")
     id: str | None = None  # answer / approve / review_*: see cad_guide(topic="drawing:done")
     text: str | None = None
     by: str | None = Field(default=None, description="approve, answer: engineer; review_*: engineer|fabricator")
     reason: str | None = None
     decisions: dict[str, Any] | None = Field(
         default=None,
-        description="compose: decisions (cad_guide drawing:compose)",
+        description="compose: decisions",
     )
     recompose: bool = False  # compose again: only on the engineer's order (by, reason)
+    step: int | None = None  # plan: show this step (1-8) in full
+    full: bool = False  # plan: every step in full (the default gives the current step and one line for each other)
 
 
 class ExportArgs(Strict):
@@ -443,8 +445,10 @@ def _drawing_actions(session: "Session") -> list[str]:
         ("capture_drawing", ("capture",)),
     )
     found = [action for tool, actions in pairs if tool in t for action in actions]
+    if "describe_drawing" in t:
+        found.append("plan")  # the work sequence of this sheet and the rules of each step, in both flows
     if sheet_flow(session) and {"create_drawing", "annotate_drawing", "describe_drawing"} <= set(t):
-        found += ["plan", "compose"]  # the default flow; a project that chose drawing_flow=steps does not see them
+        found.append("compose")  # the default flow; a project that chose drawing_flow=steps does not see it
     return found
 
 
@@ -539,13 +543,14 @@ TOOLS: tuple[ToolDef, ...] = (
         "out again after the part changed) | list | read (texts the sheet prints only) | "
         "capture (the PDF's own image; region "
         "zooms) | review (findings) | requirements (what the standards ask this part's sheet to carry, with the "
-        "questions to ask) | "
+        "questions to ask) | plan (the 8 work steps of THIS sheet, each with the rules that apply to this part and "
+        "their status on the page; every reply ends with the step you are at) | "
         "answer (id, text; by, reason: the engineer's order) | request_review, review_choice, review_report (by, items: who reviews it) | approve (the "
         "ENGINEER's gate: by, reason). export(pdf|dxf) writes ONE sheet, refused until its review is done. Items, "
         'finishing: cad_guide(topic="drawing" | "drawing:done").',
         DrawingArgs,
-        "drawing(action=create|add|remove|remove_sheet|update|add_view|remove_view|list|read|review|requirements|capture|"
-        "answer|approve|request_review|review_choice|review_report, "
+        "drawing(action=create|add|remove|remove_sheet|update|add_view|remove_view|list|read|review|requirements|plan|capture|"
+        "answer|approve|request_review|review_choice|review_report, step?, "
         "sheet?, items?, template?, angle?, title?, author?, date?, material?, scale?, language?, drawing_number?, "
         "revision?, general_tolerances?, company?, title_block?, body?, isometric?, views?, symmetry?, "
         "region?, id?, text?, by?, reason?, append?)",

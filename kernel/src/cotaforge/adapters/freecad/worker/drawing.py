@@ -58,6 +58,7 @@ import sheet_context as sc
 import sheet_dimtext
 import sheet_dxf
 import sheet_facts
+import sheet_hiddendims
 import sheet_interface
 import sheet_iso
 import sheet_isoview
@@ -1603,8 +1604,6 @@ def _sync_auto_items(doc: reg.DocumentRec, spec: dict[str, Any], op: str | None)
     standard = [v for v in views_of(spec) if v != "iso"]
     assembly = _is_assembly(doc, spec.get("body"))
     wanted: dict[str, dict[str, Any]] = {}
-    if assembly and LiveGeometry(doc, _shapes(doc, spec.get("body"), op), op).assembly_holes():
-        wanted[AUTO_HOLES_ID] = {"id": AUTO_HOLES_ID, "type": "hole_positions", "auto": True}
     found_holes = [] if assembly else hole_infos(doc, spec.get("body"), op)
     if found_holes:
         wanted[AUTO_LOCATE_ID] = {"id": AUTO_LOCATE_ID, "type": "datum_dims", "auto": True}
@@ -1749,7 +1748,7 @@ def _remark_ids(spec: dict[str, Any]) -> list[str]:
     return [str(r["id"]) for report in spec.get("reports", {}).values() for r in report.get("remarks", [])]
 
 
-REQUIREMENT_PREFIX = "req."  # the ids of the rows of the table of requirements: the caller (the server) evaluated them
+REQUIREMENT_PREFIX = ("req.", "plan.")  # the rows of the table of requirements and the open questions of the plan: the caller (the server) evaluated them
 
 
 def answer(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
@@ -1963,7 +1962,7 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
         _clear_approval(spec)
         write_spec(page, spec)
         _sync_template_fields(fc_doc, op)
-        return _result(doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), [], op, changed=tuple(wanted))
+        return _result(doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), [], op, changed=tuple(wanted), state=True)
     requested = _expand_keyway_dims(doc, spec, list(params.get("items") or ()), op)
     requested = _expand_baseline_dims(doc, spec, items, requested, op)
     requested = _expand_chamfer_dims(doc, items, requested, op)
@@ -1973,9 +1972,9 @@ def annotate(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     if not requested and routed:
         write_spec(page, spec)
         _sync_template_fields(fc_doc, op)
-        return _result(doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), routed, op)
+        return _result(doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), routed, op, state=True)
     if not requested and asked_threads:  # every thread has its callout: the sheet stays as it is
-        return _result(doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), [], op)
+        return _result(doc, page, _scale_of(page) or 1.0, wait_views(fc_doc, page, op), [], op, state=True)
     if not requested:
         raise invalid_request('add needs items: a list like [{"type": "hole_dim", "all": true}]', op)
     if len(items) + len(requested) > sheet_items.MAX_ITEMS:
@@ -3312,9 +3311,11 @@ def _result(
     changed: tuple[str, ...] = (),
     tried: tuple[dict[str, Any], tuple[model.Sheet, list[sc.ItemResult], sc.Context]] | None = None,
     rules: bool = False,
+    state: bool = False,
 ) -> dict[str, Any]:
     """The sheet as the contract's ``DrawingResult``; ``rules``: the step changed the sheet's items or layout, so it also answers
-    for the few rules that need the sheet as it stands (``step_findings``)."""
+    for the few rules that need the sheet as it stands (``step_findings``). ``rules`` and ``state`` also return the sheet as the
+    step left it (``page_state``), read from the sheet composed here: no second compose and no review."""
     spec = spec_of(page)
     size, language = split_key(spec["template"])
     found = pages(doc.fc_doc)
@@ -3326,9 +3327,20 @@ def _result(
     warnings = [*warnings, *ctx.extras.get("iso_notes", []), *failed]
     width, depth, height = _extents(doc, spec.get("body"), op)
     rows = _item_rows(results, refused)
-    step = step_findings(doc, page, spec, (sheet, results, ctx)) if rules else []
+    step: list[str] = []
+    page_state: dict[str, Any] | None = None
+    if rules or state:
+        data = _review_data(doc, page, spec, (sheet, results, ctx))
+        standing = step_rows(data)
+        if rules:
+            step = step_findings(page, standing)
+        try:
+            page_state = _page_state(page, spec, (sheet, results, ctx), data, standing)
+        except Exception as exc:  # noqa: BLE001 - the line of the reply is help: the step itself stands, and the reply says why it has none
+            warnings = [*warnings, f"the step line could not be read from the sheet ({type(exc).__name__}: {exc})"]
     return {
         "step_findings": step,
+        "page_state": page_state,
         "changed": [*changed, *(item_id for item_id in (refused or {}) if item_id not in changed)],
         "window": window,
         "sheet": spec["sheet"],
@@ -3619,20 +3631,41 @@ def _review_data(
     return data
 
 
-def step_findings(
-    doc: reg.DocumentRec, page: Any, spec: dict[str, Any], drawn: tuple[model.Sheet, list[sc.ItemResult], sc.Context]
-) -> list[str]:
-    """The blocking findings of the few rules a step answers for (``sheet_viewchecks.STEP_CODES``) that this step brought: the
-    ones not already standing after the step before (the ids of what stood then are kept on the sheet's spec). Only those rules
-    run, on the sheet the step has just composed."""
+def step_rows(data: sheet_review.ReviewInput) -> list[dict[str, Any]]:
+    """The findings of the few rules a step answers for (``sheet_viewchecks.STEP_CODES``), as rows with their ids, on the sheet the
+    step has just composed (``data``: what the review reads of it). Only those rules run."""
     import sheet_viewchecks  # noqa: PLC0415 - the rules of the views and their dimensions
 
-    data = _review_data(doc, page, spec, drawn)
     rows = [
         {"code": f.code, "severity": f.severity, "message": f.message, "items": [*f.items], "features": [*f.features], "key": f.key}
         for f in sheet_viewchecks.step_check(data)
     ]
     sheet_checks.assign_ids(rows)
+    return rows
+
+
+def _page_state(
+    page: Any,
+    spec: dict[str, Any],
+    drawn: tuple[model.Sheet, list[sc.ItemResult], sc.Context],
+    data: sheet_review.ReviewInput,
+    standing: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """The sheet as the step left it, as ``describe`` with ``review`` states it, but read from the sheet already composed and
+    reviewed by the step's own rules only: the facts and the measures the table of requirements reads (``sheet_reqfacts``),
+    the answers, and as findings the step's. The rest of the review (``drawing review``) is not run here."""
+    row = _sheet_row(page, spec, drawn, quick=True)
+    answers = spec.get("answers", {})
+    row["findings"] = [{**r, "answer": answers.get(r["id"])} for r in standing]
+    row["questions"] = []
+    row["facts"] = sheet_reqfacts.facts(data)
+    row.update(sheet_reqfacts.measures(data))
+    return row
+
+
+def step_findings(page: Any, rows: list[dict[str, Any]]) -> list[str]:
+    """The blocking findings of the step's rules (``step_rows``) that this step brought: the ones not already standing after the
+    step before (the ids of what stood then are kept on the sheet's spec)."""
     standing = [str(r["id"]) for r in rows if r["blocking"]]
     fresh = spec_of(page)
     seen = set(fresh.get("rules_seen") or ())
@@ -3698,6 +3731,9 @@ def review_findings(
                 }
             )
     findings += sheet_dimtext.findings(sheet_dimtext.read(ctx.extras["units"], held), ctx)  # what the dimensions print, as a shop reads it
+    findings += sheet_hiddendims.findings(  # a dimension on a hidden line: a hidden line is never dimensioned
+        sheet_hiddendims.hidden_references(page, view_names(page), sheet_mirror.PROP_ITEM), ctx
+    )
     for unit in ctx.extras["units"]:  # a symbol or a leader whose view the engineer deleted stays loose on the page
         lost = sheet_native.orphaned(unit, held.get(unit.key, []))
         if lost:
@@ -3961,6 +3997,49 @@ def _printed(sheet: model.Sheet) -> list[str]:
     return list(seen)[:MAX_PRINTED]
 
 
+def _sheet_row(
+    page: Any, spec: dict[str, Any], drawn: tuple[model.Sheet, list[sc.ItemResult], sc.Context], quick: bool = False
+) -> dict[str, Any]:
+    """One sheet as ``describe`` states it (its fields, its items as stored with what each does now, its answers, reports and
+    review state), read from the sheet ``drawn`` already composed. ``quick`` leaves out what only a listing needs: the texts
+    the sheet prints and the native objects on the page."""
+    composed, results, _ = drawn
+    by_id = {r.id: r for r in results}
+    size, language = split_key(spec["template"])
+    row: dict[str, Any] = {
+        "sheet": spec["sheet"],
+        "template": size,
+        "language": language,
+        "page_mm": list(sheet_layout.PAGES_MM[size]),
+        "scale": _scale_of(page) or 1.0,
+        "body": spec.get("body"),
+        "angle": key_angle(spec["template"]),
+        "views": ["isometric" if v == "iso" else v for v in views_of(spec)],
+        "fields": {k: v for k, v in spec.get("fields", {}).items() if v},
+        "items": [
+            {
+                "id": item["id"],
+                "type": item["type"],
+                "status": by_id[item["id"]].status if item["id"] in by_id else "error",
+                "detail": by_id[item["id"]].detail if item["id"] in by_id else "not drawn",
+                "spec": item,
+            }
+            for item in spec.get("items", [])
+        ],
+    }
+    row["answers"] = {str(k): dict(v) for k, v in spec.get("answers", {}).items()}
+    row["approved_by"] = str(spec.get("fields", {}).get("approval_person", ""))
+    row["edits"] = int(spec.get("edits", 0))
+    row["reports"] = _report_rows(spec)
+    row["review_request"] = _request_row(spec)
+    row["review_choice"] = _choice_row(spec)
+    row["composed"] = dict(spec.get("composed") or {})
+    if not quick:
+        row["printed"] = _printed(composed)
+        row["native"] = sheet_output.listed(sheet_output.native_rows(page))
+    return row
+
+
 def describe(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     """Every sheet (or the one asked for) with its title-block fields and its items as stored, each with what it does
     now against the part; with ``review`` also the findings of the review."""
@@ -3968,39 +4047,7 @@ def describe(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     sheets = []
     for page, spec, number, total in _all_sheets(doc, params.get("sheet"), op):
         drawn = compose(doc, page, spec, number, total, op)
-        composed, results, _ = drawn
-        by_id = {r.id: r for r in results}
-        size, language = split_key(spec["template"])
-        row: dict[str, Any] = {
-            "sheet": spec["sheet"],
-            "template": size,
-            "language": language,
-            "page_mm": list(sheet_layout.PAGES_MM[size]),
-            "scale": _scale_of(page) or 1.0,
-            "body": spec.get("body"),
-            "angle": key_angle(spec["template"]),
-            "views": ["isometric" if v == "iso" else v for v in views_of(spec)],
-            "fields": {k: v for k, v in spec.get("fields", {}).items() if v},
-            "items": [
-                {
-                    "id": item["id"],
-                    "type": item["type"],
-                    "status": by_id[item["id"]].status if item["id"] in by_id else "error",
-                    "detail": by_id[item["id"]].detail if item["id"] in by_id else "not drawn",
-                    "spec": item,
-                }
-                for item in spec.get("items", [])
-            ],
-        }
-        row["answers"] = {str(k): dict(v) for k, v in spec.get("answers", {}).items()}
-        row["approved_by"] = str(spec.get("fields", {}).get("approval_person", ""))
-        row["edits"] = int(spec.get("edits", 0))
-        row["reports"] = _report_rows(spec)
-        row["review_request"] = _request_row(spec)
-        row["review_choice"] = _choice_row(spec)
-        row["composed"] = dict(spec.get("composed") or {})
-        row["printed"] = _printed(composed)
-        row["native"] = sheet_output.listed(sheet_output.native_rows(page))
+        row = _sheet_row(page, spec, drawn)
         if params.get("review"):
             row["findings"], row["questions"], row["facts"], given = review_bundle(
                 doc, page, spec, number, total, op, drawn=drawn

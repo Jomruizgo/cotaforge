@@ -20,7 +20,6 @@ from typing import Any
 
 import sheet_callout
 import sheet_checks
-import sheet_interface
 import sheet_isoview
 import sheet_thread
 import sheet_turned
@@ -92,7 +91,6 @@ def review(data: ReviewInput) -> list[Finding]:
         _layout,
         _assembly_lists,
         _weldment_lists,
-        _assembly_holes,
         _assembly_joints,
         _hidden_instances,
         _marks_run_over_themselves,
@@ -107,7 +105,16 @@ def review(data: ReviewInput) -> list[Finding]:
     import sheet_viewchecks  # noqa: PLC0415 - the three drawing rules of the views and their dimensions
 
     found += sheet_viewchecks.check(data)
-    return sorted(found, key=lambda f: 0 if f.severity == "warning" else 1)
+    return sorted(one_weight_per_defect(found), key=lambda f: 0 if f.severity == "warning" else 1)
+
+
+def one_weight_per_defect(found: list[Finding]) -> list[Finding]:
+    """``found`` without the ``dimension_redundant`` loops that ``over_dimensioned`` already reports. A chain that closes on the
+    overall size (or on the datum ordinates) is one defect: ``over_dimensioned`` holds the export for it, and listing it again
+    as ``dimension_redundant`` (which only warns) would say the same thing with two weights. The loop is the same one when every
+    dimension of the ``over_dimensioned`` finding is among those of the loop (the loop adds the overall that closes it)."""
+    reported = [set(f.items) for f in found if f.code == "over_dimensioned" and f.items]
+    return [f for f in found if not (f.code == "dimension_redundant" and any(r <= set(f.items) for r in reported))]
 
 
 # --- what a shop reader sees at a glance ----------------------------------------------------------------------------------
@@ -772,22 +779,35 @@ def _over_dimensioning(data: ReviewInput) -> list[Finding]:
                 out.append(Finding("over_dimensioned", "warning", text, (table["id"], m.spec["id"])))
     # 3. a chain that closes on the overall size
     if _of(data, "overall"):
+        positional = [
+            _Measured({"id": item}, axis, lo, hi, (set(), set())) for item, axis, lo, hi in ctx.extras.get("position_spans", [])
+        ]
+        pool = [*measured, *positional]
         for axis in AXES:
             overall = _extent(ctx, axis)
-            same = sorted((m for m in measured if m.axis == axis), key=lambda m: m.lo)
+            # the lengths of ``dim`` items and the spacings and locators of hole positions (8 + 44 + 8 = 60 on a plate): a spacing
+            # or a locator never says "the same distance twice", but chained it closes on the overall like any other length
+            same = sorted((m for m in pool if m.axis == axis), key=lambda m: (m.lo, m.hi))
+            same = [m for i, m in enumerate(same) if not any(abs(m.lo - n.lo) < SAME_MM and abs(m.hi - n.hi) < SAME_MM for n in same[:i])]
             if overall is None or len(same) < 2:
                 continue
             chain = [same[0]]
             for m in same[1:]:
                 if abs(m.lo - chain[-1].hi) < SAME_MM:
                     chain.append(m)
-            if len(chain) >= 2 and abs(sum(m.hi - m.lo for m in chain) - overall) < SAME_MM * 2:
-                ids = tuple(m.spec["id"] for m in chain)
+            ids = tuple(dict.fromkeys(str(m.spec["id"]) for m in chain))
+            # a chain made by ONE item (the default hole location of two groups of holes) is that item's own composition: the
+            # drafter has no tool to take one dimension out of it, so it is not a finding it could ever clear
+            if len(chain) >= 2 and len(ids) >= 2 and abs(sum(m.hi - m.lo for m in chain) - overall) < SAME_MM * 2:  # noqa: PLR2004
                 text = ctx.say(
                     f"Las cotas {', '.join(ids)} forman una cadena que suma la cota total en {axis} "
-                    f"({ctx.num(overall)} mm): sobreacotado; quita una.",
+                    f"({ctx.num(overall)} mm): sobreacotado. Deja el localizador desde el borde de referencia con la separación y "
+                    "quita la cota del otro extremo (drawing(action=\"remove\", items=[\"<su id>\"]); un id que empieza por rq_ "
+                    "pide además reason=).",
                     f"Dimensions {', '.join(ids)} form a chain that adds up to the overall size along {axis} "
-                    f"({ctx.num(overall)} mm): over-dimensioned; remove one.",
+                    f"({ctx.num(overall)} mm): over-dimensioned. Keep the locator from the reference edge together with the spacing "
+                    "and drop the dimension at the other end (drawing(action=\"remove\", items=[\"<its id>\"]); an id that "
+                    "starts with rq_ also needs reason=).",
                 )
                 out.append(Finding("over_dimensioned", "warning", text, ids))
     return out
@@ -1062,26 +1082,6 @@ def _assembly_joints(data: ReviewInput) -> list[Finding]:
     return [Finding("assembly_not_joined", "warning", text)]
 
 
-def _assembly_holes(data: ReviewInput) -> list[Finding]:
-    """A through hole of the assembly is located only by a dimension that is ON THE SHEET (its centre distance and its
-    distance from the edge of the plate): a hole that the model has and the sheet does not position is a finding."""
-    ctx = data.ctx
-    out: list[Finding] = []
-    for key, label, missing in sheet_interface.unlocated(ctx):
-        along = {"x": "en x", "y": "en y", "xy": "en x e y"}[missing]
-        along_en = {"x": "along x", "y": "along y", "xy": "along x and y"}[missing]
-        text = ctx.say(
-            f"Agujero pasante {label} del conjunto sin posición {along} en la hoja: ninguna cota dibujada da su distancia entre "
-            "centros ni su distancia a un borde de la placa. Una vista que lo vea como círculo (superior) y el item overall "
-            "las dibujan; o acota con dim distance desde una arista de la placa.",
-            f"Through hole {label} of the assembly has no position {along_en} on the sheet: no dimension drawn gives its centre "
-            "distance or its distance from an edge of the plate. A view that sees it as a circle (the top one) and the overall "
-            "item draw them; or dimension it with dim distance from an edge of the plate.",
-        )
-        out.append(Finding("hole_not_located", "warning", text, (), (), key))
-    return out
-
-
 def _weldment_lists(data: ReviewInput) -> list[Finding]:
     """The sheet of a welded part carries its cut list and a balloon per body, numbered as the list (``sheet_weldrules``), and
     every position has the designation (profile and size) the designer gave: the harness never guesses it."""
@@ -1302,16 +1302,6 @@ def _assembly_lists(data: ReviewInput) -> list[Finding]:
                 f"Balloons without a row in the parts list: {shown}.",
             )
             out.append(Finding("balloon_without_row", "warning", text, (*list_ids, *balloon_ids)))
-    shown_in = {str(v) for v in book.get("view", {}).values()}
-    pictorial = {n for n in ctx.extras.get("views_extra", {}) if n in ("isometric", "exploded")}
-    if balloons and pictorial and shown_in and not shown_in & pictorial:
-        text = ctx.say(
-            f"Los globos están en la vista {', '.join(sorted(shown_in))} y la hoja tiene {' y '.join(sorted(pictorial))}: los "
-            f"globos van en la vista isométrica, donde se ve cada pieza (balloons con view={sorted(pictorial)[0]}).",
-            f"The balloons are on the {', '.join(sorted(shown_in))} view and the sheet has a {' and '.join(sorted(pictorial))} "
-            f"view: balloons go on the pictorial view, where each part is seen (balloons with view={sorted(pictorial)[0]}).",
-        )
-        out.append(Finding("balloons_off_isometric", "warning", text, balloon_ids))
     thin = {n: s for n, s in sorted(book.get("share", {}).items()) if n in drawn and s < sheet_isoview.VISIBLE_MIN}
     if thin:
         labels = {g.position: g.label for g in ctx.assembly.groups}
