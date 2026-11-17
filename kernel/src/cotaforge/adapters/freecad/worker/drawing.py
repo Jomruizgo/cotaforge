@@ -1108,6 +1108,27 @@ def _best_isometric(doc: reg.DocumentRec, body: Any, op: str | None) -> tuple[sc
     return sheet_isoview.CANDIDATES[sheet_isoview.choose(shares)]
 
 
+def _unreadable_page(page: Any, name: str) -> str:
+    """Why a page that exists cannot be rebuilt: nothing was changed. Says what was found (the version, if any) and the two routes."""
+    found = "it carries no cotaforge spec (a page made by hand, or by something else)"
+    if SPEC_PROP in page.PropertiesList:
+        try:
+            spec = json.loads(str(getattr(page, SPEC_PROP)))
+            version = spec.get("v") if isinstance(spec, dict) else None
+        except ValueError:
+            version = None
+        found = (
+            f"its cotaforge spec is version {version!r} and this one reads version {SPEC_VERSION!r}"
+            if version is not None
+            else "its cotaforge spec is damaged and cannot be read"
+        )
+    return (
+        f"sheet {name} exists and this cotaforge cannot read it: {found}. Nothing was changed: creating it again would throw "
+        "it away. Work on it by hand in the CAD, or, only if the engineer orders it (by, reason: his words), create it again "
+        "with fresh=true, which discards it"
+    )
+
+
 def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     """Build the sheet (a new one when ``sheet`` names none that exists). A sheet of that name that exists is REBUILT, and
     what is still valid in it stays: its items (placed again on the new views), the answers to its review, who reviews it,
@@ -1118,6 +1139,8 @@ def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     old = find_page(fc_doc, name)
     old_spec = read_spec(old) if old is not None else None
     fresh = bool(params.get("fresh"))
+    if old is not None and old_spec is None and not fresh:  # never remove a page this cotaforge cannot read, unasked
+        raise invalid_request(_unreadable_page(old, name), op)
     carried = old_spec if old_spec is not None and not fresh else None
     if carried is not None:
         params = _stated(params, carried)
@@ -3424,14 +3447,13 @@ def _result(
     step: list[str] = []
     page_state: dict[str, Any] | None = None
     if rules or state:
-        data = _review_data(doc, page, spec, (sheet, results, ctx))
-        standing = step_rows(data)
-        if rules:
-            step = step_findings(page, standing)
         try:
-            page_state = _page_state(page, spec, (sheet, results, ctx), data, standing)
-        except Exception as exc:  # noqa: BLE001 - the line of the reply is help: the step itself stands, and the reply says why it has none
-            warnings = [*warnings, f"the step line could not be read from the sheet ({type(exc).__name__}: {exc})"]
+            step, page_state = _step_state((sheet, results, ctx), doc, page, spec, rules)
+        except Exception as exc:  # noqa: BLE001 - the line is help: the step is already written and stands, the reply says why
+            step, page_state = [], None
+            where = _where(exc)
+            warnings = [*warnings, f"the step line could not be read from the sheet ({type(exc).__name__}: {exc} at {where})"]
+            App.Console.PrintWarning(f"cotaforge: the step line of sheet {spec.get('sheet', '?')} could not be built: {exc!r}\n")
     return {
         "step_findings": step,
         "page_state": page_state,
@@ -3454,6 +3476,21 @@ def _result(
         "warnings": warnings,
         "angle": key_angle(spec["template"]),
     }
+
+
+def _step_state(
+    drawn: tuple[model.Sheet, list[sc.ItemResult], sc.Context],
+    doc: reg.DocumentRec,
+    page: Any,
+    spec: dict[str, Any],
+    rules: bool,
+) -> tuple[list[str], dict[str, Any]]:
+    """What the reply of a step adds about the sheet: the blocking findings the step brought (``rules``) and the sheet as the step
+    left it (``page_state``), both read from the sheet ``drawn``. All of it is help: the caller guards the whole block."""
+    data = _review_data(doc, page, spec, drawn)
+    standing = step_rows(data)
+    step = step_findings(page, standing) if rules else []
+    return step, _page_state(page, spec, drawn, data, standing)
 
 
 def _where(exc: BaseException) -> str:
@@ -3754,6 +3791,9 @@ def _page_state(
     row["questions"] = []
     row["facts"] = sheet_reqfacts.facts(data)
     row.update(sheet_reqfacts.measures(data))
+    import sheet_viewchecks  # noqa: PLC0415 - the rules the step runs: the findings of every other code are not read here
+
+    row["checked_codes"] = list(sheet_viewchecks.STEP_CODES)
     return row
 
 

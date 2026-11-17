@@ -247,6 +247,35 @@ def test_the_engineer_can_order_a_second_compose_and_it_needs_his_words(settings
     assert items_of(fake)["dc_notes1"]["text"] == "dos"
 
 
+def test_compose_cannot_throw_the_sheet_away_without_the_engineers_order(settings: Settings) -> None:
+    call, fake, everything = composed_once(settings)
+    changing = {**everything, "notes": ["dos"], "sheet": {"template": "A3"}}  # a compose that would otherwise be allowed
+    created, shown = len(fake.created), len(call.engineer.dialogs)
+    lonely = call.err("drawing", action="compose", sheet="Drawing", decisions=changing, fresh=True)
+    assert "engineer's order" in lonely and "fresh=true" in lonely and len(fake.created) == created  # nothing asked him, nothing changed
+    assert len(call.engineer.dialogs) == shown
+    declined = call.err("drawing", action="compose", sheet="Drawing", decisions=changing, fresh=True, by="Ana", reason="la hoja no me gusta")
+    assert "rejected" in declined and len(fake.created) == created and items_of(fake)["dc_notes1"]["text"] == "uno"  # he did not say it
+    words = call.says("tírala y empieza de nuevo")
+    call.ok("drawing", action="compose", sheet="Drawing", decisions=changing, fresh=True, by="Ana", reason=words)
+    assert "tirar la hoja" in call.engineer.dialogs[-1] and "en la hoja Drawing" in call.engineer.dialogs[-1]  # what he confirmed says it
+    assert any(r.fresh for r in fake.created[created:]) and items_of(fake)["dc_notes1"]["text"] == "dos"
+
+
+def test_a_lenient_fresh_is_still_put_to_the_engineer_as_a_discard(settings: Settings) -> None:
+    call, fake, everything = composed_once(settings)
+    for value, paper in (("yes", "A3"), ("true", "A2"), (1, "A4")):
+        created = len(fake.created)
+        words = call.says(f"tírala {value}")
+        changing = {**everything, "notes": ["dos"], "sheet": {"template": paper}}
+        call.ok("drawing", action="compose", sheet="Drawing", decisions=changing, fresh=value, by="Ana", reason=words)
+        assert "tirar la hoja" in call.engineer.dialogs[-1], value  # he read that the sheet goes
+        assert any(r.fresh for r in fake.created[created:]), value
+    words = call.says("empieza otra")
+    call.ok("drawing", action="create", sheet="Drawing", fresh="yes", by="Ana", reason=words)
+    assert "tirar la hoja" in call.engineer.dialogs[-1] and fake.created[-1].fresh is True
+
+
 def test_a_refused_first_compose_leaves_the_sheet_open_to_compose(settings: Settings) -> None:
     call, fake = sheet_shaft(settings)
     call.err("drawing", action="compose", decisions={"notes": ["x"]})  # decisions missing: nothing recorded

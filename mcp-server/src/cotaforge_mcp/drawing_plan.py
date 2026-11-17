@@ -51,8 +51,37 @@ def _review_pending(session: Session, info: Any) -> tuple[str, ...]:
     return tuple(pending)
 
 
+def last_review(session: Session, sheet: str | None) -> Any:
+    """The last full review this session read of ``sheet`` (of the only sheet it has read, when none is named); ``None``: none."""
+    found = [i for (doc, name), i in session.sheet_reviews.items() if doc == session.doc_name and (sheet is None or name == sheet)]
+    return found[0] if len(found) == 1 else None
+
+
+def forget_review(session: Session, sheet: str | None) -> None:
+    """The sheet is gone or thrown away: so is what its last review said (``None``: every sheet of the document)."""
+    for key in [k for k in session.sheet_reviews if k[0] == session.doc_name and (sheet is None or k[1] == sheet)]:
+        del session.sheet_reviews[key]
+
+
+def _carried(session: Session, info: Any) -> tuple[Any, bool]:
+    """``info`` with what the last full review left open, and whether a full review stands behind it. A full ``info`` (the
+    review's own) is remembered and passes as it is. The sheet as a step left it holds only the findings of the rules that step
+    runs (``checked_codes``): the other findings are the last review's, so a rule that review left open does not vanish from the
+    line because an unrelated item was added. No review read yet: the step's findings alone, and ``False``."""
+    key = (session.doc_name, info.sheet)
+    if not info.checked_codes:
+        session.sheet_reviews[key] = info
+        return info, True
+    last = session.sheet_reviews.get(key)
+    if last is None:
+        return info, False
+    kept = tuple(f for f in last.findings if f.code not in info.checked_codes)
+    return info.model_copy(update={"findings": (*kept, *info.findings)}), True
+
+
 def sheet_plan(session: Session, info: Any) -> plan.Plan:
     """The plan of the sheet ``info`` describes (a ``DrawingSheetInfo``: read WITH its review, or as the step left it)."""
+    info, reviewed = _carried(session, info)
     intent = reqs.find_intent(session.settings.workspace, session.doc_name)
     sections = dict(intent.sections)
     answered: set[str] = set()
@@ -72,7 +101,7 @@ def sheet_plan(session: Session, info: Any) -> plan.Plan:
         if finding.blocking and not reqs.finding_closed(finding):
             open_codes[finding.code] = open_codes.get(finding.code, 0) + 1
     states = {r.id: plan.RowState(r.closed, _lacking(r)) for r in rows}
-    return plan.build(found, catalog.load(), open_codes, states, _review_pending(session, info))
+    return plan.build(found, catalog.load(), open_codes, states, _review_pending(session, info), reviewed)
 
 
 def step_line(session: Session, info: Any, quick: bool = False) -> str:
