@@ -134,6 +134,42 @@ def test_a_compose_that_throws_the_sheet_away_says_so_in_the_dialog() -> None:
     assert both is not None and "volver a componer la hoja entera" in both.closes("es") and "tirar la hoja" in both.closes("es")
 
 
+@pytest.mark.parametrize("fresh", [True, "true", "True", " yes ", "y", "on", "1", 1, 1.0])
+def test_any_value_the_server_reads_as_fresh_names_the_discard_in_the_dialog(fresh: object) -> None:
+    created = engineer_orders.order_of("drawing", {"action": "create", "sheet": "Plano", "fresh": fresh, "by": "Ana", "reason": "otra vez"})
+    composed = engineer_orders.order_of("drawing", {**COMPOSE_FRESH, "fresh": fresh})
+    for order, kind in ((created, "fresh_sheet"), (composed, "compose")):
+        assert order is not None and order.kind == kind and order.discards, (fresh, kind)
+        assert "tirar la hoja" in order.closes("es") and "throwing the sheet" in order.closes("en")
+
+
+@pytest.mark.parametrize("fresh", [False, "false", "no", "0", 0, 2, None, "", [], "tal vez"])
+def test_a_value_the_server_does_not_read_as_fresh_discards_nothing(fresh: object) -> None:
+    created = engineer_orders.order_of("drawing", {"action": "create", "fresh": fresh, "by": "Ana", "reason": "otra vez"})
+    composed = engineer_orders.order_of("drawing", {**COMPOSE_FRESH, "fresh": fresh})
+    assert created is None and (composed is None or not composed.discards)
+
+
+def test_the_server_agrees_with_the_hook_about_what_fresh_is() -> None:
+    from cotaforge_mcp.schemas import DrawingArgs
+
+    for value in (True, "true", "yes", "y", "on", "1", 1, False, "false", "no", "0", 0, "off"):
+        assert engineer_orders.is_true(value) == DrawingArgs(action="create", fresh=value).fresh, value  # type: ignore[arg-type]
+
+
+def test_confirmed_with_discards_refuses_an_order_that_does_not_name_the_discard() -> None:
+    plain = engineer_orders.order_of("drawing", {"action": "compose", "decisions": {}, "by": "Ana", "reason": "x"})
+    assert plain is not None and not plain.discards
+    with engineer_orders.confirming(plain), pytest.raises(ToolError) as refused:
+        engineer_orders.confirmed("compose with fresh=true", discards=True)
+    assert "does not name throwing the sheet away" in refused.value.message
+    named = engineer_orders.order_of("drawing", COMPOSE_FRESH)
+    with engineer_orders.confirming(named):
+        assert engineer_orders.confirmed("compose with fresh=true", discards=True) is named
+    with engineer_orders.confirming(None), pytest.raises(ToolError):
+        engineer_orders.confirmed("compose with fresh=true", discards=True)
+
+
 def test_the_order_says_his_phrase_and_what_it_closes() -> None:
     order = engineer_orders.order_of("drawing", ORDERS[0][1])
     assert order is not None and order.words == "la rosca la hace el cliente"

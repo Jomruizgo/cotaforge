@@ -560,7 +560,8 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
         if action == "create":
             session.need("create_drawing", "drawing create")
             if args.fresh:
-                engineer_orders.confirmed("create with fresh=true (throwing the sheet away and starting it again)")
+                engineer_orders.confirmed("create with fresh=true (throwing the sheet away and starting it again)", discards=True)
+                drawing_plan.forget_review(session, args.sheet)  # what an earlier review said is of a sheet that is going
             request = _create_request(session, args)
             result = session.adapter.create_drawing(request)
             session.dirty = True
@@ -582,6 +583,7 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
             session.need("annotate_drawing", f"drawing {action}")
             if action == "remove_sheet":
                 engineer_orders.confirmed(f"removing the whole sheet {args.sheet or ''}".strip())
+                drawing_plan.forget_review(session, args.sheet)
             items = list(args.items or [])
             auto_rows: list[str] = []
             handed: list[str] = []

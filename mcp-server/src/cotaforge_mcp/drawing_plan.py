@@ -58,8 +58,9 @@ def last_review(session: Session, sheet: str | None) -> Any:
 
 
 def forget_review(session: Session, sheet: str | None) -> None:
-    """The sheet is gone: so is what its last review said."""
-    session.sheet_reviews.pop((session.doc_name, sheet or ""), None)
+    """The sheet is gone or thrown away: so is what its last review said (``None``: every sheet of the document)."""
+    for key in [k for k in session.sheet_reviews if k[0] == session.doc_name and (sheet is None or k[1] == sheet)]:
+        del session.sheet_reviews[key]
 
 
 def _carried(session: Session, info: Any) -> tuple[Any, bool]:

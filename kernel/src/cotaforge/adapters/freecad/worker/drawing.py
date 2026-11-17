@@ -1078,6 +1078,27 @@ def _best_isometric(doc: reg.DocumentRec, body: Any, op: str | None) -> tuple[sc
     return sheet_isoview.CANDIDATES[sheet_isoview.choose(shares)]
 
 
+def _unreadable_page(page: Any, name: str) -> str:
+    """Why a page that exists cannot be rebuilt: nothing was changed. Says what was found (the version, if any) and the two routes."""
+    found = "it carries no cotaforge spec (a page made by hand, or by something else)"
+    if SPEC_PROP in page.PropertiesList:
+        try:
+            spec = json.loads(str(getattr(page, SPEC_PROP)))
+            version = spec.get("v") if isinstance(spec, dict) else None
+        except ValueError:
+            version = None
+        found = (
+            f"its cotaforge spec is version {version!r} and this one reads version {SPEC_VERSION!r}"
+            if version is not None
+            else "its cotaforge spec is damaged and cannot be read"
+        )
+    return (
+        f"sheet {name} exists and this cotaforge cannot read it: {found}. Nothing was changed: creating it again would throw "
+        "it away. Work on it by hand in the CAD, or, only if the engineer orders it (by, reason: his words), create it again "
+        "with fresh=true, which discards it"
+    )
+
+
 def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     """Build the sheet (a new one when ``sheet`` names none that exists). A sheet of that name that exists is REBUILT, and
     what is still valid in it stays: its items (placed again on the new views), the answers to its review, who reviews it,
@@ -1088,6 +1109,8 @@ def create(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
     old = find_page(fc_doc, name)
     old_spec = read_spec(old) if old is not None else None
     fresh = bool(params.get("fresh"))
+    if old is not None and old_spec is None and not fresh:  # never remove a page this cotaforge cannot read, unasked
+        raise invalid_request(_unreadable_page(old, name), op)
     carried = old_spec if old_spec is not None and not fresh else None
     if carried is not None:
         params = _stated(params, carried)

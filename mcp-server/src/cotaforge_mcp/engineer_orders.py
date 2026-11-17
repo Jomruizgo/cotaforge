@@ -107,10 +107,11 @@ class Order:
     """An engineer's order carried by one tool call: its ``kind``, his phrase as the call carries it (``words``; may
     be empty: a choice says it all) and what it closes or decides, for the dialog he reads."""
 
-    __slots__ = ("closes_en", "closes_es", "kind", "words")
+    __slots__ = ("closes_en", "closes_es", "discards", "kind", "words")
 
-    def __init__(self, kind: str, words: str, closes_es: str, closes_en: str) -> None:
+    def __init__(self, kind: str, words: str, closes_es: str, closes_en: str, discards: bool = False) -> None:
         self.kind, self.words, self.closes_es, self.closes_en = kind, words, closes_es, closes_en
+        self.discards = discards  # the order throws a sheet away (``fresh``): what ``confirmed(discards=True)`` asks for
 
     def closes(self, language: str) -> str:
         return self.closes_en if language == "en" else self.closes_es
@@ -132,6 +133,19 @@ def _remark(item: object) -> str:
     rest = {k: v for k, v in item.items() if k not in ("kind", "text")}
     head = ": ".join(part for part in (_short(item.get("kind") or ""), _short(item.get("text") or "")) if part)
     return head + (f" ({_short(rest)})" if rest else "")
+
+
+_TRUE_WORDS = frozenset({"1", "true", "t", "yes", "y", "on"})
+
+
+def is_true(value: object) -> bool:
+    """Whether the server reads ``value`` as ``True`` for a bool field (the schema's own lax parsing: ``"yes"``, ``1``...), so
+    the hook and the server cannot disagree about a ``fresh`` that only one of them takes as set."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    return isinstance(value, str) and value.strip().lower() in _TRUE_WORDS
 
 
 def _is_engineer(value: object) -> bool:
@@ -173,14 +187,15 @@ def _drawing(args: Mapping[str, Any]) -> Order | None:
         listed_es = f"{len(items)} observaciones: {points}" if items else "sin observaciones"
         listed_en = f"{len(items)} remarks: {points}" if items else "no remarks"
         return Order("review_report", reason, f"tu informe de revisión{on_es}, {listed_es}", f"your review report{on_en}, {listed_en}")
-    if action == "compose" and (args.get("recompose") or args.get("fresh") is True or by):
+    fresh = is_true(args.get("fresh"))
+    if action == "compose" and (args.get("recompose") or fresh or by):
         if not (by and reason):
             return None
         decisions = args.get("decisions") if isinstance(args.get("decisions"), dict) else {}
         answers = decisions.get("answers") if isinstance(decisions.get("answers"), dict) else {}
         parts_es = ["volver a componer la hoja entera"] if args.get("recompose") else []
         parts_en = ["composing the whole sheet again"] if args.get("recompose") else []
-        if args.get("fresh") is True:  # compose can throw the sheet away too: he must read that in the dialog
+        if fresh:  # compose can throw the sheet away too: he must read that in the dialog
             parts_es.append("tirar la hoja y empezarla de nuevo (fresh)")  # the sheet is named once, at the end
             parts_en.append("throwing the sheet away and starting it again (fresh)")
         if answers:
@@ -191,15 +206,17 @@ def _drawing(args: Mapping[str, Any]) -> Order | None:
             reason,
             (" y ".join(parts_es) or "la composición de la hoja") + on_es,
             (" and ".join(parts_en) or "the composition of the sheet") + on_en,
+            discards=fresh,
         )
     if not (by and reason):
         return None
-    if action == "create" and args.get("fresh") is True:
+    if action == "create" and fresh:
         return Order(
             "fresh_sheet",
             reason,
             f"tirar la hoja{on_es} y empezarla de nuevo (fresh)",
             f"throwing the sheet{on_en} away and starting it again (fresh)",
+            discards=True,
         )
     if action == "remove_sheet":
         return Order("remove_sheet", reason, f"quitar la hoja entera{on_es}", f"removing the whole sheet{on_en}")
@@ -678,9 +695,10 @@ class confirming:  # noqa: N801 - used as ``with confirming(order):``
         _current.reset(self.token)
 
 
-def confirmed(what: str) -> Order:
+def confirmed(what: str, discards: bool = False) -> Order:
     """Called where the server is about to record something in the engineer's name: the order he confirmed for the
-    running call. Refuses when there is none, so a place ``order_of`` does not know can never record one unasked."""
+    running call. Refuses when there is none, so a place ``order_of`` does not know can never record one unasked.
+    ``discards``: it must be an order that names throwing the sheet away, not any other order of his."""
     from cotaforge_mcp.reply import ToolError  # noqa: PLC0415
 
     order = _current.get()
@@ -689,6 +707,13 @@ def confirmed(what: str) -> Order:
             f"{what} is the engineer's order, and an order is recorded only when he confirms that very call in Claude "
             "Code's permission dialog; this call was not put to him: nothing was changed. The decision is not yours: "
             "tell him what is open and what you recommend",
+            code=CODE,
+            field_name="by",
+        )
+    if discards and not order.discards:
+        raise ToolError(
+            f"{what} is the engineer's order, and the order he confirmed for this call does not name throwing the sheet "
+            "away: nothing was changed. The decision is not yours: tell him what is open and what you recommend",
             code=CODE,
             field_name="by",
         )

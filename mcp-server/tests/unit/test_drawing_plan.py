@@ -8,7 +8,7 @@ import pytest
 
 from cotaforge_mcp import drawing_gate
 from cotaforge_mcp.config import Settings
-from tests.conftest import DrawingFake, declare
+from tests.conftest import Caller, DrawingFake, declare
 from tests.unit.test_drawing_auto import shaft_session
 from tests.unit.test_drawing_compose import choose_steps
 from tests.unit.test_drawing_finished import PROJECT_PRINCIPLE, drawing_session
@@ -252,6 +252,56 @@ def test_with_no_full_review_behind_it_the_quick_line_does_not_claim_a_step(sett
     assert reviewed.startswith("step ") and "unknown" not in reviewed
     after = call.ok("drawing", action="add", items=[{"type": "note", "text": "Otra"}]).splitlines()[-1]
     assert after.startswith("step ") and "unknown" not in after  # the review the session just read stands behind the next ones
+
+
+def read_one_sheet(settings: Settings) -> tuple[Caller, DrawingFake]:
+    choose_steps(settings)
+    with_intent(settings)
+    call, fake = shaft_session(settings)
+    call.ok("drawing", action="create")
+    call.ok("drawing", action="review")
+    assert call.session.sheet_reviews, "the review is kept"
+    return call, fake
+
+
+def test_what_a_review_said_is_forgotten_when_the_sheet_is_thrown_away_or_removed(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    from cotaforge_mcp import drawing_plan
+
+    forgotten: list[str | None] = []
+    real = drawing_plan.forget_review
+    monkeypatch.setattr(drawing_plan, "forget_review", lambda session, sheet: (forgotten.append(sheet), real(session, sheet))[1])
+    call, _ = read_one_sheet(settings)
+    call.ok("drawing", action="create", sheet="Drawing", fresh=True, by="Ana", reason=call.says("empieza de nuevo"))
+    assert forgotten == ["Drawing"]
+    call.ok("drawing", action="review")
+    assert call.session.sheet_reviews
+    call.ok("drawing", action="remove_sheet", sheet="Drawing", by="Ana", reason=call.says("esta hoja sobra"))
+    assert forgotten[1:] and not call.session.sheet_reviews
+
+
+def test_what_a_review_said_is_forgotten_when_the_document_is_reopened_or_reloaded(settings: Settings) -> None:
+    call, _ = read_one_sheet(settings)
+    suffix = call.session.adapter.suffix_for(call.session.require_executor().plan.kind)
+    call.ok("doc", action="save", path=f"plate{suffix}")
+    call.ok("doc", action="reload")
+    assert not call.session.sheet_reviews
+    call.ok("drawing", action="review")
+    assert call.session.sheet_reviews
+    call.ok("doc", action="close")
+    assert not call.session.sheet_reviews
+    call.ok("doc", action="open", path=f"plate{suffix}")
+    assert not call.session.sheet_reviews
+
+
+def test_a_stale_review_is_not_carried_into_the_line_of_a_reopened_document(settings: Settings) -> None:
+    call, fake = read_one_sheet(settings)
+    fake.findings = (*fake.findings, finding("cylinder_no_axis", "Cilindro sin eje"))
+    assert "cylinder_no_axis" in call.ok("drawing", action="review").splitlines()[-1]
+    suffix = call.session.adapter.suffix_for(call.session.require_executor().plan.kind)
+    call.ok("doc", action="save", path=f"plate{suffix}")
+    call.ok("doc", action="reload")
+    line = call.ok("drawing", action="add", items=[{"type": "note", "text": "Sin tratamiento"}]).splitlines()[-1]
+    assert line.startswith("step unknown") and "cylinder_no_axis" not in line
 
 
 def test_a_finding_that_does_not_block_is_not_an_open_rule_of_the_line(settings: Settings) -> None:

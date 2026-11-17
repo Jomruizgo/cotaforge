@@ -1052,6 +1052,7 @@ class Session:
 
     def new_document(self, name: str, kind: str) -> list[str]:
         with self.lock:
+            self.sheet_reviews.clear()  # same reason as import_document
             self._refuse_taken_name(name)
             doc_kind = DocumentKind(kind)
             previous = self._park_active()
@@ -1088,6 +1089,7 @@ class Session:
     def open_document(self, path: str) -> list[str]:
         self.need("open_document", "doc(action=open)")
         with self.lock:
+            self.sheet_reviews.clear()  # the file is read again: its sheets may have changed since the last review of them
             target = self.settings.resolve(path)
             if not target.is_file():
                 raise ToolError(f"{target} does not exist or is not a file", code="not_found", field_name="path")
@@ -1137,6 +1139,7 @@ class Session:
         self.need("import_geometry", "doc(action=import)")
         usage_text = foreign.import_usage(self.adapter.import_suffixes())
         with self.lock:
+            self.sheet_reviews.clear()  # a document comes in: what an earlier one said of a sheet of that name is not its review
             if not path:
                 raise ToolError(
                     "import needs the path of the file",
@@ -1698,6 +1701,7 @@ class Session:
         are only dropped with ``force``."""
         self.need("open_document", "doc(action=reload)")
         with self.lock:
+            self.sheet_reviews.clear()  # the file is read again (see open_document)
             suffix = self.adapter.suffix_for(self.require_executor().plan.kind)
             if self.doc_path is None or not self.doc_path.is_file():
                 raise ToolError(
@@ -1760,6 +1764,7 @@ class Session:
     def close_document(self, discard: bool) -> list[str]:
         self.need("close_document", "doc(action=close)")
         with self.lock:
+            self.sheet_reviews.clear()  # the document goes: so does what was read of its sheets
             if self.executor is None:
                 raise ToolError("no document is open", code="no_document")
             if self.dirty and not discard:
