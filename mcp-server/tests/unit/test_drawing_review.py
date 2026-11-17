@@ -2,6 +2,7 @@
 """Who reviews a drawing before it is exported (``drawing_review`` of the brief): the setting, the reports of the
 manufacturer and the engineer, the engineer's choice with its wait (the clock is injected), and the gate in every mode."""
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -245,6 +246,7 @@ def test_ingeniero_waits_for_his_report_without_a_time_limit(settings: Settings,
     call, _ = session_in(settings, "engineer")
     text = call.ok("drawing", action="request_review", sheet="Drawing")
     assert "ask the engineer to review sheet Drawing" in text and "No time limit" in text
+    assert "end your turn" in text and "never end the turn" not in text
     clock.minutes(24 * 60)
     refused = call.err("export", action="pdf")
     assert "no engineer report yet" in refused and 'by="engineer"' in refused
@@ -256,7 +258,7 @@ def test_ingeniero_waits_for_his_report_without_a_time_limit(settings: Settings,
 # --- engineer_or_fabricator: the engineer chooses, or the manufacturer is assumed ------------------------------------------------------
 
 
-def test_the_first_export_asks_for_the_request_and_the_request_says_what_to_ask_and_starts_the_timer(
+def test_the_first_export_asks_for_the_request_and_the_request_says_what_to_ask_and_to_wait_with_one_call(
     settings: Settings, clock: Clock
 ) -> None:
     call, fake = session_in(settings, "engineer_or_fabricator")
@@ -265,9 +267,9 @@ def test_the_first_export_asks_for_the_request_and_the_request_says_what_to_ask_
     assert 'drawing(action="request_review", sheet="Drawing")' in refused
     text = call.ok("drawing", action="request_review")
     assert "¿Revisas tú la hoja Drawing o la revisa el agente fabricante?" in text
-    assert "within 15 min the manufacturer review counts" in text and "NEVER end the turn" in text
-    assert "`sleep 900`" in text and "run_in_background=true" in text and "Start-Sleep -Seconds 900" in text
-    assert "if the engineer has already answered the choice, ignore the timer" in text
+    assert "within 15 min the manufacturer review counts" in text
+    assert 'drawing(action="wait_review", sheet="Drawing")' in text and "never by polling" in text
+    assert "sleep" not in text and "Bash" not in text  # the drafter has no shell: no timer to start
     assert [a.action for a in fake.annotated][-1] == "request_review" and fake.annotated[-1].at == clock.now
 
 
@@ -280,7 +282,8 @@ def test_while_the_engineer_has_not_answered_the_refusal_says_how_many_minutes_a
     refused = call.err("export", action="pdf")
     assert "waiting for the engineer's choice" in refused and "15 min left of 20" in refused
     assert "¿Revisas tú la hoja Drawing o la revisa el agente fabricante?" in refused
-    assert 'drawing(action="review_choice"' in refused and "never end the turn to wait" in refused
+    assert 'drawing(action="review_choice"' in refused and 'drawing(action="wait_review", sheet="Drawing")' in refused
+    assert "never end the turn" not in refused
     clock.minutes(14.5)
     assert "1 min left of 20" in call.err("export", action="pdf")  # rounded up: it is never 0 min while waiting
     review = call.ok("drawing", action="review")
@@ -331,6 +334,150 @@ def test_the_engineer_chose_himself_so_the_gate_waits_for_his_report_with_no_tim
     assert "eng1.1" in call.err("export", action="pdf")
     call.ok("drawing", action="answer", id="eng1.1", text="applies: añadí la nota de material en el bloque de notas")
     assert "exported pdf" in call.ok("export", action="pdf")
+
+
+# --- waiting costs one call, not a loop ---------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def passing(clock: Clock, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """``wait_review`` lets the fake clock pass instead of sleeping; the list holds every pause it asked for."""
+    pauses: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        pauses.append(seconds)
+        clock.now += seconds
+
+    monkeypatch.setattr(drawing_gate, "sleep", sleep)
+    return pauses
+
+
+def test_a_waiting_sheet_costs_one_call_and_not_a_loop(settings: Settings, clock: Clock, passing: list[float]) -> None:
+    call, fake = session_in(settings, "engineer_or_fabricator", wait=4)
+    call.ok("drawing", action="request_review")
+    text = call.ok("drawing", action="wait_review")  # ONE call: it blocks until the wait is over
+    assert sum(passing) == pytest.approx(4 * 60) and clock.now == pytest.approx(1_000_000.0 + 4 * 60)
+    assert "the engineer did not choose within 4 min: the manufacturer review counts" in text
+    assert 'subagent_type="fabricator"' in text
+    assert [a.action for a in fake.annotated].count("request_review") == 1  # it asks for nothing, it only waits
+
+
+def test_a_long_wait_is_a_few_bounded_calls_each_saying_to_call_again(
+    settings: Settings, clock: Clock, passing: list[float]
+) -> None:
+    call, _ = session_in(settings, "engineer_or_fabricator")
+    call.ok("drawing", action="request_review")
+    first = call.ok("drawing", action="wait_review")
+    assert sum(passing) == pytest.approx(drawing_gate.WAIT_CHUNK_S)  # bounded: the engineer's message reaches the agent
+    assert "still waiting for the engineer's choice" in first and "10 min left of 15" in first
+    assert 'drawing(action="wait_review", sheet="Drawing")' in first and "review_choice" in first
+    assert "Do not export, review or ask doc(status)" in first
+    call.ok("drawing", action="wait_review")
+    last = call.ok("drawing", action="wait_review")  # 3 calls for 15 min (the polling it replaces was ~120)
+    assert "manufacturer review counts" in last and 'subagent_type="fabricator"' in last
+    assert sum(passing) == pytest.approx(15 * 60)
+
+
+def test_wait_review_returns_at_once_when_there_is_nothing_to_wait_for(
+    settings: Settings, clock: Clock, passing: list[float]
+) -> None:
+    call, _ = session_in(settings, "engineer_or_fabricator")
+    unasked = call.ok("drawing", action="wait_review")
+    assert "nobody has been asked who reviews sheet Drawing" in unasked and "request_review" in unasked
+    call.ok("drawing", action="request_review")
+    call.ok("drawing", action="review_choice", sheet="Drawing", by="fabricator")
+    chosen = call.ok("drawing", action="wait_review")
+    assert 'subagent_type="fabricator"' in chosen
+    call.ok("drawing", action="review_choice", sheet="Drawing", by="engineer")
+    himself = call.ok("drawing", action="wait_review")
+    assert "end your turn" in himself and "no time limit" in himself
+    assert passing == []  # not one pause
+
+
+@pytest.mark.parametrize("mode", ["fabricator", "own", "none"])
+def test_wait_review_in_the_other_modes_does_not_wait(
+    settings: Settings, clock: Clock, passing: list[float], mode: str
+) -> None:
+    call, _ = session_in(settings, mode)
+    text = call.ok("drawing", action="wait_review")
+    assert passing == [] and text.startswith("sheet Drawing:")
+
+
+def test_the_second_refused_export_for_the_wait_says_plainly_what_to_do(
+    settings: Settings, clock: Clock, passing: list[float]
+) -> None:
+    call, _ = session_in(settings, "engineer_or_fabricator")
+    call.ok("drawing", action="request_review")
+    first = call.err("export", action="pdf")
+    assert "refused AGAIN" not in first and "waiting for the engineer's choice" in first
+    assert 'drawing(action="wait_review", sheet="Drawing")' in first
+    second = call.err("export", action="pdf")
+    assert "refused AGAIN, for the same reason" in second and "15 min left of 15" in second
+    assert 'The one call to make is drawing(action="wait_review", sheet="Drawing")' in second
+    assert "do not ask doc(status)" in second
+    call.ok("drawing", action="wait_review")  # the wait call starts the count again
+    assert "refused AGAIN" not in call.err("export", action="pdf")
+
+
+def test_a_refusal_with_other_points_pending_is_never_the_plain_wait_message(settings: Settings, clock: Clock) -> None:
+    call, fake = session_in(settings, "engineer_or_fabricator")
+    fake.findings = [NOT_LOCATED]
+    call.ok("drawing", action="request_review")
+    for _ in range(3):
+        refused = call.err("export", action="pdf")
+        assert "refused AGAIN" not in refused and "hole_not_located" in refused
+
+
+def test_the_second_refused_export_while_the_engineer_reviews_says_to_end_the_turn(
+    settings: Settings, clock: Clock
+) -> None:
+    call, _ = session_in(settings, "engineer")
+    call.ok("drawing", action="request_review")
+    assert "refused AGAIN" not in call.err("export", action="pdf")
+    second = call.err("export", action="pdf")
+    assert "refused AGAIN" in second and "end your turn" in second and "wait_review" not in second
+
+
+def test_doc_status_during_the_wait_points_at_the_call_that_waits(settings: Settings, clock: Clock) -> None:
+    call, _ = session_in(settings, "engineer_or_fabricator")
+    assert "review wait" not in call.ok("doc", action="status")
+    call.ok("drawing", action="request_review")
+    clock.minutes(5)
+    status = call.ok("doc", action="status")
+    assert "review wait: sheet Drawing waits for the engineer's choice of reviewer, 10 min left" in status
+    assert "changes nothing" in status and 'drawing(action="wait_review", sheet="Drawing")' in status
+    call.ok("drawing", action="review_choice", sheet="Drawing", by="fabricator")
+    assert "review wait" not in call.ok("doc", action="status")
+
+
+def test_esc_ends_the_wait_and_the_cad_is_free_while_it_runs(
+    settings: Settings, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    call, _ = session_in(settings, "engineer_or_fabricator")
+    call.ok("drawing", action="request_review")
+    gave_up = threading.Event()
+    free: list[bool] = []
+
+    def sleep(seconds: float) -> None:
+        taken: list[bool] = []
+
+        def try_lock() -> None:  # another thread of the server: the CAD is not held while the call waits
+            got = call.session.lock.acquire(timeout=1)
+            taken.append(got)
+            if got:
+                call.session.lock.release()
+
+        other = threading.Thread(target=try_lock)
+        other.start()
+        other.join()
+        free.extend(taken)
+        clock.now += seconds
+        gave_up.set()  # the engineer presses Esc
+
+    monkeypatch.setattr(drawing_gate, "sleep", sleep)
+    said = drawing_gate.wait_review(call.session, "Drawing", gave_up)
+    assert free == [True] and "given up" in said
+    assert clock.now < 1_000_000.0 + 60  # it did not go on to the end of the chunk
 
 
 def long_remarks(count: int) -> list[dict[str, str]]:

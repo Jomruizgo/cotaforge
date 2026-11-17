@@ -151,6 +151,7 @@ def test_the_drawing_title_is_a_property_the_schema_still_names(make: MakeSessio
         "requirements",
         "capture",
         "plan",  # the default flow: the first proposal in one order
+        "wait_review",
         "compose",
     ]
 

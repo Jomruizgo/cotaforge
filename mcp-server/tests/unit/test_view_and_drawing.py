@@ -155,6 +155,7 @@ def test_the_drawing_tool_only_exists_when_the_cad_can_make_sheets(make: MakeSes
         "requirements",
         "capture",
         "plan",  # the default flow: the first proposal in one order
+        "wait_review",
         "compose",
     ]
     export = input_schema(TOOLS_BY_NAME["export"], with_sheets)["properties"]["action"]["enum"]

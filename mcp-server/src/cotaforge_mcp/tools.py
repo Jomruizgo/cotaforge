@@ -13,6 +13,7 @@ from cotaforge_mcp import (
     bearing_seats,
     channel_tools,
     design_memory,
+    drawing_gate,
     engineer_orders,
     feature_tools,
     guide,
@@ -141,7 +142,7 @@ def _doc(session: Session, args: DocArgs, progress: Reporter | None = None) -> R
         return ok("\n".join(session.set_purpose(args.purpose)))
     if action == "convention":
         return ok("\n".join(session.convention(args.values)))
-    return _fitted(session, "status", session.status(), STATUS_RESULT_CHARS)
+    return _fitted(session, "status", [*session.status(), *drawing_gate.wait_notice(session)], STATUS_RESULT_CHARS)
 
 
 def _drawing_action(args: DrawingArgs) -> str | None:
@@ -347,6 +348,9 @@ def _call_tool(
         with engineer_orders.confirming(order):
             if not tool.needs_cad:
                 return _run(session, tool, args, progress, cancelled)
+            if isinstance(args, DrawingArgs) and args.action == "wait_review":
+                # blocks for minutes: it holds the CAD only to read the sheet, never while it waits, and Esc ends it
+                return view_export.wait_review(session, args, cancelled)
             with session.holding(name, cancelled):  # one call at a time in the CAD; waiting for another is bounded
                 return _run(session, tool, args, progress)
     except ValidationError as exc:
