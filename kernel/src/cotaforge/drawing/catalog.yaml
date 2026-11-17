@@ -16,8 +16,9 @@
 #   text      what the rule asks, in one or two sentences
 #   standard  the standard it rests on, if any (numbers only: no clause until checked against the text)
 #   origin    standard | owner | harness  (owner: the owner's own practice, given in the workshop)
-#   checks    review finding codes that stand for this rule being broken; none = debt
-#   weight    blocks (holds the export) | warns (listed, never holds) | debt (no check yet)
+#   checks    review finding codes that stand for this rule being broken; none = debt (or a gate)
+#   weight    blocks (holds the export) | warns (listed, never holds) | gate (a tool refuses it) | debt (no check yet)
+#   gate      only for weight gate: what the tool does (a call that needs the engineer's order)
 #   requirement  the requirement row id when the rule is one of them (it is then also a question to the designer)
 #   sources   where the rule is written today: prompt, guide, requirements, checks, memory_base, owner
 
