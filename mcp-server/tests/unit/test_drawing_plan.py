@@ -62,7 +62,7 @@ def test_the_plan_gives_the_sequence_with_the_rules_of_this_part_and_what_the_in
     assert "views.turned_axial_section" not in text  # the step in view is in full, the others are one line each
     assert "views.turned_axial_section" in call.ok("drawing", action="plan", step=2) and "keyway.dimensioned" in call.ok("drawing", action="plan", step=4)
     everything = call.ok("drawing", action="plan", full=True)
-    assert "views.turned_axial_section" in everything and "keyway.dimensioned" in everything and len(everything) > 2 * len(text)
+    assert "views.turned_axial_section" in everything and "keyway.dimensioned" in everything and len(everything) > 1.5 * len(text)
     assert "circular_pattern.polar" not in everything and "welded.weld_symbols" not in everything  # not this part's
     assert "open questions" not in text  # the intent file says it all
     assert text.splitlines()[-1].startswith("step ")

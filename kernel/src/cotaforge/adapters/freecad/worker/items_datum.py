@@ -8,9 +8,10 @@ silhouette of the view). Every value is the measured distance from the hole's ax
 
 ``auto`` is the default location every sheet with holes carries (``drawing`` makes the item): it locates the holes no
 other item locates, in the view that shows each one as a circle, for the measuring tools every shop has (a caliper, a
-micrometer, a depth gauge, a dial indicator): per group of equal holes the spacing between its holes and ONE locator from
-the real flat face of the part nearest to the group, seen edge-on (or from the datum edge the sheet declares across that
-direction), in each direction of the view; the dimensions that do not touch share a row. Where the part has no such face (a
+micrometer, a depth gauge, a dial indicator): in each direction of the view ONE locator from the real flat face of the
+part nearest to the holes, seen edge-on (or from the datum edge the sheet declares across that direction), and the spacings
+(each group of equal holes its own, and one more to tie a group to the rest); every dimension joins columns nothing else joins,
+so a direction never closes on the overall size; the dimensions that do not touch share a row. Where the part has no such face (a
 round outline) no locator is drawn and the review asks the designer. It is never a baseline from one datum (that needs a height gauge: ``datum_dims`` with ``x_from`` / ``y_from`` asks
 for it) and never the symmetry of the part: the middle of a plate is dimensioned from an edge like any other place.
 """
@@ -470,22 +471,50 @@ def _reach_of(dim: _Dim, horizontal: bool, text: str) -> tuple[float, float]:
     return min(low, dim.lo), max(high, dim.hi)
 
 
-def _group_dims(
+class _Components:
+    """Union-find over the columns of one direction and the edges of the part: a dimension is drawn only when it joins two things
+    that no other dimension of the direction joins already, so the dimensions of a direction are a forest and never close a loop.
+    The two edges of the part start joined: the overall size (``o1``) joins them."""
+
+    LOW, HIGH = -1e9, 1e9  # the two edges of the part, as nodes
+
+    def __init__(self, keys: list[float], edges_joined: bool) -> None:
+        self.parent = {k: k for k in (*keys, self.LOW, self.HIGH)}
+        if edges_joined:
+            self.union(self.LOW, self.HIGH)
+
+    def find(self, k: float) -> float:
+        while self.parent[k] != k:
+            self.parent[k] = self.parent[self.parent[k]]
+            k = self.parent[k]
+        return k
+
+    def joined(self, a: float, b: float) -> bool:
+        return self.find(a) == self.find(b)
+
+    def union(self, a: float, b: float) -> None:
+        self.parent[self.find(a)] = self.find(b)
+
+
+def _direction_dims(
     ctx: Context,
     view: ViewInfo,
-    placed: list[tuple[HoleInfo, Point]],
+    groups: list[list[tuple[HoleInfo, Point]]],
     horizontal: bool,
     datum: float | None,
 ) -> list[_Dim]:
-    """The dimensions of ONE group of equal holes along one direction of the view (``horizontal``: page x): the spacing
-    between its holes (a caliper measures a distance between two holes) and ONE locator, from the real flat face of the part
-    nearest to the group (or from the datum edge the sheet declares across that direction), to its nearest hole. Never the
-    symmetry of the part: a group in the middle is dimensioned from the edge like any other. Where the part has no edge to
-    measure from across this direction (a round outline, a rounded end) no locator is drawn and the review asks the designer
-    (``loc_missing``): the harness never counts from a place the caliper cannot reach. A group on the axis of revolution across
-    the view is located by it."""
+    """The dimensions of one direction of the view (``horizontal``: page x) for ALL the groups of equal holes: per group the spacings
+    between its holes (a caliper measures a distance between two holes) and ONE locator from the real flat face of the part nearest to
+    it, seen edge-on (or from the datum edge the sheet declares across that direction). Every dimension joins things nothing else
+    joins -- columns, and the two edges of the part, which the overall size already joins -- so a direction never gives a measure twice
+    and never closes on the overall size: two groups whose locators come from opposite edges (8 + 44 + 8 on a 60 plate) or a column
+    two groups share (a locator of 52 beside the 8 and the 44) get ONE locator between them. Never the symmetry of the part: a hole in
+    the middle is dimensioned from an edge like any other. Where the part has no edge to measure from (a round outline, a rounded end)
+    no locator is drawn and the review asks the designer (``loc_missing``): the harness never counts from a place the caliper cannot
+    reach. A hole on the axis of revolution across the view is located by it."""
     i = 0 if horizontal else 1  # the page coordinate this direction measures
     scale = view.scale
+    placed = [hp for group in groups for hp in group]
     columns: dict[float, list[tuple[HoleInfo, Point]]] = {}
     for hole, p in placed:
         columns.setdefault(round(p[i] / scale, 2), []).append((hole, p))
@@ -497,38 +526,67 @@ def _group_dims(
             _located(ctx, hole, view, horizontal)
             ctx.extras.setdefault("loc_edge", {}).setdefault(hole.index, set()).add(axis_name)
         return []
-    out: list[_Dim] = []
-    gaps = [round(b - a, 2) for a, b in zip(keys, keys[1:], strict=False)]
-    if len(gaps) >= 2 and max(gaps) - min(gaps) <= 0.011:  # a row at one pitch: the pitch once, with how many
-        pairs = [(keys[0], keys[1])]
-        repeats = len(keys) - 1
-    else:
-        pairs = list(zip(keys, keys[1:], strict=False))
-        repeats = 0
-    for ka, kb in pairs:
-        points = [[p for _, p in columns[k]] for k in (ka, kb)]
-        holes = [h for k in (ka, kb) for h, _ in columns[k]]
-        out.append(_Dim(round(kb - ka, 2), ka * scale, kb * scale, points[0], points[1], holes, repeats=repeats))
     edges = [datum] if datum is not None else _reachable_edges(ctx, view, horizontal)
-    edge: float | None = None
-    if edges:  # the nearest edge to the group (the low one when it is a tie)
-        edge = min(edges, key=lambda e: (round(min(abs(k * scale - e) for k in keys), 3), e))
-        key = min(keys, key=lambda k: abs(k * scale - edge))
+    tree = _Components(keys, edges_joined=datum is None and len(edges) == 2)  # noqa: PLR2004
+    out: list[_Dim] = []
+    made: dict[tuple[Any, ...], _Dim] = {}
+
+    def node(edge: float) -> float:
+        return tree.LOW if len(edges) == 2 and edge == min(edges) else tree.HIGH  # noqa: PLR2004
+
+    def once(kind: Any, dim: _Dim) -> None:
+        twin = made.get((kind, dim.lo, dim.hi, dim.repeats))
+        if twin is not None:  # the same two places seen again (another group): one dimension, one centre line through the holes of both
+            twin.first += dim.first
+            twin.second += dim.second
+            twin.holes += dim.holes
+            return
+        made[(kind, dim.lo, dim.hi, dim.repeats)] = dim
+        out.append(dim)
+
+    for group in groups:
+        own = sorted({round(p[i] / scale, 2) for _, p in group})
+        gaps = [round(b - a, 2) for a, b in zip(own, own[1:], strict=False)]
+        if len(gaps) >= 2 and max(gaps) - min(gaps) <= 0.011:  # a row at one pitch: the pitch once, with how many
+            pairs, repeats = [(own[0], own[1])], len(own) - 1
+        else:
+            pairs, repeats = list(zip(own, own[1:], strict=False)), 0
+        for ka, kb in pairs:
+            dim = _Dim(round(kb - ka, 2), ka * scale, kb * scale, [p for _, p in columns[ka]], [p for _, p in columns[kb]], [h for k in (ka, kb) for h, _ in columns[k]], repeats=repeats)
+            if ("space", dim.lo, dim.hi, repeats) in made:
+                once("space", dim)
+            elif repeats or not tree.joined(ka, kb):  # the others already fix a spacing that would close a loop
+                once("space", dim)
+        for k in own[1:]:
+            tree.union(own[0], k)  # the spacings of a group tie all its columns
+        if not edges:
+            continue
+        edge = min(edges, key=lambda e: (round(min(abs(k * scale - e) for k in own), 3), e))  # the nearest edge to the group (the low one on a tie)
+        key = min(own, key=lambda k: abs(k * scale - edge))
         distance = round(abs(key * scale - edge) / scale, 2)
-        if distance >= POSITION_ON_DATUM_MM:
+        here = node(edge) if datum is None else tree.LOW
+        if distance < POSITION_ON_DATUM_MM:
+            tree.union(here, key)  # on the datum line: nothing to measure
+        elif ("edge", min(edge, key * scale), max(edge, key * scale), 0) in made or not tree.joined(here, key):
             span = (min(edge, key * scale), max(edge, key * scale))
-            out.append(_Dim(distance, *span, [], [p for _, p in columns[key]], [h for h, _ in columns[key]], edge=edge))
+            once("edge", _Dim(distance, *span, [], [p for _, p in columns[key]], [h for h, _ in columns[key]], edge=edge))
+            tree.union(here, key)
     for dim in out:
         dim.reach = _reach_of(dim, horizontal, dim.prefix + ctx.num(dim.value))
-    for hole, p in placed:
-        if edge is None:  # nothing to count from: the review asks the designer which face or edge it is
-            ctx.extras.setdefault("loc_missing", {}).setdefault(hole.index, set()).add(axis_name)
-            continue
-        ctx.extras.setdefault("positions", {}).setdefault(hole.index, {})["x" if horizontal else "y"] = round(
-            abs(p[i] - edge) / scale, 2
-        )  # what the sheet says of each hole: how far from the edge it counted from
-        _located(ctx, hole, view, horizontal)
-        ctx.extras.setdefault("loc_edge", {}).setdefault(hole.index, set()).add(axis_name)
+    for group in groups:
+        near = None
+        if edges:
+            own = [p[i] / scale for _, p in group]
+            near = min(edges, key=lambda e: (round(min(abs(k * scale - e) for k in own), 3), e))
+        for hole, p in group:
+            if near is None:  # nothing to count from: the review asks the designer which face or edge it is
+                ctx.extras.setdefault("loc_missing", {}).setdefault(hole.index, set()).add(axis_name)
+                continue
+            ctx.extras.setdefault("positions", {}).setdefault(hole.index, {})["x" if horizontal else "y"] = round(
+                abs(p[i] - near) / scale, 2
+            )  # what the sheet says of each hole: how far from the edge it counted from
+            _located(ctx, hole, view, horizontal)
+            ctx.extras.setdefault("loc_edge", {}).setdefault(hole.index, set()).add(axis_name)
     return out
 
 
@@ -738,8 +796,8 @@ def row_plan(
     out = []
     for horizontal in (True, False):
         dims: list[_Dim] = []
-        for reps in _groups(ctx, pool, _axes(pool)).values():
-            dims += _group_dims(ctx, view, [(h, view.project(h.centre)) for h in reps], horizontal, None)
+        placed = [[(h, view.project(h.centre)) for h in reps] for reps in _groups(ctx, pool, _axes(pool)).values()]
+        dims += _direction_dims(ctx, view, placed, horizontal, None) if placed else []
         near, far = _split(_merged(dims))
         out.append((len(_rows(near)), len(_rows(far))))
     return out[0], out[1]
@@ -846,10 +904,10 @@ def _draw_auto(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         if on_axis and not groups:
             details.append(f"{len(on_axis)} hole(s) in the {name} view on the axis of the part: the axis locates them, nothing to measure")
         dims: dict[bool, list[_Dim]] = {True: [], False: []}
-        for reps in groups.values():
-            placed = [(h, view.project(h.centre)) for h in reps]
-            dims[True] += _group_dims(ctx, view, placed, True, datums[0])
-            dims[False] += _group_dims(ctx, view, placed, False, datums[1])
+        placed = [[(h, view.project(h.centre)) for h in reps] for reps in groups.values()]
+        if placed:
+            dims[True] += _direction_dims(ctx, view, placed, True, datums[0])
+            dims[False] += _direction_dims(ctx, view, placed, False, datums[1])
         if groups:
             tag = "" if first else f"{name}_"
             item = str(ctx.extras["current"])
@@ -861,8 +919,8 @@ def _draw_auto(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
                 if values:
                     shown.append(f"{'x' if horizontal else 'y'} {', '.join(ctx.num(v) for v in values)}")
             details.append(
-                f"{len(axes)} hole(s) in the {name} view; {'; '.join(shown)} (mm: the spacing in each group of equal holes "
-                "and one locator from the nearest edge, as a caliper measures)"
+                f"{len(axes)} hole(s) in the {name} view; {'; '.join(shown)} (mm: one locator from the nearest edge per direction "
+                "and the spacings that tie the groups to it, as a caliper measures)"
             )
             first = False
         done = ctx.extras.setdefault("loc_axes", {})

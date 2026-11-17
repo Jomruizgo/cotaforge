@@ -38,7 +38,7 @@ def test_an_overall_beside_the_segments_that_add_up_to_it_is_redundant() -> None
         [("len125", "front", ("len", "x", 0.0, 125.0)), ("thread", "front", ("len", "x", 125.0, 168.0)), ("overall", "front", ("len", "x", 0.0, 168.0))]
     )
     assert set(found.items) == {"len125", "thread", "overall"} and "front" in found.message
-    assert "dimension_redundant" in checks.NON_BLOCKING  # listed until the sheet defaults stop breaking it
+    assert "dimension_redundant" not in checks.NON_BLOCKING  # the defaults no longer close a loop: it holds the export
 
 
 def test_a_dimension_that_is_the_difference_of_two_others_is_redundant() -> None:
@@ -59,13 +59,19 @@ def test_a_baseline_stack_a_chain_without_its_closing_dimension_and_other_views_
     assert _redundant([("a", "front", ("len", "x", 0.0, 10.0)), ("b", "front", ("len", "y", 10.0, 20.0)), ("c", "front", ("len", "y", 0.0, 20.0))]) == []  # other axes
 
 
-def test_the_same_length_twice_a_stage_a_diameter_and_one_items_own_links_are_not_this() -> None:
+def test_the_same_length_twice_a_stage_and_a_diameter_are_not_this() -> None:
     assert _redundant([("a", "front", ("len", "x", 0.0, 10.0)), ("b", "front", ("len", "x", 0.0, 10.0))]) == []  # ``dimension_twice``
     staged = ("len", "x", 0.0, 168.0, "stage", "ground")
     assert _redundant([("a", "front", ("len", "x", 0.0, 100.0)), ("b", "front", ("len", "x", 100.0, 168.0)), ("c", "front", staged)]) == []
     assert _redundant([("a", "front", ("dia", 22.0, "face:3")), ("b", "front", ("dia", 25.0, "face:5"))]) == []
+
+
+def test_a_loop_made_by_the_dimensions_of_one_item_is_flagged_too() -> None:
+    """The defaults never close a loop by themselves any more (the hole location is a forest, the overall is left out), so a loop
+    inside one item is a real defect and holds the export; it used to be left alone because the default made it."""
     one = [("stack", "front", ("len", "x", 0.0, 10.0)), ("stack", "front", ("len", "x", 10.0, 30.0)), ("stack", "front", ("len", "x", 0.0, 30.0))]
-    assert _redundant(one) == []
+    (found,) = _redundant(one)
+    assert found.items == ("stack",)
 
 
 # --- a dimension on a hidden line --------------------------------------------------------------------------------------------
@@ -121,7 +127,7 @@ def test_the_finding_names_the_dimension_and_holds_the_export() -> None:
     ctx = ring_context()
     (row,) = hiddendims.findings([("kw_len", "front", "Edge2"), ("kw_len", "front", "Vertex2")], ctx)
     assert row["code"] == "dimension_on_hidden" and row["items"] == ["kw_len"] and "oculta" in row["message"]
-    assert "dimension_on_hidden" in checks.NON_BLOCKING  # listed until the automatic keyway dimensions leave the hidden lines
+    assert "dimension_on_hidden" not in checks.NON_BLOCKING  # the automatic keyway dimensions left the hidden lines: it holds the export
 
 
 CALL = re.compile(r'drawing\(action="(\w+)", ([^)]*)\)')
@@ -201,7 +207,8 @@ def test_the_catalog_rows_of_the_two_findings_agree_with_it() -> None:
 
     rows = {r.id: r for r in catalog.load().rules}
     assert "over_dimensioned" in rows["dimensions.once"].checks and rows["dimensions.once"].weight == "blocks"
-    assert rows["dimensions.no_redundant"].weight == "warns" and "dimensions.once" in rows["dimensions.no_redundant"].text
+    assert rows["dimensions.no_redundant"].weight == "blocks" and "dimensions.once" in rows["dimensions.no_redundant"].text
+    assert rows["dimensions.never_on_hidden"].weight == "blocks" and rows["keyway.shown_face_on"].checks == ("dimension_on_hidden",)
 
 
 # --- the plate of the owner: 8 + 44 + 8 closes on 60 -------------------------------------------------------------------------------
@@ -251,12 +258,47 @@ def test_the_fix_the_message_names_is_one_the_gate_lets_through() -> None:
         assert one.message.count('drawing(action="remove", items=[') == 1 and "rq_" in one.message and "reason=" in one.message and "ids=" not in one.message
 
 
-def test_a_chain_made_by_the_default_hole_location_alone_is_not_a_finding_the_drafter_could_clear() -> None:
-    """Two groups of holes (Ø6.6 on the rows y = 8 and 52, Ø5 on y = 20 and 52): the default location gives 8 + 44 from the bottom
-    and 8 from the top, which closes on 60, all from the ONE item. The drafter has no tool to take one dimension out of it, so the
-    review leaves it alone (a chain with another item in it is flagged: the test above)."""
+def test_the_default_location_of_two_groups_never_closes_on_the_overall() -> None:
+    """Two groups of holes (Ø6.6 on the rows y = 8 and 52, Ø5 on y = 20 and 52) on a 60 plate: located one by one from their nearest
+    edge the locators are 8 from the bottom and 8 from the top and the spacing 44, which closes on 60. The default now gives ONE of
+    the two 8 (the other end is the overall's): the spans form a forest and the review has nothing to say about them."""
     ctx = views_context([hole(0, 10, 8), hole(1, 90, 8), hole(2, 10, 52), hole(3, 90, 52), hole(4, 50, 20, 5.0), hole(5, 70, 20, 5.0), hole(6, 50, 52, 5.0), hole(7, 70, 52, 5.0)])
     found = run_review(ctx, {"type": "overall", "id": "o1"}, {"type": "datum_dims", "id": "g", "auto": True})
-    spans = [(a, b) for item, axis, a, b in ctx.extras["position_spans"] if axis == "y"]
-    assert (0.0, 8.0) in spans and (8.0, 52.0) in spans and (52.0, 60.0) in spans, spans  # the chain does close, inside one item
+    spans = sorted((a, b) for item, axis, a, b in ctx.extras["position_spans"] if axis == "y")
+    assert (0.0, 8.0) not in spans or (52.0, 60.0) not in spans, spans  # not both ends of the 44
+    assert (8.0, 52.0) in spans and len(spans) == 3, spans
     assert _closing(found) == []
+
+
+def test_the_owner_s_plate_100_by_60_with_dowels_and_screws_gets_8_and_44_and_not_the_second_8() -> None:
+    """Four dowel holes on the rows y = 8 and 52 and two screw holes on y = 52: the screws are on a row the dowels already locate, so
+    the default says 8 and 44 once and the review finds nothing (8 + 44 + 8 = 60 is the case it used to build, from one item)."""
+    ctx = views_context([hole(0, 10, 8), hole(1, 90, 8), hole(2, 10, 52), hole(3, 90, 52), hole(4, 38, 52, 5.0), hole(5, 62, 52, 5.0)])
+    found = run_review(ctx, {"type": "overall", "id": "o1"}, {"type": "datum_dims", "id": "g", "auto": True})
+    spans = sorted((a, b) for item, axis, a, b in ctx.extras["position_spans"] if axis == "y")
+    assert (8.0, 52.0) in spans and len(spans) == 2 and ((0.0, 8.0) in spans) != ((52.0, 60.0) in spans), spans  # the 44 and ONE 8, from either end
+    assert _closing(found) == []
+
+
+def test_the_plate_150_by_100_gets_every_position_once_and_never_a_half_of_another() -> None:
+    """Four fixing holes 120 apart in x and 70 in y and a bore in the middle: x says 15, 120 and 75, y says 15, 70 and 50. No
+    dimension is given by the others (the spans of each direction are a forest) and the bore, which is in the middle, is located
+    from an edge like any other hole: never from the symmetry unless the intent declares it."""
+    holes = [hole(0, 15, 15), hole(1, 135, 15), hole(2, 15, 85), hole(3, 135, 85), hole(4, 75, 50, 42.0)]
+    ctx = views_context(holes)
+    found = run_review(ctx, {"type": "overall", "id": "o1"}, {"type": "datum_dims", "id": "g", "auto": True})
+    for axis in ("x", "y"):
+        spans = [(a, b) for item, ax, a, b in ctx.extras["position_spans"] if ax == axis]
+        ends = sorted({v for span in spans for v in span})
+        assert len(spans) <= len(ends) - 1, (axis, spans)  # a forest over its places: no loop, nothing given twice
+    assert _closing(found) == []
+    values = sorted(round(b - a, 1) for _, ax, a, b in ctx.extras["position_spans"] if ax == "x")
+    assert 120.0 in values and 150.0 not in values  # the overall (o1) is its own dimension, not rebuilt from the holes
+
+
+def test_a_centre_hole_designation_is_a_leader_note_and_never_a_dimension_on_a_hidden_line() -> None:
+    """The lathe centre holes (ISO 6411) show in hidden lines in the main view and that is right: their designation is a leader (a
+    note), not a dimension, so ``dimension_on_hidden`` does not read it."""
+    page = _page([("note", "Edge2")], hidden=True)
+    page.Views[1].TypeId = "TechDraw::DrawLeaderLine"
+    assert hiddendims.hidden_references(page, {"View_front": "front"}, "Item", _near) == []
