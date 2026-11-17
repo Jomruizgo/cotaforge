@@ -158,14 +158,16 @@ rules:
     step: views
     applies: {features: [hole, revolution_body]}
     text: >-
-      Every hole and round feature carries its centre mark or centre line; one continuous centre line per axis, not
-      crossing text, not overlong.
+      Every hole and round feature carries its centre mark or centre line, drawn as the thin long-dash dotted line
+      (ISO 128 line type 04.1, a chain line), never as a dashed one, which reads as a hidden edge; one continuous centre
+      line per axis, not crossing text, not overlong. The chain check judges only the lines the harness made: the ones the
+      engineer draws himself carry his own line style.
     standard: ISO 128
     origin: standard
     requirement: req.centre_lines
     sources: [requirements, prompt, checks]
     checks: [centre_mark_missing, cylinder_no_axis, no_view_lines, centre_line_crosses, centre_line_long, centre_line_gap,
-             flat_face_unmarked]
+             centre_line_not_chain, flat_face_unmarked]
     weight: blocks
   - id: turned.centre_line_every_segment
     step: views
@@ -198,6 +200,15 @@ rules:
     sources: [owner]
     checks: []
     weight: debt
+  - id: views.centre_line_deleted_stays
+    step: views
+    text: >-
+      An axis or centre mark the harness made and the engineer deleted by hand stays deleted: no sync, item, review or
+      export draws it again, and it never holds the export. The review says it once, as information.
+    origin: owner
+    sources: [owner, checks]
+    checks: [line_deleted_by_hand]
+    weight: warns
   - id: views.scale_per_view
     step: views
     text: >-

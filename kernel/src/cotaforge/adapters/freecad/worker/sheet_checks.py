@@ -81,6 +81,7 @@ NON_BLOCKING = frozenset(
         "layout_unplaced",
         "native_fallback",
         "line_weight_off_table",
+        "line_deleted_by_hand",  # an axis the engineer deleted: his call, said once
         "hidden_check_partial",
         "single_view_enough",
         "dowel_unmarked",
