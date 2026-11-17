@@ -560,6 +560,9 @@ def _refuse_repeat(info: Any, scope: dict[str, Any], args: DrawingArgs) -> dict[
 
 def compose(session: Session, args: DrawingArgs, make_request: Any) -> Reply:
     require_sheet_flow(session, "compose")
+    if args.fresh:  # the same gate as `create`: compose reaches create_drawing(fresh=True) and throws the sheet away
+        engineer_orders.confirmed("compose with fresh=true (throwing the sheet away and starting it again)", discards=True)
+        drawing_plan.forget_review(session, args.sheet)
     items, sheet_over, answers = normalise(args.decisions, design_memory.load_brief(session.settings).lang)
     _check_items(items)
     paper_fixed = "template" in sheet_over or "template" in args.model_fields_set
