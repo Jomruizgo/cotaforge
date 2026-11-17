@@ -9,7 +9,10 @@ from cotaforge.drawing import catalog
 
 SRC = Path(__file__).resolve().parents[3] / "src" / "cotaforge"
 WORKER = SRC / "adapters" / "freecad" / "worker"
-DEBT_CEILING = 21  # rules with no check; lower it when one gets its check (21: +3 that lived only in the prompt)
+# Rules with no check. An owner rule enters the catalog the same day, with its check or marked as debt (construction rule 1 of
+# ARQUITECTURA-planos), so the ceiling rises only by owner rules; any other change only lowers it, when a rule gets its check.
+# 25: the 21 of the plan (+3 that lived only in the prompt) and the 4 owner rules of the shaft and keyway sheet; the real count of rules with no check.
+DEBT_CEILING = 25
 
 FINDING = re.compile(r"(?<![A-Za-z])(?:_finding|Finding)\(\s*(f?)\"([a-z_0-9{}]+)\"(?:\s*if [^,]+ else \"([a-z_0-9]+)\")?")  # noqa: E501
 

@@ -242,6 +242,8 @@ def draw_items(ctx: Context, items: list[dict[str, Any]]) -> list[ItemResult]:
             ctx.extras.get("natives", {}).pop(item_id, None)
             if "dim_records" in ctx.extras:
                 ctx.extras["dim_records"] = [r for r in ctx.extras["dim_records"] if r[0] != item_id]
+            if "position_spans" in ctx.extras:
+                ctx.extras["position_spans"] = [r for r in ctx.extras["position_spans"] if r[0] != item_id]
             for users in ctx.extras.get("view_use", {}).values():
                 users.discard(item_id)
             del ctx.sheet.entities[mark[0] :]

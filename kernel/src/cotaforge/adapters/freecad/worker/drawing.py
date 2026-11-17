@@ -58,6 +58,7 @@ import sheet_context as sc
 import sheet_dimtext
 import sheet_dxf
 import sheet_facts
+import sheet_hiddendims
 import sheet_interface
 import sheet_iso
 import sheet_isoview
@@ -3725,6 +3726,9 @@ def review_findings(
                 }
             )
     findings += sheet_dimtext.findings(sheet_dimtext.read(ctx.extras["units"], held), ctx)  # what the dimensions print, as a shop reads it
+    findings += sheet_hiddendims.findings(  # a dimension on a hidden line: a hidden line is never dimensioned
+        sheet_hiddendims.hidden_references(page, view_names(page), sheet_mirror.PROP_ITEM), ctx
+    )
     for unit in ctx.extras["units"]:  # a symbol or a leader whose view the engineer deleted stays loose on the page
         lost = sheet_native.orphaned(unit, held.get(unit.key, []))
         if lost:
