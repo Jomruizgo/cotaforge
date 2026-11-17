@@ -255,6 +255,16 @@ def _countersink_at(shape: Any, chain: list[_Cut], d: g.Vec3, t_rim: float) -> t
     return None
 
 
+def _drill_sense(body: reg.BodyRec, chain: list[_Cut]) -> g.Vec3 | None:
+    """The way the hole was drilled (from the face it enters into the material), when the operation that made it said so
+    (``FaceRec.axis_dir``); ``None`` for a hole made any other way."""
+    for cut in chain:
+        rec = body.faces.get(cut.rec.id)
+        if rec is not None and rec.axis_dir is not None:
+            return rec.axis_dir
+    return None
+
+
 def _describe(body: reg.BodyRec, shape: Any, chain: list[_Cut]) -> dict[str, Any]:
     d = chain[0].direction
     t0, t1 = min(c.t0 for c in chain), max(c.t1 for c in chain)
@@ -266,6 +276,9 @@ def _describe(body: reg.BodyRec, shape: Any, chain: list[_Cut]) -> dict[str, Any
     start, direction = t0, d
     if low == "open" and high == "open":
         through = True
+        drill = _drill_sense(body, chain)
+        if drill is not None and g.dot(drill, d) < 0:  # drilled from the high end (a plate tapped from its top face): the axis starts THERE,
+            start, direction = t1, g.scale(d, -1.0)  # so what is counted along it (a thread's length) is counted from the entry face
     elif {low, high} == {"open", "closed"}:
         through = False
         if high == "open":  # blind: the axis runs from the open end into the material

@@ -1,7 +1,7 @@
 # ruff: noqa: E501
 """The centre lines of holes and cylinders seen from the side (no FreeCAD import).
 
-A centre line goes a short, fixed distance (``CENTRE_OVERSHOOT_MM``, 2 to 3 mm at sheet scale, ISO 128-24) past the feature it
+A centre line goes a short, fixed distance (``CENTRE_OVERSHOOT_MM``, 3 mm on paper; 2 to 5 mm is correct, ISO 128-24) past the feature it
 marks, the SAME distance at both ends: past both faces of a through hole, past the entry face AND past the drill point of a
 blind one. It never reaches a dimension line or a dimension text: the sheet is drawn with the full overshoot, and once every
 item is drawn ``trim`` shortens a line whose way out is closed (the same amount at both ends, so it stays centred on the
@@ -14,7 +14,7 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from sheet_model import AXES, CENTRE_CLEAR_MM, CENTRE_OVERSHOOT_MM, Line
+from sheet_model import AXES, CENTRE_CLEAR_MM, CENTRE_OVERSHOOT_MAX_MM, CENTRE_OVERSHOOT_MM, Line
 
 Point = tuple[float, float]
 Rect = tuple[float, float, float, float]
@@ -49,6 +49,38 @@ def side_line(ctx: Any, view: str, a: Point, b: Point, over: float = CENTRE_OVER
     line = Line(a[0] - ux * over, a[1] - uy * over, b[0] + ux * over, b[1] + uy * over, AXES)
     ctx.extras.setdefault(KEY, []).append(CentreLine(line, a, b, view, str(ctx.extras.get("current") or ""), fixed, reason))
     return line
+
+
+NEAR_OUTLINE_MM = 4.0  # an end of a cylinder this near the outline of the part stops short of it by a chamfer, a round or a cone
+
+
+def _outline(ctx: Any, view: Any) -> Rect:
+    """The rectangle (page mm) the outline of the part has in ``view``: its model box projected, else the box of the view."""
+    box = ctx.extras.get("model_box")
+    if box is None:
+        return tuple(view.box)  # type: ignore[return-value]
+    corners = [view.project((x, y, z)) for x in (box[0][0], box[1][0]) for y in (box[0][1], box[1][1]) for z in (box[0][2], box[1][2])]
+    return (min(c[0] for c in corners), min(c[1] for c in corners), max(c[0] for c in corners), max(c[1] for c in corners))
+
+
+def reach_outline(ctx: Any, view: Any, a: Point, b: Point) -> tuple[Point, Point]:
+    """The ends ``a`` and ``b`` (page mm) of the axis of a cylinder, with an end that stops short of the OUTLINE of the part only by
+    its chamfer (a round, a cone: ``NEAR_OUTLINE_MM`` at most) carried to the outline: the overhang of the centre line (ISO 128:
+    2 to 5 mm) is counted from the outline of the part, not from where the straight side of the cylinder stops."""
+    left, bottom, right, top = _outline(ctx, view)
+    if abs(a[1] - b[1]) <= 1e-3 < abs(a[0] - b[0]):
+        axis, low, high = 0, left, right
+    elif abs(a[0] - b[0]) <= 1e-3 < abs(a[1] - b[1]):
+        axis, low, high = 1, bottom, top
+    else:
+        return a, b
+    ends = [list(a), list(b)]
+    first, last = sorted(ends, key=lambda p: p[axis])
+    if 0.0 < first[axis] - low <= NEAR_OUTLINE_MM:
+        first[axis] = low
+    if 0.0 < high - last[axis] <= NEAR_OUTLINE_MM:
+        last[axis] = high
+    return (ends[0][0], ends[0][1]), (ends[1][0], ends[1][1])
 
 
 def overshoots(rec: CentreLine) -> tuple[float, float]:
@@ -160,6 +192,6 @@ def crossings(ctx: Any) -> list[tuple[CentreLine, str]]:
             crossed = crossed or any(_crosses(s, end, direction, reach) is not None for s in segments)
         if crossed:
             out.append((rec, "crosses"))
-        elif max(first, last) > CENTRE_OVERSHOOT_MM + OVERSHOOT_TOL_MM and not rec.reason:
+        elif max(first, last) > CENTRE_OVERSHOOT_MAX_MM + OVERSHOOT_TOL_MM and not rec.reason:
             out.append((rec, "long"))
     return out
