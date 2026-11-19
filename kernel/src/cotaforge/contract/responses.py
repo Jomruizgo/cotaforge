@@ -313,13 +313,21 @@ class DrawingResult(BaseModel, frozen=True):
     removed: bool = False
     waited_s: float = 0.0
     warnings: tuple[str, ...] = ()
-    projection: Literal["techdraw", "hlr"] = "techdraw"
+    step_findings: tuple[str, ...] = ()  # an add / update: the blocking findings of the view, crossing and empty-sheet rules that THIS step brought ("id: message")
     angle: Literal["first", "third"] = "first"
     changed: tuple[str, ...] = ()  # ids of the items this call added or took off (the rest is the sheet as it was)
     window: str = ""  # what the call did to the objects of the CAD's sheet window ("1 new", "unchanged")
     kept: tuple[str, ...] = ()  # a rebuild: what it kept of the sheet it replaced (items, answers, reviewer)
     unresolved: tuple[str, ...] = ()  # a rebuild: the kept items that no longer resolve against the part, and why
     discarded: tuple[str, ...] = ()  # a rebuild with ``fresh``: what it threw away
+    layout_placed: tuple[str, ...] = ()  # ``layout``: the items it moved (each now carries its side/offset_mm/elbow_mm)
+    layout_unplaced: tuple[str, ...] = ()  # ``layout``: what it could not place ("id: why"), never dropped silently
+    layout_fits: bool = True  # ``layout``: whether the views and the room their annotations need fit the area
+    layout_needed: tuple[float, float] = (0.0, 0.0)  # ``layout``: the width and height (mm) they need
+    page_state: "DrawingSheetInfo | None" = None
+    """An add / update / remove: the sheet as the step left it, read from the sheet the step has just composed (no
+    second compose, no review): its facts and measures, its answers and the review state, and as findings only the step's
+    own checks. The per-step line of the reply is built from it; a full ``review`` lists the rest."""
 
 
 class DrawingItemInfo(BaseModel, frozen=True):
@@ -338,6 +346,9 @@ class DrawingAnswer(BaseModel, frozen=True):
 
     verdict: Literal["applies", "not_applies"]
     text: str
+    ordered_by: str = ""
+    """The engineer who ordered a ``not_applies`` the harness would not accept on its own (a measured finding or
+    requirement): his name; his words are quoted in ``text``. Empty: the agent answered by itself."""
 
 
 class DrawingFinding(BaseModel, frozen=True):
@@ -397,6 +408,76 @@ class DrawingReviewRequest(BaseModel, frozen=True):
     at: float
 
 
+class DrawingMeasure(BaseModel, frozen=True):
+    """A value one dimension item of the sheet gives DIRECTLY (a distance between two features, a diameter, a radius, the
+    overall size, the diameter of a called-out hole), measured on the model; toleranced: it carries a fit or tolerance."""
+
+    id: str
+    kind: Literal["distance", "diameter", "radius", "overall", "hole"]
+    value_mm: float
+    toleranced: bool = False
+
+
+class DrawingComponent(BaseModel, frozen=True):
+    """One position of the parts list of an assembly: its designation and the reference (drawing number) the row prints."""
+
+    name: str
+    reference: str = ""
+
+
+class DrawingWeldBody(BaseModel, frozen=True):
+    """One position of the cut list of a welded part, with the section MEASURED of its body (the proposal for its designation,
+    never the designation): ``kind`` is ``tube`` (``section_mm`` width x height, ``wall_mm`` the wall), ``bar`` (width x
+    thickness) or ``plate`` (its thickness); ``named``: the sheet carries the designer's designation."""
+
+    position: int
+    instances: tuple[str, ...]
+    reference: str = ""
+    kind: Literal["tube", "bar", "plate"]
+    section_mm: tuple[float, ...] = ()
+    wall_mm: float = 0.0
+    named: bool = False
+
+
+class DrawingWeldJoint(BaseModel, frozen=True):
+    """A group of identical joints of a welded part (same kind, thinner wall and seam), measured: ``pairs`` are the two bodies
+    of each, the rest the weld the harness would propose (a fillet of throat max(3, 0.7 x the wall), never applied);
+    ``welded``: a weld item of the sheet covers all of them."""
+
+    kind: str
+    pairs: tuple[tuple[str, str], ...]
+    length_mm: float
+    thin_mm: float
+    weld_kind: str
+    size_mm: float
+    size_kind: str = "throat"
+    all_around: bool = False
+    welded: bool = False
+
+
+class DrawingWeldMember(BaseModel, frozen=True):
+    """One body that stands on the plate of a welded part, with its box (low corner, high corner; mm, document axes)."""
+
+    id: str
+    box: tuple[tuple[float, float, float], tuple[float, float, float]]
+
+
+class DrawingWeldPlacement(BaseModel, frozen=True):
+    """Where the members stand on the one plate (``base``) of a welded part, measured: what the welder needs located."""
+
+    base: str
+    base_box: tuple[tuple[float, float, float], tuple[float, float, float]]
+    members: tuple[DrawingWeldMember, ...] = ()
+
+
+class DrawingWeldPlan(BaseModel, frozen=True):
+    """What a welded part still asks of its designer: the bodies of the cut list and the groups of its joints."""
+
+    bodies: tuple[DrawingWeldBody, ...] = ()
+    joints: tuple[DrawingWeldJoint, ...] = ()
+    placement: DrawingWeldPlacement | None = None
+
+
 class DrawingSheetInfo(BaseModel, frozen=True):
     sheet: str
     template: str
@@ -404,7 +485,6 @@ class DrawingSheetInfo(BaseModel, frozen=True):
     page_mm: tuple[float, float]
     scale: float
     body: str | None = None
-    projection: Literal["techdraw", "hlr"] = "techdraw"
     angle: Literal["first", "third"] = "first"
     views: tuple[str, ...] = ()
     fields: dict[str, str] = {}
@@ -425,9 +505,28 @@ class DrawingSheetInfo(BaseModel, frozen=True):
     """Who the engineer chose to review this sheet (empty: no answer yet); it stays through the changes of the sheet."""
     printed: tuple[str, ...] = ()
     """The texts the sheet prints (dimensions, callouts, notes, title block): what a reader without the model has."""
+    facts: dict[str, int] = {}
+    """With ``review``: what the CAD measured on the part and found on the sheet that the table of requirements of
+    a drawing reads (``cotaforge_mcp.drawing_requirements``): a count per fact name (threaded holes, fit holes, notes
+    found, weld items...). Empty: this CAD does not report them and no requirement is evaluated."""
+    measures: tuple[DrawingMeasure, ...] = ()
+    """With review: the value each dimension item of the sheet states by itself (see DrawingMeasure)."""
+    components: tuple[DrawingComponent, ...] = ()
+    """With review, an assembly: each position of the parts list and the reference (drawing number) its row prints."""
+    weldment: DrawingWeldPlan | None = None
+    """With review, a welded part: its bodies with the measured section and its groups of joints."""
     native: tuple[str, ...] = ()
     """The objects on the page that no item made (a view, a dimension, a note, a hatch added by a native script): they
     show in the capture and the PDF, but the review does not read them."""
+    composed: dict[str, Any] = {}
+    """What the order that composed the sheet recorded (``signature``: the decisions that affect the whole sheet) and
+    the items edited in place since (``pinned``). Empty: the sheet was not composed in one order."""
+    checked_codes: tuple[str, ...] = ()
+    """The finding codes this read ran, when it is the sheet as a step left it (``DrawingResult.page_state``: only the
+    step's own rules run). Empty: a full review, whose findings are all of them."""
+
+
+DrawingResult.model_rebuild()
 
 
 class DescribeDrawingResult(BaseModel, frozen=True):
@@ -461,11 +560,44 @@ class SheetOutput(BaseModel, frozen=True):
     warnings: tuple[str, ...] = ()
 
 
+class SheetFinding(BaseModel, frozen=True):
+    """Something measured on the sheet that lies wrong (``kind``: ``overlap``, ``crossing``, ``stack_order``,
+    ``stack_gap``, ``outside``): ``text`` for the agent and the ``box`` on the page (mm, y up) where to look."""
+
+    kind: str
+    text: str
+    box: tuple[float, float, float, float]
+    view: str = ""
+    items: tuple[str, ...] = ()
+
+
+class SheetCrop(BaseModel, frozen=True):
+    """A zoomed image written next to the capture: ``label`` says which view and region it shows, ``findings`` the indexes
+    (in ``CaptureDrawingResult.findings``) of the findings it holds."""
+
+    label: str
+    view: str
+    region: tuple[float, float, float, float]
+    path: str
+    size_px: tuple[int, int]
+    px_per_mm: float
+    findings: tuple[int, ...] = ()
+
+
 class CaptureDrawingResult(SheetOutput, frozen=True):
-    """The sheet image: its size in pixels and, with a ``region``, the part of the sheet it shows (page mm)."""
+    """The sheet image: its size in pixels and, with a ``region``, the part of the sheet it shows (page mm). ``edits`` is
+    the sheet's change counter at the moment of the capture. ``findings`` is what was measured on the sheet (always, for the
+    whole sheet); with ``crops`` in the request, ``zoomed`` are the crops written next to the image and ``left_out`` the
+    areas the cap on their number left out."""
 
     size_px: tuple[int, int] = (0, 0)
     region: tuple[float, float, float, float] | None = None
+    sheet: str = ""
+    edits: int = 0
+    annotations: int = 0
+    findings: tuple[SheetFinding, ...] = ()
+    zoomed: tuple[SheetCrop, ...] = ()
+    left_out: tuple[str, ...] = ()
 
 
 class ExportDrawingResult(SheetOutput, frozen=True):

@@ -55,10 +55,18 @@ def test_the_spanish_role_tokens_are_aliases(old: str, new: str) -> None:
 # ---- the base memory ids -------------------------------------------------------------------------------------------
 
 
+ADDED_AFTER_THE_RENAME = {"machining-turned-end-chamfer"}
+
+
 def test_every_old_base_id_points_to_a_base_entry_that_exists() -> None:
     store = MemoryStore(base_dir=base_memory_dir())
     ids = {item.entry.id for item in store.scope_entries(Scope.base)}
-    assert len(LEGACY_IDS) == len(ids) and set(LEGACY_IDS.values()) == ids
+    # LEGACY_IDS is the frozen table of the 0.10 rename: an entry added later has an English id from the start
+    assert (
+        set(LEGACY_IDS.values()) | ADDED_AFTER_THE_RENAME == ids
+        and not set(LEGACY_IDS.values()) & ADDED_AFTER_THE_RENAME
+    )
+    assert len(LEGACY_IDS) == len(set(LEGACY_IDS.values()))
     assert LEGACY_BY_NEW == {new: old for old, new in LEGACY_IDS.items()}
     assert not set(LEGACY_IDS) & ids, "an old id never collides with a new one"
 

@@ -34,7 +34,7 @@ from cotaforge.memory import (
 )
 from pydantic import ValidationError
 
-from cotaforge_mcp import design_memory, rules
+from cotaforge_mcp import design_memory, engineer_orders, rules
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.reply import Reply, ToolError, ok
 from cotaforge_mcp.schemas import MemoryArgs
@@ -432,6 +432,7 @@ def _approve(session: "Session", store: MemoryStore, args: MemoryArgs) -> Reply:
             code="not_proposed",
             field_name="id",
         )
+    engineer_orders.confirmed(f"the approval of memory entry {args.id}")
     said = f"by {args.by.strip()} ({' '.join(args.text.split())})"
     scope = item.scope
     if scope is Scope.user:
@@ -473,7 +474,48 @@ def _approve(session: "Session", store: MemoryStore, args: MemoryArgs) -> Reply:
     )
 
 
+MAX_BATCH = 12
+"""Entries read or answered in one call (a milestone calls for a handful; more is a list to split)."""
+
+
+def _get_many(session: "Session", store: MemoryStore, ids: list[str]) -> Reply:
+    """``get`` of several entries in one call: each as ``get`` prints it, in the order asked, each marked as read."""
+    wanted = list(dict.fromkeys(ids))
+    if len(wanted) > MAX_BATCH:
+        raise ToolError(f"ids: at most {MAX_BATCH} entries in one call", code="invalid_input", field_name="ids")
+    texts = [_get(session, store, entry_id).text for entry_id in wanted]
+    return ok("\n\n".join(texts), limit=4000 * len(wanted))
+
+
+def _answer_many(session: "Session", answers: dict[str, str]) -> Reply:
+    """Several answers in one call, in order. One that is not accepted stops the batch: the ones before it stay
+    recorded, and the error says which, so that the next call carries only the rest."""
+    if len(answers) > MAX_BATCH:
+        raise ToolError(f"answers: at most {MAX_BATCH} in one call", code="invalid_input", field_name="answers")
+    lines: list[str] = []
+    with session.lock:
+        for position, (entry_id, text) in enumerate(answers.items(), start=1):
+            if not entry_id or not text:
+                raise _missing(
+                    f"a text for answer {position}",
+                    "answer",
+                    'memory(action="answer", answers={"x": "applies: welded plate s3 carries the holes"})',
+                )
+            try:
+                lines.append(design_memory.record_answer(session, entry_id, text))
+            except ToolError as failure:
+                done = f"{len(lines)} of {len(answers)} recorded before it" if lines else "none recorded"
+                failure.message = f"answer {position} ({entry_id}): {failure.message}\n({done}; send the rest again)"
+                if lines:
+                    session.dirty = True
+                raise
+        session.dirty = True  # the answers are saved with the next doc save
+    return ok("\n".join(lines), limit=4000)
+
+
 def _answer(session: "Session", args: MemoryArgs) -> Reply:
+    if args.answers:
+        return _answer_many(session, args.answers)
     if not args.id or not args.text:
         raise _missing(
             "id and text",
@@ -481,7 +523,7 @@ def _answer(session: "Session", args: MemoryArgs) -> Reply:
             'memory(action="answer", id="x", text="applies: welded plate s3 carries the hole pattern")',
         )
     with session.lock:
-        line = design_memory.record_answer(session, args.id, args.text)
+        line = design_memory.record_answer(session, args.id, args.text, args.by)
         session.dirty = True  # the answer is saved with the next doc save
     return ok(line)
 
@@ -500,8 +542,8 @@ def _review(session: "Session", args: MemoryArgs) -> Reply:
                 + ("\nanswered:\n" + "\n".join(answered) if answered else ""),
                 code="pending_answers",
                 field_name="stage",
-                usage='memory(action="get", id=...) then memory(action="answer", id=..., text="applies: how, here" '
-                '| "does not apply: why")',
+                usage='memory(action="get", ids=[...]) then memory(action="answer", answers={"<id>": '
+                '"applies: how, here" | "does not apply: why", ...}) (id= and text= take one)',
             )
         head = f"review {stage.value}: ready - {len(answered)} entr{'y' if len(answered) == 1 else 'ies'} answered"
         if not answered:
@@ -541,6 +583,7 @@ def _brief(session: "Session", args: MemoryArgs) -> Reply:
         or args.processes is not None
         or args.drawing_review is not None
         or args.language is not None
+        or args.drawing_flow is not None
     ):
         if mode is not None and mode != design_memory.DEFAULT_DRAWING_REVIEW and not (args.text or "").strip():
             raise ToolError(
@@ -551,7 +594,9 @@ def _brief(session: "Session", args: MemoryArgs) -> Reply:
                 usage='memory(action="brief", drawing_review="own", text="Ana: I review the drawing myself, no fabricator")',
             )
         said = args.text if mode is not None else None
-        brief = design_memory.save_brief(settings, args.sector, args.processes, mode, wait_min, said, args.language)
+        if args.sector is not None or args.processes is not None or mode not in (None, design_memory.DEFAULT_DRAWING_REVIEW):
+            engineer_orders.confirmed("the sector, the processes and who reviews the drawings (the project brief)")
+        brief = design_memory.save_brief(settings, args.sector, args.processes, mode, wait_min, said, args.language, args.drawing_flow)
         verb = "brief updated"
     else:
         brief = design_memory.load_brief(settings)
@@ -579,6 +624,8 @@ def _brief(session: "Session", args: MemoryArgs) -> Reply:
     review = f"; drawing review {brief.drawing_review}"
     if brief.drawing_review == "engineer_or_fabricator":
         review += f" (the engineer chooses within {brief.drawing_review_wait_min} min, else the manufacturer)"
+    if brief.drawing_flow != design_memory.DEFAULT_DRAWING_FLOW:
+        review += f"; drawing flow {brief.drawing_flow}"
     stated = "" if brief.language else " (the default: none stated)"
     return ok(f"{verb}: sector {sector}; processes {processes}{review}; language {brief.lang}{stated}{hint}")
 
@@ -619,8 +666,10 @@ def run(session: "Session", args: MemoryArgs) -> Reply:
     if action == "index":
         return _index(session, store, args)
     if action == "get":
+        if args.ids:
+            return _get_many(session, store, args.ids)
         if not args.id:
-            raise _missing("id (an entry id from the index)", "get", EXAMPLE)
+            raise _missing("id (an entry id from the index), or ids (several)", "get", EXAMPLE)
         return _get(session, store, args.id)
     if action == "search":
         if not args.text or not args.text.strip():

@@ -59,10 +59,10 @@ def keep(folder: Path, name: str, reply_images: list) -> None:  # type: ignore[t
 
 
 async def drawing_with_a_section(cad: Cad, cylinder: str) -> None:
-    await cad.ok("drawing", action="create", template="A3", scale="1:1", title="Manguito", views=["front", "top"])
+    await cad.ok("drawing", action="create", template="A3", scale="1:1", title="Manguito", views=["front", "right"])
     await cad.ok("drawing", action="add", items=[{"type": "view_lines"}, {"type": "hole_dim", "all": True}])
-    sec = await cad.ok("drawing", action="add", items=[{"type": "section", "id": "sec", "holes": "all", "view": "top"}])
-    assert "A-A in the top view" in sec and "centre line" in sec and "thread lines of 1 threaded bore" in sec, sec
+    sec = await cad.ok("drawing", action="add", items=[{"type": "section", "id": "sec", "holes": "all", "view": "right"}])
+    assert "A-A in the right view" in sec and "centre line" in sec and "thread lines of 1 threaded bore" in sec, sec
     items = [
         {"type": "hole_dim", "id": "thr", "all": True, "view": "A-A", "text": "M45x1,5 - 6H"},
         {
@@ -96,7 +96,7 @@ async def test_a_section_carries_its_dimensions_thread_note_and_chain_line_in_th
         keep(shots, "sleeve.png", shot.images)
         assert (
             "TechDraw's own scene of the sheet window" in shot.text
-            and "views on the sheet: front, top, section sec" in shot.text
+            and "views on the sheet: front, right, section sec" in shot.text
         )
         zoom = await cad("drawing", action="capture", region=[20, 130, 200, 250])
         assert not zoom.is_error, zoom.text

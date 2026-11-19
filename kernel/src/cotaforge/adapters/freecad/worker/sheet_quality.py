@@ -2,10 +2,13 @@
 """The quality floor of a drawing, as review findings (no FreeCAD import): what a shop-floor reader would send back that the
 sheet's own placement should have prevented.
 
-* leaders: two callouts whose leaders cross, a leader that goes through the part more than once;
+* leaders: two callouts whose leaders cross, a leader that goes through the part more than once, a leader that crosses a
+  dimension line or an extension line (ISO 128-22: a leader crosses nothing but the outline of the part, once);
 * dimensions: a dimension line or its text inside the outline of a view;
-* positions: a hole located in one direction only (a lone "30"); a hole is located by a dimension, by a datum the default
-  location counts from or by the part's own symmetry (a hole on a plane of symmetry needs no number there);
+* positions: a hole located in one direction only (a lone "30"); a hole is located by a dimension or by the default
+  location (per group of equal holes the spacing and one locator from an edge: what a caliper measures); a group located
+  only by the spacing between its holes has no locator (``hole_group_no_locator``);
+* a tolerance only a special instrument verifies, with no note saying how (``measurement_unstated``);
 * the same dimension in two views (ISO 129);
 * dowel holes that look like registration holes and are not marked;
 
@@ -13,17 +16,21 @@ sheet's own placement should have prevented.
 untouched).
 """
 
+import re
 from typing import Any
 
 import hole_class
 import iso286
 import items_holes
+import sheet_centre
 import sheet_checks
+import sheet_pattern
 import sheet_tol
 from items_common import view_segments
 from items_dims import AXES
 from sheet_collide import Segment, ink_of, segments_cross
 from sheet_context import Context, HoleInfo, ItemError
+from sheet_model import CENTRE_OVERSHOOT_MAX_MM, CENTRE_OVERSHOOT_MM
 from sheet_review import Finding, ReviewInput, _hole_of_ref, _measure, _of, ask_reference
 
 OUTLINE_SLACK_MM = 0.5  # a dimension this close to the outline is on it, not inside it
@@ -36,7 +43,11 @@ def check(data: ReviewInput) -> list[Finding]:
     for part in (
         _leaders,
         _dimensions_inside,
+        _centre_lines,
         _partly_located,
+        _group_locators,
+        _special_measurement,
+        _patterns,
         _dowels,
         _fit_differs,
         _single_view,
@@ -71,6 +82,7 @@ def _leaders(data: ReviewInput) -> list[Finding]:
                     f"The leaders of {' and '.join(ids)} cross: move one (side or offset_mm) so they do not.",
                 )
                 out.append(Finding("leader_crossing", "warning", text, ids, key="+".join(ids)))
+    out += _leaders_across_dimensions(data, leaders)
     if not ctx.views:
         return out
     outline = view_segments(ctx, next(iter(ctx.views.values())))
@@ -85,6 +97,75 @@ def _leaders(data: ReviewInput) -> list[Finding]:
                 "(move it with side or offset_mm to a free side).",
             )
             out.append(Finding("leader_crosses_part", "warning", text, (str(leader["item"]),), key=str(leader["item"])))
+    return out
+
+
+def _leaders_across_dimensions(data: ReviewInput, leaders: list[dict[str, Any]]) -> list[Finding]:
+    """A leader that goes through a dimension line or an extension line (of any dimension or datum of the sheet): the shop
+    reads the callout as pointing at the dimension. One finding per callout, naming it and the items it crosses. Only on a
+    sheet the global layout placed (``layout_planned``): the callouts of a sheet built item by item may cross a dimension line
+    when they must, and say so in their own row."""
+    ctx = data.ctx
+    if not ctx.extras.get("layout_planned"):
+        return []
+    kinds = {str(i["id"]) for i in data.items if i.get("type") in ("datum_dims", "overall", "datum") or _linear_dim(i)}
+    dimensions = [
+        (unit.key, ink_of(unit.key, unit.entities).lines)
+        for unit in ctx.extras.get("units", [])
+        if unit.kind == "item" and unit.key in kinds and unit.entities
+    ]
+    out: list[Finding] = []
+    seen: set[str] = set()
+    for leader in leaders:
+        item = str(leader.get("item") or "")
+        if not item or item in seen:
+            continue
+        crossed = [
+            key
+            for key, lines in dimensions
+            if key != item and any(segments_cross(part, line) for part in _parts(leader) for line in lines)
+        ]
+        if not crossed:
+            continue
+        seen.add(item)
+        ids = (item, *dict.fromkeys(crossed))
+        text = ctx.say(
+            f"La guía de {item} cruza una línea de cota o de extensión de {', '.join(ids[1:])}: una guía no cruza cotas "
+            "(ISO 128-22). Mueve la llamada (side, offset_mm o leader_mm) o la cota (offset_mm) para que quede un camino libre.",
+            f"The leader of {item} crosses a dimension line or an extension line of {', '.join(ids[1:])}: a leader crosses no "
+            "dimension (ISO 128-22). Move the callout (side, offset_mm or leader_mm) or the dimension (offset_mm) to leave a clear way.",
+        )
+        out.append(Finding("leader_crosses_dimension", "warning", text, ids, key="+".join(ids)))
+    return out
+
+
+# --- centre lines -------------------------------------------------------------------------------------------------------
+
+
+def _centre_lines(data: ReviewInput) -> list[Finding]:
+    """A centre line that goes through a dimension line or a dimension text, or farther past its feature than the set
+    overshoot without a reason (ISO 128-24: a short, fixed reach; it never reaches a dimension)."""
+    ctx = data.ctx
+    out: list[Finding] = []
+    for rec, why in sheet_centre.crossings(ctx):
+        first, last = sheet_centre.overshoots(rec)
+        where = f"{rec.item} ({rec.view})" if rec.item else rec.view
+        if why == "crosses":
+            text = ctx.say(
+                f"Un eje de {where} cruza una cota o su texto: un eje sobrepasa el rasgo de 2 a {CENTRE_OVERSHOOT_MAX_MM:g} mm y no llega a ninguna cota "
+                "(acorta el eje con extend_mm o aleja la cota con offset_mm).",
+                f"A centre line of {where} goes through a dimension or its text: a centre line passes its feature by 2 to {CENTRE_OVERSHOOT_MAX_MM:g} mm and "
+                "never reaches a dimension (shorten it with extend_mm or move the dimension with offset_mm).",
+            )
+            out.append(Finding("centre_line_crosses", "warning", text, (rec.item,) if rec.item else (), key=f"{rec.item}:{rec.view}:{rec.line.x1:.1f},{rec.line.y1:.1f}"))
+        else:
+            text = ctx.say(
+                f"Un eje de {where} sobrepasa su rasgo {max(first, last):.1f} mm (lo correcto son 2 a {CENTRE_OVERSHOOT_MAX_MM:g} mm; el eje trae {CENTRE_OVERSHOOT_MM:g}) sin decir por qué: "
+                "añade reason a la línea o acórtalo.",
+                f"A centre line of {where} passes its feature by {max(first, last):.1f} mm (2 to {CENTRE_OVERSHOOT_MAX_MM:g} mm is correct; the harness gives {CENTRE_OVERSHOOT_MM:g}) "
+                "without saying why: add reason to the line or shorten it.",
+            )
+            out.append(Finding("centre_line_long", "warning", text, (rec.item,) if rec.item else (), key=f"{rec.item}:{rec.view}:{rec.line.x1:.1f},{rec.line.y1:.1f}"))
     return out
 
 
@@ -154,6 +235,7 @@ def _partly_located(data: ReviewInput) -> list[Finding]:
         # the default location: the axes it positioned each hole along (a datum edge or the plane of symmetry)
         for index, axes in ctx.extras.get("loc_axes", {}).items():
             axes_of.setdefault(index, set()).update(axes)
+    _aligned_centres(data, axes_of, full)
     chained = {f.key for f in sheet_checks._hole_references(data)}  # noqa: SLF001 - hole_no_reference says it already
     out: list[Finding] = []
     for hole in ctx.holes:
@@ -171,6 +253,197 @@ def _partly_located(data: ReviewInput) -> list[Finding]:
         text += ask_reference(ctx, {hole.index})
         out.append(Finding("hole_partly_located", "warning", text, ids, key=sheet_checks.hole_key([hole])))
     return out
+
+
+def _edge_located(data: ReviewInput) -> dict[int, set[str]]:
+    """The axes along which an edge, a face or a datum of the part (not another hole) locates each hole: a distance dimension
+    from a face or an edge to the hole, a ``datum_dims`` baseline, the default location's locator."""
+    ctx = data.ctx
+    edged: dict[int, set[str]] = {}
+    for m in _measure(data):
+        if bool(m.holes[0]) != bool(m.holes[1]):  # one end is a hole, the other is the part itself
+            for index in m.holes[0] | m.holes[1]:
+                edged.setdefault(index, set()).add(m.axis)
+    for spec in _of(data, "datum_dims"):
+        if spec.get("auto"):
+            continue
+        view = ctx.views.get(str(spec.get("view", "top")))
+        wanted = spec.get("holes", "all")
+        for h in ctx.holes:
+            if view is not None and view.looks_along(h.direction) and (wanted == "all" or any(h.on_axis(p) for p in wanted)):
+                edged.setdefault(h.index, set()).update(_plane_axes(h) or ())
+    if any(i.get("type") == "datum_dims" and i.get("auto") and _ok(data, i) for i in data.items):
+        for index, axes in ctx.extras.get("loc_edge", {}).items():
+            edged.setdefault(index, set()).update(axes)
+    _chain_edge(data, edged)
+    return edged
+
+
+def _chain_edge(data: ReviewInput, edged: dict[int, set[str]]) -> None:
+    """A hole dimensioned from another hole that is itself located from an edge along the same axis is located from that edge
+    through it (a screw spaced from a dowel that stands 15 from the left face is 15 + the spacing from it): the chain goes on
+    until nothing more follows, across groups of different diameter, and along a row the centres of which share the other
+    coordinate (``_aligned_centres``)."""
+    links = [(m.axis, a, b) for m in _measure(data) for a in m.holes[0] for b in m.holes[1] if a != b]
+    changed = True
+    while changed:
+        before = sum(len(v) for v in edged.values())
+        for axis, a, b in links:
+            for source, target in ((a, b), (b, a)):
+                if axis in edged.get(source, ()):
+                    edged.setdefault(target, set()).add(axis)
+        _aligned_centres(data, edged, set())
+        changed = sum(len(v) for v in edged.values()) > before
+
+
+def _group_locators(data: ReviewInput) -> list[Finding]:
+    """A group of equal holes located only by the distance between its holes (or by the symmetry of the part) in some
+    direction: the shop measures a plate with a caliper, and a spacing says where the holes are from each other, not where the
+    group is on the part. Each group needs ONE locator from an edge or a face of the part in each direction it is spaced
+    (the default location draws it; a hole nobody dimensions from another is ``hole_not_located``'s)."""
+    ctx = data.ctx
+    edged = _edge_located(data)
+    spaced: dict[int, set[str]] = {}
+    ids: dict[int, list[str]] = {}
+    for m in _measure(data):
+        if m.holes[0] and m.holes[1]:
+            for index in m.holes[0] | m.holes[1]:
+                spaced.setdefault(index, set()).add(m.axis)
+                ids.setdefault(index, []).append(str(m.spec["id"]))
+    if not spaced:
+        return []
+    chained = {f.key for f in sheet_checks._hole_references(data)}  # noqa: SLF001 - hole_no_reference says it already
+    polar = set(ctx.extras.get("polar_located", ()))
+    groups: dict[tuple[Any, ...], list[list[HoleInfo]]] = {}
+    for stack in items_holes._stacks(list(ctx.holes)):  # noqa: SLF001
+        if sheet_checks.hole_key(stack) in chained or {h.index for h in stack} & polar:
+            continue
+        key = (tuple(sorted(round(h.diameter, 3) for h in stack)), tuple(round(abs(c), 3) for c in stack[0].direction))
+        groups.setdefault(key, []).append(stack)
+    out: list[Finding] = []
+    for stacks in groups.values():
+        indexes = {h.index for stack in stacks for h in stack}
+        axes_spaced = set().union(*(spaced.get(i, set()) for i in indexes))
+        axes_edged = set().union(*(edged.get(i, set()) for i in indexes))
+        missing = sorted(axes_spaced - axes_edged)
+        if not missing:
+            continue
+        first = stacks[0]
+        name = f"{len(stacks)}× " + " + ".join(f"Ø{ctx.num(h.diameter)}" for h in first)
+        where = ", ".join(missing)
+        text = ctx.say(
+            f"Los agujeros {name} se ubican solo por la distancia entre ellos en {where} (o por la simetría de la pieza): "
+            "falta una cota desde una arista o una cara de la pieza hasta el agujero más cercano del grupo. Un calibre mide "
+            "desde un borde; la separación sola no dice dónde está el grupo en la pieza.",
+            f"The holes {name} are located only by the distance between them along {where} (or by the symmetry of the part): "
+            "a dimension from an edge or a face of the part to the nearest hole of the group is missing. A caliper measures "
+            "from an edge; the spacing alone does not say where the group is on the part.",
+        )
+        text += ask_reference(ctx, indexes)  # no flat face a caliper reaches there: the designer says what it is counted from
+        items = tuple(dict.fromkeys(i for index in indexes for i in ids.get(index, [])))
+        out.append(Finding("hole_group_no_locator", "warning", text, items, key=f"{sheet_checks.hole_key(first)}:{where}"))
+    return out
+
+
+SPECIAL_TOOLS = {
+    "position": r"posici.n|position",
+    "concentricity": r"concentric|coaxial",
+    "symmetry": r"simetr|symmetr",
+    "profile_line": r"perfil|profile",
+    "profile_surface": r"perfil|profile",
+    "cylindricity": r"cilindric",
+    "circularity": r"circularidad|redondez|roundness|circularity",
+}
+"""The geometric tolerances no caliper, micrometer, height gauge or dial indicator can check (a CMM for a position, a roundness
+tester, a profile projector): the word each is called by in a note. A runout or a coaxiality is not here: the lathe shop checks
+them with the dial indicator between centres or on V-blocks, an instrument every shop has."""
+_HOW_MEASURED = re.compile(r"verific|medir|medici|comprob|inspecc|calibre pasa|galga|verify|measure|inspect|gauge|check", re.I)
+
+
+def _feature_numbers(data: ReviewInput, spec: dict[str, Any]) -> set[str]:
+    """How a note names the feature a frame is on: the diameters of what its callout says (``Ø6`` of ``4× Ø6 H7``) or, for a
+    dimension, its value. Empty when the frame has no dimension to read them from (the frame is on a face)."""
+    found: set[str] = set()
+    for native in data.ctx.extras.get("natives", {}).get(str(spec.get("on", "")), []):
+        text = getattr(native, "text", None)
+        if text:
+            found |= {m.replace(",", ".") for m in re.findall(r"Ø\s*(\d+(?:[.,]\d+)?)", str(text))}
+        elif getattr(native, "expected", None) is not None:
+            found.add(f"{native.expected:g}")
+    return found
+
+
+def _names_feature(note: str, numbers: set[str]) -> bool:
+    flat = note.replace(",", ".")
+    return any(re.search(rf"(?<![\d.A-Za-z]){re.escape(n)}(?!\d|\.\d)", flat) for n in numbers)
+
+
+def _special_measurement(data: ReviewInput) -> list[Finding]:
+    """A tolerance only a special instrument can verify (see ``SPECIAL_TOOLS``) with no note that says how it is measured: the
+    shop assumes the general tools (caliper, micrometer, depth gauge, height gauge, dial indicator, thread and plug gauges), so
+    what needs another one says which, and the shop gets it or the part goes elsewhere (``Posición de los 4× Ø6 H7: verificar
+    en MMC``). The note is for THAT feature: it names it (the diameter of the holes the frame is on), so one loose "check
+    position" does not close the frame of every other feature."""
+    ctx = data.ctx
+    notes = sheet_checks._notes(data)  # noqa: SLF001
+    out: list[Finding] = []
+    for spec in _of(data, "gdt"):
+        char = str(spec.get("char", ""))
+        words = SPECIAL_TOOLS.get(char)
+        if words is None:
+            continue
+        numbers = _feature_numbers(data, spec)
+        if any(
+            _HOW_MEASURED.search(n) and re.search(words, n, re.I) and (not numbers or _names_feature(n, numbers))
+            for n in notes
+        ):
+            continue
+        text = ctx.say(
+            f"{spec['id']} ({char}): esta tolerancia no se verifica con el calibre, el micrómetro, el gramil ni el comparador de un "
+            "taller general (hace falta una máquina de medir por coordenadas, un comprobador de redondez o un proyector de perfiles) "
+            "y la hoja no dice cómo medirla en esa característica. Añade una nota que la nombre, p. ej. «Posición de los 4× Ø6 H7: "
+            "verificar en MMC»; el taller consigue el medio o la pieza se hace en otro.",
+            f"{spec['id']} ({char}): this tolerance cannot be checked with the caliper, micrometer, height gauge or dial indicator "
+            "of a general shop (it needs a coordinate measuring machine, a roundness tester or a profile projector) and the sheet "
+            "does not say how to measure it on this feature. Add a note that names it, e.g. 'Position of the 4× Ø6 H7: verify on a "
+            "CMM'; the shop gets the tool or the part is made elsewhere.",
+        )
+        out.append(Finding("measurement_unstated", "warning", text, (str(spec["id"]),), key=str(spec["id"])))
+    return out
+
+
+ALIGNED_MM = 0.1  # two hole centres this close across a dimension share that coordinate
+
+
+def _aligned_centres(data: ReviewInput, axes_of: dict[int, set[str]], full: set[int]) -> None:
+    """A bolt pattern is dimensioned centre to centre: a distance between two holes along x also places the second one
+    along y when their centres share y (a row) and the first is located along y -- the dimension runs along the row, and
+    the row's position is the first hole's. Adds those axes to ``axes_of``, until nothing more follows, so a pattern
+    located from one corner is not called partly located hole by hole."""
+    ctx = data.ctx
+    by_index = {h.index: h for h in ctx.holes}
+    plane_of = {h.index: _plane_axes(h) for h in ctx.holes}
+
+    def known(index: int) -> set[str]:
+        return set(plane_of[index] or ()) if index in full else axes_of.get(index, set())
+
+    links = [(m.axis, a, b) for m in _measure(data) for a in m.holes[0] for b in m.holes[1] if a != b]
+    changed = True
+    while changed:
+        changed = False
+        for axis, a, b in links:
+            ha, hb = by_index.get(a), by_index.get(b)
+            plane = plane_of.get(a)
+            if ha is None or hb is None or not plane or plane != plane_of.get(b):
+                continue
+            for other in plane - {axis}:
+                at = "xyz".index(other)
+                if abs(ha.centre[at] - hb.centre[at]) > ALIGNED_MM:
+                    continue
+                for source, target in ((a, b), (b, a)):
+                    if other in known(source) and other not in known(target) and target not in full:
+                        axes_of.setdefault(target, set()).add(other)
+                        changed = True
 
 
 def _ok(data: ReviewInput, spec: dict[str, object]) -> bool:
@@ -264,9 +537,9 @@ def _dowels(data: ReviewInput) -> list[Finding]:
         if stacks and all(items_holes.looks_like_dowel(spec, s) for s in stacks):
             text = ctx.say(
                 f"{spec['id']}: agujeros pasantes con ajuste {spec['fit']}. Si son de pasador o de registro, márcalos con "
-                "dowel=true (la llamada lleva ◎ y cada agujero un anillo); si no, ignóralo.",
+                "dowel=true (la llamada termina en «registro» y cada agujero lleva un anillo); si no, ignóralo.",
                 f"{spec['id']}: through holes with fit {spec['fit']}. If they are dowel or registration holes, mark them "
-                "with dowel=true (the callout gets ◎ and each hole a ring); if not, ignore this.",
+                "with dowel=true (the callout ends in 'dowel' and each hole gets a ring); if not, ignore this.",
             )
             out.append(Finding("dowel_unmarked", "info", text, (str(spec["id"]),), key=str(spec["id"])))
     return out
@@ -355,7 +628,9 @@ def _single_view(data: ReviewInput) -> list[Finding]:
         return []
     from sheet_review import _hole_like  # noqa: PLC0415 - a helper of the checks of that module
 
-    if any(f.kind in ("chamfer", "fillet") or (f.kind == "cut" and not _hole_like(ctx, f)) for f in data.features):
+    if any(
+        (f.kind in ("chamfer", "fillet") and not f.outline) or (f.kind == "cut" and not _hole_like(ctx, f)) for f in data.features
+    ):
         return []
     view = next((v for v in standard if ctx.views[v].looks_along(axis)), None)
     if view is None:
@@ -369,3 +644,79 @@ def _single_view(data: ReviewInput) -> list[Finding]:
         "goes as a note and the scale grows.",
     )
     return [Finding("single_view_enough", "info", text, tuple(n for n in standard if n != view), key=view)]
+
+
+# --- circular patterns ----------------------------------------------------------------------------------------------------
+
+
+def _pitch_in_note(data: ReviewInput, pattern: sheet_pattern.Pattern) -> bool:
+    """Whether a note states the pitch circle of ``pattern`` (``Ø70``, ``PCD 70``, ``círculo de 70``): its number on the sheet
+    only in words, where no one can measure or check it."""
+    number = re.escape(f"{round(pattern.diameter, 2):g}").replace("\\.", "[.,]")
+    wanted = r"(Ø|⌀|PCD|DPC|c[ií]rculo|circle)\s*(de\s+|of\s+)?" + number + r"(?![0-9])"
+    return any(re.search(wanted, text, re.I) for text in sheet_checks._notes(data))  # noqa: SLF001 - the notes of the sheet
+
+
+def _by_coordinates(data: ReviewInput, pattern: sheet_pattern.Pattern) -> tuple[str, ...]:
+    """The items that locate holes of ``pattern`` by distances from an edge or a datum (X / Y) instead of from its axis."""
+    ctx = data.ctx
+    ids: list[str] = []
+    for spec in data.items:
+        kind = spec.get("type")
+        if kind == "dim" and spec.get("kind") == "distance" and _holes_of(ctx, spec) & pattern.indexes:
+            ids.append(str(spec["id"]))
+        elif kind == "datum_dims" and not spec.get("auto") and _ok(data, spec):
+            view = ctx.views.get(str(spec.get("view", "top")))
+            wanted = spec.get("holes", "all")
+            if view is not None and any(
+                h.index in pattern.indexes and view.looks_along(h.direction) and (wanted == "all" or any(h.on_axis(p) for p in wanted))
+                for h in ctx.holes
+            ):
+                ids.append(str(spec["id"]))
+        elif kind == "datum_dims" and spec.get("auto") and _ok(data, spec) and pattern.indexes & set(ctx.extras.get("loc_axes", {})):
+            ids.append(str(spec["id"]))
+    return tuple(ids)
+
+
+def _patterns(data: ReviewInput) -> list[Finding]:
+    """A circular pattern of holes is located by its pitch circle diameter (a diameter dimension on the view that shows it) and,
+    when its first hole is not on a centre line, the angle of that hole (ISO 129-1): never by the X / Y of each hole, and never
+    with its pitch circle only in a note. The harness draws and dimensions every pattern by itself (``pattern_dim``), so this
+    says what an item of the engineer, or a pattern taken off, left wrong. A pattern whose coordinates the intent declares
+    functional is answered, not changed."""
+    ctx = data.ctx
+    out: list[Finding] = []
+    for pattern in sheet_pattern.patterns_of(ctx):
+        polar = ctx.extras.get("polar", {}).get(min(pattern.reps))
+        ids = _by_coordinates(data, pattern)
+        problems: list[str] = []
+        label = f"{pattern.count}× Ø{ctx.num(round(pattern.diameter, 2))}"
+        if ids:
+            problems.append(ctx.say("sus agujeros se ubican por coordenadas X / Y", "its holes are located by X / Y coordinates"))
+        if polar is None or not polar["diameter"]:
+            note = _pitch_in_note(data, pattern)
+            problems.append(
+                ctx.say(
+                    "el diámetro del círculo de paso está " + ("solo en una nota" if note else "sin acotar") + " (una cota Ø sobre la vista)",
+                    "the pitch circle diameter is " + ("in a note only" if note else "not dimensioned") + " (a Ø dimension on the view)",
+                )
+            )
+        elif polar["need"] > polar["given"]:
+            problems.append(
+                ctx.say(
+                    "falta el ángulo del primer agujero respecto de una línea de centros (pattern_dim kind=angle)",
+                    "the angle of the first hole from a centre line is missing (pattern_dim kind=angle)",
+                )
+            )
+        if not problems:
+            continue
+        text = ctx.say(
+            f"Patrón circular {label}: " + "; ".join(problems) + ". Se ubica con el diámetro del círculo de paso y el ángulo, no con "
+            "X / Y (ISO 129-1): {\"type\":\"pattern_dim\",\"at\":[x,y,z]} (un punto del eje de uno de sus agujeros). Si la intención "
+            "declara esas coordenadas funcionales, responde con esa razón.",
+            f"Circular pattern {label}: " + "; ".join(problems) + ". It is located by its pitch circle diameter and angle, not by "
+            "X / Y (ISO 129-1): {\"type\":\"pattern_dim\",\"at\":[x,y,z]} (a point on the axis of one of its holes). If the intent "
+            "declares those coordinates functional, answer with that reason.",
+        )
+        out.append(Finding("pattern_not_polar", "warning", text, ids, key=f"@{min(pattern.reps)}"))
+    return out

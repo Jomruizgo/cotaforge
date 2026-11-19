@@ -25,7 +25,7 @@ from .test_sheet_quality import DOWELS, draw, plate  # noqa: E402
 PRECISION = (255, 128, 128)
 PLAIN = (0, 192, 0)
 THREADED = (128, 128, 255)
-BASE = (0.8, 0.8, 0.8, 0.0)
+BASE = (0.8, 0.8, 0.8, 1.0)
 kernel_classify = importlib.import_module("cotaforge.conventions.classify")
 
 
@@ -134,7 +134,7 @@ def test_a_stale_list_after_a_later_feature_is_made_again_from_the_registry() ->
 
 
 def test_the_engineers_own_colour_is_respected() -> None:
-    red = (1.0, 0.0, 0.0, 0.0)
+    red = (1.0, 0.0, 0.0, 1.0)
     shown = [BASE, red, rgba(PRECISION)]  # he painted face 1 red by hand
     new = hole_paint.plan(shown, 3, {1: PLAIN, 2: PRECISION}, [PRECISION, PLAIN], BASE)
     assert new is None  # face 1 stays red, face 2 is already right
@@ -148,7 +148,7 @@ def test_a_colour_of_ours_on_a_face_that_is_no_longer_a_hole_goes_back_to_the_ba
 
 
 def test_a_uniform_object_the_engineer_painted_is_left_alone() -> None:
-    blue = (0.0, 0.0, 1.0, 0.0)
+    blue = (0.0, 0.0, 1.0, 1.0)
     new = hole_paint.plan([blue], 3, {1: PRECISION}, [PRECISION], BASE)
     assert new is None  # his whole-object colour is not the base: no face of it is ours to repaint
 

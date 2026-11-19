@@ -231,6 +231,47 @@ def test_one_balloon_per_visible_position_numbered_like_the_list_and_the_hidden_
     assert ctx.extras["balloons"]["drawn"] == {1, 2, 3} and 4 in ctx.extras["balloons"]["hidden"]
 
 
+class SharedGeometry(AssemblyGeometry):
+    """Each view shows a share of each part: ``shares[view direction][instance]`` (a part a view does not list is hidden there)."""
+
+    def __init__(self, shares: dict[tuple[float, ...], dict[str, float]]) -> None:
+        super().__init__()
+        self.shares = shares
+
+    def instance_anchors(self, instances: list[str], frame: Any, offsets: dict[str, sc.Vec3], margin_mm: float, outward: bool = False) -> dict[str, list[sc.Vec3]]:
+        seen = self.shares.get(tuple(frame[2]), {})
+        return {c: [VISIBLE[c]] if c in seen and c in VISIBLE else [] for c in instances}
+
+    def visible_share(self, instances: list[str], frame: Any, offsets: dict[str, sc.Vec3]) -> dict[str, float]:
+        return {c: self.shares.get(tuple(frame[2]), {}).get(c, 0.0) for c in instances}
+
+
+def test_balloons_with_no_view_given_spread_over_the_views_each_position_once_where_its_part_is_best_seen() -> None:
+    """The owner's practice. It used to put every balloon on the isometric (or the front view)."""
+    ctx = context()
+    front, top = tuple(ctx.views["front"].direction), tuple(ctx.views["top"].direction)
+    ctx.geometry = SharedGeometry(
+        {
+            front: {"comp:1": 0.3, "comp:2": 1.0, "comp:3": 1.0},  # the bracket is clearest from the front
+            top: {"comp:1": 1.0, "comp:2": 0.4, "comp:4": 0.9},  # the plate and the shaft from above
+        }
+    )
+    [res] = draw(ctx, {"type": "balloons"})
+    where = ctx.extras["balloons"]["view"]
+    assert where == {1: "top", 2: "front", 3: "top"}, where
+    assert sorted(e.text for e in ctx.sheet.entities if isinstance(e, model.Text) and e.height == asm.BALLOON_TEXT_MM) == ["1", "2", "3"]
+    assert "front view" in res.detail and "top view" in res.detail and "4 (pasador)" in res.detail  # no view shows the pin: reported
+
+
+def test_balloons_take_the_positions_they_are_given_so_the_drafter_can_place_each_part_on_its_view() -> None:
+    ctx = context()
+    draw(ctx, {"type": "balloons", "view": "front", "positions": [2]}, {"type": "balloons", "view": "top", "positions": [1, 3]})
+    assert ctx.extras["balloons"]["view"] == {2: "front", 1: "top", 3: "top"}
+    assert len(balloon_circles(ctx)) == 3  # each position once
+    with pytest.raises(ValueError, match="positions"):
+        asm.check_balloons({"positions": []})
+
+
 def test_identical_instances_get_one_balloon_and_the_first_visible_one_is_used() -> None:
     ctx = context()
     geometry = ctx.geometry
@@ -434,15 +475,13 @@ def test_a_leader_that_must_cross_a_dimension_is_tried_only_when_no_clean_place_
 # --- names, trails, no isometric view, the reference finding --------------------------------------------------------------
 
 
-def test_the_name_a_part_shows_is_the_one_the_engineer_gave_digits_and_all() -> None:
+def test_the_name_a_part_shows_is_its_designation_not_the_name_of_its_document_or_file() -> None:
     import assembly_names as names
 
-    assert names.display_name("eje_d20", "", "/x/3_eje_d.FCStd", "comp:4") == "eje_d20"
-    assert names.display_name("rodamiento_6204", "Rodamiento", "", "comp:5") == "rodamiento_6204"
-    assert names.display_name("eje_d20.step", "", "", "comp:4") == "eje_d20", "an import name without its extension"
-    assert names.display_name("", "Soporte 2", "/x/soporte.FCStd", "comp:1") == "Soporte 2", "then the sheet's title"
-    assert names.display_name("", "", r"C:\piezas\placa_M8.FCStd", "comp:1") == "placa_M8", "then the file's stem"
-    assert names.display_name("", "", "", "comp:7") == "comp:7"
+    assert names.designation("Eje D20", "") == "Eje D20"
+    assert names.designation("", "Soporte 2") == "Soporte 2", "then the title of the part's own sheet"
+    assert names.designation("", "") == "", "never the stem of the file or the id: the review asks the designer"
+    assert names.without_extension("eje_d20.step") == "eje_d20", "an import name without its extension (kept for the metadata)"
 
 
 def test_a_trail_covers_only_the_gap_between_the_assembled_and_the_drawn_place() -> None:
@@ -473,13 +512,17 @@ def test_the_exploded_view_draws_trails_in_the_gaps_and_leaves_out_the_ones_that
     assert off[0].status in ("ok", "warning")
 
 
-def test_without_the_isometric_view_the_group_stays_left_and_leaves_room_to_the_right() -> None:
-    with_iso = layout.plan(160, 100, 87, 420, 297)
-    without = layout.plan(160, 100, 87, 420, 297, isometric=False)
+def test_without_the_isometric_view_an_assembly_group_stays_left_and_a_part_sheet_is_centred() -> None:
+    parts_list = (180.0, 30.0)
+    with_iso = layout.plan(160, 100, 87, 420, 297, reserve=parts_list)
+    without = layout.plan(160, 100, 87, 420, 297, reserve=parts_list, isometric=False)
     assert without.scale >= with_iso.scale
     left = layout.drawing_area(420, 297)[0]
     assert without.front[0] < with_iso.front[0] and without.front[0] - 100 * without.scale < left + 100
-    assert layout.plan(160, 100, 87, 420, 297) == with_iso, "a part sheet's layout is what it was"
+    alone = layout.plan(160, 100, 87, 420, 297, isometric=False)  # nothing will take the room on the right: no corner
+    area = layout.drawing_area(420, 297)
+    block_left = alone.front[0] - 160 * alone.scale / 2 - 100 * alone.scale - alone.spacing
+    assert abs((block_left - area[0]) - (area[2] - (alone.front[0] + 160 * alone.scale / 2))) < 40.0
 
 
 def test_review_says_which_own_parts_have_no_drawing_number_or_reference() -> None:

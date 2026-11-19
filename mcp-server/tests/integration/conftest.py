@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -19,6 +20,9 @@ from cotaforge.adapters.freecad import find_freecad_root
 from cotaforge.adapters.freecad.rpc import _binaries
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+from cotaforge_mcp import engineer_orders
+from tests.conftest import Engineer
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -38,12 +42,89 @@ class Reply:
         self.images = [c for c in result.content if isinstance(c, types.ImageContent)]
 
 
+SHEET_RULES = frozenset(
+    {
+        "view_adds_nothing",
+        "view_duplicate",
+        "dimension_crossing",
+        "dimension_stack_order",
+        "dimension_gap",
+        "sheet_underused",
+        "collision",
+        "views_overlap",
+        "text_outside_frame",
+        "paper_too_small",
+        "native_unread",
+        "native_orphaned",
+    }
+)
+"""The codes of the geometry of the drawing: a view with nothing on it or drawn twice, lines across lines, a sheet left empty or
+crowded, what the review could not read. A real test that builds a sheet FAILS when its review holds one of them (see
+``assert_sheet_clean``) unless it lists it on purpose (``@pytest.mark.expected_findings``)."""
+EXPECTED: tuple[str, ...] = ()
+"""The codes the running test lists as expected (the autouse fixture below fills it from its ``expected_findings`` marks)."""
+PENDING_BLOCKING = re.compile(r"^  BLOCKS EXPORT (\S+?)(?: \[[^\]]*\])?(?: \(row [^)]*\))?: ", re.M)
+ANSWERED = re.compile(r"^  - ([a-z_]+(?:[:#]\S*)?): (?:APPLIES|DOES NOT APPLY)", re.M)
+
+
 class Cad:
-    def __init__(self, session: ClientSession) -> None:
+    def __init__(self, session: ClientSession, looks: bool = True, engineer: Engineer | None = None) -> None:
         self.session = session
+        self.engineer = engineer
+        """The person at Claude Code: he confirms each order of his at its permission dialog (the real hook runs)."""
+        self.built = False  # a sheet was built (created or composed) in this test: its review runs when the test ends
+        self.allowed: set[str] = set()
+        self.looks = looks
+        """Look at the sheet before an export of it, like the agent does (export waits for a capture taken after the last
+        change of the sheet): the tests of the export are about something else; the ones about the look pass ``looks=False``."""
+
+    def says(self, text: str) -> str:
+        """The engineer types ``text`` and will accept the dialog that shows it. Returns the text, to carry it in
+        the order (an order he does not confirm is never recorded)."""
+        assert self.engineer is not None
+        return self.engineer.says(text)
+
+    def allow(self, *codes: str) -> None:
+        """This test builds a defect on purpose: these codes may stand on its sheets."""
+        self.allowed.update(codes)
+
+    async def assert_sheet_clean(
+        self, sheet: str | None = None, expected: tuple[str, ...] = (), strict: bool = False
+    ) -> None:
+        """Fail when the review of the sheet holds a finding of the drawing rules (``SHEET_RULES``) that the test did not list in
+        ``expected`` (or ``allow``): the ones still pending AND the ones a test answered to get past them. ``strict``: every pending
+        finding that holds the export."""
+        arguments = {"sheet": sheet} if sheet else {}
+        text = await self.ok("drawing", action="review", **arguments)
+        listed = {*expected, *self.allowed, *EXPECTED}
+        codes = [(m.split(":")[0].split("#")[0], m) for m in PENDING_BLOCKING.findall(text)]
+        answered = [(m.split(":")[0].split("#")[0], m) for m in ANSWERED.findall(text)]
+        bad = [i for code, i in codes if code not in listed and (strict or code in SHEET_RULES)]
+        bad += [f"{i} (answered)" for code, i in answered if code in SHEET_RULES and code not in listed]
+        detail = "\n  ".join(bad)
+        assert not bad, f"the review of the sheet holds findings of the drawing rules:\n  {detail}\n{text[:3000]}"
 
     async def __call__(self, tool: str, **arguments: Any) -> Reply:
-        return Reply(await self.session.call_tool(tool, arguments))
+        if tool == "drawing" and arguments.get("action") in ("create", "compose"):
+            self.built = True
+        if (
+            self.looks
+            and tool == "export"
+            and arguments.get("action") in ("pdf", "dxf")
+            and arguments.get("face") is None
+            and arguments.get("flat") is None
+        ):
+            sheet = {"sheet": arguments["sheet"]} if arguments.get("sheet") else {}
+            await self.session.call_tool("drawing", {"action": "capture", **sheet})
+        meta = None
+        if self.engineer is not None:  # what Claude Code does before the call: the hook, and his answer to its dialog
+            call_id = f"toolu_{uuid.uuid4().hex}"
+            refusal = self.engineer.before(tool, arguments, call_id)
+            if refusal is not None:
+                said = types.TextContent(type="text", text=refusal)
+                return Reply(types.CallToolResult(content=[said], isError=True))
+            meta = {engineer_orders.META_CALL_ID: call_id}
+        return Reply(await self.session.call_tool(tool, arguments, meta=meta))
 
     async def ok(self, tool: str, **arguments: Any) -> str:
         reply = await self(tool, **arguments)
@@ -67,13 +148,28 @@ async def running_server(
         "COTAFORGE_VISIBLE": "1" if visible else "0",
         "COTAFORGE_FREECAD_ISOLATED": "1",  # a FreeCAD profile of its own: never the engineer's recent files or recovery data
     }
+    env.setdefault(engineer_orders.ENV_HOME, str(workspace.parent / "home"))  # never the real data folder
     params = StdioServerParameters(command=sys.executable, args=["-m", "cotaforge_mcp"], env=env)
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
         init = await session.initialize()
-        yield Cad(session), init
+        cad = Cad(session, engineer=Engineer(Path(env[engineer_orders.ENV_HOME]), workspace))
+        yield cad, init
+        if cad.built:  # no test sheet without a review: reached only when the test body ended without an error
+            await cad.assert_sheet_clean()
 
 
-FINDING_LINE = re.compile(r"^  (?:warning|info) (\S+?)(?: \[[^\]]*\])?: ", re.M)
+FINDING_LINE = re.compile(r"^  (?:warning|info|BLOCKS EXPORT)(?: \(does not block export\))? (\S+?)(?: \[[^\]]*\])?(?: \(row [^)]*\))?: ", re.M)
+ROW_LINE = re.compile(r"^  \[(?:MISSING|NEEDS AN ANSWER)\] (req\.\S+) ", re.M)
+ORDER_WORDS = "esta prueba trata de otra cosa: ordeno cerrar este punto"
+
+
+def order(cad: Cad) -> dict[str, str]:
+    """The order of an engineer who closes a point: a test about something else than the finished drawing plays him.
+    He says it and confirms it at Claude Code's dialog (the server records no order he did not confirm), so the
+    measured points (which an agent may not dismiss on its own word) close like the rest."""
+    return {"by": "Ana", "reason": cad.says(ORDER_WORDS)}
+
+
 QUESTION_LINE = re.compile(r"^  (q\.\S+): ", re.M)
 MEMORY_LINE = re.compile(r"^  (\S+) — recognize: ", re.M)
 
@@ -85,6 +181,12 @@ async def pending_points(cad: Cad, sheet: str | None = None) -> tuple[list[str],
     return FINDING_LINE.findall(text), QUESTION_LINE.findall(text), MEMORY_LINE.findall(text)
 
 
+async def pending_rows(cad: Cad, sheet: str | None = None) -> list[str]:
+    """The rows of the table of requirements of ``sheet`` that are missing or need an answer."""
+    arguments = {"sheet": sheet} if sheet else {}
+    return ROW_LINE.findall(await cad.ok("drawing", action="review", **arguments))
+
+
 async def finish_drawing(
     cad: Cad, sheet: str | None = None, reason: str = "no aplica: la prueba trata de otra cosa que este requisito"
 ) -> int:
@@ -92,14 +194,20 @@ async def finish_drawing(
     that is about something else than the finished drawing (the export of a sheet is refused until this is done): the
     project reviews its drawings itself (``propio``, the engineer's words quoted), so the points are the agent's own.
     Memory entries are read first, as the server requires. Returns how many points it answered."""
-    await cad.ok("memory", action="brief", drawing_review="propio", text="la prueba trata de otra cosa que la revisión")
-    findings, questions, memory = await pending_points(cad, sheet)
+    await cad.ok("memory", action="brief", drawing_review="propio", text=cad.says("esta prueba trata de otra cosa que la revisión"))
     arguments = {"sheet": sheet} if sheet else {}
-    for entry in memory:
-        await cad.ok("memory", action="get", id=entry)
-    for point in [*findings, *questions, *memory]:
-        await cad.ok("drawing", action="answer", id=point, text=reason, **arguments)
-    return len(findings) + len(questions) + len(memory)
+    total = 0
+    for _ in range(4):  # answering opens the next points (the memory entries of the drawing ops, the rows that follow)
+        findings, questions, memory = await pending_points(cad, sheet)
+        rows = await pending_rows(cad, sheet)
+        if not (findings or questions or memory or rows):
+            break
+        for entry in memory:
+            await cad.ok("memory", action="get", id=entry)
+        for point in [*findings, *questions, *memory, *rows]:
+            await cad.ok("drawing", action="answer", id=point, text=reason, **order(cad), **arguments)
+        total += len(findings) + len(questions) + len(memory) + len(rows)
+    return total
 
 
 @pytest.fixture
@@ -131,10 +239,11 @@ async def close_findings(
 ) -> int:
     """Answer only the findings of the CAD (they hold the export in every mode but ``ninguno``). Returns how many."""
     findings, _, _ = await pending_points(cad, sheet)
+    rows = await pending_rows(cad, sheet)
     arguments = {"sheet": sheet} if sheet else {}
-    for point in findings:
-        await cad.ok("drawing", action="answer", id=point, text=reason, **arguments)
-    return len(findings)
+    for point in [*findings, *rows]:
+        await cad.ok("drawing", action="answer", id=point, text=reason, **order(cad), **arguments)
+    return len(findings) + len(rows)
 
 
 @pytest.fixture(autouse=True)
@@ -142,3 +251,11 @@ def isolated_freecad_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every FreeCAD these tests start (the server child inherits the environment) gets a profile of its own: never the
     engineer's recent files, recovery data or preferences."""
     monkeypatch.setenv("COTAFORGE_FREECAD_ISOLATED", "1")
+
+
+@pytest.fixture(autouse=True)
+def expected_findings(request: pytest.FixtureRequest) -> None:
+    """The defects a real test builds on purpose (``@pytest.mark.expected_findings("view_adds_nothing", ...)``): their codes may stand
+    on its sheets when its review runs at the end."""
+    global EXPECTED  # noqa: PLW0603 - the server context manager of the test reads it
+    EXPECTED = tuple(code for mark in request.node.iter_markers("expected_findings") for code in mark.args)

@@ -17,6 +17,7 @@ Everything comes from the model's real geometry (the holes, the faces the worker
 the sheet really draws; when a fact is not known, the check is skipped, never guessed.
 """
 
+import json
 import math
 import re
 from dataclasses import dataclass, field
@@ -24,7 +25,10 @@ from typing import Any
 
 import iso286
 import sheet_collide
+import sheet_flats
 import sheet_review  # circular on purpose: both import each other as modules and use each other only when called
+import sheet_section
+import sheet_seen
 from items_holes import _select as select_callout_holes
 from items_holes import _stacks
 from sheet_context import Context, HoleInfo, ItemError
@@ -52,13 +56,21 @@ class Boss:
     axis_point: tuple[float, float, float]  # on the axis, halfway along the cylinder
     axis_dir: tuple[float, float, float]
     length: float = 0.0  # along the axis (0: not known)
+    bore: bool = False  # the wall of a hole all the way round (only read in an assembly, whose holes nobody lists)
 
 
 @dataclass
 class PartFacts:
     rounds: list[RoundFace] = field(default_factory=list)
     bosses: list[Boss] = field(default_factory=list)
+    assembly: bool = False  # the cylinders of the components of an assembly: some are hidden behind other parts
     sheet_metal: bool = False
+    keyways: int = 0  # slots with parallel walls along the axis of a cylindrical face (``sheet_keyway``)
+    keyway_slots: list[Any] = field(default_factory=list)  # the same slots with their faces (``sheet_keyway.Slot``)
+    cylinders: list[Any] = field(default_factory=list)  # every cylinder with where it lies along its axis (``sheet_keyway.Cylinder``: axis, radius, concave, lo, hi)
+    planes: list[Any] = field(default_factory=list)  # every planar face (``sheet_keyway.Flat``: id, normal, centre): ``baseline_dims`` finds the shoulders of a turned part among them
+    thread_features: int = 0  # features named as a thread that no ``hole`` operation made (an external thread)
+    flats: list[Any] = field(default_factory=list)  # the flats of a turned part (``sheet_flats.FlatFace``): a square flange, wrench flats
 
 
 # --- ids ------------------------------------------------------------------------------------------------------------------
@@ -66,25 +78,28 @@ class PartFacts:
 NON_BLOCKING = frozenset(
     {
         "window_differs",
+        "layout_unplaced",
         "native_fallback",
-        "native_unread",
+        "line_weight_off_table",
+        "line_deleted_by_hand",  # an axis the engineer deleted: his call, said once
         "hidden_check_partial",
         "single_view_enough",
         "dowel_unmarked",
         "dimension_repeated",
         "dimension_side",
-        "dimension_crossing",
         "datum_on_line",
         "datum_unused",
         "leader_not_on_chamfer",
         "view_redundant",
         "arrows_inside_short",
-        "sheet_underused",
+        "sheet_unbalanced",
         "hatch_same_as_neighbour",
         "hatch_pattern_differs",
+        "weld_designation_unchecked",
+        "revision_marker_missing",  # a released row is never rewritten: a marker with no room must not hold the export for ever
     }
 )
-"""Notices that never hold an export: about the harness (the FreeCAD window, TechDraw's own objects) or suggestions whose
+"""Notices that never hold an export: about the harness (the FreeCAD window, the fallback of an item to a symbol) or suggestions whose
 question is asked anyway (``single_view_enough`` is the plate case of the memory principle ``drawing-sufficient-views``,
 ``dowel_unmarked`` of ``q.callouts``) or that is a matter of style (``dimension_repeated``: the same size in two views,
 ISO 129, which a shop reads without trouble): they are listed and can be answered, but the question is what the export
@@ -183,6 +198,7 @@ def _hole_references(data: Any) -> list[Any]:
             for h in ctx.holes
             if view.looks_along(h.direction) and (wanted == "all" or any(h.on_axis(p) for p in wanted))
         }
+    anchored |= set(ctx.extras.get("polar_located", ()))  # a bolt circle is counted from the axis of its pattern (items_pattern)
     changed = True
     while changed:  # a hole measured from an anchored one is anchored only through a chain: say it is a chain
         changed = False
@@ -220,17 +236,31 @@ def _toleranced_holes(data: Any) -> set[int]:
     return done
 
 
+def _called_holes(data: Any) -> set[int]:
+    """The holes some ``hole_dim`` calls out (a callout without a fit of its own prints the one the hole declared)."""
+    done: set[int] = set()
+    for spec in sheet_review._of(data, "hole_dim"):
+        try:
+            done |= {h.index for h in select_callout_holes(data.ctx, spec)}
+        except ItemError:
+            continue
+    return done
+
+
 def _fit_holes(data: Any) -> list[Any]:
     """A plain hole of a dowel / reamer size with no tolerance on its callout: a fit hole needs its class (H7) and, with
     ``hole_not_located``, its position. A hole that is not one of those sizes is never flagged here: the memory principle ``drawing-general-tolerance-declared``
     asks about bearing seats and the like."""
     ctx = data.ctx
     toleranced = _toleranced_holes(data)
+    called = _called_holes(data)
     out: list[Any] = []
     for stack in _stack_list(ctx):
         hole = stack[0]
         if hole.thread is not None or hole.index in toleranced:
             continue
+        if hole.fit and hole.index in called:
+            continue  # the hole operation declared its fit and a callout prints it: the class is on the sheet
         if not any(abs(hole.diameter - size) <= DOWEL_TOL_MM for size in DOWEL_SIZES_MM):
             continue
         name = " + ".join(sheet_review._label(h, ctx) for h in stack)
@@ -357,6 +387,8 @@ def _rounds(data: Any) -> list[Any]:
 # --- centre marks and axes ------------------------------------------------------------------------------------------------
 
 MARK_TOL_MM = 0.3
+HAND_ARC_OVER = 0.02  # a thread arc is wider than the hole it marks by at least this fraction of its radius ...
+HAND_ARC_RATIO = 1.6  # ... and by less than this multiple of it (TechDraw's own command draws it at 1/0.85 of the circle picked)
 
 
 def _axis_segments(data: Any) -> list[sheet_collide.Segment]:
@@ -394,10 +426,21 @@ def _marks(data: Any) -> list[Any]:
         for v in ctx.views.values():
             if v.looks_along(boss.axis_dir):
                 point = v.project(boss.axis_point)
-                if not _marked(segments, point):
+                if not _marked(segments, point) and not (facts.assembly and not sheet_seen.circle_seen(ctx, v, boss)):
                     missing.append(v.name)
             elif v.shows_axis_along(boss.axis_dir) and not _marked(segments, v.project(boss.axis_point)):
+                if boss.bore or (facts.assembly and not sheet_seen.side_on_seen(ctx, v, boss)):
+                    continue  # a bore is inside the material here, and a cylinder behind another part shows no sides
                 missing.append(v.name)
+        for label, view in ctx.extras.get("sections", {}).items():  # a section cuts the cylinders whose axis lies in its plane
+            plane = ctx.extras.get("section_planes", {}).get(label)
+            if (
+                plane is not None
+                and boss.length > 0
+                and sheet_section.in_plane(plane[0], plane[1], boss.axis_point, boss.axis_dir)
+                and not _marked(segments, view.project(boss.axis_point))
+            ):
+                missing.append(label)
         if missing:
             text = ctx.say(
                 f"Cilindro Ø{ctx.num(2 * boss.radius)} ({boss.face_id}) sin eje o marca de centro en la vista "
@@ -406,6 +449,29 @@ def _marks(data: Any) -> list[Any]:
                 f"{', '.join(missing)} view: draw its axis.",
             )
             out.append(_finding("cylinder_no_axis", "info", text, boss.face_id))
+    return out
+
+
+# --- flats of a turned part ---------------------------------------------------------------------------------------------
+
+
+def _flats(data: Any) -> list[Any]:
+    """A flat of a turned part that a view sees face-on (a square flange, wrench flats) carries its two diagonals there: with a
+    centre line in the view, its rectangle reads as a cylinder (ISO 128-30)."""
+    ctx = data.ctx
+    by_face: dict[str, list[str]] = {}
+    for view, flat in sheet_flats.missing(ctx, list(data.sheet.entities)):
+        by_face.setdefault(flat.face_id, []).append(view.name)
+    out: list[Any] = []
+    for face_id, names in by_face.items():
+        where = ", ".join(names)
+        text = ctx.say(
+            f"La cara plana {face_id} se ve de frente en la vista {where} sin sus diagonales: con eje en la vista su rectángulo "
+            f'se lee como un cilindro. Añade {{"type":"view_lines"}} (dibuja las diagonales finas de las caras planas).',
+            f"The flat face {face_id} is seen face-on in the {where} view without its diagonals: with a centre line in the view "
+            f'its rectangle reads as a cylinder. Add {{"type":"view_lines"}} (it draws the thin diagonals of the flat faces).',
+        )
+        out.append(_finding("flat_face_unmarked", "info", text, face_id))
     return out
 
 
@@ -595,6 +661,15 @@ def _material_consistency(data: Any) -> list[Any]:
                 )
                 out.append(_finding("material_title_block_empty", "warning", msg, note["id"], (note["id"],)))
             continue
+        if not field_material and said:
+            msg = ctx.say(
+                f"{note['id']} dice el material («{said}») y el campo de material del rótulo está vacío: el material va en el "
+                "rótulo (doc set_material, o material= al crear la hoja) y la nota no lo repite.",
+                f"{note['id']} states the material ('{said}') and the title block's material field is empty: the material belongs in "
+                "the title block (doc set_material, or material= when the sheet is created) and the note does not repeat it.",
+            )
+            out.append(_finding("material_only_in_note", "warning", msg, note["id"], (note["id"],)))
+            continue
         a, b = _norm(said), _norm(field_material)
         if field_material and a and b and a not in b and b not in a:
             msg = ctx.say(
@@ -602,6 +677,41 @@ def _material_consistency(data: Any) -> list[Any]:
                 f"{note['id']} says '{said}' and the title block says '{field_material}': the material must be one.",
             )
             out.append(_finding("material_inconsistent", "warning", msg, note["id"], (note["id"],)))
+    return out
+
+
+# the datums the title block has a field for, by what a note that sends the reader there names (the material has its own
+# finding, ``material_title_block_empty``, which also reads the notes that state it)
+POINTED_FIELDS: tuple[tuple[str, re.Pattern[str], str, str], ...] = (
+    ("general_tolerances", re.compile(r"toleranc|tolerance", re.I), "las tolerancias generales", "the general tolerances"),
+    ("drawing_number", re.compile(r"n[uú]mero\s+de\s+plano|drawing\s+(number|no)", re.I), "el número de plano", "the drawing number"),
+    ("creator", re.compile(r"dibuj[oó]|dibujado|drawn\s+by", re.I), "quién dibujó el plano", "who drew the sheet"),
+    ("approval_person", re.compile(r"aprob[oó]|aprobado|approved\s+by", re.I), "quién aprobó el plano", "who approved the sheet"),
+    ("legal_owner_1", re.compile(r"\bempresa\b|\bcompany\b|propietari|\bowner\b", re.I), "la empresa", "the company"),
+    ("revision_index", re.compile(r"revisi[oó]n|\brevision\b", re.I), "la revisión", "the revision"),
+)
+
+
+def _title_block_pointers(data: Any) -> list[Any]:
+    """A note that sends the reader to the title block for a datum (``según rótulo``, ``see title block``) while the field of that
+    datum is empty: the sheet says "look in the title block" and there is nothing there. The datum goes in its field (the
+    sheet's fields, ``doc`` ``set_material``), never only in the note."""
+    ctx = data.ctx
+    shown = _fields(ctx)
+    out: list[Any] = []
+    for note in sheet_review._of(data, "note"):
+        text = str(note.get("text", ""))
+        if not _SEE_TITLE.search(text):
+            continue
+        for name, pattern, es, en in POINTED_FIELDS:
+            if name in shown and not shown[name].strip() and pattern.search(text):
+                msg = ctx.say(
+                    f"{note['id']} remite {es} al rótulo y el campo «{name}» del rótulo está vacío: escríbelo en el campo (el dato va en su "
+                    "campo del rótulo, no solo en la nota).",
+                    f"{note['id']} sends {en} to the title block and the title block's '{name}' field is empty: write it in the field "
+                    "(a datum goes in its title-block field, not only in the note).",
+                )
+                out.append(_finding("title_block_field_empty", "warning", msg, f"{note['id']}:{name}", (note["id"],)))
     return out
 
 
@@ -694,10 +804,13 @@ def _hidden_features(data: Any) -> list[Any]:
 
 def _threads(data: Any) -> list[Any]:
     """A threaded hole is drawn with its thread arc in the view that sees it as a circle: no view looks along it, no
-    representation."""
+    representation. The arc is the sheet's own (``thread_entities``) or one the page holds, whoever drew it: a cosmetic arc
+    concentric with the hole and wider than it, as TechDraw's own *Cosmetic thread* command makes (a thread the engineer drew
+    by hand is represented; one of the sheet's that he deleted is his call, ``line_deleted_by_hand`` says so)."""
     ctx = data.ctx
     out: list[Any] = []
     arcs = [e for e in data.sheet.entities if isinstance(e, Arc) and e.layer == THREAD]
+    page_circles = ctx.extras.get("page_circles", [])
     for stack in _stack_list(ctx):
         threaded = next((h for h in stack if h.thread is not None), None)
         if threaded is None:
@@ -706,7 +819,15 @@ def _threads(data: Any) -> list[Any]:
             v
             for v in ctx.views.values()
             if v.looks_along(threaded.direction)
-            and any(math.dist((a.cx, a.cy), v.project(threaded.centre)) < MARK_TOL_MM for a in arcs)
+            and (
+                any(math.dist((a.cx, a.cy), v.project(threaded.centre)) < MARK_TOL_MM for a in arcs)
+                or any(
+                    name == v.name
+                    and math.dist((x, y), v.project(threaded.centre)) < MARK_TOL_MM
+                    and threaded.diameter / 2 * v.scale * (1 + HAND_ARC_OVER) < r < threaded.diameter / 2 * v.scale * HAND_ARC_RATIO
+                    for name, x, y, r in page_circles
+                )
+            )
         ]
         if not shown:
             name = " + ".join(sheet_review._label(h, ctx) for h in stack)
@@ -720,6 +841,55 @@ def _threads(data: Any) -> list[Any]:
     return out
 
 
+def _stage_feature(spec: dict[str, Any]) -> str:
+    """What a stage dimension is a size of: its cylindrical face, or the two references it spans."""
+    if spec.get("kind") == "diameter":
+        return "face:" + ",".join(str(f) for f in spec.get("face", []))
+    return json.dumps([spec.get("from"), spec.get("to")], sort_keys=True)
+
+
+def _stage_sizes(data: Any) -> list[Any]:
+    """A feature with the size of an intermediate process stage on the sheet (``stage`` and ``size_mm``) has its FINAL size on
+    it too (``stage`` without ``size_mm``: the model's value, the one that stands out): the operator of the last process reads
+    nothing otherwise. Read from the sheet alone; the route the intent file declares is the requirement row's."""
+    ctx = data.ctx
+    staged = [s for s in sheet_review._of(data, "dim") if s.get("stage")]
+    final = {_stage_feature(s) for s in staged if "size_mm" not in s}
+    out: list[Any] = []
+    for feature in dict.fromkeys(_stage_feature(s) for s in staged if "size_mm" in s):
+        if feature in final:
+            continue
+        ids = tuple(str(s["id"]) for s in staged if "size_mm" in s and _stage_feature(s) == feature)
+        text = ctx.say(
+            f"Tamaños intermedios de proceso ({', '.join(ids)}) sin la cota final del mismo rasgo: añade un dim con stage y sin size_mm "
+            "(el valor del modelo, la que destaca).",
+            f"Intermediate process sizes ({', '.join(ids)}) with no final size of the same feature: add a dim with stage and no "
+            "size_mm (the model's value, the one that stands out).",
+        )
+        out.append(_finding("stage_no_final", "warning", text, ids[0], ids))
+    return out
+
+
+def _revision_marks(data: Any) -> list[Any]:
+    """A revision row that names the dimensions it changed (``at``) has FreeCAD's revision marker beside each of them: a row
+    whose marker found no free place, or whose dimension is not on the sheet, points at nothing."""
+    ctx = data.ctx
+    out: list[Any] = []
+    natives = ctx.extras.get("natives", {})
+    for spec in sheet_review._of(data, "revision"):
+        wanted = len(spec.get("at", []))
+        made = sum(1 for n in natives.get(spec["id"], []) if type(n).__name__ == "NativeRevisionMark")
+        if wanted and made < wanted:
+            text = ctx.say(
+                f"La revisión {spec['index']} marca {wanted} cota(s) y solo {made} marcador(es) tienen sitio o cota en la hoja: "
+                "mueve la cota o su texto para dejar sitio, o quita el campo at del renglón.",
+                f"Revision {spec['index']} marks {wanted} dimension(s) and only {made} marker(s) found a place or a dimension on the "
+                "sheet: make room beside the dimension, or take the at field off the row.",
+            )
+            out.append(_finding("revision_marker_missing", "warning", text, str(spec["id"]), (str(spec["id"]),)))
+    return out
+
+
 def checks(data: Any) -> list[Any]:
     """Every automatic finding of the finished-drawing list."""
     found: list[Any] = []
@@ -729,12 +899,16 @@ def checks(data: Any) -> list[Any]:
         _fine_tolerances,
         _rounds,
         _marks,
+        _flats,
         _text_on_part,
         _notes_missing,
         _material_consistency,
+        _title_block_pointers,
         _hidden_density,
         _hidden_features,
         _threads,
+        _stage_sizes,
+        _revision_marks,
     ):
         found += check(data)
     return found
@@ -753,11 +927,10 @@ def judgement(data: Any) -> list[Question]:
     """The questions no program answers AND no drawing principle of the memory already asks, in the sheet's language. Views,
     sections, dimensions, tolerances and fabrication notes are the base set's ``dibujo-*`` principles (one question
     each is one too many: answering the same thing twice makes the answers rote). What is left has no counterpart:
-    callouts, line weights, the assembly and the sheet metal. Each is answered with ``applies: <how, here>`` or
-    ``no aplica: <why>``."""
+    callouts, line weights and the assembly. Each is answered with ``applies: <how, here>`` or ``no aplica: <why>``.
+    What a sheet must CARRY (the sheet metal's bends included) is the table of requirements of the server, not a question."""
     ctx = data.ctx
     say = ctx.say
-    facts: PartFacts | None = ctx.extras.get("facts")
     out = [
         Question(
             "q.callouts",
@@ -790,19 +963,7 @@ def judgement(data: Any) -> list[Question]:
                 ),
             )
         )
-    if facts is not None and facts.sheet_metal:
-        out.append(
-            Question(
-                "q.sheet_metal",
-                say(
-                    "¿Las líneas de doblez llevan sentido y ángulo («hacia abajo 90°»), el desarrollo sus cotas y el calibre "
-                    "está en una nota?",
-                    "Do the bend lines carry direction and angle ('down 90°'), does the flat pattern have its dimensions and "
-                    "is the gauge in a note?",
-                ),
-            )
-        )
-    return out
+    return out  # the sheet metal is a row of the table of requirements (``req.bent_sheet``), not a question here
 
 
 __all__ = [

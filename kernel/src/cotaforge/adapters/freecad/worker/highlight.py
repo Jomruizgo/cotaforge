@@ -11,10 +11,12 @@ unit-testable with plain pytest -- the same reasoning ``debounce.py`` documents 
 """
 
 from collections.abc import Sequence
+from typing import Any
 
 RGBA = tuple[float, float, float, float]
+"""``(r, g, b, a)``, all 0..1; ``a`` is the OPACITY (1 opaque), as FreeCAD 1.1 reads it (see ``appearance``)."""
 
-__all__ = ["HighlightState", "expand_to_length", "recolor", "restore_value"]
+__all__ = ["HighlightState", "base_index", "expand_to_length", "recolor", "restore_value"]
 
 
 class HighlightState:
@@ -25,17 +27,19 @@ class HighlightState:
     never disturb, restore, or drop document A's still-pending highlight."""
 
     def __init__(self) -> None:
-        self._originals: dict[tuple[str, str], tuple[str, tuple[RGBA, ...]]] = {}
+        self._originals: dict[tuple[str, str, str], tuple[Any, ...]] = {}
 
-    def remember(self, document_name: str, object_name: str, attr: str, original: Sequence[RGBA]) -> None:
-        """Record ``object_name``'s (in ``document_name``) ``attr`` original value, once per object per
+    def remember(self, document_name: str, object_name: str, attr: str, original: Sequence[Any]) -> None:
+        """Record ``object_name``'s (in ``document_name``) ``attr`` original value, once per object per attribute per
         round -- a second ``remember`` for the same key this round is a no-op (the FIRST read is the true
-        original; a later one would already be showing the highlight colour)."""
-        key = (document_name, object_name)
+        original; a later one would already be showing the highlight colour). The faces and the edges of one object
+        are two attributes, each with its own original: keyed by the object alone, painting both in one call forgot
+        the edges' original. ``original`` is whatever the caller restores with (colours, or materials)."""
+        key = (document_name, object_name, attr)
         if key not in self._originals:
-            self._originals[key] = (attr, tuple(original))
+            self._originals[key] = tuple(original)
 
-    def entries_for(self, document_name: str) -> list[tuple[str, str, tuple[RGBA, ...]]]:
+    def entries_for(self, document_name: str) -> list[tuple[str, str, tuple[Any, ...]]]:
         """``(object_name, attr, original)`` for every entry remembered for ``document_name`` -- read-only,
         does NOT remove anything. Fresh review fix: the caller (``gui.clear_highlight``) restores one
         entry at a time and calls ``discard`` only once THAT entry's own restore actually succeeded, so a
@@ -43,14 +47,16 @@ class HighlightState:
         before any restore was attempted, so a failure partway through lost the rest forever)."""
         return [
             (obj_name, attr, colors)
-            for (doc_name, obj_name), (attr, colors) in self._originals.items()
+            for (doc_name, obj_name, attr), colors in self._originals.items()
             if doc_name == document_name
         ]
 
-    def discard(self, document_name: str, object_name: str) -> None:
-        """Forget one entry -- call only once it no longer needs restoring: its colours were put back
-        successfully, or there is nothing left in FreeCAD to restore a colour on (object/document gone)."""
-        self._originals.pop((document_name, object_name), None)
+    def discard(self, document_name: str, object_name: str, attr: str | None = None) -> None:
+        """Forget one entry (``attr`` given) or every entry of the object -- call only once it no longer needs
+        restoring: its colours were put back successfully, or there is nothing left in FreeCAD to restore a colour
+        on (object/document gone)."""
+        for key in [k for k in self._originals if k[:2] == (document_name, object_name) and attr in (None, k[2])]:
+            del self._originals[key]
 
     def discard_document(self, document_name: str) -> None:
         """Forget every entry of ``document_name`` WITHOUT attempting to restore anything -- the document
@@ -91,6 +97,17 @@ def expand_to_length(current: Sequence[RGBA], length: int) -> list[RGBA]:
         return list(current)
     fill = current[-1] if current else (1.0, 1.0, 1.0, 1.0)
     return [fill] * length
+
+
+def base_index(colours: Sequence[RGBA]) -> int:
+    """The index of the colour most faces show (the first of them on a tie): the colour of the object itself in a
+    per-face list, what a list that no longer fits the solid falls back to. ``0`` for an empty list."""
+    seen: dict[tuple[int, int, int], list[int]] = {}
+    for index, colour in enumerate(colours):
+        seen.setdefault((round(colour[0] * 255), round(colour[1] * 255), round(colour[2] * 255)), []).append(index)
+    if not seen:
+        return 0
+    return max(seen.values(), key=len)[0]
 
 
 def restore_value(original: Sequence[RGBA], current_length: int) -> list[RGBA]:

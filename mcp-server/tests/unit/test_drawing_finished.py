@@ -73,7 +73,7 @@ def test_the_review_lists_findings_with_ids_the_questions_and_what_the_export_wa
     fake.findings, fake.questions = (NOT_LOCATED, NOTE), (CALLOUTS, LINES)
     text = call.ok("drawing", action="review")
     assert "review: 1 warning(s), 1 to confirm" in text
-    assert "warning hole_not_located:@20,20,8 [feature:3]: Agujero Ø6 [20, 20, 8] sin posición" in text
+    assert "BLOCKS EXPORT hole_not_located:@20,20,8 [feature:3]: Agujero Ø6 [20, 20, 8] sin posición" in text
     assert "q.callouts: ¿Las llamadas dicen cantidad, Ø y profundidad?" in text and "q.line_weights" in text
     assert (
         "export of this sheet is REFUSED: 4 pending (2 findings, 2 questions, 0 memory entries, 0 reviewer remarks"
@@ -129,8 +129,8 @@ def test_an_answer_closes_a_point_and_the_export_goes_through_when_all_are_close
     fake.findings, fake.questions = (NOT_LOCATED,), (CALLOUTS,)
     call.err("export", action="pdf")
     call.ok(
-        "drawing", action="answer", id="hole_not_located:@20,20,8", text="no aplica: es un agujero de paso sin ajuste"
-    )
+        "drawing", action="answer", id="hole_not_located:@20,20,8", text="corregido: ubicado con datum_dims en la vista top"
+    )  # a hole with no position is a measurement: only a fix closes it (see test_drawing_requirements)
     call.ok("drawing", action="answer", id="q.callouts", text="applies: una placa con un solo tipo de agujero")
     pending = call.err("export", action="pdf")
     assert "- hole_not_located" not in pending and "- q.callouts" not in pending and "- plano-del-taller" in pending
@@ -244,16 +244,16 @@ def test_approve_is_the_engineers_gate_and_fills_the_title_block(settings: Setti
         assert "engineer's gate" in call.err("drawing", action="approve", sheet="Drawing", **arguments)
     assert "names the sheet" in call.err("drawing", action="approve", by="Ana", reason="Ana: apruébalo")
     assert [a.action for a in fake.annotated if a.action == "approve"] == []
-    text = call.ok("drawing", action="approve", sheet="Drawing", by="Ana", reason="Ana: apruébalo")
-    assert "approved: sheet Drawing by Ana (Ana: apruébalo)" in text and "empties it again" in text
+    text = call.ok("drawing", action="approve", sheet="Drawing", by="Ana", reason=call.says("apruebo el plano"))
+    assert "approved: sheet Drawing by Ana (apruebo el plano)" in text and "empties it again" in text
     request = fake.annotated[-1]
-    assert (request.action, request.by, request.text) == ("approve", "Ana", "Ana: apruébalo")
+    assert (request.action, request.by, request.text) == ("approve", "Ana", "apruebo el plano")
     assert "approved by: Ana" in call.ok("drawing", action="review")
 
 
 def test_any_change_of_the_sheet_empties_the_approval(settings: Settings) -> None:
     call, _ = drawing_session(settings)
-    call.ok("drawing", action="approve", sheet="Drawing", by="Ana", reason="Ana: apruébalo")
+    call.ok("drawing", action="approve", sheet="Drawing", by="Ana", reason=call.says("apruebo el plano"))
     call.ok("drawing", action="add", items=[{"type": "note", "text": "Sin rebabas"}])
     assert 'not approved ("Aprobó" is empty)' in call.ok("drawing", action="review")
 
@@ -287,7 +287,7 @@ def test_the_guide_topic_explains_the_gate_and_stays_whole(settings: Settings) -
         "engineer_or_fabricator",
         "review_choice",
         "review_report",
-        "run_in_background=true",
+        "wait_review",
         "One drawing = one sheet = one file",
         "cannot prove WHO",
     ):

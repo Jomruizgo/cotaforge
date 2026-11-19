@@ -6,6 +6,7 @@ The requests here are shaped exactly as the adapter sends them (``AnnotateDrawin
 ``add``, ``ids`` for ``remove``.
 """
 
+import json
 import os
 import tempfile
 from typing import Any
@@ -13,6 +14,7 @@ from typing import Any
 import drawing
 import main
 import sheet_mirror
+import sheet_native
 import sheet_model as model
 from harness import (
     call,
@@ -154,8 +156,9 @@ def check_removing_without_ids_is_refused_and_the_sheet_goes_only_with_remove_sh
 def check_every_item_shows_on_the_page_when_it_is_added_and_the_page_matches_the_sheet() -> None:
     base = build_part()
     call("create_drawing", op("d", template="A3", title="Placa", scale=1.0))
-    # the overall dimensions are TechDraw's own objects, not mirrored ones; the thread arc of the M6 is a thing of the views
-    assert keys() <= {"threads", "loc"}, keys()  # loc: the centre lines of the default location
+    # the overall dimensions are TechDraw's own objects, not mirrored ones; the thread arc of the M6 and the centre lines of
+    # the default location are cosmetic edges of the views (no object of their own)
+    assert keys() == {"loc"}, keys()  # the default location: its dimensions are TechDraw dimension objects of the sheet
     steps: list[tuple[list[dict[str, Any]], str]] = [
         ([{"type": "view_lines", "id": "vl"}], "vl"),
         ([{"type": "hole_dim", "id": "dowels", "at": [[x, y, 0] for x, y in DOWELS], "fit": "H7"}], "dowels"),
@@ -180,20 +183,16 @@ def check_every_item_shows_on_the_page_when_it_is_added_and_the_page_matches_the
         ([{"type": "note", "id": "n1", "text": "Sin rebabas"}], "n1"),
         ([{"type": "revision", "id": "rv", "index": "A", "description": "Primera emision", "by": "JR"}], ""),
     ]
-    seen: set[str] = {"loc"}  # the default location of the holes is on the page from the start
+    seen: set[str] = set()
     for items, key in steps:
         result = add(*items)
         statuses = {r["id"]: r["status"] for r in result["items"]}
         assert all(statuses[i["id"]] in ("ok", "warning") for i in items), result["items"]
         assert result["changed"] == [i["id"] for i in items]
         if key:
-            seen.add(key)
-            if key == "tbl":
-                seen.discard("loc")  # the table locates every hole: the default location has nothing left to draw
-            assert keys() - {"threads", "iso286", "n286"} == seen, (
-                keys(),
-                seen,
-            )  # n286: the ISO 286 note, in the notes block
+            if key != "vl":  # hidden and centre lines of view_lines are the views' own: no object
+                seen.add(key)
+            assert keys() - {"threads", "iso286", "loc"} == seen, (keys(), seen)  # loc: its dimensions, once datums locate the holes
             assert result["window"] != "unchanged", result["window"]
         problems = drawing.compare_window(_rec(), None, "check")
         assert problems == [], problems
@@ -204,7 +203,6 @@ def check_every_item_shows_on_the_page_when_it_is_added_and_the_page_matches_the
         "clear": "DrawViewDimension",
         "tap": "DrawViewDimension",
         "n1": "DrawViewAnnotation",
-        "n286": "DrawViewAnnotation",  # the ISO 286 note in the notes block
     }
     for row in drawing.page_objects(_page()):
         assert row[1] == native.get(row[3], "DrawViewSymbol") or row[3] in native and row[1] == "DrawViewSymbol", row
@@ -261,15 +259,6 @@ def check_the_page_follows_the_part_and_a_rebuilt_sheet_keeps_its_items_on_the_p
         "create_drawing", op("d2", template="A3", scale=1.0, fresh=True)
     )  # from scratch: the items go, the objects too
     assert keys() <= {"threads", "loc"}
-
-
-def check_an_hlr_sheet_shows_its_views_and_items_on_the_page() -> None:
-    build_part()
-    call("create_drawing", op("d", template="A3", scale=1.0, projection="hlr"))
-    assert {"view:front", "view:top", "view:right", "view:isometric", "o1"} <= keys()
-    add({"type": "hole_dim", "id": "h1", "at": [[15, 12, 0]]})
-    assert "h1" in keys() and drawing.compare_window(_rec(), None, "check") == []
-    assert not drawing.part_views(_page())
 
 
 def check_the_window_check_catches_a_page_that_differs_and_an_export_puts_it_right() -> None:
@@ -356,8 +345,8 @@ def check_a_callout_the_placer_chooses_stays_inside_the_frame() -> None:
     """Without side or offset the placer moves a callout that would leave the frame (or land on something) to a place that
     does not, on every sheet size."""
     build_part()
-    for template in ("A4", "A3"):
-        call("create_drawing", op("d", template=template, scale=1.0, fresh=True))
+    for template, scale in (("A4", 0.5), ("A3", 1.0)):  # the largest scale the plate takes with its dimensions on each paper
+        call("create_drawing", op("d", template=template, scale=scale, fresh=True))
         add({"type": "hole_dim", "id": "dowels", "at": [[x, y, 0] for x, y in DOWELS], "fit": "H7"})
         add(
             {"type": "hole_dim", "id": "clear", "at": [[x, y, 0] for x, y in CLEARANCE]},
@@ -397,7 +386,7 @@ def check_the_review_flags_an_item_over_the_title_block_and_one_outside_the_fram
 
 
 def check_visible_lines_are_thick_and_everything_else_thin_in_the_svg_and_on_the_techdraw_objects() -> None:
-    """ISO 128: the visible outline is at least 1.8 times the dimension line, in the PDF / SVG and in the window."""
+    """ISO 128-20: the visible outline is at least 1.8 times the dimension line (hidden lines as thick as it), in the PDF / SVG and in the window."""
     import sheet_svg
 
     build_part()
@@ -407,7 +396,8 @@ def check_visible_lines_are_thick_and_everything_else_thin_in_the_svg_and_on_the
     style = model.LAYERS
     outline, dim = style[model.CONTOUR].width_mm, style[model.DIMENSIONS].width_mm
     assert outline >= 1.8 * dim, (outline, dim)
-    for layer in (model.HIDDEN, model.AXES, model.HATCH, model.THREAD, model.TEXT):
+    assert style[model.HIDDEN].width_mm == outline  # the owner's drawings: hidden outlines are as thick as the visible ones
+    for layer in (model.AXES, model.HATCH, model.THREAD, model.TEXT):
         assert style[layer].width_mm <= outline / 1.8, layer
     svg = sheet_svg.to_svg(sheet)
     assert f'stroke-width="{outline:g}"' in svg and f'stroke-width="{dim:g}"' in svg
@@ -424,13 +414,13 @@ def check_every_centre_mark_is_at_the_projected_centre_of_its_hole_in_the_sheet_
     """Real use: the crosses of the circles were painted off their centres in the window. Every hole seen as a circle
     in a view has its cross at the projected 3D centre to 0.01 mm, in the sheet model and in the TechDraw objects."""
     build_part()
-    for projection in ("techdraw", "hlr"):
-        call("create_drawing", op("d", template="A3", scale=1.0, projection=projection, fresh=True))
+    if True:
+        call("create_drawing", op("d", template="A3", scale=1.0, fresh=True))
         add(
             {"type": "view_lines", "id": "vl"},
             {"type": "hole_dim", "id": "dowels", "at": [[x, y, 0] for x, y in DOWELS]},
         )
-        assert drawing.centre_mark_problems(_rec(), None, "check") == [], projection
+        assert drawing.centre_mark_problems(_rec(), None, "check") == []
         page = _page()
         marks = sheet_mirror.page_crosses(page, 297.0)
         holes = drawing.hole_infos(_rec(), None, "check")
@@ -439,10 +429,13 @@ def check_every_centre_mark_is_at_the_projected_centre_of_its_hole_in_the_sheet_
             len(marks),
         )  # a counterbore shares the centre of its hole
         # a cross somebody moved is named
-        owned = next(  # the default location (loc) draws the crosses first; view_lines only the hidden lines
-            o for o in sheet_mirror.owned(page)["loc"] if str(o.TypeId) == "TechDraw::DrawViewSymbol"
-        )
-        owned.X = float(owned.X) + 0.5
+        # a TechDraw view: the crosses are cosmetic edges of it; the engineer deletes one of them by hand
+        top = next(v for v in drawing.part_views(page) if drawing.view_key(v) == "top")
+        edges = json.loads(str(top.CotaforgeCosmetic))["loc"][1]
+        # the first ones are the centre lines that join the holes of a row or a column (the default location draws them before the
+        # marks): the engineer deletes one of the CROSSES, a short line through a hole centre
+        kind, values = next((k, v) for k, v in edges if k == "line" and abs(v[2] - v[0]) + abs(v[3] - v[1]) <= 12.0)
+        top.removeCosmeticEdge(str(sheet_native._find(top, (kind, tuple(values))).Tag))  # noqa: SLF001
         problems = drawing.centre_mark_problems(_rec(), None, "check")
         assert problems and any("not at the centre of any hole" in p or "page does not" in p for p in problems), (
             problems

@@ -62,12 +62,14 @@ FEATURE_KINDS = frozenset(DIMENSION_FIELDS)
 """Feature ops whose dimensions (and the dimensions of the sketch they consume) can be edited in place."""
 EDITABLE_KINDS = frozenset({"box", "cylinder", "move_body"}) | FEATURE_KINDS
 """Ops whose request can be edited in place."""
-LIVE_KINDS = frozenset({"box", "cylinder", "move_body", "boolean"})
+LIVE_KINDS = frozenset({"box", "cylinder", "move_body", "boolean", "shrink_body"})
 """Ops that stay linked to their inputs (a recompute updates them): the only ones allowed among the dependents of an
 edited primitive."""
 FEATURE_LIVE_KINDS = LIVE_KINDS | FEATURE_KINDS | frozenset({"mirror", "shell", "draft"})
 """The features of a body follow an edit of an earlier feature of the same body (the PartDesign chain)."""
-EXPLICIT_INPUT_KINDS = frozenset({"box", "cylinder", "boolean", "move_body", "copy_body", "mirror_body", "split"})
+EXPLICIT_INPUT_KINDS = frozenset(
+    {"box", "cylinder", "boolean", "move_body", "copy_body", "mirror_body", "shrink_body", "split"}
+)
 """Ops whose inputs are exactly the bodies named in their request (everything else may depend implicitly)."""
 _VOLUME_EPS = 1e-9
 _GEOMETRY_EPS = 1e-6

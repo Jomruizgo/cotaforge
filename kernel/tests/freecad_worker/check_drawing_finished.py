@@ -242,6 +242,26 @@ def check_a_report_is_kept_in_the_sheet_with_ids_and_answers_and_survives_save_a
         assert after["reports"]["fabricator"]["edit"] == after["edits"]
 
 
+def check_a_long_report_is_recorded_in_pieces_with_continuous_ids_and_a_plain_call_still_replaces() -> None:
+    bracket_sheet()
+    first = report("engineer", {"text": "uno"}, {"text": "dos"})
+    assert first["changed"] == ["eng1.1", "eng1.2"]
+    second = call(
+        "annotate_drawing",
+        op("r2", action="review_report", by="engineer", remarks=[{"text": "tres"}, {"text": "cuatro"}], at=200.0, append=True),
+    )
+    assert second["changed"] == ["eng1.3", "eng1.4"]  # the ids go on and only the new ones are reported as changed
+    mine = review()["reports"]["engineer"]
+    assert (mine["n"], mine["at"], [r["id"] for r in mine["remarks"]]) == (1, 200.0, ["eng1.1", "eng1.2", "eng1.3", "eng1.4"])
+    assert mine["edit"] == review()["edits"]
+    assert [r["text"] for r in mine["remarks"]] == ["uno", "dos", "tres", "cuatro"]
+    other = call("annotate_drawing", op("r3", action="review_report", by="fabricator", remarks=[{"text": "x"}], at=1.0, append=True))
+    assert other["changed"] == ["fab2.1"]  # with no report of its own yet an append starts one
+    replaced = report("engineer", {"text": "nuevo"})  # no append: the old behaviour, a new report
+    assert replaced["changed"] == ["eng3.1"]
+    assert [r["id"] for r in review()["reports"]["engineer"]["remarks"]] == ["eng3.1"]
+
+
 def check_a_change_of_the_sheet_counts_as_an_edit_but_keeps_the_reports_the_request_and_the_choice() -> None:
     bracket_sheet()
     call("annotate_drawing", op("q", action="request_review", at=50.0))

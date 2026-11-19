@@ -80,7 +80,7 @@ def test_3_a_keyway_finds_nothing_and_says_what_to_do_next(shop) -> None:  # noq
 
 def test_4_a_countersunk_hole_for_a_screw_reaches_the_hole_wizard(shop) -> None:  # noqa: ANN001
     rows = _rows(guide(shop, "find:agujero avellanado para tornillo"))
-    assert rows[:2] == ["holes", "hole"] or rows[0] == "holes"
+    assert set(rows[:2]) == {"holes", "hole"} or rows[0] == "holes"  # the hole op names counterbore and countersink
     assert "toolbox" not in rows[:1]
 
 

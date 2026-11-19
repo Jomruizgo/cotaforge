@@ -48,6 +48,12 @@ class PlateGeometry(sc.Geometry):
     def round_extent(self) -> None:
         return None
 
+    planes: dict[int, list[float]] = {0: [0.0, WIDTH], 1: [0.0, DEPTH], 2: [0.0, HEIGHT]}
+    """The flat faces square to each model axis (x, y, z): the four sides and the two faces of a plate."""
+
+    def axial_planes(self, axis: sc.Vec3) -> list[float]:
+        return list(self.planes.get(max(range(3), key=lambda i: abs(axis[i])), []))
+
 
 def plate(third: bool = False, one_view: bool = False) -> tuple[sc.Context, lay.Layout]:
     if one_view:
@@ -207,77 +213,81 @@ def is_dowel(hole: sc.HoleInfo) -> bool:
     return hole.diameter == 6.0
 
 
-CORNER_VALUES = ("15", "35", "50", "65", "85", "12", "48")  # what a count from the corner of the box would print
-
-
 # --- the default location -----------------------------------------------------------------------------------------------------
 
 
-def test_a_plate_with_one_plane_of_symmetry_is_located_across_it_by_pairs_and_asks_for_the_other_direction() -> None:
-    ctx, results = sheet_of(symmetry={"x": 50.0})
-    loc = {r.id: r for r in results}["loc"]
-    assert loc.status == "warning" and "Ask the engineer" in loc.detail and "along y" in loc.detail
-    texts = ctx.sheet.texts()
-    assert texts.count("70") == 1 and texts.count("30") == 1  # the dowel pair and the clearance pair, once each
-    assert not [v for v in CORNER_VALUES if v in texts]  # nothing counted from the corner of the box
-    assert all(ctx.extras["loc_axes"][h.index] == {"x"} for h in ctx.holes)  # located across x, nothing along y
-    assert all(ctx.extras["loc_missing"][h.index] == {"y"} for h in ctx.holes)
-    top = ctx.views["top"]
-    plane = top.project((50.0, 0.0, 0.0))[0]  # the plane of symmetry is drawn as a centre line
-    lines = [e for e in ctx.sheet.of_layer(model.AXES) if isinstance(e, model.Line)]
-    assert any(
-        abs(e.x1 - plane) < 1e-6 and abs(e.x2 - plane) < 1e-6 and abs(e.y1 - e.y2) > top.box[3] - top.box[1]
-        for e in lines
-    )
+def _texts(ctx: sc.Context) -> list[str]:
+    return ctx.sheet.texts()
 
 
-@pytest.mark.parametrize(("third", "one_view"), [(True, False), (False, True)])
-def test_the_pairs_of_a_symmetric_part_go_outside_the_part_in_third_angle_and_in_a_sheet_of_one_view(
-    third: bool, one_view: bool
-) -> None:
-    ctx, results = sheet_of(symmetry={"x": 50.0, "y": 30.0}, only=is_dowel, third=third, one_view=one_view)
+def test_each_group_of_equal_holes_gets_its_spacing_and_one_locator_from_the_nearest_edge() -> None:
+    """The measuring tool is the caliper (the owner's rule): the dowels are 70 and 36 apart and 15 from the left edge and 12
+    from the bottom one; the counterbores 30 apart and 35 from the left, 30 from the bottom; the M6 50 from the left and 12
+    from the bottom. Nothing is counted from one corner for the whole plate (that needs a height gauge)."""
+    ctx, results = sheet_of()
     assert {r.id: r.status for r in results}["loc"] == "ok"
-    box = ctx.views["top"].box
-    texts = [e for e in ctx.sheet.entities if isinstance(e, model.Text) and e.text in ("70", "36")]
-    assert len(texts) == 2 and all(t.y < box[1] or t.y > box[3] or t.x < box[0] for t in texts)  # not inside the part
-
-
-def test_a_part_symmetric_both_ways_is_located_by_symmetry_alone() -> None:
-    ctx, results = sheet_of(symmetry={"x": 50.0, "y": 30.0}, only=is_dowel)
-    assert {r.id: r.status for r in results}["loc"] == "ok"
-    texts = ctx.sheet.texts()
-    assert texts.count("70") == 1 and texts.count("36") == 1  # the spacing across x and across y, one dimension each
-    assert not [v for v in CORNER_VALUES if v in texts]
-    assert all(ctx.extras["loc_axes"][h.index] == {"x", "y"} for h in ctx.holes)
+    texts = _texts(ctx)
+    assert texts.count("70") == 1 and texts.count("36") == 1  # the dowels: x spacing and y spacing
+    assert texts.count("15") == 1 and texts.count("35") == 1 and texts.count("50") == 1  # the x locators, one per group
+    assert texts.count("12") == 1 and texts.count("30") == 2  # the y locator of the dowels and of the M6 is ONE 12 (their centres share the line), the counterbore spacing and its y (30)
+    assert not [v for v in ("65", "85", "48") if v in texts]  # not a baseline from one datum
+    assert all(ctx.extras["loc_edge"][h.index] == {"x", "y"} for h in ctx.holes)  # every group has an edge locator in both directions
     assert not ctx.extras.get("loc_missing")
-    top = ctx.views["top"]
-    ink = [e for e in ctx.sheet.of_layer(model.AXES) if isinstance(e, model.Line)]
-    assert any(abs(e.x1 - e.x2) < 1e-6 and abs(e.x1 - top.project((50.0, 0, 0))[0]) < 1e-6 for e in ink)  # x = 50
-    assert any(abs(e.y1 - e.y2) < 1e-6 and abs(e.y1 - top.project((0, 30.0, 0))[1]) < 1e-6 for e in ink)  # y = 30
 
 
-def test_a_hole_on_the_axis_of_a_symmetric_part_has_no_dimension_at_all() -> None:
+def test_the_locator_comes_from_the_nearer_edge_and_never_from_the_symmetry() -> None:
+    ctx, _ = plate()
+    ctx.holes[:] = [sc.HoleInfo(0, (80.0, 54.0, 19.0), (0, 0, -1), 6.0, 19.0, True, ("face:one",), None, True)]
+    ctx.extras["symmetry"] = {"x": 50.0, "y": 30.0}  # declared symmetry is no reference any more
+    draw(ctx, {"type": "datum_dims", "id": "loc", "auto": True})
+    texts = _texts(ctx)
+    assert texts.count("20") == 1 and texts.count("6") == 1  # 20 from the right edge, 6 from the top one
+    assert "80" not in texts and "54" not in texts
+    assert ctx.extras["positions"][0] == {"x": 20.0, "y": 6.0}
+
+
+def test_a_hole_in_the_middle_of_a_symmetric_plate_is_dimensioned_from_an_edge_like_any_other() -> None:
     ctx, _ = plate()
     ctx.holes[:] = [sc.HoleInfo(0, (50.0, 30.0, 19.0), (0, 0, -1), 20.0, 19.0, True, ("face:bore",), None, True)]
     ctx.extras["symmetry"] = {"x": 50.0, "y": 30.0}
     results = draw(ctx, {"type": "datum_dims", "id": "loc", "auto": True})
-    assert results[0].status == "ok" and ctx.extras["loc_axes"][0] == {"x", "y"}
-    assert not ctx.sheet.texts() or all(not t.strip() for t in ctx.sheet.texts())  # no number: the centre lines say it
+    assert results[0].status == "ok" and ctx.extras["loc_edge"][0] == {"x", "y"}
+    texts = _texts(ctx)
+    assert texts.count("50") == 1 and texts.count("30") == 1  # no symmetry to lean on: its place is on the sheet
+    assert not [f for f in review_of(ctx, results) if f.code in ("hole_not_located", "hole_partly_located", "hole_group_no_locator")]
+
+
+def test_a_row_at_one_pitch_says_the_pitch_once_with_how_many_gaps() -> None:
+    ctx, _ = plate()
+    ctx.holes[:] = [
+        sc.HoleInfo(i, (20.0 + 20.0 * i, 30.0, 19.0), (0, 0, -1), 6.0, 19.0, True, (f"face:r{i}",), None, True)
+        for i in range(4)
+    ]
+    draw(ctx, {"type": "datum_dims", "id": "loc", "auto": True})
+    texts = _texts(ctx)
+    assert texts.count("3×20") == 1 and texts.count("20") == 1  # the pitch (20, said once: three gaps) and the first hole from the left edge
+    # TechDraw measures the pitch itself and only the "3×" in front of it is text: a hand edit of a hole moves the number
+    prefixed = [n for n in ctx.extras["natives"]["loc"] if n.prefix]
+    assert [(n.prefix, n.text, n.expected) for n in prefixed] == [("3×", None, 20.0)]
+    assert not [n for n in ctx.extras["natives"]["loc"] if n.text], "no dimension of the default location is fixed text"
+
+
+def test_the_axis_of_revolution_of_a_turned_part_is_the_reference_of_a_bore_on_it() -> None:
+    class Turned(PlateGeometry):
+        def round_extent(self) -> tuple[tuple[float, float, float], float]:
+            return (0.0, 0.0, 1.0), 100.0
+
+    ctx, _ = plate()
+    ctx.geometry = Turned()
+    ctx.extras["model_box"] = ((0.0, 0.0, 0.0), (100.0, 60.0, 19.0))
+    ctx.holes[:] = [sc.HoleInfo(0, (50.0, 30.0, 19.0), (0, 0, -1), 20.0, 19.0, True, ("face:bore",), None, True)]
+    results = draw(ctx, {"type": "datum_dims", "id": "loc", "auto": True})
+    assert results[0].status == "ok" and not ctx.extras.get("natives", {}).get("loc")  # the axis says it: nothing to measure
     assert not [f for f in review_of(ctx, results) if f.code in ("hole_not_located", "hole_partly_located")]
 
 
-def test_with_no_reference_nothing_is_counted_from_the_corner_and_the_agent_is_told_to_ask() -> None:
-    ctx, results = sheet_of()
-    loc = {r.id: r for r in results}["loc"]
-    assert loc.status == "warning" and "Ask the engineer which face or edge" in loc.detail and "x and y" in loc.detail
-    assert not [v for v in CORNER_VALUES if v in ctx.sheet.texts()]
-    found = of_code(review_of(ctx, results), "hole_not_located")
-    assert len(found) == 7 and all("Pregunta al ingeniero" in f.message and "x, y" in f.message for f in found)
-
-
-def test_a_declared_datum_is_the_reference_of_its_direction_and_beats_the_symmetry() -> None:
+def test_a_declared_datum_is_the_edge_the_locator_counts_from() -> None:
     ctx, _ = plate()
-    ctx.extras["symmetry"] = {"x": 50.0}
     results = draw(
         ctx,
         {"type": "datum", "id": "dB", "letter": "B", "face": "face:left"},
@@ -287,10 +297,10 @@ def test_a_declared_datum_is_the_reference_of_its_direction_and_beats_the_symmet
 
     # B is across x; the bottom (A) is not in the plane
     assert declared_datums(ctx, ctx.views["top"]) == ("face:left", None)
-    texts = ctx.sheet.texts()
-    assert all(texts.count(v) == 1 for v in ("35", "50", "65", "85")) and "70" not in texts  # counted from the datum
-    assert {r.id: r for r in results}["loc"].status == "warning"  # y still has no reference
-    assert all(ctx.extras["loc_axes"][h.index] == {"x"} for h in ctx.holes)
+    texts = _texts(ctx)
+    assert all(texts.count(v) == 1 for v in ("35", "50", "70")) and texts.count("30") == 2 and "65" not in texts  # the x locators from B, the spacings between holes
+    assert {r.id: r for r in results}["loc"].status == "ok"
+    assert all(ctx.extras["loc_edge"][h.index] == {"x", "y"} for h in ctx.holes)
 
 
 def datum_sheet() -> tuple[sc.Context, list[sc.ItemResult]]:
@@ -307,28 +317,62 @@ def datum_sheet() -> tuple[sc.Context, list[sc.ItemResult]]:
     return ctx, results
 
 
-def test_with_two_datums_every_hole_is_located_from_them_with_one_dimension_per_value() -> None:
-    ctx, results = datum_sheet()
-    assert {r.id: r.status for r in results}["loc"] == "ok"
-    for hole in ctx.holes:
-        assert ctx.extras["loc_axes"][hole.index] == {"x", "y"}, hole
-    unit_texts = ctx.sheet.texts()
-    for value in ("15", "35", "50", "65", "85", "12", "30", "48"):  # five x values and three y values, once each
-        assert unit_texts.count(value) == 1, (value, unit_texts)
-
-
-def test_the_rows_stack_outward_below_and_left_of_the_view_with_an_equal_step() -> None:
-    ctx, _ = datum_sheet()
+def _stacks_of(ctx: sc.Context) -> dict[str, list[tuple[float, float]]]:
+    """The dimensions of the default location of the top view by the side they stand on: (distance from the view, value),
+    nearest first."""
     box = ctx.views["top"].box
-    lines = ctx.extras["dimension_main_lines"]
-    horizontal = sorted({round(ln[1], 2) for ln in lines if abs(ln[1] - ln[3]) < 1e-6 and ln[1] < box[1]}, reverse=True)
-    assert len(horizontal) == 5  # the x values: 15, 35, 50, 65, 85
-    steps = {round(a - b, 2) for a, b in zip(horizontal, horizontal[1:], strict=False)}
-    assert steps == {sc.STACK_STEP_MM}
-    vertical = sorted({round(ln[0], 2) for ln in lines if abs(ln[0] - ln[2]) < 1e-6 and ln[0] < box[0]}, reverse=True)
-    assert len(vertical) == 3 and {round(a - b, 2) for a, b in zip(vertical, vertical[1:], strict=False)} == {
-        sc.STACK_STEP_MM
-    }
+    out: dict[str, list[tuple[float, float]]] = {"below": [], "above": [], "left": [], "right": []}
+    for n in ctx.extras["natives"]["loc"]:
+        if n.orient == "h":
+            side, far = ("below", box[1] - n.label[1]) if n.label[1] < box[1] else ("above", n.label[1] - box[3])
+        else:
+            side, far = ("left", box[0] - n.label[0]) if n.label[0] < box[0] else ("right", n.label[0] - box[2])
+        out[side].append((round(far, 2), n.expected))
+    return {side: sorted(found) for side, found in out.items()}
+
+
+def test_the_rows_stack_outward_on_each_side_of_the_view_with_an_equal_step() -> None:
+    ctx, _ = datum_sheet()
+    stacks = _stacks_of(ctx)
+    assert sum(len(stacks[s]) for s in ("below", "above")) == 5  # x: the locators 15, 35, 50 and the spacings 70, 30
+    assert sum(len(stacks[s]) for s in ("left", "right")) == 3  # y: the locator 12 (the dowels and the M6 share the line), 30 and the spacing 36
+    for side, found in stacks.items():
+        distances = sorted({d for d, _ in found})  # the dimensions that do not touch share a row: the rows are what stack
+        assert {round(b - a, 2) for a, b in zip(distances, distances[1:], strict=False)} <= {sc.STACK_STEP_MM}, (side, found)
+
+
+def test_the_shorter_dimensions_stand_nearest_the_part_on_each_side() -> None:
+    ctx, _ = datum_sheet()
+    for side, found in _stacks_of(ctx).items():
+        values = [v for _, v in found]
+        assert values == sorted(values), (side, found)  # from the part outward the values only grow (ISO 129-1)
+
+
+def test_no_extension_line_of_the_default_location_crosses_the_line_of_another_dimension() -> None:
+    """The counterbores sit between the dowel rows: their locator and the spacing of the dowels cannot stack on one side of the
+    view without an extension line across the other's line, so they stand on opposite sides."""
+    ctx, _ = datum_sheet()
+    stacks = _stacks_of(ctx)
+    assert any(stacks[s] for s in ("above", "right")), stacks  # something had to go to the opposite side
+    import sheet_viewrules  # noqa: PLC0415
+
+    shapes = ctx.extras["dim_shapes"]
+    assert len(shapes) >= 9
+    assert sheet_viewrules.dimension_crossings(shapes) == []
+
+
+def test_the_layout_knows_how_many_dimensions_go_to_the_opposite_side_before_the_sheet_exists() -> None:
+    """``drawing`` reserves the room of the far rows from the holes and the box of the part alone (``items_datum.row_plan``)."""
+    import items_datum  # noqa: PLC0415
+
+    ctx, _ = plate()
+    box = ((0.0, 0.0, 0.0), (WIDTH, DEPTH, HEIGHT))
+    seen = [h for h in ctx.holes if abs(h.direction[2]) > 0.99]
+    (_, far_x), (_, far_y) = items_datum.row_plan(seen, "top", box, 0.5)
+    assert far_x >= 1 and far_y >= 1  # the groups interleave: something stands on the opposite side
+    dowels = [h for h in ctx.holes if is_dowel(h)]
+    (_, far_x), (_, far_y) = items_datum.row_plan(dowels, "top", box, 0.5)
+    assert (far_x, far_y) == (0, 0)  # one group: its dimensions chain, nothing crosses
 
 
 def test_holes_that_share_a_coordinate_are_joined_by_a_centre_line() -> None:
@@ -342,7 +386,6 @@ def test_holes_that_share_a_coordinate_are_joined_by_a_centre_line() -> None:
 
 def test_the_default_location_leaves_alone_the_holes_another_item_locates() -> None:
     ctx, _ = plate()
-    ctx.extras["symmetry"] = {"x": 50.0}
     results = draw(
         ctx,
         {"type": "datum_dims", "id": "loc", "auto": True},
@@ -360,23 +403,86 @@ def test_auto_takes_no_table_and_no_holes() -> None:
         items.normalise({"type": "datum_dims", "auto": True, "holes": "all"}, set(), 1)
 
 
-# --- the floor asks for function: a location by symmetry is complete, a real gap still fails ------------------------------
+def test_a_baseline_from_a_datum_is_still_there_for_a_shop_with_a_height_gauge() -> None:
+    """The caliper scheme is the default; a baseline from the datum edges is what ``datum_dims`` x_from / y_from asks for."""
+    ctx, _ = plate()
+    results = draw(ctx, {"type": "datum_dims", "id": "base", "x_from": "min", "y_from": "min", "holes": [[x, y, 0] for x, y in DOWELS]})
+    assert results[0].status == "ok", results
+    texts = _texts(ctx)
+    assert all(texts.count(v) == 1 for v in ("15", "85", "12", "48")), texts  # every position from the one datum edge
 
 
-def test_the_review_accepts_a_location_by_symmetry_as_complete() -> None:
-    ctx, results = sheet_of(symmetry={"x": 50.0, "y": 30.0}, only=is_dowel)
+# --- the floor asks for a locator of each group: a spacing alone, or the symmetry, does not place the group -------------------
+
+
+def spacing(a: tuple[float, float], b: tuple[float, float], item_id: str) -> dict[str, Any]:
+    return {"type": "dim", "id": item_id, "kind": "distance", "from": {"at": [*a, 0]}, "to": {"at": [*b, 0]}, "view": "top"}
+
+
+def test_the_default_location_leaves_no_group_without_a_locator() -> None:
+    ctx, results = sheet_of(symmetry={"x": 50.0, "y": 30.0})
     codes = {f.code for f in review_of(ctx, results)}
-    assert not codes & {"hole_not_located", "hole_partly_located", "hole_no_reference"}, codes
+    assert not codes & {"hole_not_located", "hole_partly_located", "hole_no_reference", "hole_group_no_locator"}, codes
 
 
-def test_the_review_still_fails_a_hole_the_symmetry_leaves_half_located() -> None:
-    ctx, results = sheet_of(symmetry={"x": 50.0})
-    found = review_of(ctx, results)
-    partly = of_code(found, "hole_partly_located")
-    assert partly and all(
-        "falta su posición en y" in f.message and "Pregunta al ingeniero" in f.message for f in partly
+def test_a_group_spaced_only_between_its_holes_is_a_finding_with_the_measurable_alternative() -> None:
+    ctx, _ = plate()
+    ctx.holes[:] = [h for h in ctx.holes if is_dowel(h)]
+    ctx.extras["symmetry"] = {"x": 50.0, "y": 30.0}  # the part is symmetric and the engineer leaned on it
+    results = draw(
+        ctx,
+        {"type": "overall", "id": "o1"},
+        {"type": "dim", "id": "edge", "kind": "distance", "from": {"face": "face:left"}, "to": {"at": [15, 12, 0]}, "view": "top"},
+        spacing(DOWELS[0], DOWELS[1], "sx"),
+        spacing(DOWELS[0], DOWELS[2], "sy"),
     )
-    assert not of_code(found, "hole_not_located")  # they are located across x: half of the way
+    assert all(r.status in ("ok", "warning") for r in results), results
+    found = of_code(review_of(ctx, results), "hole_group_no_locator")
+    assert [f.key.split(":")[-1] for f in found] == ["y"], found  # x has its locator (15 from the left face), y has none
+    assert "4× Ø6" in found[0].message and "arista o una cara" in found[0].message and set(found[0].items) == {"sx", "sy"}
+
+
+def test_a_group_with_its_locator_in_both_directions_has_no_finding() -> None:
+    ctx, _ = plate()
+    ctx.holes[:] = [h for h in ctx.holes if is_dowel(h)]
+    ctx.geometry.faces["face:front"] = sc.FaceInfo("face:front", "plane", (50.0, 0.0, 9.5), normal=(0.0, -1.0, 0.0))
+    results = draw(
+        ctx,
+        {"type": "overall", "id": "o1"},
+        {"type": "dim", "id": "ex", "kind": "distance", "from": {"face": "face:left"}, "to": {"at": [15, 12, 0]}, "view": "top"},
+        {"type": "dim", "id": "ey", "kind": "distance", "from": {"face": "face:front"}, "to": {"at": [15, 12, 0]}, "view": "top"},
+        spacing(DOWELS[0], DOWELS[1], "sx"),
+        spacing(DOWELS[0], DOWELS[2], "sy"),
+    )
+    assert not of_code(review_of(ctx, results), "hole_group_no_locator")
+
+
+def gdt_sheet(char: str, *notes: str) -> list[review.Finding]:
+    ctx, _ = plate()
+    ctx.holes[:] = [h for h in ctx.holes if is_dowel(h)]
+    specs: list[dict[str, Any]] = [
+        {"type": "overall", "id": "o1"},
+        {"type": "datum_dims", "id": "loc", "auto": True},
+        {"type": "datum", "id": "dA", "letter": "A", "face": "face:bottom"},
+        {"type": "hole_dim", "id": "dowels", "at": [[x, y, 0] for x, y in DOWELS], "fit": "H7"},
+        {"type": "gdt", "id": "g1", "char": char, "value": 0.02, "datums": ["A"], "on": "dowels"},
+        *({"type": "note", "text": n} for n in notes),
+    ]
+    results = draw(ctx, *specs)
+    return review_of(ctx, results)
+
+
+def test_a_position_tolerance_with_no_note_on_how_to_measure_it_is_a_finding() -> None:
+    found = of_code(gdt_sheet("position"), "measurement_unstated")
+    assert found and found[0].items == ("g1",) and "MMC" in found[0].message
+
+
+def test_a_note_that_says_how_the_special_tolerance_is_measured_closes_the_finding() -> None:
+    assert not of_code(gdt_sheet("position", "Posición de los 4× Ø6 H7: verificar en MMC"), "measurement_unstated")
+
+
+def test_a_tolerance_the_general_tools_check_needs_no_note() -> None:
+    assert not of_code(gdt_sheet("perpendicularity"), "measurement_unstated")
 
 
 def test_the_same_size_in_two_views_is_flagged_without_blocking() -> None:
@@ -399,7 +505,7 @@ def test_the_same_size_in_two_views_is_flagged_without_blocking() -> None:
     ctx.extras.setdefault("units", [])
     data = review.ReviewInput(ctx.extras["items"], {r.id: r for r in results}, ctx, ctx.sheet, [])
     (finding,) = of_code(quality.check(data), "dimension_repeated")
-    assert finding.severity == "info" and finding.items == ("o1", "w") and "ISO 129" in finding.message
+    assert finding.severity == "info" and set(finding.items) == {"o1", "w"} and "ISO 129" in finding.message
     assert "dimension_repeated" in checks.NON_BLOCKING
 
 
@@ -465,7 +571,7 @@ def test_the_review_of_a_clean_plate_has_nothing_against_the_leaders_or_the_posi
     ctx.extras["units"] = []
     data = review.ReviewInput(ctx.extras["items"], {r.id: r for r in results}, ctx, ctx.sheet, [])
     found = {f.code for f in quality.check(data)}
-    assert not found & {"leader_crossing", "leader_crosses_part", "hole_partly_located", "dimension_inside_outline"}, (
+    assert not found & {"leader_crossing", "leader_crosses_part", "leader_crosses_dimension", "hole_partly_located", "dimension_inside_outline"}, (
         found
     )
 
@@ -488,9 +594,51 @@ def test_two_leaders_that_cross_are_a_finding() -> None:
     assert "leader_crossing" in {f.code for f in quality.check(data)}
 
 
+def _dimension_unit(key: str, segment: tuple[float, float, float, float]) -> Any:
+    import sheet_units as units  # noqa: PLC0415
+
+    line = model.Line(*segment, model.DIMENSIONS)
+    return units.Unit(key, key, units.KIND_ITEM, (line,), "dim")
+
+
+def test_a_leader_that_crosses_a_dimension_line_is_a_finding_that_names_the_callout_and_the_dimension() -> None:
+    ctx, results = sheet_of()
+    leader = ctx.extras["leaders"][0]
+    mx, my = (leader["tip"][0] + leader["elbow"][0]) / 2, (leader["tip"][1] + leader["elbow"][1]) / 2
+    across = _dimension_unit("d1", (mx - 10.0, my + 10.0, mx + 10.0, my - 10.0))  # a line through the middle of the leader
+    ctx.extras["units"] = [across]
+    ctx.extras["layout_planned"] = True
+    specs = [*ctx.extras["items"], {"id": "d1", "type": "dim", "kind": "distance"}]
+    data = review.ReviewInput(specs, {r.id: r for r in results}, ctx, ctx.sheet, [])
+    found = [f for f in quality.check(data) if f.code == "leader_crosses_dimension" and f.items[0] == leader["item"]]
+    assert len(found) == 1 and "d1" in found[0].items, found
+
+
+def test_a_sheet_built_item_by_item_does_not_get_that_finding() -> None:
+    ctx, results = sheet_of()
+    leader = ctx.extras["leaders"][0]
+    mx, my = (leader["tip"][0] + leader["elbow"][0]) / 2, (leader["tip"][1] + leader["elbow"][1]) / 2
+    ctx.extras["units"] = [_dimension_unit("d1", (mx - 10.0, my + 10.0, mx + 10.0, my - 10.0))]
+    specs = [*ctx.extras["items"], {"id": "d1", "type": "dim", "kind": "distance"}]
+    data = review.ReviewInput(specs, {r.id: r for r in results}, ctx, ctx.sheet, [])
+    assert "leader_crosses_dimension" not in {f.code for f in quality.check(data)}
+
+
+def test_a_leader_that_crosses_no_dimension_has_no_such_finding() -> None:
+    ctx, results = sheet_of()
+    leader = ctx.extras["leaders"][0]
+    far = _dimension_unit("d1", (leader["tip"][0] - 50.0, leader["tip"][1] - 50.0, leader["tip"][0] - 50.0, leader["tip"][1] - 30.0))
+    ctx.extras["units"] = [far]
+    ctx.extras["layout_planned"] = True
+    specs = [*ctx.extras["items"], {"id": "d1", "type": "dim", "kind": "distance"}]
+    data = review.ReviewInput(specs, {r.id: r for r in results}, ctx, ctx.sheet, [])
+    assert "leader_crosses_dimension" not in {f.code for f in quality.check(data)}
+
+
 def test_the_dowel_callout_has_its_marker_its_fit_with_deviations_and_a_ring_on_each_hole() -> None:
     ctx, _ = sheet_of()
-    assert "◎ 4× Ø6 H7 (+0,012/0) pasante" in ctx.sheet.texts()
+    assert "4× Ø6 H7 (+0,012/0) pasante, registro" in ctx.sheet.texts()
+    assert not any("◎" in t for t in ctx.sheet.texts())  # a GD&T symbol stands only inside a frame
     rings = [e for e in ctx.sheet.of_layer(model.AXES) if isinstance(e, model.Circle)]
     assert len(rings) == 4 and {round(r.r, 2) for r in rings} == {4.6}
     # not asked for, not a dowel: the same fit on a hole without dowel=true gets no marker and the review asks
@@ -506,22 +654,25 @@ def test_the_dowel_callout_has_its_marker_its_fit_with_deviations_and_a_ring_on_
 # --- notes --------------------------------------------------------------------------------------------------------------------
 
 
-def test_the_notes_are_numbered_with_the_thickness_first_and_the_iso_286_note_last() -> None:
+def test_the_notes_are_numbered_with_the_thickness_first() -> None:
     ctx, _ = plate(one_view=True)
     draw(
         ctx,
         {"type": "note", "id": "n1", "text": "Fabricar de lámina rectificada"},
-        {"type": "note", "id": "n286", "auto": "iso286"},
         {"type": "note", "id": "tn", "auto": "thickness"},
         {"type": "note", "id": "n2", "text": "Rebabas eliminadas"},
     )
     notes = [t for t in ctx.sheet.texts() if t[:2] in ("1.", "2.", "3.", "4.")]
     assert sorted(notes) == [
-        "1. 19 de espesor",
+        "1. Espesor 19",
         "2. Fabricar de lámina rectificada",
         "3. Rebabas eliminadas",
-        "4. Tablas ISO 286 transcritas; verificar contra la norma",
     ]
+
+
+def test_the_iso_286_note_is_no_longer_a_note_a_sheet_writes() -> None:
+    with pytest.raises(sc.ItemError, match="auto"):
+        items.normalise({"type": "note", "auto": "iso286"}, set(), 1)
 
 
 def test_an_auto_note_takes_no_text_and_a_note_without_either_is_refused() -> None:
@@ -606,3 +757,261 @@ def test_segments_cross_only_when_they_cross_and_not_when_they_meet_at_an_end() 
     assert not collide.segments_cross((0, 0, 10, 10), (10, 10, 20, 0))  # meet at an end
     assert not collide.segments_cross((0, 0, 10, 0), (0, 5, 10, 5))  # parallel
     assert not collide.segments_cross((0, 0, 10, 0), (0, 0, 10, 0))  # the same line: an overlap, not a crossing
+
+
+# --- the order of the dimension lines, and the callout leaders ----------------------------------------------------------------
+
+
+def lines_of(ctx: sc.Context, item_id: str) -> collide.Ink:
+    """What one item drew on the sheet (page mm, y up)."""
+    start, end = ctx.extras["item_slices"][item_id]
+    return collide.ink_of(item_id, ctx.sheet.entities[start:end])
+
+
+def test_the_overall_size_stands_outside_the_dimensions_it_encloses_and_nothing_crosses_its_line() -> None:
+    ctx, _ = plate(one_view=True)
+    ctx.holes[:] = [h for h in ctx.holes if is_dowel(h)]
+    results = draw(ctx, {"type": "overall", "id": "o1", "side": "below"}, {"type": "datum_dims", "id": "loc", "auto": True})
+    assert all(r.status in ("ok", "warning") for r in results), results
+    box = ctx.views["top"].box
+    overall = [s for s in lines_of(ctx, "o1").dimension_lines if s[1] == s[3] and s[1] < box[1]]
+    inner = [s for s in lines_of(ctx, "loc").dimension_lines if s[1] == s[3] and s[1] < box[1]]
+    assert len(overall) == 1 and inner, (overall, inner)  # both stack under the view
+    assert overall[0][1] < min(s[1] for s in inner)  # the overall one is the farthest from the part (ISO 129-1: the larger outside)
+    for s in lines_of(ctx, "loc").lines:  # an extension line of a smaller dimension stops short of the overall line
+        crosses = s[0] == s[2] and min(s[1], s[3]) < overall[0][1] < max(s[1], s[3]) and overall[0][0] <= s[0] <= overall[0][2]
+        assert not crosses, s
+
+
+def test_a_hole_callout_is_a_radius_dimension_and_its_leader_ends_on_the_circle_without_entering_it() -> None:
+    ctx, _ = sheet_of()
+    assert [(n.kind, n.expected) for n in ctx.extras["natives"]["dowels"]] == [("radius", 3.0)]  # a diameter one has two arrows
+    top = ctx.views["top"]
+    circles = [(*top.project(h.centre), h.diameter / 2 * top.scale) for h in ctx.holes]
+    for key in ("dowels", "clear", "tap"):
+        long = [s for s in lines_of(ctx, key).lines if (s[2] - s[0]) ** 2 + (s[3] - s[1]) ** 2 > 36 and s[1] != s[3]]
+        assert long, key
+        s = long[0]
+        ends = [(s[0], s[1]), (s[2], s[3])]
+        touching = [
+            (c, e) for c in circles for e in ends if abs(((e[0] - c[0]) ** 2 + (e[1] - c[1]) ** 2) ** 0.5 - c[2]) < 0.3
+        ]
+        assert touching, (key, s)
+        (cx, cy, r), _tip = touching[0]
+        for t in (i / 20 for i in range(1, 21)):  # no point of the leader is inside the circle it points at
+            x, y = s[0] + (s[2] - s[0]) * t, s[1] + (s[3] - s[1]) * t
+            assert ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 >= r - 0.3, (key, t)
+
+
+# --- review of #69: the chain of locators, the edges a caliper reaches, the rows, the special instruments -------------------------
+
+
+def edge_dims(prefix: str, at: tuple[float, float]) -> list[dict[str, Any]]:
+    """The engineer's own dimensions from the left face and the front face to the hole at ``at``."""
+    return [
+        {"type": "dim", "id": prefix + "x", "kind": "distance", "from": {"face": "face:left"}, "to": {"at": [*at, 0]}, "view": "top"},
+        {"type": "dim", "id": prefix + "y", "kind": "distance", "from": {"face": "face:front"}, "to": {"at": [*at, 0]}, "view": "top"},
+    ]
+
+
+def dowels_and_tap(chain_from_the_edge: bool) -> tuple[sc.Context, list[sc.ItemResult]]:
+    """The four dowels spaced between them and an M6 spaced from the first dowel; the first dowel has its distances from
+    the left and the front faces only when ``chain_from_the_edge``."""
+    ctx, _ = plate()
+    ctx.holes[:] = [h for h in ctx.holes if is_dowel(h) or h.diameter == 5.0]
+    specs = [
+        {"type": "overall", "id": "o1"},
+        {"type": "datum_dims", "id": "loc", "auto": True},
+        *(edge_dims("e", DOWELS[0]) if chain_from_the_edge else []),
+        spacing(DOWELS[0], DOWELS[1], "sx"),
+        spacing(DOWELS[0], DOWELS[2], "sy"),
+        spacing(DOWELS[0], TAP, "tapx"),
+    ]
+    return ctx, draw(ctx, *specs)
+
+
+def test_a_hole_spaced_from_another_that_is_located_from_an_edge_is_located_through_it() -> None:
+    """The M6 is 35 from the first dowel along x and shares its line along y; the dowel stands 15 / 12 from the faces. The M6 is
+    located from the left face through the dowel, and the dowels by their own distances: no group lacks a locator."""
+    ctx, results = dowels_and_tap(chain_from_the_edge=True)
+    assert all(r.status in ("ok", "warning") for r in results), results
+    found = review_of(ctx, results)
+    assert not of_code(found, "hole_group_no_locator"), [(f.key, f.items) for f in of_code(found, "hole_group_no_locator")]
+
+
+def test_the_chain_of_locators_starts_from_an_edge_not_from_another_hole() -> None:
+    """The same sheet without the distances from the faces: the dowels are spaced only between them and the M6 from a dowel, so
+    NOTHING is measured from the plate and both groups are findings."""
+    ctx, results = dowels_and_tap(chain_from_the_edge=False)
+    data = review.ReviewInput(ctx.extras["items"], {r.id: r for r in results}, ctx, ctx.sheet, [])
+    unplaced = {f.key for f in checks._hole_references(data)} | {f.key for f in of_code(review_of(ctx, results), "hole_group_no_locator")}  # noqa: SLF001
+    assert {"@15,12,19", "@50,12,19"} <= unplaced, unplaced  # the dowels, and the M6, which only has a dowel to lean on
+
+
+def test_a_chain_goes_on_across_several_holes() -> None:
+    """Dowel -> M6 -> a clearance hole: each is spaced from the one before, and the first is on an edge."""
+    ctx, _ = plate()
+    ctx.holes[:] = [h for h in ctx.holes if is_dowel(h) or h.diameter == 5.0 or h.diameter in (9.0, 14.0)]
+    results = draw(
+        ctx,
+        {"type": "overall", "id": "o1"},
+        {"type": "datum_dims", "id": "loc", "auto": True},
+        *edge_dims("e", DOWELS[0]),
+        spacing(DOWELS[0], DOWELS[1], "sx"),
+        spacing(DOWELS[0], DOWELS[2], "sy"),
+        spacing(DOWELS[0], TAP, "tapx"),
+        {**spacing(TAP, CLEAR[0], "cx"), "along": "x"},
+        spacing(CLEAR[0], CLEAR[1], "cc"),
+        {"type": "dim", "id": "cy", "kind": "distance", "from": {"at": [*TAP, 0]}, "to": {"at": [*CLEAR[0], 0]}, "view": "top", "along": "y"},
+    )
+    assert not of_code(review_of(ctx, results), "hole_group_no_locator")
+
+
+class Shaft(PlateGeometry):
+    """A shaft along x: its ends are flat faces, the rest is one cylinder (no flat face along y or z)."""
+
+    planes = {0: [0.0, 100.0], 1: [], 2: []}
+
+    def round_extent(self) -> tuple[tuple[float, float, float], float]:
+        return (1.0, 0.0, 0.0), 60.0
+
+
+class Disc(PlateGeometry):
+    """A disc about z: two flat faces (top and bottom), a cylinder all round."""
+
+    planes = {0: [], 1: [], 2: [0.0, 19.0]}
+
+    def round_extent(self) -> tuple[tuple[float, float, float], float]:
+        return (0.0, 0.0, 1.0), 100.0
+
+
+def test_a_radial_hole_in_a_shaft_is_located_from_its_end_and_by_the_axis_across_not_from_the_silhouette() -> None:
+    ctx, _ = plate()
+    ctx.geometry = Shaft()
+    ctx.extras["model_box"] = ((0.0, 0.0, 0.0), (100.0, 60.0, 60.0))
+    ctx.holes[:] = [sc.HoleInfo(0, (25.0, 30.0, 60.0), (0, 0, -1), 6.0, 60.0, True, ("face:x",), None, True)]
+    results = draw(ctx, {"type": "datum_dims", "id": "loc", "auto": True})
+    assert results[0].status == "ok", results
+    natives = ctx.extras["natives"]["loc"]
+    assert [(n.orient, n.expected) for n in natives] == [("h", 25.0)]  # 25 from the end face; across, the axis says it
+    assert "30" not in _texts(ctx)  # the silhouette of the cylinder is no edge: no 30 from it
+    assert ctx.extras["loc_axes"][0] == {"x", "y"} and not ctx.extras.get("loc_missing")
+    placed = ("hole_not_located", "hole_partly_located", "hole_group_no_locator", "hole_no_reference")
+    assert not [f for f in review_of(ctx, results) if f.code in placed]
+
+
+def test_a_radial_hole_off_the_axis_of_a_shaft_has_nothing_to_count_from_across_and_the_designer_is_asked() -> None:
+    ctx, _ = plate()
+    ctx.geometry = Shaft()
+    ctx.extras["model_box"] = ((0.0, 0.0, 0.0), (100.0, 60.0, 60.0))
+    ctx.holes[:] = [sc.HoleInfo(0, (25.0, 40.0, 60.0), (0, 0, -1), 6.0, 60.0, True, ("face:x",), None, True)]  # 10 off the axis
+    results = draw(ctx, {"type": "datum_dims", "id": "loc", "auto": True})
+    assert [(n.orient, n.expected) for n in ctx.extras["natives"]["loc"]] == [("h", 25.0)]  # no y locator from the silhouette
+    assert ctx.extras["loc_missing"] == {0: {"y"}}
+    (finding,) = [f for f in review_of(ctx, results) if f.code == "hole_partly_located"]
+    assert "falta su posición en y" in finding.message or "position along y is missing" in finding.message
+    assert "Falta una referencia en y" in finding.message or "No reference along y" in finding.message  # and who to ask
+
+
+def test_the_holes_of_a_disc_get_no_locator_from_its_tangent_points_and_the_designer_is_asked() -> None:
+    ctx, _ = plate()
+    ctx.geometry = Disc()
+    ctx.extras["model_box"] = ((0.0, -20.0, 0.0), (100.0, 80.0, 19.0))
+    ctx.holes[:] = [
+        sc.HoleInfo(0, (50.0, 30.0, 19.0), (0, 0, -1), 20.0, 19.0, True, ("face:bore",), None, True),
+        sc.HoleInfo(1, (20.0, 30.0, 19.0), (0, 0, -1), 6.0, 19.0, True, ("face:a",), None, True),
+        sc.HoleInfo(2, (80.0, 30.0, 19.0), (0, 0, -1), 6.0, 19.0, True, ("face:b",), None, True),
+    ]
+    results = draw(ctx, {"type": "datum_dims", "id": "loc", "auto": True})
+    natives = ctx.extras["natives"]["loc"]
+    assert [n.expected for n in natives] == [60.0]  # the spacing between the two holes, and no locator from the rim
+    assert ctx.extras["loc_missing"] == {1: {"x", "y"}, 2: {"x", "y"}}
+    found = review_of(ctx, results)
+    asked = [f for f in found if f.code in ("hole_not_located", "hole_group_no_locator")]
+    assert asked and all("pattern_dim" in f.message for f in asked), [f.message for f in asked]
+
+
+def test_a_flat_end_that_is_not_there_is_not_an_edge_either() -> None:
+    """A plate whose right side is a cylinder (a rounded end) is located from the left face only."""
+
+    class Rounded(PlateGeometry):
+        planes = {0: [0.0], 1: [0.0, DEPTH], 2: [0.0, HEIGHT]}
+
+    ctx, _ = plate()
+    ctx.geometry = Rounded()
+    ctx.extras["model_box"] = ((0.0, 0.0, 0.0), (WIDTH, DEPTH, HEIGHT))
+    ctx.holes[:] = [sc.HoleInfo(0, (90.0, 30.0, 19.0), (0, 0, -1), 6.0, 19.0, True, ("face:one",), None, True)]
+    draw(ctx, {"type": "datum_dims", "id": "loc", "auto": True})
+    # 90 from the left face, not 10 from the rounded end; across, the front and the back faces are flat: 30 from the nearer
+    assert sorted((n.orient, n.expected) for n in ctx.extras["natives"]["loc"]) == [("h", 90.0), ("v", 30.0)]
+
+
+def test_dimensions_that_do_not_touch_share_a_row_and_the_rest_stack() -> None:
+    ctx, _ = datum_sheet()
+    stacks = _stacks_of(ctx)
+    for side, found in stacks.items():
+        rows = sorted({d for d, _ in found})
+        assert len(rows) <= 2, (side, found)  # five dimensions across: two rows on each side, not five lines
+    assert any(len([1 for d, _ in found if d == row]) >= 2 for found in stacks.values() for row in {d for d, _ in found}), stacks
+    import sheet_viewrules  # noqa: PLC0415
+
+    assert sheet_viewrules.dimension_crossings(ctx.extras["dim_shapes"]) == []
+    assert sheet_viewrules.dimension_stacks(ctx.extras["dim_shapes"], {n: v.box for n, v in ctx.views.items()}) == []
+
+
+def test_the_plate_keeps_its_scale_on_a_small_sheet_with_the_rows_grouped() -> None:
+    """On an A4 sheet the 100 x 60 plate is drawn at 1:2. With every dimension on its own row the rows asked for more room than the
+    sheet has and the scale fell to 1:5: the rows are counted as they stand and the room follows them."""
+    import items_datum  # noqa: PLC0415
+
+    ctx, _ = plate()
+    box = ((0.0, 0.0, 0.0), (WIDTH, DEPTH, HEIGHT))
+    seen = [h for h in ctx.holes if abs(h.direction[2]) > 0.99]
+    page = (297.0, 210.0)
+
+    def room(scale: float) -> dict[str, float]:
+        (near_x, far_x), (near_y, far_y) = items_datum.row_plan(seen, "top", box, scale)
+        rows, far = {"top": near_x, "front": 0, "right": 0}, {"top": far_x, "front": 0, "right": 0}
+        return lay.rows_room(rows, far, near_y, far_y, ("front", "top", "iso"), False, True)
+
+    def plan(rooms: dict[str, float]) -> lay.Layout:
+        return lay.plan(WIDTH, DEPTH, HEIGHT, *page, None, None, True, True, False, iso_dims=(WIDTH, DEPTH, HEIGHT), **rooms)
+
+    guess = plan({}).scale
+    layout = plan(room(guess))
+    while layout.scale < guess - 1e-9:  # what ``drawing._build`` does: the rows are counted again at the scale chosen
+        guess = layout.scale
+        layout = plan(room(guess))
+    assert layout.scale == 0.5, layout.scale
+    one_row_each = {"left_mm": 29.0, "right_mm": 31.0, "spacing_mm": 48.0, "need_right_mm": 15.0, "need_spacing_mm": 22.0, "below_mm": 43.0}
+    assert plan(one_row_each).scale == 0.2  # the room the dimensions took with one row each: 1:5
+
+
+def test_a_runout_is_checked_with_the_dial_indicator_every_shop_has() -> None:
+    for char in ("runout", "total_runout", "coaxiality"):
+        assert not of_code(gdt_sheet(char), "measurement_unstated"), char
+    for char in ("position", "profile_surface", "symmetry"):
+        assert of_code(gdt_sheet(char), "measurement_unstated"), char  # what needs a CMM, a profile projector or a roundness tester still does
+
+
+def test_a_loose_note_about_checking_the_position_does_not_close_the_frame_of_every_feature() -> None:
+    """Two position frames, on the dowels and on the counterbores; the note names the dowels only: the counterbores still ask."""
+    specs = [
+        {"type": "overall", "id": "o1"},
+        {"type": "datum_dims", "id": "loc", "auto": True},
+        {"type": "datum", "id": "dA", "letter": "A", "face": "face:bottom"},
+        {"type": "hole_dim", "id": "dowels", "at": [[x, y, 0] for x, y in DOWELS], "fit": "H7"},
+        {"type": "hole_dim", "id": "clear", "at": [[x, y, 0] for x, y in CLEAR]},
+        {"type": "gdt", "id": "g_dowels", "char": "position", "value": 0.02, "datums": ["A"], "on": "dowels"},
+        {"type": "gdt", "id": "g_clear", "char": "position", "value": 0.1, "datums": ["A"], "on": "clear"},
+    ]
+
+    def asked(note: str) -> list[tuple[str, ...]]:
+        ctx, _ = plate()
+        results = draw(ctx, *specs, {"type": "note", "text": note})
+        return sorted(f.items for f in of_code(review_of(ctx, results), "measurement_unstated"))
+
+    assert asked("Posición de los 4× Ø6 H7: verificar en MMC") == [("g_clear",)]  # the counterbores still ask
+    assert asked("Verificar la posición") == [("g_clear",), ("g_dowels",)]  # a loose note names no feature: it closes none
+    assert asked("Position of the Ø9 holes: verify on a CMM") == [("g_dowels",)]
+    assert asked("Posición de los Ø6 H7 y de los Ø9: verificar en MMC") == []

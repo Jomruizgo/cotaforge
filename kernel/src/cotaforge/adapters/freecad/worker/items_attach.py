@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from items_common import VIEW_ORDER, why_not
+from sheet_collide import segments_of
 from sheet_context import Context, ItemError, Point, Vec3, ViewInfo, cross, dot, scale, sub, unit
 from sheet_model import Entity
 
@@ -27,9 +28,23 @@ CARDINAL: dict[str, tuple[float, float]] = {
 FIRST_DISTANCE_MM = 9.0  # the label's anchor is this far from the feature, then farther while the place is taken
 NUDGE_MM = 6.0
 TRIES = 12
-SLIDES = (0.5, 0.25, 0.75, 0.12, 0.88)  # fractions of the trace of a plane a label may touch
+SLIDES = (0.5, 0.25, 0.75, 0.12, 0.88, 0.06, 0.94, 0.38, 0.62)  # fractions of the trace of a plane a label may touch (the last ones clear the extension lines of a dimension along the whole edge)
 SLIDE_TRIES = 5  # distances tried at each place along the trace before the next one
 TRACE_MARGIN_MM = 2.0  # a label touches a plane at least this far from the end of its trace
+
+
+class Placed(list):  # type: ignore[type-arg]
+    """The entities of a label together with where it was put (``tip``, ``anchor``, ``rect``, ``origin``, ``side``): what the
+    native TechDraw object that stands for the label needs. ``place_label`` hands back the very list ``build`` made."""
+
+    tip: Point
+    anchor: Point
+    rect: Rect
+    origin: Point
+    side: str
+    stretch: int
+    leader: bool
+    reach: Point  # where the label really joins the feature, when it is not the ``anchor`` asked for (a fixed symbol)
 
 
 @dataclass
@@ -181,6 +196,15 @@ def _attach_face(ctx: Context, face_id: str, wanted: str | None, side: str | Non
     # then in the air). Where the silhouette line of that side really exists is where a label may touch it.
     band = None
     found = ctx.geometry.cylinder_span(face_id, scale(side_line, sign))
+    named = [t for t in ctx.threads if t.cylinder == face_id]
+    if found is not None and named:  # a threaded shaft: the callout points at the thread, not the plain part
+        spans = []
+        for t in named:
+            start = dot(sub(t.start, face.axis_point), axis)
+            spans.append(tuple(sorted((start, start + t.length * dot(t.direction, axis)))))
+        narrowed = (max(found[0], min(a for a, _ in spans)), min(found[1], max(b for _, b in spans)))
+        if narrowed[1] - narrowed[0] > 1e-6:
+            found = narrowed
     if found is not None:
         low, high = found
         centre = view.project(_on_axis(face.axis_point, axis, (low + high) / 2))
@@ -240,18 +264,25 @@ def place_label(
     home = att.tip
     # a leader that crosses nothing first; then one that may cross the LINE of a dimension (never its text); a label
     # that slides along the plane it points at (``Attach.tips``) before it goes farther out
-    for crossing in (False, True) if not explicit else (False,):
+    for crossing, strict in ((False, True), (True, True), (False, False), (True, False)) if not explicit else ((False, False),):
         for direction, tip, step in _candidates(att, explicit):
             att.tip = tip
             distance = start + step * NUDGE_MM
             anchor = (tip[0] + direction[0] * distance, tip[1] + direction[1] * distance)
             entities, rect = build(anchor, direction)
+            anchor = getattr(entities, "reach", anchor)  # a symbol of a fixed size reaches where it reaches
             fits = ctx.inside(rect)
             if first is None:
                 first = (entities, rect)
             if fits and inside_first is None:
                 inside_first = (entities, rect)
-            if fits and ctx.free(rect) and clear_of_views(ctx, rect) and _leader_free(ctx, att, tip, anchor, crossing):
+            if (
+                fits
+                and ctx.free(rect)
+                and clear_of_views(ctx, rect)
+                and _leader_free(ctx, att, tip, anchor, crossing)
+                and not (strict and _on_dimension_lines(ctx, entities, rect))
+            ):
                 ctx.reserve(rect)
                 ctx.extras.setdefault("segments", []).append((tip, anchor))
                 return entities, True
@@ -281,14 +312,16 @@ def _candidates(att: Attach, explicit: bool) -> list[tuple[tuple[float, float], 
 
 
 def _segment_distance(a: Point, b: Point, c: Point, d: Point) -> float:
-    """The smallest distance between the segments ``ab`` and ``cd`` (0 when they cross)."""
-
-    def side(p: Point, q: Point, r: Point) -> float:
-        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
-
-    if side(a, b, c) * side(a, b, d) < 0 and side(c, d, a) * side(c, d, b) < 0:
-        return 0.0
-    return min(_point_segment(p, q, r) for p, q, r in ((a, c, d), (b, c, d), (c, a, b), (d, a, b)))
+    """The smallest distance between the segments ``ab`` and ``cd`` (0 when they cross). Called millions of times by the
+    placement of a welded sheet (every candidate place against every line of a view): no closure, no generator."""
+    if a == b:  # a point (is it on this edge?): nothing to cross, and its distance to ``cd`` is the smallest
+        return _point_segment(a, c, d)
+    abx, aby = b[0] - a[0], b[1] - a[1]
+    if (abx * (c[1] - a[1]) - aby * (c[0] - a[0])) * (abx * (d[1] - a[1]) - aby * (d[0] - a[0])) < 0:
+        cdx, cdy = d[0] - c[0], d[1] - c[1]
+        if (cdx * (a[1] - c[1]) - cdy * (a[0] - c[0])) * (cdx * (b[1] - c[1]) - cdy * (b[0] - c[0])) < 0:
+            return 0.0
+    return min(_point_segment(a, c, d), _point_segment(b, c, d), _point_segment(c, a, b), _point_segment(d, a, b))
 
 
 def _point_segment(p: Point, a: Point, b: Point) -> float:
@@ -300,6 +333,8 @@ def _point_segment(p: Point, a: Point, b: Point) -> float:
 
 def _segment_hits_rect(a: Point, b: Point, rect: Rect) -> bool:
     x0, y0, x1, y1 = rect
+    if max(a[0], b[0]) < x0 or min(a[0], b[0]) > x1 or max(a[1], b[1]) < y0 or min(a[1], b[1]) > y1:
+        return False  # the boxes of the segment and of the rectangle are apart: most segments of a view end here
     corners = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
     if x0 < a[0] < x1 and y0 < a[1] < y1 or x0 < b[0] < x1 and y0 < b[1] < y1:
         return True
@@ -307,6 +342,23 @@ def _segment_hits_rect(a: Point, b: Point, rect: Rect) -> bool:
 
 
 LEADER_CLEARANCE_MM = 1.5
+DIMENSION_LINE_CLEARANCE_MM = 0.6  # a label keeps this far from the extension and dimension lines already drawn
+
+
+def _on_dimension_lines(ctx: Context, entities: list[Entity], rect: Rect) -> bool:
+    """Whether a label (its entities and the rectangle it takes) touches a dimension or extension line already on the sheet:
+    a datum, a frame or a symbol does not stand on the lines of another item (ISO 129-1; the review flags it)."""
+    lines = ctx.extras.get("dimension_lines", [])
+    if not lines:
+        return False
+    mine = segments_of(entities)
+    for a in lines:
+        start, end = (a[0], a[1]), (a[2], a[3])
+        if _segment_hits_rect(start, end, rect):
+            return True
+        if any(_segment_distance(start, end, (b[0], b[1]), (b[2], b[3])) < DIMENSION_LINE_CLEARANCE_MM for b in mine):
+            return True
+    return False
 
 
 def _leader_free(ctx: Context, att: Attach, tip: Point, anchor: Point, crossing: bool = False) -> bool:

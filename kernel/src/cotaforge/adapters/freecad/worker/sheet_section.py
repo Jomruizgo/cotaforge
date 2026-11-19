@@ -9,13 +9,15 @@ and diameters, the cylinders of the part -- and placed with ``ViewInfo.project``
 
 import math
 
+import sheet_centre
 from sheet_context import Context, HoleInfo, ItemError, Point, Vec3, ViewInfo, dot, hole_stacks, sub, unit
 from sheet_draw import linear_dimension
-from sheet_model import AXES, THREAD, Entity, Line
+from sheet_model import AXES, CENTRE_OVERSHOOT_MM, THREAD, Entity, Line
 from sheet_thread import major_diameter
+from sheet_units import NativeDim, Ref2
 
 PLANE_TOL_MM = 0.05  # an axis lies in the cutting plane within this
-AXIS_REACH_MM = 2.0  # a centre line goes this far beyond the ends of a bore or a boss (clear of the view label)
+AXIS_REACH_MM = CENTRE_OVERSHOOT_MM  # a centre line goes this far beyond the ends of a bore or a boss
 PARALLEL_TOL = 1e-3
 AXIS_ON_PAGE = 0.99  # |component| of the axis on a page axis to call it horizontal or vertical
 
@@ -51,7 +53,8 @@ def _stack_reach(stack: list[HoleInfo]) -> tuple[Vec3, Vec3, float]:
     ends = [
         0.0,
         *(dot(sub(h.centre, first.centre), d) for h in stack),
-        *(dot(sub(h.centre, first.centre), d) + h.depth for h in stack),
+        # the far end of each hole along ITS direction (a blind hole runs from its open end into the material) and its drill point
+        *(dot(sub(h.centre, first.centre), d) + dot(unit(h.direction), d) * h.length for h in stack),
     ]
     low, high = min(ends), max(ends)
     start = tuple(c + u * low for c, u in zip(first.centre, d, strict=True))
@@ -67,17 +70,11 @@ def centre_lines(ctx: Context, view: ViewInfo, at: Vec3, normal: Vec3) -> tuple[
         start, d, length = _stack_reach(stack)
         got = _page_axis(view, start, d, length)
         if got is not None:
-            a, b, u = got
-            out.append(
-                Line(
-                    a[0] - u[0] * AXIS_REACH_MM,
-                    a[1] - u[1] * AXIS_REACH_MM,
-                    b[0] + u[0] * AXIS_REACH_MM,
-                    b[1] + u[1] * AXIS_REACH_MM,
-                    AXES,
-                )
-            )
-            count += 1
+            a, b, _ = got
+            line = sheet_centre.side_line(ctx, view.name, a, b)  # the same overshoot at both ends
+            if line is not None:
+                out.append(line)
+                count += 1
     facts = ctx.extras.get("facts")
     for boss in facts.bosses if facts is not None else ():
         if boss.length <= 0 or not in_plane(at, normal, boss.axis_point, boss.axis_dir):
@@ -98,6 +95,7 @@ def centre_lines(ctx: Context, view: ViewInfo, at: Vec3, normal: Vec3) -> tuple[
         if not any(
             _same_line(line, other) for other in out if isinstance(other, Line)
         ):  # a bore and a boss may share an axis
+            line = sheet_centre.side_line(ctx, view.name, a, b) or line
             out.append(line)
             count += 1
     return out, count
@@ -111,7 +109,16 @@ def _same_line(a: Line, b: Line) -> bool:
         return False
     off = abs((b.x1 - a.x1) * uy - (b.y1 - a.y1) * ux) / size
     off2 = abs((b.x2 - a.x1) * uy - (b.y2 - a.y1) * ux) / size
-    return off < 0.1 and off2 < 0.1
+    if off >= 0.1 or off2 >= 0.1:
+        return False
+    # on one straight line AND over the same stretch of it: the line of the next cylinder on the same axis (a plate above a
+    # spacer) is another line, not this one drawn twice. ``a`` is the new line: it is a repeat when its middle lies on ``b``.
+    bx, by = b.x2 - b.x1, b.y2 - b.y1
+    blen2 = bx * bx + by * by
+    if blen2 < 1e-12:
+        return False
+    along = (((a.x1 + a.x2) / 2 - b.x1) * bx + ((a.y1 + a.y2) / 2 - b.y1) * by) / blen2
+    return -0.01 <= along <= 1.01
 
 
 def thread_lines(view: ViewInfo, hole: HoleInfo, size: str, depth: float | None) -> list[Entity]:
@@ -184,11 +191,29 @@ def dimension_bore(
     dist = ctx.stack_distance(view.name, side, offset_mm)
     if orient == "h":
         line = box[3] + dist if side == "above" else box[1] - dist
-        entities, taken = linear_dimension((end[0] - r, end[1]), (end[0] + r, end[1]), "h", line, text)
+        a, b = (end[0] - r, end[1]), (end[0] + r, end[1])
+        entities, taken = linear_dimension(a, b, "h", line, text)
+        label = (end[0], line)
     else:
         line = box[2] + dist if side == "right" else box[0] - dist
-        entities, taken = linear_dimension((end[0], end[1] - r), (end[0], end[1] + r), "v", line, text)
+        a, b = (end[0], end[1] - r), (end[0], end[1] + r)
+        entities, taken = linear_dimension(a, b, "v", line, text)
+        label = (line, end[1])
     ctx.add(entities)
     ctx.reserve_dimension(entities, taken)
     ctx.used_view(view.name)
+    ctx.native(  # TechDraw's own dimension across the bore: FreeCAD measures the distance between the two walls
+        NativeDim(
+            item=str(ctx.extras["current"]),
+            name=f"b{len(ctx.extras.get('natives', {}).get(str(ctx.extras['current']), [])) + 1}",
+            kind="distance",
+            view=view.name,
+            refs=(Ref2("point", a), Ref2("point", b)),
+            label=label,
+            expected=2 * r / k,
+            text=text,
+            orient=orient,
+            rect=taken,
+        )
+    )
     return f"Ø{ctx.num(2 * r / k)} across the bore in the {view.name} view, {side}"

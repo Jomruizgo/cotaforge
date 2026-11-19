@@ -13,7 +13,7 @@ model point at the view's centre (``getGeometricCenter``); the view is placed on
 import math
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sheet_collide import ink_of, text_box
@@ -135,6 +135,17 @@ class ViewInfo:
         return parallel(self.direction, v, 1e-6)
 
 
+@dataclass(frozen=True)
+class AssemblyHole:
+    """A full round hole of one component of an assembly: the component, a point on its axis (the middle of the hole),
+    the axis direction and the diameter."""
+
+    comp_id: str
+    centre: "Vec3"
+    direction: "Vec3"
+    diameter: float
+
+
 @dataclass
 class HoleInfo:
     """A cylindrical hole of the part. ``centre`` is the axis point where the hole opens (any point of the axis
@@ -154,6 +165,12 @@ class HoleInfo:
     fit: str | None = None  # the tolerance class the ``hole`` operation declared (``H7``): its ``hole_dim`` default
     hole_class: str | None = None  # precision | plain | threaded, as the convention classed it when the hole was made
     precision_grade: int | None = None  # the IT grade that convention called precision
+    tip: float = 0.0  # the height of the drill point of a blind hole: the cone past ``depth`` (0: flat bottom or through)
+
+    @property
+    def length(self) -> float:
+        """How far the hole reaches along its axis from where it opens: the wall and the drill point."""
+        return self.depth + self.tip
 
     def on_axis(self, p: Vec3, tol: float = POSITION_TOL_MM) -> bool:
         """Whether ``p`` lies on the axis of the hole (within ``tol`` mm) -- how an ``at`` finds its hole."""
@@ -161,6 +178,24 @@ class HoleInfo:
         along = dot(d, unit(self.direction))
         radial = norm(sub(d, scale(unit(self.direction), along)))
         return radial <= tol
+
+
+@dataclass
+class ThreadInfo:
+    """A cosmetic external thread of the part (``external_thread``): ``size`` the ISO designation (``M12``, ``M45x1.5``),
+    ``major`` / ``minor`` the diameters (mm), ``length`` how far it runs from ``start`` (the centre of the end face, on the
+    axis) along the unit ``direction`` (into the shaft); ``cylinder`` is the face it was made on."""
+
+    size: str
+    major: float
+    minor: float
+    length: float
+    start: Vec3
+    direction: Vec3
+    cylinder: str = ""
+    pitch: float = 0.0
+    name: str = ""
+    tolerance_class: str = ""  # ISO 965 class of an external thread (``6g``): part of what its callout says; empty: none was given
 
 
 def hole_stacks(holes: list[HoleInfo]) -> list[list[HoleInfo]]:
@@ -219,6 +254,20 @@ class ChamferInfo:
 
 
 @dataclass
+class ConeChamfer:
+    """A chamfer on a round edge (a conical face between a shaft's end and its cylinder): the two circles it joins, its legs
+    and the axis it turns about. ``leg_a`` is the longer leg, ``angle_deg`` the angle the chamfer makes with it."""
+
+    face: str
+    leg_a: float
+    leg_b: float
+    angle_deg: float
+    axis: Vec3
+    small: tuple[Vec3, float]  # centre and radius of the circle at the end of the chamfer that is nearer the axis
+    big: tuple[Vec3, float]
+
+
+@dataclass
 class Projection:
     """A part seen from one direction, in the view's own coordinates (scale 1, y up): its ``visible`` and ``hidden``
     edges, and for a section the ``cut_loops`` (the outlines of the faces the plane cut, holes included)."""
@@ -247,13 +296,50 @@ class Geometry:
         not on the part."""
         return None
 
+    # --- a moulded part (ISO 10135): what the pull direction and the parting line are proposed from ---
+    def mould_box(self) -> "tuple[Vec3, Vec3, Vec3] | None":
+        """``(low, high, centre of mass)`` of the part in document axes, measured on the shape; ``None`` when it cannot be told."""
+        return None
+
+    def outline_areas(self, axis: Vec3, around: "tuple[float, float] | None" = None) -> "list[tuple[float, float]]":
+        """``(coordinate along axis, area inside the outer outline of the section there)`` at sample planes across the part
+        (``around`` = (low, high): only that stretch, finer); the section a parting plane would cut. Empty when it cannot be told."""
+        return []
+
+    def axial_planes(self, axis: Vec3) -> list[float]:
+        """The coordinates along ``axis`` of the planar faces square to it (a shoulder, a floor: where a parting plane lies)."""
+        return []
+
+    def section_outline(self, axis: Vec3, level: float, centre: Vec3, xdir: Vec3, direction: Vec3) -> "list[Point]":
+        """The outer outline of the part cut by the plane square to ``axis`` at ``level`` (coordinate along it), in a view's own
+        coordinates (the frame of ``projection``), scale 1; empty when it cannot be told."""
+        return []
+
+    def circle_span(self, a: Vec3, b: Vec3) -> float | None:
+        """The diameter of the circle of the part that ``a`` and ``b`` are the two ends of (diametrically opposite points of one
+        round wall -- a bore, a boss, a cone with draft -- or of one circular edge: the middle of the two is on the axis and both
+        are the same distance from it), ``None`` when they are not. A distance dimension between them measures a DIAMETER and is
+        written with ``Ø`` (ISO 129-1: a diameter is always marked)."""
+        return None
+
     def chamfer(self, face_id: str) -> ChamferInfo:
         msg = "chamfer legs are not available"
         raise ItemError(msg)
 
+    def cone_chamfer(self, face_id: str) -> "ConeChamfer | None":
+        """The chamfer ``face_id`` when it is the conical face of a chamfer on a round edge, else ``None``."""
+        return None
+
     def round_extent(self) -> tuple[Vec3, float] | None:
         """``(axis, diameter)`` when the part is a body of revolution about a coordinate axis whose overall size across
         it is the diameter of one of its outer cylinders (a flange, a shaft); ``None`` otherwise."""
+        return None
+
+    def axial_features(self) -> tuple[bool, bool] | None:
+        """``(coaxial, hollow)`` for a body of revolution (see ``round_extent``): ``coaxial`` when every face of it is a plane
+        square to the axis or a surface of revolution about that same axis (nothing off the axis: no hole on a pitch circle,
+        flat, keyway or square flange), ``hollow`` when something inside looks at the axis (a bore, a recess). ``None`` for a
+        part that is not a body of revolution, or when it cannot be told."""
         return None
 
     def symmetry(self) -> dict[str, float]:
@@ -278,8 +364,8 @@ class Geometry:
         raise ItemError(msg)
 
     def view_projection(self, centre: Vec3, xdir: Vec3, direction: Vec3) -> "Projection":
-        """The visible edges of the whole part for a standard view of a sheet made with ``projection="hlr"`` (kept
-        between calls where that is costly); by default the same as ``projection`` without a cut."""
+        """The visible edges of the whole part for a standard view (kept between calls where that is costly); by default
+        the same as ``projection`` without a cut."""
         return self.projection(centre, xdir, direction)
 
     def face_outline(self, face_id: str, centre: Vec3, xdir: Vec3, direction: Vec3) -> list[list[Point]]:
@@ -292,6 +378,34 @@ class Geometry:
         return []
 
     # --- assemblies (P3: parts list, balloons, exploded view) ---
+    def visible_share(
+        self, instances: list[str], frame: tuple[Vec3, Vec3, Vec3], offsets: dict[str, Vec3]
+    ) -> dict[str, float]:
+        """For each instance, the share (0 to 1) of its outline that is its own surface in a view looking against
+        ``frame`` = (centre, xdir, direction): how much of it a reader sees. Empty when it cannot be told."""
+        return {}
+
+    def body_boxes(self) -> "list[tuple[Vec3, Vec3]]":
+        """The box of every live body of the part (a weldment), in document axes; none when it cannot be told."""
+        return []
+
+    def body_boxes_by_id(self) -> "dict[str, tuple[Vec3, Vec3]]":
+        """The box of every live body of the part (a weldment) by its id, in document axes; none when it cannot be told."""
+        return {}
+
+    def assembly_holes(self) -> "list[AssemblyHole]":
+        """The full round holes of the components of an assembly (none for a part)."""
+        return []
+
+    def weld_joints(self) -> "list[Any]":
+        """Where the bodies of a welded part touch (``sheet_joints.Joint``: the two bodies, the kind of joint, the seam
+        lines, the walls), measured on the model; none for a part of one body or an assembly."""
+        return []
+
+    def seam_hidden(self, point: Vec3, towards: Vec3) -> bool:
+        """Whether a body of the part stands between ``point`` (on a seam) and a viewer far away along ``towards``."""
+        return False
+
     def instance_box(self, comp_id: str) -> tuple[Vec3, Vec3]:
         """The (quick, never smaller than the part) box of one component instance in the assembly's axes."""
         msg = "component boxes are not available"
@@ -309,6 +423,13 @@ class Geometry:
         direction): the best first (the one with ``margin_mm`` of the same instance all round it), none when the
         instance is hidden behind others. ``offsets`` displaces instances (an exploded view); the points returned are
         where the instance IS drawn, offset included."""
+        msg = "instance visibility is not available"
+        raise ItemError(msg)
+
+    def owner_at(self, frame: tuple[Vec3, Vec3, Vec3], local: Point, offsets: dict[str, Vec3]) -> str | None:
+        """The instance whose surface a viewer looking against ``frame`` = (centre, xdir, direction) meets first at the point
+        ``local`` = (u, v) of the view (model mm, the view's own axes); ``None`` when the ray meets nothing, or two instances
+        at the same depth. The balloon of a part ends on a point where this is the part itself."""
         msg = "instance visibility is not available"
         raise ItemError(msg)
 
@@ -331,10 +452,16 @@ class PartGroup:
     remarks: str
     instances: list[str]
     bought: bool = False
+    measured: Any = None  # a weldment body: what was measured of it (``sheet_weldment.BodyFact``)
 
     @property
     def quantity(self) -> int:
         return len(self.instances)
+
+    @property
+    def label(self) -> str:
+        """How a message names the position: its designation, else its first component (never a file name)."""
+        return self.name or f"({self.instances[0]})"
 
 
 @dataclass
@@ -379,6 +506,8 @@ class Context:
     warnings: list[str] = field(default_factory=list)
     extras: dict[str, Any] = field(default_factory=dict)
     assembly: Assembly | None = None
+    weldment: Assembly | None = None  # the bodies of a welded part grouped like the parts of an assembly (instances are body ids)
+    threads: list[ThreadInfo] = field(default_factory=list)  # the cosmetic external threads of the part
 
     @property
     def comma(self) -> bool:
@@ -424,11 +553,16 @@ class Context:
         for one, else the first free slot (lines stack outward in the order the items are drawn; a nudged item skips
         slots)."""
         self.extras["stack_view"] = view  # the dimension the item draws next stands on this view
+        view = self.extras.get("in_place_views", {}).get(view, view)  # a section in place of a view shares its dimension lines
         slot = self.stacks.get((view, side), 0)
         self.stacks[(view, side)] = slot + 1
         if offset_mm is not None:
             return offset_mm
-        return DEFAULT_OFFSET_MM + STACK_STEP_MM * (slot + self.nudge())
+        # a nudged line moves out, and so does every line drawn after it on this side: the order of the stack (the shorter
+        # nearest the part, ISO 129-1) is never turned over by the placement pass
+        shifts = self.extras.setdefault("stack_shift", {})
+        shifts[(view, side)] = max(shifts.get((view, side), 0), self.nudge())
+        return DEFAULT_OFFSET_MM + STACK_STEP_MM * (slot + shifts[(view, side)])
 
     def reserve_dimension(self, entities: list[Entity], strip: Rect) -> None:
         """Reserve what a dimension takes: ``strip`` (its line, arrows and text, where no label may go) and, apart, the
@@ -487,13 +621,25 @@ class Context:
         it adds are what the headless sheet writes, these are what the CAD's page holds (and TechDraw exports)."""
         item = self.extras.get("current")
         if item is not None:
+            if "size_mm" in self.current_spec():  # an intermediate process stage: its dimension is drawn secondary
+                objects = tuple(replace(o, secondary=True) if hasattr(o, "secondary") else o for o in objects)
             self.extras.setdefault("natives", {}).setdefault(item, []).extend(objects)
+
+    def current_spec(self) -> dict[str, Any]:
+        """The stored spec of the item being drawn (empty when there is none)."""
+        item = self.extras.get("current")
+        specs = self.extras.get("items") or self.extras.get("sheet_items") or []
+        return next((s for s in specs if s.get("id") == item), {})
 
     def record_dimension(self, key: tuple[Any, ...], view: str) -> None:
         """Keep that the item being drawn put a dimension on ``view`` that says ``key`` (what it measures, in the model:
         an axis and the two places it spans, or a diameter and its face): the same thing said in two views is a defect
-        (ISO 129) the review flags."""
+        (ISO 129) the review flags. A dimension of a process stage (``stage``) says the same feature at another stage of its
+        route: the stage is part of the key, so the turned and the ground size of one diameter are not one thing said twice."""
         item = self.extras.get("current")
+        stage = self.current_spec().get("stage")
+        if stage:
+            key = (*key, "stage", str(stage).lower())
         self.extras.setdefault("dim_records", []).append((str(item or ""), view, key))
 
     def used_view(self, name: str) -> None:
@@ -672,4 +818,5 @@ COMMON_FIELDS: dict[str, Check] = {
     "view": v_enum(*VIEW_NAMES),
     "offset_mm": v_num(0.0, 500.0),
     "side": v_enum("above", "below", "left", "right"),
+
 }

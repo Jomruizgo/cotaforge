@@ -127,7 +127,7 @@ def check_what_a_dimension_cannot_say_is_refused_and_nothing_moves() -> None:
     before = volume()
     moved = {"feature": ids["hole"]["feature"], "kind": "hole", "request": _hole_request(ids["top"], 6.0, (0, 0))}
     result = _edit([moved])
-    assert result["refused"] and "position" in next(iter(result["refused"].values())), result
+    assert result["refused"] and "axis" in next(iter(result["refused"].values())), result
     two = op("base_sketch", on="XY", entities=[*_entities(100.0), rect("extra", (200, 30), 20, 20)], constraints=[])
     result = _edit([_pad_edit(ids, 8.0, {**two, "named_dimensions": _named()})])
     assert result["refused"] and "other entities" in next(iter(result["refused"].values())), result

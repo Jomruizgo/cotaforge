@@ -13,7 +13,7 @@ import main
 import sheet_collide
 import sheet_mirror
 from check_drawing_live import CLEARANCE, DOWELS, TAPPED, add, build_part, remove, side_face
-from harness import call, expect_error, op
+from harness import call, expect_error, extrude, faces_of, new_document, op, rect, select_face, sketch
 
 
 def _rec() -> Any:
@@ -108,6 +108,32 @@ def check_every_item_that_has_a_techdraw_object_is_that_object_with_the_contract
     assert problems == [], problems
 
 
+def check_a_row_at_one_pitch_says_its_pitch_in_techdraws_own_format_and_only_the_prefix_is_text() -> None:
+    """Four holes in a row 20 apart: the default location writes ``3×20`` once. TechDraw measures the 20 itself and the ``3×`` is
+    the text in front of its format (``3×%.2w``), not the whole text fixed (``Arbitrary``): the number follows the model, and a
+    format changed by hand is named by the comparison with the sheet."""
+    new_document("fila")
+    base = extrude("base", sketch("s0", "XY", [rect("outline", (50, 30), 100.0, 60.0)]), 19.0)
+    for number, x in enumerate((20.0, 40.0, 60.0, 80.0), start=1):
+        face = select_face(faces_of(base["feature"]), normal=(0, 0, 1))
+        centre = face["center"]
+        params = {"standard": "simple", "size": None, "end_condition": "through_all", "depth_mm": None, "diameter_mm": 6}
+        call("hole", op(f"h{number}", face=face["handle"], position=[x - centre[0], 30.0 - centre[1]], **params))
+    call("create_drawing", op("d", template="A3", scale=1.0))  # a sheet with holes carries the default location (loc) from create on
+    pitch = [o for o in _natives("loc") if "×" in str(o.FormatSpec)]
+    assert len(pitch) == 1, [str(o.FormatSpec) for o in _natives("loc")]
+    (dim,) = pitch
+    assert not dim.Arbitrary and str(dim.FormatSpec) == "3×%.2w", (dim.Arbitrary, dim.FormatSpec)
+    assert abs(abs(float(dim.getRawValue())) - 20.0) < 0.011  # TechDraw measured the pitch: the 20 is not typed
+    assert [o for o in _natives("loc") if o.Arbitrary] == []  # nothing of the default location is fixed text
+    problems = drawing.compare_window(_rec(), None, "check")
+    assert problems == [], problems
+    dim.FormatSpec = "3×%.1f"  # somebody changed the format by hand
+    _rec().fc_doc.recompute()
+    problems = drawing.compare_window(_rec(), None, "check")
+    assert any("format" in p and "edited by hand" in p for p in problems), problems
+
+
 def check_the_baseline_dimensions_of_datum_dims_are_native_and_measure_the_positions() -> None:
     base = build_part()
     call("create_drawing", op("d", template="A3", scale=1.0))
@@ -175,6 +201,7 @@ def _view_types() -> list[str]:
 def check_a_view_can_be_dropped_and_the_scale_grows_to_the_largest_standard_one_that_fits() -> None:
     build_part()
     first = call("create_drawing", op("d", template="A4"))
+    # the dimensions of the default location that do not touch share a row: the plate keeps its 1:2 on A4 (every one on a row of its own took 1:5)
     assert first["scale"] == 0.5 and first["views"] == ["front", "top", "right", "isometric"], first
     remove("loc")  # the engineer wants no default location: its rows need no room, so the scale can grow
     add({"type": "hole_dim", "id": "h1", "at": [[15, 12, 0]]})

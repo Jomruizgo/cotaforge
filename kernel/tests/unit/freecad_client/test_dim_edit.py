@@ -48,7 +48,8 @@ def test_only_a_dimension_of_a_feature_is_a_dimension() -> None:
     assert de.non_dimension_changes("extrude", PAD, {**PAD, "depth_mm": 12.0}) == []
     assert de.non_dimension_changes("extrude", PAD, {**PAD, "direction": "negative"}) == ["direction"]
     assert de.non_dimension_changes("extrude", PAD, {**PAD, "merge": False, "depth_mm": 2.0}) == ["merge"]
-    assert de.non_dimension_changes("hole", HOLE, {**HOLE, "position": [0, 0]}) == ["position"]
+    assert de.non_dimension_changes("hole", HOLE, {**HOLE, "position": [0, 0]}) == []  # moved on its sketch
+    assert de.non_dimension_changes("hole", HOLE, {**HOLE, "face": {"id": "face:2"}}) == ["face.id"]
     nested = {**HOLE, "counterbore": {"diameter_mm": 12.0, "depth_mm": 3.0}}
     assert de.non_dimension_changes("hole", HOLE, nested) == []
     appears = {**HOLE, "countersink": {"diameter_mm": 9.0, "angle_deg": 90.0}}
@@ -172,3 +173,61 @@ def test_a_datum_bound_to_an_expression_is_named() -> None:
     assert de.bound_by_expression(["Constraints.W"], changes) == ["W"]
     assert de.bound_by_expression(["Constraints[2]"], changes) == ["constraint 2"]
     assert de.bound_by_expression(["Constraints.other"], changes) == []
+
+
+def _hole_rows(points: list[tuple[float, float]]) -> tuple[list[tuple[Any, ...]], list[float]]:
+    """The constraints the harness makes for a hole sketch: a Diameter and the DistanceX / DistanceY from the origin to
+    the centre of every circle (the geo index is the circle)."""
+    rows: list[tuple[Any, ...]] = []
+    values: list[float] = []
+    for circle, (u, v) in enumerate(points):
+        rows += [
+            ("Diameter", circle, 0, -2000, 0, -2000, 0, True, ""),
+            ("DistanceX", -1, 1, circle, 3, -2000, 0, True, ""),
+            ("DistanceY", -1, 1, circle, 3, -2000, 0, True, f"hole_{circle + 1}_y"),
+        ]
+        values += [6.0, u, v]
+    return rows, values
+
+
+def test_the_position_of_a_hole_is_a_dimension_of_its_sketch() -> None:
+    old = {**HOLE, "positions": None}
+    new = {**old, "position": [-25, -20]}
+    assert de.non_dimension_changes("hole", old, new) == []
+    rows, values = _hole_rows([(-30, -20)])
+    assert de.hole_position_changes(old, new, rows, values) == [(1, "", -25.0)]
+    both = {**old, "position": [-25, -12]}
+    assert de.hole_position_changes(old, both, rows, values) == [(1, "", -25.0), (2, "hole_1_y", -12.0)]
+    assert de.hole_position_changes(old, old, rows, values) == []
+    # one hole turning into several (or the other way) is another design
+    several = {**HOLE, "positions": [[-30, -20], [30, 20]]}
+    assert de.non_dimension_changes("hole", old, several) == ["positions"]
+
+
+def test_every_circle_of_a_multi_hole_feature_moves_by_its_own_datums() -> None:
+    old = {**HOLE, "position": [-30, -20], "positions": [[-30, -20], [30, 20], [30, -20]]}
+    new = {**old, "positions": [[-30, -20], [35, 20], [30, -15]]}
+    rows, values = _hole_rows([(-30, -20), (30, 20), (30, -20)])
+    assert de.hole_position_changes(old, new, rows, values) == [(4, "", 35.0), (8, "hole_3_y", -15.0)]
+    fewer = {**old, "positions": [[-30, -20], [35, 20]]}
+    with pytest.raises(de.NotInPlaceError, match="number of holes"):
+        de.hole_position_changes(old, fewer, rows, values)
+
+
+def test_a_position_with_no_datum_or_a_sketch_changed_by_hand_is_not_in_place() -> None:
+    old = {**HOLE, "positions": None}
+    rows, values = _hole_rows([(-30, -20)])
+    with pytest.raises(de.NotInPlaceError, match="changed by hand"):
+        de.hole_position_changes(old, {**old, "position": [-25, -20]}, rows, [6.0, -29.0, -20.0])
+    with pytest.raises(de.NotInPlaceError, match="no DistanceX"):
+        de.hole_position_changes(old, {**old, "position": [-25, -20]}, rows[:1], values[:1])  # across a tube wall
+    with pytest.raises(de.NotInPlaceError, match="axis"):
+        de.hole_position_changes(old, {**old, "position": [0, -20]}, rows, values)
+    with pytest.raises(de.NotInPlaceError, match="no DistanceX"):  # a centre that was on the axis has no datum
+        zero_rows, zero_values = _hole_rows([(0, -20)])
+        de.hole_position_changes(
+            {**HOLE, "position": [0, -20]},
+            {**HOLE, "position": [5, -20]},
+            zero_rows[:1] + zero_rows[2:],
+            zero_values[:1] + zero_values[2:],
+        )

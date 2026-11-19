@@ -17,7 +17,7 @@ from typing import Any
 
 from cotaforge import __version__
 from cotaforge.adapters.fake import assembly as asm
-from cotaforge.adapters.fake import editing, foreign, saving, sheetmetal
+from cotaforge.adapters.fake import editing, foreign, mould, saving, sheetmetal
 from cotaforge.adapters.fake.booleans import as_box, intersection_primitive
 from cotaforge.adapters.fake.builders import (
     Build,
@@ -120,6 +120,8 @@ from cotaforge.contract import (
     DocumentHandle,
     DocumentInfo,
     DocumentKind,
+    DraftAnalysisRequest,
+    DraftAnalysisResult,
     EdgeFlangeRequest,
     EdgeHandle,
     EdgeInfo,
@@ -180,6 +182,8 @@ from cotaforge.contract import (
     OpenDocumentRequest,
     OpenDocumentResult,
     OperationResult,
+    PartingAnalysisRequest,
+    PartingAnalysisResult,
     PersistentRef,
     PlaceComponentRequest,
     PlaneName,
@@ -207,6 +211,7 @@ from cotaforge.contract import (
     ShellRequest,
     ShowEntitiesRequest,
     ShowEntitiesResult,
+    ShrinkBodyRequest,
     Side,
     SketchFrame,
     SketchHandle,
@@ -832,49 +837,54 @@ class FakeAdapter(Adapter):
                 request.operation_id,
             )
         frame = frame_for_face(self._face_info(doc, face, None), request.origin)
-        origin = frame.to_world(*request.position)
+        points = [frame.to_world(*p) for p in (request.positions or (request.position,))]
         direction = vscale(face.normal, -1.0)
         radius = request.diameter_mm / 2.0
         through = request.end_condition is EndCondition.through_all
-        if not circle_within_face(face, origin, radius):
+        for origin in points:
+            if circle_within_face(face, origin, radius):
+                continue
             # The analytic bookkeeping would subtract a full cylinder wherever the hole lands; a footprint
             # that leaves the face is a wrong position (frame or selector), not material to drill.
             raise self._error(
                 ErrorCode.geometry_failed,
                 f"hole footprint (centre {_fmt_vec(origin)}, radius {radius:g} mm) is not fully inside face "
                 f"{face.id} (centre {_fmt_vec(face.center)}, bbox {_fmt_vec(face.bbox.min)}-"
-                f"{_fmt_vec(face.bbox.max)}); position is (u, v) from the face centre in its local frame",
+                f"{_fmt_vec(face.bbox.max)}); position is (u, v) from the centre of the face's bounding box",
                 request,
             )
 
         def build(feature: FakeFeature) -> None:
             b = Build(doc, feature, face.body)
-            if through:
-                _, length = axial_range_from(doc, face.body, origin, direction)
-            else:
-                assert request.depth_mm is not None
-                length = request.depth_mm
-            if length <= 1e-9:
-                raise self._error(ErrorCode.geometry_failed, "hole finds no material", request, recoverable=True)
-            exit_face = (
-                find_planar_face(doc, face.body, vadd(origin, vscale(direction, length)), direction, exclude={face.id})
-                if through
-                else None
-            )
-            build_cylinder(
-                b,
-                origin,
-                direction,
-                radius,
-                length,
-                -1,
-                blind=not through,
-                entry_face=face.id,
-                exit_face=exit_face.id if exit_face else None,
-            )
-            b.modify_face_area(face.id, -math.pi * radius * radius)
-            if exit_face is not None:
-                b.modify_face_area(exit_face.id, -math.pi * radius * radius)
+            for origin in points:
+                if through:
+                    _, length = axial_range_from(doc, face.body, origin, direction)
+                else:
+                    assert request.depth_mm is not None
+                    length = request.depth_mm
+                if length <= 1e-9:
+                    raise self._error(ErrorCode.geometry_failed, "hole finds no material", request, recoverable=True)
+                exit_face = (
+                    find_planar_face(
+                        doc, face.body, vadd(origin, vscale(direction, length)), direction, exclude={face.id}
+                    )
+                    if through
+                    else None
+                )
+                build_cylinder(
+                    b,
+                    origin,
+                    direction,
+                    radius,
+                    length,
+                    -1,
+                    blind=not through,
+                    entry_face=face.id,
+                    exit_face=exit_face.id if exit_face else None,
+                )
+                b.modify_face_area(face.id, -math.pi * radius * radius)
+                if exit_face is not None:
+                    b.modify_face_area(exit_face.id, -math.pi * radius * radius)
 
         return self._construct(doc, "hole", request, build).model_copy(update={"place": frame})
 
@@ -1055,6 +1065,25 @@ class FakeAdapter(Adapter):
             )
 
         return self._construct(doc, "copy_body", request, build)
+
+    @_recorded
+    def shrink_body(self, request: ShrinkBodyRequest) -> OperationResult:
+        doc = self._doc(request)
+        source = request.source.id
+        if source not in doc.bodies:
+            raise self._error(ErrorCode.invalid_reference, f"unknown body {source}", request)
+        factor = request.scale[0]
+        if max(request.scale) - min(request.scale) > 1e-12:
+            raise not_supported(
+                "the fake scales a body by one factor on all three axes only: a shrinkage per axis needs a real CAD",
+                request.operation_id,
+            )
+
+        def build(feature: FakeFeature) -> None:
+            body = self._new_body(doc, feature)
+            clone_body(Build(doc, feature, body), source, Transform(), scale=factor)
+
+        return self._construct(doc, "shrink_body", request, build)
 
     @_recorded
     def split(self, request: SplitRequest) -> OperationResult:
@@ -1636,12 +1665,18 @@ class FakeAdapter(Adapter):
         """A JSON stand-in for a STEP/IGES file read into a new document (``adapters.fake.foreign``)."""
         return foreign.import_geometry(self, request)
 
+    def parting_analysis(self, request: PartingAnalysisRequest) -> PartingAnalysisResult:
+        return mould.parting_analysis(self, request)
+
+    def draft_analysis(self, request: DraftAnalysisRequest) -> DraftAnalysisResult:
+        return mould.draft_analysis(self, request)
+
     def list_holes(self, request: ListHolesRequest) -> ListHolesResult:
         return foreign.list_holes(self, request)
 
     def design_attributes(self, request: Empty) -> DesignAttributes:
         doc = self._doc(request)
-        return DesignAttributes(material=doc.material, route=doc.route, roles=dict(doc.roles))
+        return DesignAttributes(material=doc.material, route=doc.route, title=doc.title, roles=dict(doc.roles))
 
     def set_design_attributes(self, request: SetDesignAttributesRequest) -> DesignAttributes:
         doc = self._doc(request)
@@ -1649,9 +1684,11 @@ class FakeAdapter(Adapter):
             doc.material = request.material.strip() or None
         if request.route is not None:
             doc.route = tuple(request.route)
+        if request.title is not None:
+            doc.title = request.title.strip() or None
         if request.roles is not None:
             doc.roles = dict(request.roles)
-        return DesignAttributes(material=doc.material, route=doc.route, roles=dict(doc.roles))
+        return DesignAttributes(material=doc.material, route=doc.route, title=doc.title, roles=dict(doc.roles))
 
     def close_document(self, request: Empty) -> Ack:
         """Forget the active document (the fake keeps nothing on disk besides what ``save_document`` wrote)."""

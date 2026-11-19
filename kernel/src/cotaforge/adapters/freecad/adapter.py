@@ -24,7 +24,7 @@ from typing import Any, ClassVar, TypeVar
 from pydantic import BaseModel, ValidationError
 
 import cotaforge.adapters.freecad.rpc as freecad_rpc
-from cotaforge.adapters.freecad import numberformat
+from cotaforge.adapters.freecad import external_thread, numberformat
 from cotaforge.adapters.freecad.fileunits import declared_length_unit
 from cotaforge.adapters.freecad.pathlimit import path_length_problem
 from cotaforge.adapters.freecad.rpc import (
@@ -74,6 +74,8 @@ from cotaforge.contract import (
     DesignAttributes,
     DocumentInfo,
     DocumentStamp,
+    DraftAnalysisRequest,
+    DraftAnalysisResult,
     DraftRequest,
     DrawingRequest,
     DrawingResult,
@@ -94,6 +96,7 @@ from cotaforge.contract import (
     ExportDxfRequest,
     ExportMeshRequest,
     ExportRequest,
+    ExtensionRequest,
     ExtrudeRequest,
     FaceInfo,
     FaceRequest,
@@ -129,11 +132,16 @@ from cotaforge.contract import (
     MeasureBodiesResult,
     MirrorBodyRequest,
     MirrorRequest,
+    MouldComponentRequest,
+    MouldSplitRequest,
     MoveBodyRequest,
     NewDocumentRequest,
     OpenDocumentRequest,
     OpenDocumentResult,
     OperationResult,
+    OperationSpec,
+    PartingAnalysisRequest,
+    PartingAnalysisResult,
     PersistentRef,
     PlaceComponentRequest,
     ProgressListener,
@@ -160,6 +168,8 @@ from cotaforge.contract import (
     ShellRequest,
     ShowEntitiesRequest,
     ShowEntitiesResult,
+    ShrinkBodyRequest,
+    SlideMechanismRequest,
     SketchRequest,
     SketchResult,
     SketchStatusRequest,
@@ -234,6 +244,12 @@ DRAWING_METHODS = frozenset(
 )
 
 
+MOULD_METHODS = frozenset({"draft_analysis", "parting_analysis", "mould_split", "mould_component", "slide_mechanism"})
+# The mould tools read every face of the part and cast rays at its triangles (and a split cuts and checks solids): a part
+# of hundreds of faces takes minutes. Like an import they wait for as long as the CAD is alive and using CPU, never for a
+# fixed time that would kill the worker and the document with it.
+
+
 def _default_log_dir() -> Path:
     return Path(tempfile.gettempdir()) / "cotaforge"
 
@@ -285,6 +301,12 @@ class FreeCADAdapter(Adapter):
     @property
     def worker_pid(self) -> int | None:
         return self._rpc.pid if self._rpc is not None and self._rpc.alive else None
+
+    def crash_worker(self) -> None:
+        """End the FreeCAD process alone and at once, as a crash would (see ``WorkerProcess.crash``). For tests of
+        recovery: the next call finds the worker gone."""
+        if self._rpc is not None:
+            self._rpc.crash()
 
     @property
     def last_script_path(self) -> Path | None:
@@ -345,7 +367,7 @@ class FreeCADAdapter(Adapter):
                     recoverable=False,
                 )
             )
-        if liveness is None and timeout_s is None and (method in COMPONENT_METHODS or method in DRAWING_METHODS):
+        if liveness is None and timeout_s is None and (method in COMPONENT_METHODS or method in DRAWING_METHODS or method in MOULD_METHODS):
             liveness = Liveness(
                 stall_s=self._import_stall_s,
                 max_s=self._import_max_s,
@@ -748,6 +770,18 @@ class FreeCADAdapter(Adapter):
     def mirror_body(self, request: MirrorBodyRequest) -> OperationResult:
         return self._call("mirror_body", request, OperationResult)
 
+    def shrink_body(self, request: ShrinkBodyRequest) -> OperationResult:
+        return self._call("shrink_body", request, OperationResult)
+
+    def mould_split(self, request: MouldSplitRequest) -> OperationResult:
+        return self._call("mould_split", request, OperationResult)
+
+    def mould_component(self, request: MouldComponentRequest) -> OperationResult:
+        return self._call("mould_component", request, OperationResult)
+
+    def slide_mechanism(self, request: SlideMechanismRequest) -> OperationResult:
+        return self._call("slide_mechanism", request, OperationResult)
+
     def split(self, request: SplitRequest) -> OperationResult:
         return self._call("split", request, OperationResult)
 
@@ -849,6 +883,14 @@ class FreeCADAdapter(Adapter):
         result = self._call("import_geometry", request, ImportGeometryResult, liveness=liveness)
         return result.model_copy(update={"source_units": declared_length_unit(request.path)})
 
+    def draft_analysis(self, request: DraftAnalysisRequest) -> DraftAnalysisResult:
+        """READ-ONLY draft of every face against a pull direction, with the shadow test (``worker/mould.py``)."""
+        return self._call("draft_analysis", request, DraftAnalysisResult)
+
+    def parting_analysis(self, request: PartingAnalysisRequest) -> PartingAnalysisResult:
+        """READ-ONLY parting line, walls to decide and slide proposals (``worker/mould_split.py``)."""
+        return self._call("parting_analysis", request, PartingAnalysisResult)
+
     def list_holes(self, request: ListHolesRequest) -> ListHolesResult:
         """READ-ONLY concave cylindrical faces grouped into holes (``worker/holes.py``)."""
         return self._call("list_holes", request, ListHolesResult)
@@ -869,6 +911,18 @@ class FreeCADAdapter(Adapter):
     def set_design_attributes(self, request: SetDesignAttributesRequest) -> DesignAttributes:
         """Store them: a ``CotaforgeMaterial`` property on every live body and keys in ``Document.Meta``."""
         return self._call("set_design_attributes", request, DesignAttributes)
+
+    def extra_operations(self) -> tuple[OperationSpec, ...]:
+        """What FreeCAD offers beyond the common vocabulary: the cosmetic thread of a shaft end."""
+        return (external_thread.spec(),)
+
+    def external_thread(self, request: ExtensionRequest) -> OperationResult:
+        """The numbers of the size (major, pitch, basic minor) travel with it: the worker has no thread table of its own
+        for this, and the sheet reads them back from the record."""
+        numbers = external_thread.record(str(request.params["size"]))
+        return self._call(
+            "external_thread", request.model_copy(update={"params": {**request.params, **numbers}}), OperationResult
+        )
 
     def box(self, request: BoxRequest) -> OperationResult:
         return self._call("box", request, OperationResult)

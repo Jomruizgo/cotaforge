@@ -12,11 +12,15 @@ letters, and finds room for the new view. A derived view takes the first free pl
 import math
 from typing import Any
 
+import sheet_centre
+import sheet_flats
 import sheet_hatch
+import sheet_keyway
 import sheet_section
-from items_common import VIEW_ORDER, mark_once
+import sheet_seen
+from items_common import VIEW_ORDER, hole_mark, mark_once
 from items_holes import _stacks
-from sheet_clip import HATCH_ANGLE_DEG, bbox, clip_to_circle, clip_to_rect, hatch, hatch_spacing, place, relayer
+from sheet_clip import HATCH_ANGLE_DEG, bbox, clip_to_circle, hatch, hatch_spacing, place, relayer
 from sheet_context import (
     COMMON_FIELDS,
     Context,
@@ -41,28 +45,28 @@ from sheet_context import (
     v_point3,
     v_points3,
 )
-from sheet_draw import arrow, centre_mark
+from sheet_draw import ARROW_HALF_WIDTH_MM, ARROW_LENGTH_MM, arrow, centre_mark, linear_dimension
 from sheet_model import AXES, CONTOUR, DIMENSIONS, HIDDEN, TEXT, Circle, Entity, Line, Text, fmt
-from sheet_units import NativeFlag
+from sheet_units import NativeCosmetic, NativeFlag, NativeNote, NativeView
 
 LABEL_HEIGHT_MM = 5.0  # the letters of a view are bigger than the dimension text
 LABEL_ROOM_MM = 9.0  # below a view: its label
 ROOM_MARGIN_MM = 4.0  # clear space around a new view
 ROOM_GAP_MM = 18.0  # between the parent and a view placed beside it (dimensions go there)
+REMOVED_GAP_MM = 40.0  # a removed section stands this far from the part at least: the arrows and letters of its cutting line (17 mm) and its own dimension line fit between
+REMOVED_DIMS_MM = 26.0  # the strip of a removed section on the side of the part: its width dimension (line 10 mm out, text, arrows)
 ROOM_STEP_MM = 8.0
 ROOM_TRIES = 30
 SCAN_STEP_MM = 10.0
 CUT_END_MM = 12.0  # the thick ends of a cutting-plane line
 CUT_OVERSHOOT_MM = 4.0
-CUT_ARROW_MM = 9.0
-HOLE_AXIS_REACH_MM = 3.0  # a centre line goes this far beyond the ends of a hole
+CUT_ARROW_MM = 5.5  # the stem of the arrow of a cutting line: short, so its letter stands inside the extension lines of a keyway's length
 STANDARD_ENLARGEMENTS = (2.0, 5.0, 10.0, 20.0, 50.0)  # ISO 5455
 MAX_DETAIL_MM = 70.0
 LETTERS = "ABCDEFGHJKLMNPRSTUVWXYZ"  # no I, O or Q: they read as digits
 HIDDEN_DEFAULT = ("front", "right")
 PHASE_VIEWS = 3  # after dimensions and callouts have taken their room
 PERP_TOL = 1e-3
-PARTIAL_MARGIN_MM = 4.0  # a partial (auxiliary) view reaches this far beyond the face it shows
 
 
 def v_letter(value: Any) -> str:
@@ -137,13 +141,20 @@ def room_ok(ctx: Context, rect: Rect) -> bool:
 
 
 def find_room(
-    ctx: Context, width: float, height: float, parent: Rect, directions: list[Point], align: Point
+    ctx: Context,
+    width: float,
+    height: float,
+    parent: Rect,
+    directions: list[Point],
+    align: Point,
+    gap: float = ROOM_GAP_MM,
 ) -> Point | None:
     """The centre for a new view ``width`` x ``height`` mm: beside ``parent`` in the first of ``directions`` that has
-    room (aligned with ``align``, the page position the view is projected from), else any free place near the parent."""
+    room (aligned with ``align``, the page position the view is projected from; ``gap`` mm from the parent at least), else
+    any free place near the parent."""
     for dx, dy in directions:
         for step in range(ROOM_TRIES):
-            reach = ROOM_GAP_MM + step * ROOM_STEP_MM
+            reach = gap + step * ROOM_STEP_MM
             if abs(dx) >= abs(dy):
                 cx = parent[2] + reach + width / 2 if dx > 0 else parent[0] - reach - width / 2
                 cy = align[1]
@@ -260,9 +271,32 @@ def _arrow_with_letter(tip_base: Point, direction: Point, letter: str) -> list[E
     pointing the same way, and the letter beyond it."""
     tip = (tip_base[0] + direction[0] * CUT_ARROW_MM, tip_base[1] + direction[1] * CUT_ARROW_MM)
     out: list[Entity] = [Line(tip_base[0], tip_base[1], tip[0], tip[1], DIMENSIONS), arrow(tip, direction)]
-    at = (tip[0] + direction[0] * 4.0, tip[1] + direction[1] * 4.0)
+    at = (tip[0] + direction[0] * 3.5, tip[1] + direction[1] * 3.5)
     out.append(Text(at[0], at[1] - LABEL_HEIGHT_MM / 2, letter, LABEL_HEIGHT_MM, TEXT, "center"))
     return out
+
+
+def _native_arrow(
+    ctx: Context, item_id: str, view: str, tip_base: Point, direction: Point, letter: str, tag: str, letter_at_base: bool = False
+) -> None:
+    """The arrow of a cutting-plane line or a view arrow as TechDraw objects: cosmetic lines of ``view`` (the stem and the two
+    sides of an open 30 degree head: they go with the view) and the letter as a ``DrawViewAnnotation``."""
+    tip = (tip_base[0] + direction[0] * CUT_ARROW_MM, tip_base[1] + direction[1] * CUT_ARROW_MM)
+    back = (tip[0] - direction[0] * ARROW_LENGTH_MM, tip[1] - direction[1] * ARROW_LENGTH_MM)
+    side = (-direction[1] * ARROW_HALF_WIDTH_MM, direction[0] * ARROW_HALF_WIDTH_MM)
+    for p, q in (
+        (tip_base, tip),
+        (tip, (back[0] + side[0], back[1] + side[1])),
+        (tip, (back[0] - side[0], back[1] - side[1])),
+    ):
+        ctx.native(NativeCosmetic(item_id, view, "line", (p[0], p[1], q[0], q[1]), "thin"))
+    at = (tip[0] + direction[0] * 3.5, tip[1] + direction[1] * 3.5)
+    if letter_at_base:  # a view arrow: the letter stands behind the stem, the head points at the face
+        at = (tip_base[0] - direction[0] * 4.0, tip_base[1] - direction[1] * 4.0)
+    width = LABEL_HEIGHT_MM * 0.6
+    ctx.native(
+        NativeNote(item_id, f"l{tag}", (letter,), (at[0] - width / 2, at[1] - LABEL_HEIGHT_MM / 2 + LABEL_HEIGHT_MM), LABEL_HEIGHT_MM)
+    )
 
 
 # --- section ------------------------------------------------------------------------------------------------------------
@@ -276,6 +310,8 @@ SECTION_CHECKS = {
     "flip": v_bool,
     "at_mm": v_point2,
     "hatch": lambda value: v_hatch(value),
+    "in_place": v_bool,
+    "removed": v_bool,
 }
 
 
@@ -310,6 +346,9 @@ def check_section(spec: dict[str, Any]) -> dict[str, Any]:
         raise ItemError(msg)
     if "normal" in out:
         unit(out["normal"])
+    if out.get("in_place") and out.get("holes") != "axis":
+        msg = 'in_place takes holes="axis": the section through the axis of the part stands in its main view'
+        raise ItemError(msg)
     return out
 
 
@@ -396,7 +435,73 @@ def _through_axis(ctx: Context, spec: dict[str, Any]) -> tuple[ViewInfo, Vec3, V
     return parent, at, normal
 
 
+def _in_place_axis(ctx: Context, spec: dict[str, Any]) -> tuple[ViewInfo, Vec3, Vec3]:
+    """The section through the axis that stands IN the main view (``in_place``): the plane contains the axis and is square
+    to the line of sight of the view, so the section is seen face-on in that very frame, at that very place and scale."""
+    found = ctx.geometry.round_extent()
+    if found is None:
+        msg = "the part has no axis of revolution about x, y or z for the plane to go through"
+        raise ItemError(msg)
+    axis = found[0]
+    parent = _parent(
+        ctx, spec.get("view"), lambda v: not v.derived and v.shows_axis_along(axis), "the axis must lie in the view"
+    )
+    box = ctx.extras.get("model_box")
+    at: Vec3 = (
+        tuple((lo + hi) / 2 for lo, hi in zip(box[0], box[1], strict=True)) if box is not None else parent.centre  # type: ignore[assignment]
+    )
+    return parent, at, scale(parent.direction, -1.0)  # the viewer looks along -direction; his side is the one cut away
+
+
+def _draw_in_place(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
+    """A section drawn exactly over the main view it stands for (``in_place``): same frame, same origin, same scale, so every
+    item that measures in the main view still lands on the right line. No cutting-plane line and no letters are drawn: the
+    cutting plane is the plane of symmetry of the part (its axis) and the section is the main view, in direct projection
+    with the isometric one, which ISO 128-44 leaves unmarked. The view the section stands for is not drawn (``hidden_views``)."""
+    item_id = spec.get("id", "section")
+    parent, at, normal = _in_place_axis(ctx, spec)
+    letter = take_letter(ctx, spec.get("letter"))
+    label = f"{letter}-{letter}"
+    projection = ctx.geometry.projection(parent.centre, parent.xdir, parent.direction, (at, normal))
+    k = parent.scale
+    local = _local_box(projection.visible)
+    ox, oy = parent.x, parent.y
+    page_loops = [[(ox + k * x, oy + k * y) for x, y in loop] for loop in projection.cut_loops]
+    cut_x = [x for loop in page_loops for x, _ in loop]
+    cut_y = [y for loop in page_loops for _, y in loop]
+    spacing = hatch_spacing(max(cut_x) - min(cut_x), max(cut_y) - min(cut_y))
+    ink = place(projection.visible, ox, oy, k)
+    ctx.add(ink)
+    if "view_ink_shown" in ctx.extras:  # the outline items see is now the section's, not the outside view that is not drawn
+        ctx.extras["view_ink"] = [*ctx.extras["view_ink_shown"], *ink]
+        ctx.extras["view_ink_shown"] = ctx.extras["view_ink"]
+    groups = _bodies_of_cut(page_loops, projection.cut_owner)
+    touching = sheet_hatch.touching_bodies(groups)
+    styles = sheet_hatch.plan(list(groups), touching, spec.get("hatch"))
+    ctx.add(hatch_bodies(groups, styles, spacing))
+    ctx.extras.setdefault("hatches", {})[label] = (
+        [sheet_hatch.HatchFact(b, "", "", styles[b][0], styles[b][1]) for b in groups],
+        touching,
+    )
+    box = (ox + k * local[0], oy + k * local[1], ox + k * local[2], oy + k * local[3])
+    info = ViewInfo(label, ox, oy, k, parent.direction, parent.xdir, parent.centre, box, derived=True)
+    ctx.extras.setdefault("sections", {})[label] = info
+    ctx.extras.setdefault("section_items", {})[label] = item_id
+    ctx.extras.setdefault("section_planes", {})[label] = (at, normal)
+    ctx.extras.setdefault("in_place_views", {})[label] = parent.name
+    _native_section(ctx, item_id, info, parent, at, letter)
+    axes, axis_count = sheet_section.centre_lines(ctx, info, at, normal)
+    threads, thread_count = sheet_section.threads_cut(ctx, info, at, normal)
+    ctx.add(axes + threads)
+    extra = f", {axis_count} centre line(s)" if axis_count else ""
+    if thread_count:
+        extra += f", thread lines of {thread_count} threaded bore(s)"
+    return "ok", f"{label} in place of the {parent.name} view, through the axis of the part, no cutting line or letters (the plane is the part's axis); cut faces hatched{extra}"
+
+
 def draw_section(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
+    if spec.get("in_place"):
+        return _draw_in_place(ctx, spec)
     item_id = spec.get("id", "section")
     note = ""
     if spec.get("holes") == "axis":
@@ -433,6 +538,15 @@ def draw_section(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     room = (width + 2 * ROOM_MARGIN_MM, height + LABEL_ROOM_MM + 2 * ROOM_MARGIN_MM)
     if "at_mm" in spec:
         centre: Point | None = spec["at_mm"]
+    elif spec.get("removed"):
+        # a REMOVED section stands on the extension of its cutting line: above or below the part, centred on the line (ISO 128-40),
+        # so the cut and its view read as one; beside the part only when neither side has room
+        directions = [line, (-line[0], -line[1]), gaze_page, (-gaze_page[0], -gaze_page[1])]
+        # room for the strip between the part and the view, where its width dimension stands: asked on the part side and given
+        # back, so the dimension never lies on the dimension lines of the part's own stack
+        centre = find_room(ctx, room[0], room[1] + REMOVED_DIMS_MM, parent_rect, directions, anchor, REMOVED_GAP_MM)
+        if centre is not None and abs(centre[1] - (parent_rect[1] + parent_rect[3]) / 2) > abs(centre[0] - anchor[0]):
+            centre = (centre[0], centre[1] + (REMOVED_DIMS_MM / 2 if centre[1] > (parent_rect[1] + parent_rect[3]) / 2 else -REMOVED_DIMS_MM / 2))
     else:
         align = ((parent_rect[0] + parent_rect[2]) / 2, (parent_rect[1] + parent_rect[3]) / 2)
         directions = [gaze_page, (-gaze_page[0], -gaze_page[1]), line, (-line[0], -line[1])]
@@ -460,12 +574,26 @@ def draw_section(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     ctx.add([_label(view_centre[0], view_centre[1] - height / 2 - LABEL_ROOM_MM + 1.5, label)])
     claim(ctx, item_id, rect)
     ctx.add(_cutting_line(parent, anchor, line, gaze_page, letter))
+    lo, hi, thick = _cut_span(parent, anchor, line)
+    cut_ends = (
+        (anchor[0] + line[0] * lo, anchor[1] + line[1] * lo),
+        (anchor[0] + line[0] * hi, anchor[1] + line[1] * hi),
+    )
     # the section is a view the other items may name (view="A-A"): its dimensions, notes and callouts go on it
     box = (ox + k * local[0], oy + k * local[1], ox + k * local[2], oy + k * local[3])
     info = ViewInfo(label, ox, oy, k, direction, xdir, parent.centre, box, derived=True)
     ctx.extras.setdefault("sections", {})[label] = info
     ctx.extras.setdefault("section_items", {})[label] = item_id
     ctx.extras.setdefault("section_planes", {})[label] = (at, normal)
+    _native_section(ctx, item_id, info, parent, at, letter, (cut_ends[0], cut_ends[1], gaze_page, thick))
+    if ctx.assembly is not None and not {"front", "right"} & set(ctx.views):
+        # the section of an assembly is its main view when no outside view shows the height: it carries the overall height
+        dist = ctx.stack_distance(label, "right", None)
+        text = ctx.num((box[3] - box[1]) / k)
+        entities, taken = linear_dimension((box[2], box[1]), (box[2], box[3]), "v", box[2] + dist, text)
+        ctx.add(entities)
+        ctx.reserve_dimension(entities, taken)
+        ctx.used_view(label)
     axes, axis_count = sheet_section.centre_lines(ctx, info, at, normal)
     threads, thread_count = sheet_section.threads_cut(ctx, info, at, normal)
     ctx.add(axes + threads)
@@ -479,6 +607,37 @@ def draw_section(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             f"{b} {fmt(45.0 + styles[b][0])}°{'' if styles[b][1] == 1.0 else f' x{fmt(styles[b][1])}'}" for b in groups
         )
     return "ok", f"{label} in the {parent.name} view{', ' + note if note else ''}; cut faces hatched{extra}"
+
+
+def _native_section(
+    ctx: Context, item_id: str, info: ViewInfo, parent: ViewInfo, at: Vec3, letter: str, cut: tuple[Point, Point, Point] | None = None
+) -> None:
+    """Ask TechDraw for the section (``DrawViewSection``): the cut, its hatch and the cutting line and letter in the parent view
+    are its own. The sheet's drawing of them stays what the headless PDF is written from."""
+    if parent.derived:
+        return  # a section of a view that is itself drawn by the sheet has no TechDraw view to hang from
+    ctx.native(
+        NativeView(item_id, info.name, "section", parent.name, info.box, info.scale, info.direction, info.xdir, letter, at=at)
+    )
+    if cut is None:
+        return
+    # TechDraw's own section line cannot be exported (FreeCAD 1.1.3 writes a damaged PDF for it: measured, vanilla), so it is
+    # switched off and the cutting-plane line is made of the view's cosmetic edges and annotations: thick ends, a chain
+    # line between them, an arrow and a letter at each end (ISO 128-40)
+    lo, hi, gaze, thick = cut
+    ends = ((lo, hi), (hi, lo))
+    ux, uy = (hi[0] - lo[0], hi[1] - lo[1])
+    length = math.hypot(ux, uy) or 1.0
+    ux, uy = ux / length, uy / length
+    segments = (
+        ((lo[0], lo[1]), (lo[0] + ux * thick, lo[1] + uy * thick), "thick"),
+        ((lo[0] + ux * thick, lo[1] + uy * thick), (hi[0] - ux * thick, hi[1] - uy * thick), "centre"),
+        ((hi[0] - ux * thick, hi[1] - uy * thick), (hi[0], hi[1]), "thick"),
+    )
+    for p, q, style in segments:
+        ctx.native(NativeCosmetic(item_id, parent.name, "line", (p[0], p[1], q[0], q[1]), style))
+    for number, (end, _) in enumerate(ends, start=1):
+        _native_arrow(ctx, item_id, parent.name, end, gaze, letter, str(number))
 
 
 def _bodies_of_cut(page_loops: list[list[Point]], owners: list[int]) -> dict[str, list[list[Point]]]:
@@ -505,13 +664,19 @@ def hatch_bodies(
     return out
 
 
-def _cutting_line(parent: ViewInfo, anchor: Point, line: Point, gaze: Point, letter: str) -> list[Entity]:
-    """The cutting-plane line (ISO 128-40): thick at the ends, thin chain between, an arrow and the letter at each end."""
+def _cut_span(parent: ViewInfo, anchor: Point, line: Point) -> tuple[float, float, float]:
+    """Where along its direction the cutting-plane line starts and ends (it reaches past the parent view) and how long its thick
+    ends are."""
     box = parent.box
     corners = [(box[0], box[1]), (box[0], box[3]), (box[2], box[1]), (box[2], box[3])]
     along = [(c[0] - anchor[0]) * line[0] + (c[1] - anchor[1]) * line[1] for c in corners]
     lo, hi = min(along) - CUT_OVERSHOOT_MM, max(along) + CUT_OVERSHOOT_MM
-    thick = min(CUT_END_MM, (hi - lo) / 3)
+    return lo, hi, min(CUT_END_MM, (hi - lo) / 3)
+
+
+def _cutting_line(parent: ViewInfo, anchor: Point, line: Point, gaze: Point, letter: str) -> list[Entity]:
+    """The cutting-plane line (ISO 128-40): thick at the ends, thin chain between, an arrow and the letter at each end."""
+    lo, hi, thick = _cut_span(parent, anchor, line)
 
     def at(t: float) -> Point:
         return anchor[0] + line[0] * t, anchor[1] + line[1] * t
@@ -596,6 +761,22 @@ def draw_detail(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     rect = (view_centre[0] - page_r - ROOM_MARGIN_MM, view_centre[1] - page_r - LABEL_ROOM_MM - ROOM_MARGIN_MM,
             view_centre[0] + page_r + ROOM_MARGIN_MM, view_centre[1] + page_r + ROOM_MARGIN_MM)  # fmt: skip
     claim(ctx, item_id, rect)
+    if not parent.derived:
+        ctx.native(
+            NativeView(
+                item_id,
+                label,
+                "detail",
+                parent.name,
+                (view_centre[0] - page_r, view_centre[1] - page_r, view_centre[0] + page_r, view_centre[1] + page_r),
+                k,
+                parent.direction,
+                parent.xdir,
+                letter,
+                anchor=(lx, ly),
+                radius=radius,
+            )
+        )
     # the circle in the parent view, with its letter
     pr = radius * parent.scale
     ctx.add([Circle(anchor[0], anchor[1], pr, DIMENSIONS)])
@@ -656,12 +837,13 @@ def draw_aux(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     if not xs:
         msg = f"{face_id} has no outline to look at"
         raise ItemError(msg)
-    margin = PARTIAL_MARGIN_MM / parent.scale
-    window = (min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin)
+    # TechDraw's own view looked at square to the face shows the whole part from there (it has no partial view), and the sheet
+    # draws what TechDraw draws: the box is that of the whole projection
     entities = list(projection.visible)
     if parent.name in ctx.extras.get("hidden_views", set()):
         entities += projection.hidden
-    shown = clip_to_rect(entities, window)
+    window = bbox(entities) or (min(xs), min(ys), max(xs), max(ys))
+    shown = entities
     letter = take_letter(ctx, spec.get("letter"))
     k = parent.scale
     width, height = (window[2] - window[0]) * k, (window[3] - window[1]) * k
@@ -688,6 +870,20 @@ def draw_aux(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     rect = (view_centre[0] - width / 2 - ROOM_MARGIN_MM, view_centre[1] - height / 2 - LABEL_ROOM_MM - ROOM_MARGIN_MM,
             view_centre[0] + width / 2 + ROOM_MARGIN_MM, view_centre[1] + height / 2 + ROOM_MARGIN_MM)  # fmt: skip
     claim(ctx, item_id, rect)
+    if not parent.derived:
+        ctx.native(
+            NativeView(
+                item_id,
+                letter,
+                "aux",
+                parent.name,
+                (view_centre[0] - width / 2, view_centre[1] - height / 2, view_centre[0] + width / 2, view_centre[1] + height / 2),
+                k,
+                direction,
+                xdir,
+                letter,
+            )
+        )
     # the view arrow in the parent: outside the face, pointing at it
     outward = _snap(_page_unit(parent.axis(n)))
     start = (anchor[0] + outward[0] * 4.0, anchor[1] + outward[1] * 4.0)
@@ -707,6 +903,8 @@ def draw_aux(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         )
     )
     ctx.add(out)
+    if not parent.derived:
+        _native_arrow(ctx, item_id, parent.name, tail, (-outward[0], -outward[1]), letter, "1", letter_at_base=True)
     return "ok", f"view {letter} square-on to {face_id}, seen from the {parent.name} view"
 
 
@@ -717,6 +915,25 @@ LINES_CHECKS = {"hidden": v_hidden, "centres": v_bool}
 
 def check_lines(spec: dict[str, Any]) -> dict[str, Any]:
     return check_fields(spec, LINES_CHECKS)
+
+
+def _flat_diagonals(ctx: Context) -> list[str]:
+    """The two diagonals (thin continuous) of every flat of a turned part that a standard view sees face-on: with a centre line
+    in the view, a flat's rectangle would read as a cylinder (ISO 128-30). Says what it drew, view by view."""
+    done: set[tuple[str, str]] = ctx.extras.setdefault("flat_diagonals", set())
+    said: list[str] = []
+    for flat in sheet_flats.flats_of(ctx):
+        for view in sheet_flats.seen_in(ctx, flat):
+            if (view.name, flat.face_id) in done:
+                continue
+            got = sheet_flats.diagonals(ctx, view, flat)
+            if got is None:
+                continue
+            done.add((view.name, flat.face_id))
+            ctx.add(got[0])
+            ctx.used_view(view.name)
+            said.append(f"{flat.face_id} in {view.name} ({got[1]})")
+    return said
 
 
 def draw_lines(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
@@ -747,51 +964,71 @@ def draw_lines(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
                 if view.looks_along(d):
                     c = view.project(stack[0].centre)
                     if mark_once(ctx, view, c):
-                        ctx.add(centre_mark(c[0], c[1], radius_mm * view.scale))
+                        ctx.add(hole_mark(ctx, view, stack[0], c, radius_mm * view.scale))
                         marks += 1
                     continue
                 origin = stack[0].centre
                 reach = [
                     dot(sub(p, origin), unit(d))
                     for h in stack
-                    for p in (
+                    for p in (  # the wall of each hole and, in a blind one, its drill point: the line is centred on all of it
                         h.centre,
-                        tuple(c + u * h.depth for c, u in zip(h.centre, unit(h.direction), strict=True)),
+                        tuple(c + u * h.length for c, u in zip(h.centre, unit(h.direction), strict=True)),
                     )
                 ]
                 pa = view.project(tuple(o + u * min(reach) for o, u in zip(origin, unit(d), strict=True)))  # type: ignore[arg-type]
                 pb = view.project(tuple(o + u * max(reach) for o, u in zip(origin, unit(d), strict=True)))  # type: ignore[arg-type]
-                length = math.dist(pa, pb)
-                if length < 0.5:
+                if math.dist(pa, pb) < 0.5:
                     continue
-                ux, uy = (pb[0] - pa[0]) / length, (pb[1] - pa[1]) / length
-                over = HOLE_AXIS_REACH_MM
-                ctx.add([Line(pa[0] - ux * over, pa[1] - uy * over, pb[0] + ux * over, pb[1] + uy * over, AXES)])
-                ctx.used_view(view.name)
-                axes += 1
+                line = sheet_centre.side_line(ctx, view.name, pa, pb)  # the same overshoot at both ends
+                if line is not None:
+                    ctx.add([line])
+                    ctx.used_view(view.name)
+                    axes += 1
         facts = ctx.extras.get("facts")  # the whole cylinders of the part (pins, shafts, bosses) get theirs too
+        for slot in facts.keyway_slots if facts is not None else ():  # the end arcs of a keyway: each gets its centre cross
+            for end in slot.rounds:
+                for view in ctx.views.values():
+                    if view.looks_along(slot.up):
+                        c = view.project(sheet_keyway.round_centre(slot, end))
+                        if mark_once(ctx, view, c):
+                            ctx.add(centre_mark(c[0], c[1], end.radius * view.scale))
+                            marks += 1
         for boss in facts.bosses if facts is not None else ():
             d = unit(boss.axis_dir)
+            hidden_behind = facts.assembly  # the cylinders of an assembly: only where the view really shows them
             for view in ctx.views.values():
                 if view.looks_along(d):
+                    if hidden_behind and not sheet_seen.circle_seen(ctx, view, boss):
+                        continue
                     c = view.project(boss.axis_point)
                     if mark_once(ctx, view, c):
                         ctx.add(centre_mark(c[0], c[1], boss.radius * view.scale))
                         marks += 1
                 elif boss.length > 0 and view.shows_axis_along(d):
+                    if boss.bore or (hidden_behind and not sheet_seen.side_on_seen(ctx, view, boss)):
+                        continue  # a bore is inside the material; a cylinder behind another part shows no sides
                     half = boss.length / 2
                     pa = view.project(tuple(p - u * half for p, u in zip(boss.axis_point, d, strict=True)))  # type: ignore[arg-type]
                     pb = view.project(tuple(p + u * half for p, u in zip(boss.axis_point, d, strict=True)))  # type: ignore[arg-type]
-                    length = math.dist(pa, pb)
-                    if length < 0.5:
+                    if math.dist(pa, pb) < 0.5:
                         continue
-                    ux, uy = (pb[0] - pa[0]) / length, (pb[1] - pa[1]) / length
-                    over = HOLE_AXIS_REACH_MM
-                    ctx.add([Line(pa[0] - ux * over, pa[1] - uy * over, pb[0] + ux * over, pb[1] + uy * over, AXES)])
-                    ctx.used_view(view.name)
-                    axes += 1
+                    pa, pb = sheet_centre.reach_outline(ctx, view, pa, pb)  # the overhang is counted from the outline of the part
+                    drawn = ctx.extras.setdefault("axis_lines", set())
+                    key = (view.name, *sorted(((round(pa[0], 1), round(pa[1], 1)), (round(pb[0], 1), round(pb[1], 1)))))
+                    if key in drawn:
+                        continue
+                    drawn.add(key)
+                    line = sheet_centre.side_line(ctx, view.name, pa, pb)
+                    if line is not None:
+                        ctx.add([line])
+                        ctx.used_view(view.name)
+                        axes += 1
         if marks or axes:
             said.append(f"centre marks on {marks} hole view(s), centre lines on {axes}")
+        crossed = _flat_diagonals(ctx)
+        if crossed:
+            said.append("diagonals on the flat faces seen face-on: " + "; ".join(crossed))
     if not said:
         return "warning", "nothing to draw: no hidden edges and no holes"
     return "ok", "; ".join(said)

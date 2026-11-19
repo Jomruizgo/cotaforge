@@ -324,6 +324,7 @@ def test_hole_and_patterns() -> None:
         operation_id="hole_1",
         face=FaceHandle(id="face:top"),
         position=(-40, -20),
+        origin=(50.0, 30.0, 8.0),  # the centre of the face box
         standard="iso_clearance",
         size="M6",
         diameter_mm=6.6,

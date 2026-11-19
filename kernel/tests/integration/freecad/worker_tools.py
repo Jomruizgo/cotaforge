@@ -2,7 +2,6 @@
 the hard way."""
 
 import os
-import signal
 import time
 from typing import Any
 
@@ -26,10 +25,11 @@ def call_hook(
 
 
 def kill_worker(adapter: FreeCADAdapter) -> None:
-    """The worker dies without closing or saving anything (this test's own child, by PID), as after a crash."""
+    """The worker dies without closing or saving anything (this test's own child, through its own handle), as after a
+    crash."""
     pid = adapter.worker_pid
     assert pid is not None
-    os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))  # SIGTERM on Windows is TerminateProcess
+    adapter.crash_worker()
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         if hasattr(os, "WNOHANG"):  # POSIX: reap the zombie, or the PID still looks alive

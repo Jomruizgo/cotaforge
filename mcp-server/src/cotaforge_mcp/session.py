@@ -96,6 +96,7 @@ from cotaforge.executor import (
 )
 from cotaforge.executor.config import DEFAULT_CONFIG
 from cotaforge.executor.errors import ResolutionError, UndoFloorError, UndoInterruptedError
+from cotaforge.executor.executor import HOLE_MOVE_FIELDS
 from cotaforge.ir import ExtensionOperation, Plan, PlanError, parse_plan
 from cotaforge.ir.refs import FaceRef, PlaneRef
 from cotaforge.verification.verifier import Verifier
@@ -109,8 +110,10 @@ from cotaforge_mcp import (
     design_memory,
     foreign,
     hints,
+    pocket_corners,
     recovery,
     rules,
+    turned_ends,
     usage,
 )
 from cotaforge_mcp.config import Settings
@@ -262,6 +265,12 @@ class Session:
         is that fragment saving the document itself, not somebody else."""
         self.purpose = DEFAULT_PURPOSE
         """What the document is for: ``sketch`` (a concept model) or ``detail`` (features); kept in the record."""
+        self.sheet_looks: dict[tuple[str, str], Any] = {}
+        """The last whole-sheet capture of each sheet this session took (drawing_look): export waits for one taken after the
+        last change of the sheet."""
+        self.sheet_reviews: dict[tuple[str, str], Any] = {}
+        """The last FULL review of each sheet this session read, as the sheet info it returned (drawing_plan): the quick step
+        line of an add, an update or a remove carries what that review left open (the step's own rules read a few findings)."""
         self.mem = design_memory.MemState()
         """Roles, stage and the answers given at milestones: kept in the document and in the record."""
         self._aliases: dict[str, FeatureHandle] = {}
@@ -1043,6 +1052,7 @@ class Session:
 
     def new_document(self, name: str, kind: str) -> list[str]:
         with self.lock:
+            self.sheet_reviews.clear()  # same reason as import_document
             self._refuse_taken_name(name)
             doc_kind = DocumentKind(kind)
             previous = self._park_active()
@@ -1079,6 +1089,7 @@ class Session:
     def open_document(self, path: str) -> list[str]:
         self.need("open_document", "doc(action=open)")
         with self.lock:
+            self.sheet_reviews.clear()  # the file is read again: its sheets may have changed since the last review of them
             target = self.settings.resolve(path)
             if not target.is_file():
                 raise ToolError(f"{target} does not exist or is not a file", code="not_found", field_name="path")
@@ -1128,6 +1139,7 @@ class Session:
         self.need("import_geometry", "doc(action=import)")
         usage_text = foreign.import_usage(self.adapter.import_suffixes())
         with self.lock:
+            self.sheet_reviews.clear()  # a document comes in: what an earlier one said of a sheet of that name is not its review
             if not path:
                 raise ToolError(
                     "import needs the path of the file",
@@ -1689,6 +1701,7 @@ class Session:
         are only dropped with ``force``."""
         self.need("open_document", "doc(action=reload)")
         with self.lock:
+            self.sheet_reviews.clear()  # the file is read again (see open_document)
             suffix = self.adapter.suffix_for(self.require_executor().plan.kind)
             if self.doc_path is None or not self.doc_path.is_file():
                 raise ToolError(
@@ -1751,6 +1764,7 @@ class Session:
     def close_document(self, discard: bool) -> list[str]:
         self.need("close_document", "doc(action=close)")
         with self.lock:
+            self.sheet_reviews.clear()  # the document goes: so does what was read of its sheets
             if self.executor is None:
                 raise ToolError("no document is open", code="no_document")
             if self.dirty and not discard:
@@ -1947,12 +1961,18 @@ class Session:
                 remembered = design_memory.after_op(self, step_id, name, params, role)
             except AdapterError as exc:
                 remembered = [f"note: the role could not be stored in the document ({exc.info.message})"]
-            remembered = [*remembered, *bearing_seats.after_op(self, step_id, name, role)]
+            remembered = [
+                *remembered,
+                *bearing_seats.after_op(self, step_id, name, role),
+                *pocket_corners.after_op(self, step_id, name),
+                *turned_ends.after_op(self, step_id, name, role),
+            ]
             return [
                 *before_lines,
                 *lines,
                 *after_lines,
                 *hole_hint,
+                *hints.widened_holes(self, step_id, name),
                 *remembered,
                 *self._convention_lines(name, operation),
             ]
@@ -2392,6 +2412,15 @@ class Session:
 
     # --- editing a step --------------------------------------------------------------------------------------------
 
+    def only_moves_holes(self, step_id: str, changes: dict[str, Any]) -> bool:
+        """Does editing ``step_id`` with ``changes`` only move the holes of a hole step (its centres, nothing else)?
+        Such an edit changes where the holes are and nothing a reading of the part's outer shape depends on (an end
+        that has no chamfer), so those readings are not asked again after it."""
+        executor = self.executor
+        if executor is None or not set(changes) <= HOLE_MOVE_FIELDS:
+            return False
+        return any(op.id == step_id and op.op == "hole" for op in executor.plan.operations)
+
     def edit_step(self, step_id: str, changes: dict[str, Any], intent: str | None) -> list[str]:
         """Change parameters of an earlier step and regenerate what depends on it, as one call.
 
@@ -2752,6 +2781,8 @@ class Session:
         declared = rules.declared_set(self.settings)
         lines = [f"material: {attributes.material or 'none'}" + self._declared_note(declared, attributes.material)]
         lines.append(f"route: {', '.join(attributes.route) or 'none'}")
+        if attributes.title:
+            lines.append(f"title: {attributes.title}")
         return lines
 
     @staticmethod
@@ -2791,6 +2822,28 @@ class Session:
                 )
             except AdapterError as exc:
                 raise self.adapter_failure(exc, "set_material") from exc
+            self.dirty = True
+            return self._attributes_lines(attributes)
+
+    def set_title(self, title: str | None) -> list[str]:
+        """The designation of the part (the name an assembly's parts list prints), kept in the document."""
+        self.need("set_design_attributes", "doc(action=set_title)")
+        with self.lock:
+            self.require_executor()
+            if title is None:
+                raise ToolError(
+                    "set_title needs the designation in the project language (an empty string clears it)",
+                    code="invalid_input",
+                    field_name="name",
+                    usage='doc(action="set_title", name="<designation>")',
+                    example='doc(action="set_title", name="Placa superior")',
+                )
+            try:
+                attributes = self.adapter.set_design_attributes(
+                    SetDesignAttributesRequest(operation_id=self._op_id("title"), title=title.strip())
+                )
+            except AdapterError as exc:
+                raise self.adapter_failure(exc, "set_title") from exc
             self.dirty = True
             return self._attributes_lines(attributes)
 
@@ -3214,8 +3267,11 @@ def _apply_changes(op: str, data: dict[str, Any], changes: dict[str, Any]) -> No
             usage=catalog.op_usage(op),
         )
     data.update(changes)
-    if op == "hole" and ("position" in changes) != ("at" in changes):
-        data["at" if "position" in changes else "position"] = None  # one way of placing it: the one just given
+    placed = [k for k in ("position", "positions", "bolt_circle", "at") if k in changes]
+    if op == "hole" and len(placed) == 1:  # one way of placing it: the one just given
+        for other in ("position", "positions", "bolt_circle", "at"):
+            if other != placed[0]:
+                data[other] = None
     if op == "hole" and {"size", "standard"} & changes.keys() and "diameter_mm" not in changes:
         if data.get("standard") in ("iso_clearance", "iso_tapped"):
             data.pop("diameter_mm", None)  # derived from the size: let the thread table fill it in again

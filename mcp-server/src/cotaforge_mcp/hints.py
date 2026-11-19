@@ -1,8 +1,11 @@
 """Deterministic hints appended to the result of an op, from measured geometry only (never a block, never a guess).
 
-Today one: a ``boolean_subtract`` whose tool is a cylinder that pierces a planar face of the target square-on is a hole,
-and ``hole`` makes it as an editable feature that keeps its faces. A document marked as a sketch (a concept model) does
-not get it: there, primitives and booleans are the point.
+Two:
+* a ``boolean_subtract`` whose tool is a cylinder that pierces a planar face of the target square-on is a hole, and
+  ``hole`` makes it as an editable feature that keeps its faces;
+* a ``cut`` (or a ``chamfer``) that leaves a wider cylinder, or a wide cone, coaxial with a hole made earlier is the
+  counterbore (or countersink) of that hole, which ``hole`` makes in ONE feature (``counterbore=`` / ``countersink=``).
+A document marked as a sketch (a concept model) gets neither: there, primitives and booleans are the point.
 """
 
 import json
@@ -165,5 +168,122 @@ def _drilled_holes(session: "Session", operation: BooleanSubtractOperation) -> l
         f"hint: this is a hole; use hole, it stays editable and keeps its faces: {tool_id} is a D{diameter} cylinder "
         f"normal to face {face.handle.id} of {operation.target.from_op}, going into it{more}. "
         f'Undo this step and run op(name="hole", params={example})',
+        "concept model? doc(action=set_purpose, purpose=sketch) turns this hint off",
+    ]
+
+
+# ---- a counterbore or a countersink made of two steps ----------------------------------------------------------------
+
+_COAXIAL_MM = 0.05
+_COUNTERSINK_RATIO = 1.4
+"""A cone must be this many times wider than the hole to read as a countersink (a 1 mm edge chamfer is not one)."""
+_MAX_STEPS = 40
+"""More hole and cut steps than this and the hint is not looked for (the reads cost more than the hint)."""
+_WIDENING_OPS = ("cut", "chamfer", "revolve", "boolean_subtract")
+
+
+@dataclass(frozen=True)
+class _Round:
+    """A cylindrical or conical face as seen from its axis: where it is, how wide and how long along it."""
+
+    kind: str  # "cylinder" | "cone"
+    origin: tuple[float, ...]
+    axis: tuple[float, ...]
+    radius: float
+    length: float
+
+
+def _round_of(face: FaceInfo) -> _Round | None:
+    """The face as a ``_Round`` (``None`` for anything else, or for a cone with a slanted axis, whose width is not read
+    from its box)."""
+    if face.surface not in (SurfaceType.cylinder, SurfaceType.cone) or face.axis is None:
+        return None
+    norm = math.sqrt(_dot(face.axis.direction, face.axis.direction))
+    if norm < 1e-9:
+        return None
+    axis = tuple(c / norm for c in face.axis.direction)
+    size = tuple(hi - lo for lo, hi in zip(face.bbox.min, face.bbox.max, strict=True))
+    along = sum(abs(a) * s for a, s in zip(axis, size, strict=True))
+    if face.surface is SurfaceType.cylinder:
+        if face.radius is None:
+            return None
+        return _Round("cylinder", tuple(face.axis.origin), axis, face.radius, along)
+    if max(abs(a) for a in axis) < _SQUARE_ON:
+        return None
+    across = [s for a, s in zip(axis, size, strict=True) if abs(a) < 0.5]
+    return _Round("cone", tuple(face.axis.origin), axis, max(across) / 2.0, along)
+
+
+def _coaxial(a: _Round, b: _Round) -> bool:
+    if abs(_dot(a.axis, b.axis)) < _SQUARE_ON:
+        return False
+    offset = _sub(b.origin, a.origin)
+    along = _dot(offset, a.axis)
+    off_axis = tuple(o - along * x for o, x in zip(offset, a.axis, strict=True))
+    return math.sqrt(_dot(off_axis, off_axis)) <= _COAXIAL_MM
+
+
+def _widens(wide: _Round, hole: _Round) -> bool:
+    """``wide`` is a counterbore (a wider cylinder) or a countersink (a much wider cone) of the drilled ``hole``."""
+    if not _coaxial(wide, hole):
+        return False
+    if wide.kind == "cylinder":
+        return wide.radius > hole.radius + 0.01
+    return wide.radius >= _COUNTERSINK_RATIO * hole.radius
+
+
+def _created_rounds(session: "Session", feature: Any) -> list[_Round]:
+    request = FeatureRequest(operation_id="hint", feature=feature, role=ProvenanceRole.created)
+    return [r for r in (_round_of(f) for f in session.adapter.faces_of(request).faces) if r is not None]
+
+
+def widened_holes(session: "Session", step_id: str, op_name: str) -> list[str]:
+    """Hint lines for a step that, with a hole made before (or after) it, makes a counterbore or a countersink out of
+    two steps; empty for anything else (and for a sketch document, and for an adapter that reads no faces)."""
+    if op_name not in (*_WIDENING_OPS, "hole") or session.purpose == "sketch":
+        return []
+    try:
+        return _widened_holes(session, step_id, op_name)
+    except Exception:  # noqa: BLE001 - a hint must never fail the op it comes with
+        return []
+
+
+def _widened_holes(session: "Session", step_id: str, op_name: str) -> list[str]:
+    steps = session.steps()
+    mine = next((s for s in steps if s.id == step_id and s.feature is not None), None)
+    others = [s for s in steps if s.id != step_id and s.feature is not None]
+    if mine is None:
+        return []
+    drills = [s for s in others if s.op == "hole"]
+    cuts = [s for s in others if s.op in _WIDENING_OPS]
+    if len(drills) + len(cuts) > _MAX_STEPS or not (cuts if op_name == "hole" else drills):
+        return []  # nothing to pair this step with (or too much to read)
+    found: list[tuple[str, str, _Round, _Round]] = []  # (hole step, widening step, hole face, widening face)
+    if op_name == "hole":  # a pocket made first, the hole drilled into it after
+        holes_now = [r for r in _created_rounds(session, mine.feature) if r.kind == "cylinder"]
+        for step in cuts:
+            for wide in _created_rounds(session, step.feature):
+                found.extend((step_id, step.id, hole, wide) for hole in holes_now if _widens(wide, hole))
+    else:
+        wides = _created_rounds(session, mine.feature)
+        for step in drills:
+            for hole in (r for r in _created_rounds(session, step.feature) if r.kind == "cylinder"):
+                found.extend((step.id, step_id, hole, wide) for wide in wides if _widens(wide, hole))
+    if not found:
+        return []
+    hole_step, wide_step, hole, wide = found[0]
+    if wide.kind == "cylinder":
+        word, key = "counterbore", "counterbore"
+        value: dict[str, Any] = {"diameter_mm": _num(2 * wide.radius), "depth_mm": _num(wide.length)}
+    else:
+        word, key = "countersink", "countersink"
+        value = {"diameter_mm": _num(2 * wide.radius), "angle_deg": 90}
+    more = f" (+{len(found) - 1} more like it)" if len(found) > 1 else ""
+    example = json.dumps({key: value}, separators=(",", ":"))
+    return [
+        f"hint: {wide_step} is a {word} of hole {hole_step} (D{_num(2 * hole.radius)}): a D{_num(2 * wide.radius)} "
+        f"coaxial round{more}. hole makes it in ONE feature that stays editable and keeps its faces: undo {wide_step}, "
+        f'then op(edit="{hole_step}", params={example}); on a new hole, put {key} in its params. '
+        "Not the head of a screw? ignore this.",
         "concept model? doc(action=set_purpose, purpose=sketch) turns this hint off",
     ]

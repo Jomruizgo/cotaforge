@@ -228,6 +228,8 @@ class DesignAttributes(BaseModel, frozen=True):
 
     material: str | None = None
     route: tuple[str, ...] = ()
+    title: str | None = None
+    """The designation of the part in the project language (what an assembly's parts list prints), ``None`` when unset."""
     roles: dict[str, str] = Field(default_factory=dict)
     """Role of bodies and components by the name the caller gave them (the step that made them), kept in the file."""
 
@@ -240,5 +242,7 @@ class SetDesignAttributesRequest(Request):
 
     material: str | None = None
     route: tuple[str, ...] | None = None
+    title: str | None = None
+    """The designation of the part (``""`` clears it); ``None`` leaves it as it is."""
     roles: dict[str, str] | None = None
     """The whole mapping name -> role (replaces the stored one; ``{}`` clears it); ``None`` leaves it as it is."""

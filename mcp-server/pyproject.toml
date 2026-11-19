@@ -1,6 +1,6 @@
 [project]
 name = "cotaforge-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server `cad`: one CAD adapter, one live document, action-style tools"
 requires-python = ">=3.12"
 # The SDK is pinned below 2: mcp 2 renamed FastMCP/changed the low-level API and has not been evaluated yet.
@@ -40,6 +40,7 @@ addopts = "-q"
 asyncio_mode = "auto"
 markers = [
     "freecad: needs the FreeCAD root",
+    "expected_findings(*codes): the real test builds a sheet with these defects on purpose (the review it runs at the end lists them)",
 ]
 
 [tool.ruff]

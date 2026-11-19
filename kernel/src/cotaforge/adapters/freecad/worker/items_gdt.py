@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """``datum`` and ``gdt``: ISO 5459 datum features and ISO 1101 feature control frames (no FreeCAD import).
 
 * ``datum`` -- a datum triangle with its letter in a square frame, attached to a face of the part: on the outline of a
@@ -15,8 +16,19 @@ measurement; it is the only number on the sheet that does not come from the mode
 from dataclasses import dataclass
 from typing import Any
 
-from items_attach import attach_face, place_label
-from items_common import asked
+from gdt_frames import (
+    DATUM_CELL_MM,
+    DATUM_STRETCH_MM,
+    DATUM_STRETCHES,
+    SYMBOL_CELL_MM,
+    GdtFrameError,
+    datum_file,
+    frame_width,
+    gdt_frame_choice,
+    library_files,
+)
+from items_attach import Placed, _point_segment, attach_face, place_label
+from items_common import FRAME_CELL_MM, asked
 from sheet_context import (
     COMMON_FIELDS,
     Context,
@@ -28,18 +40,21 @@ from sheet_context import (
     v_enum,
     v_ids,
     v_num,
+    v_point2,
     v_str,
 )
 from sheet_draw import arrow
 from sheet_model import DIMENSIONS, Entity, Glyph, Line, Polyline, Solid, Text, text_width
+from sheet_units import NativeDim, NativeSymbol
 
-CELL_MM = 7.0  # height of a frame; a symbol or datum cell is this wide
+CELL_MM = FRAME_CELL_MM  # height of a frame; a symbol or datum cell is this wide
 TEXT_MM = 3.5
 GLYPH_MM = 4.6
 MODIFIER_MM = 4.0
-TRIANGLE_HEIGHT_MM = 4.0
-TRIANGLE_HALF_BASE_MM = 2.3
-STEM_MM = 4.0
+DATUM_BASE_MM = 6.4  # the datum symbol of the library (ISO 5459): the filled triangle ...
+DATUM_HEIGHT_MM = 5.5426
+DATUM_STEM_MM = 8.9596  # ... the stem from its apex to the frame ...
+DATUM_BOX_MM = 7.0  # ... and the square frame of the letter
 FRAME_PAD_MM = 1.75
 BAD_LETTERS = "IOQ"
 
@@ -103,21 +118,26 @@ def _cell_texts(entities: list[Entity], x: float, y: float, width: float, text: 
     entities.append(Text(x + width / 2, y + 2.2, text, TEXT_MM, DIMENSIONS, "center"))
 
 
-def frame(x: float, y: float, cells: list[tuple[str, ...]]) -> tuple[list[Entity], float]:
+def frame(
+    x: float, y: float, cells: list[tuple[str, ...]], widths: list[float] | None = None
+) -> tuple[list[Entity], float]:
     """A frame with its bottom-left corner at ``(x, y)``; ``cells`` are ``("glyph", name)``, ``("value", text, modifier
-    glyph or "")`` and ``("letter", L)``. Returns the entities and the width."""
+    glyph or "")`` and ``("letter", L)``. ``widths`` are the widths of the cells when the library symbol the frame is on the
+    page decides them (``library_frame``). Returns the entities and the width."""
     out: list[Entity] = []
-    widths: list[float] = []
-    for cell in cells:
-        if cell[0] == "value":
+    sizes: list[float] = []
+    for index, cell in enumerate(cells):
+        if widths is not None:
+            sizes.append(widths[index])
+        elif cell[0] == "value":
             extra = MODIFIER_MM + 1.0 if cell[2] else 0.0
-            widths.append(text_width(cell[1], TEXT_MM) + extra + 2 * FRAME_PAD_MM)
+            sizes.append(text_width(cell[1], TEXT_MM) + extra + 2 * FRAME_PAD_MM)
         else:
-            widths.append(CELL_MM)
-    total = sum(widths)
+            sizes.append(CELL_MM)
+    total = sum(sizes)
     out.append(Polyline(((x, y), (x + total, y), (x + total, y + CELL_MM), (x, y + CELL_MM)), DIMENSIONS, closed=True))
     left = x
-    for index, (cell, width) in enumerate(zip(cells, widths, strict=True)):
+    for index, (cell, width) in enumerate(zip(cells, sizes, strict=True)):
         if index:
             out.append(Line(left, y, left, y + CELL_MM, DIMENSIONS))
         if cell[0] == "glyph":
@@ -136,11 +156,37 @@ def frame(x: float, y: float, cells: list[tuple[str, ...]]) -> tuple[list[Entity
     return out, total
 
 
+@dataclass(frozen=True)
+class Library:
+    """The file of the symbol library a frame is on the page, with the values of its editable texts and the widths of its cells."""
+
+    file: str
+    texts: tuple[str, ...]
+    widths: list[float]
+
+
+def library_frame(ctx: Context, spec: dict[str, Any]) -> Library:
+    """The file of ``gdt_frames`` for the frame of ``spec`` (the one the engineer would insert from TechDraw's menu) and the
+    texts to put in it. The sheet's headless drawing takes its cell widths from the file, so what it reserves is what the
+    window shows."""
+    modifiers = [name for name in ("diameter", spec.get("modifier", "")) if name and (name != "diameter" or spec.get("diameter"))]
+    datums = list(spec.get("datums", []))
+    try:
+        relative, texts = gdt_frame_choice(
+            spec["char"], spec["value"], modifiers, datums, decimal="," if ctx.comma else "."
+        )
+        total = frame_width(library_files()[relative])
+    except GdtFrameError as exc:
+        raise ItemError(str(exc)) from exc
+    count = len(datums)
+    return Library(relative, texts, [SYMBOL_CELL_MM, total - SYMBOL_CELL_MM - DATUM_CELL_MM * count, *[DATUM_CELL_MM] * count])
+
+
 def _frame_at(
-    anchor: Point, direction: tuple[float, float], cells: list[tuple[str, ...]]
+    anchor: Point, direction: tuple[float, float], cells: list[tuple[str, ...]], widths: list[float] | None = None
 ) -> tuple[list[Entity], tuple[float, float, float, float]]:
     """A frame joined to ``anchor`` by the middle of the side facing the feature (``direction`` points away from it)."""
-    probe, width = frame(0.0, 0.0, cells)
+    probe, width = frame(0.0, 0.0, cells, widths)
     del probe
     if abs(direction[0]) >= abs(direction[1]):
         x0 = anchor[0] if direction[0] > 0 else anchor[0] - width
@@ -148,8 +194,16 @@ def _frame_at(
     else:
         x0 = anchor[0] - width / 2
         y0 = anchor[1] if direction[1] > 0 else anchor[1] - CELL_MM
-    entities, _ = frame(x0, y0, cells)
+    entities, _ = frame(x0, y0, cells, widths)
     return entities, (x0, y0, x0 + width, y0 + CELL_MM)
+
+
+def _view_of(ctx: Context, target: str) -> str | None:
+    """The TechDraw view the callout of item ``target`` is on (its native dimension's): what a symbol hung from it belongs to."""
+    for native in ctx.extras.get("natives", {}).get(target, []):
+        if isinstance(native, NativeDim):
+            return native.view
+    return None
 
 
 # --- datum ------------------------------------------------------------------------------------------------------------
@@ -161,7 +215,12 @@ DATUM_CHECKS = {
     "view": COMMON_FIELDS["view"],
     "side": COMMON_FIELDS["side"],
     "offset_mm": COMMON_FIELDS["offset_mm"],
+    "tip_at": v_point2,  # where the global layout left the triangle on the face (page mm): written by it, not asked for
 }
+
+
+TIP_ON_TRACE_MM = 1.0  # a planned tip is on the trace of its face (the views moved since: it is searched again)
+CARDINAL = {"up": (0.0, 1.0), "down": (0.0, -1.0), "left": (-1.0, 0.0), "right": (1.0, 0.0)}  # page, y up
 
 
 def check_datum(spec: dict[str, Any]) -> dict[str, Any]:
@@ -183,21 +242,69 @@ def prepare_datum(ctx: Context, specs: list[dict[str, Any]]) -> None:
     ctx.extras["datum_owner"] = first
 
 
-def _triangle(tip: Point, direction: tuple[float, float]) -> tuple[Entity, Point]:
-    """A filled datum triangle with its tip at ``tip``, its base ``direction`` away; returns it and its base centre."""
-    px, py = -direction[1], direction[0]
-    base = (tip[0] + direction[0] * TRIANGLE_HEIGHT_MM, tip[1] + direction[1] * TRIANGLE_HEIGHT_MM)
-    corners = (
-        tip,
-        (base[0] + px * TRIANGLE_HALF_BASE_MM, base[1] + py * TRIANGLE_HALF_BASE_MM),
-        (base[0] - px * TRIANGLE_HALF_BASE_MM, base[1] - py * TRIANGLE_HALF_BASE_MM),
+def _cardinal(direction: tuple[float, float]) -> str:
+    """The side of the feature the frame of a datum symbol is on: the library has the four (the triangle stands on the feature
+    with its base and the stem runs straight to the frame)."""
+    if abs(direction[0]) >= abs(direction[1]):
+        return "right" if direction[0] > 0 else "left"
+    return "up" if direction[1] > 0 else "down"
+
+
+def datum_entities(
+    origin: Point, side: str, letter: str, stretch: int = 0
+) -> tuple[Placed, tuple[float, float, float, float]]:
+    """The datum symbol of the library drawn on the sheet: the filled triangle stands on the feature with the middle of its base
+    at ``origin``, the stem runs from its apex to the framed letter, on ``side`` of the feature. Returns the entities and the
+    box of the frame (what the label takes)."""
+    dx, dy = CARDINAL[side]
+    px, py = -dy, dx
+
+    def at(along: float, across: float) -> Point:
+        return origin[0] + along * dx + across * px, origin[1] + along * dy + across * py
+
+    near = DATUM_HEIGHT_MM + DATUM_STEM_MM + stretch * DATUM_STRETCH_MM
+    half = DATUM_BOX_MM / 2
+    corners = (at(near, -half), at(near + DATUM_BOX_MM, -half), at(near + DATUM_BOX_MM, half), at(near, half))
+    base = (at(0.0, -DATUM_BASE_MM / 2), at(0.0, DATUM_BASE_MM / 2))
+    apex = at(DATUM_HEIGHT_MM, 0.0)
+    stem_end = at(near, 0.0)
+    centre = at(near + half, 0.0)
+    out = Placed(
+        [
+            Solid((base[0], base[1], apex), DIMENSIONS),
+            Line(apex[0], apex[1], stem_end[0], stem_end[1], DIMENSIONS),
+            Polyline(corners, DIMENSIONS, closed=True),
+            Text(centre[0], centre[1] - 1.3, letter, TEXT_MM, DIMENSIONS, "center"),
+        ]
     )
-    return Solid(corners, DIMENSIONS), base
+    xs = [p[0] for p in corners]
+    ys = [p[1] for p in corners]
+    box = (min(xs), min(ys), max(xs), max(ys))  # the label: the framed letter (the triangle stands on the feature, the stem is a line)
+    out.origin, out.side, out.rect, out.reach, out.stretch = origin, side, box, stem_end, stretch
+    return out, box
+
+
+def _native_datum(ctx: Context, spec: dict[str, Any], placed: Placed, view: str | None) -> None:
+    """The datum as the library's own symbol of FreeCAD's TechDraw (its letter is the editable text), owned by ``view``."""
+    if view is None:
+        return
+    ctx.used_view(view)
+    ctx.native(
+        NativeSymbol(
+            item=str(spec["id"]),
+            name="s",
+            kind="datum",
+            file=datum_file(placed.side, placed.stretch),
+            texts=(spec["letter"],),
+            at=placed.origin,
+            view=view,
+        )
+    )
 
 
 def _datum_on_callout(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     """The datum of an AXIS: its triangle stands on the end of the shelf of the callout that dimensions the feature (ISO
-    5459: in line with the dimension), the framed letter hangs below it."""
+    5459: in line with the dimension), the framed letter below it."""
     target = spec["on"]
     anchors = ctx.extras.get("anchors", {}).get(target)
     if not anchors:
@@ -207,25 +314,22 @@ def _datum_on_callout(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         )
         raise ItemError(msg)
     elbow, direction, rect = anchors[0]["elbow"], anchors[0]["dir"], anchors[0]["rect"]
-    tip_x = elbow[0] + direction * (rect[2] - rect[0] - 3.0)
-    tip = (tip_x, elbow[1])
-    triangle, base = _triangle(tip, (0.0, -1.0))
-    _, width = frame(0.0, 0.0, [("letter", spec["letter"])])
+    length = rect[2] - rect[0]
     free = False
-    first: tuple[list[Entity], tuple[float, float, float, float]] | None = None
-    for step in range(4):
-        top = base[1] - STEM_MM - step * (CELL_MM + 1.5)
-        boxed, box = _frame_at((tip_x, top), (0.0, -1.0), [("letter", spec["letter"])])
-        entities: list[Entity] = [triangle, Line(base[0], base[1], tip_x, top, DIMENSIONS), *boxed]
+    first: tuple[Placed, tuple[float, float, float, float]] | None = None
+    for step in range(4):  # along the shelf, from its end back towards the elbow, while the place is taken
+        origin = (elbow[0] + direction * max(length - 3.0 - step * (DATUM_BOX_MM + 1.5), DATUM_BOX_MM / 2), elbow[1])
+        placed, box = datum_entities(origin, "down", spec["letter"])
         if first is None:
-            first = (entities, box)
+            first = (placed, box)
         if ctx.free(box):
             free = True
             break
     assert first is not None
-    chosen, box = (entities, box) if free else first
+    chosen, box = (placed, box) if free else first
     ctx.reserve(box)
     ctx.add(chosen)
+    _native_datum(ctx, spec, chosen, _view_of(ctx, target))
     return ("ok" if free else "warning"), f"datum {spec['letter']} on the dimension of {target} (the axis)"
 
 
@@ -247,15 +351,24 @@ def draw_datum(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         )
         raise ItemError(msg)
     att = attach_face(ctx, face_id, spec.get("view"), spec.get("side"))
+    placed = spec.get("tip_at")
+    if placed is not None and att.trace is not None:  # the layout slid the triangle along the face: it stays where it left it
+        point = (float(placed[0]), float(placed[1]))
+        if _point_segment(point, att.trace[0], att.trace[1]) <= TIP_ON_TRACE_MM:
+            att.tip = point
 
     def build(anchor: Point, direction: tuple[float, float]) -> tuple[list[Entity], tuple[float, float, float, float]]:
-        triangle, base = _triangle(att.tip, direction)
-        boxed, rect = _frame_at(anchor, direction, [("letter", letter)])
-        return [triangle, Line(base[0], base[1], anchor[0], anchor[1], DIMENSIONS), *boxed], rect
+        tip = att.tip_towards(direction)
+        far = ((anchor[0] - tip[0]) ** 2 + (anchor[1] - tip[1]) ** 2) ** 0.5
+        # the frame stands where the label was asked to (its near edge ``far`` from the face), as near as the lengths of stem allow
+        stretch = min(DATUM_STRETCHES - 1, max(0, round((far - DATUM_HEIGHT_MM - DATUM_STEM_MM) / DATUM_STRETCH_MM)))
+        entities, rect = datum_entities(tip, _cardinal(direction), letter, stretch)
+        return entities, rect
 
     entities, free = place_label(ctx, att, build, spec.get("offset_mm"), asked(spec))
     ctx.add(entities)
     ctx.extras.setdefault("datums_drawn", set()).add(letter)
+    _native_datum(ctx, spec, entities, att.view.name)  # type: ignore[arg-type]
     text = f"datum {letter} on the surface of {face_id} in the {att.view.name} view"
     return ("ok", text) if free else ("warning", f"{text}; it overlaps other things: move it with offset_mm or side")
 
@@ -317,6 +430,33 @@ def _cells(spec: dict[str, Any]) -> list[tuple[str, ...]]:
     return cells
 
 
+def _native_frame(
+    ctx: Context,
+    spec: dict[str, Any],
+    library: Library,
+    rect: tuple[float, float, float, float],
+    view: str | None,
+    leader: tuple[Point, ...],
+) -> None:
+    """The frame as the library's own symbol (its values are the editable texts the engineer changes in the property editor),
+    owned by ``view`` and joined to the feature by a native leader line."""
+    if view is None:
+        return
+    ctx.used_view(view)
+    ctx.native(
+        NativeSymbol(
+            item=str(spec["id"]),
+            name="f",
+            kind="frame",
+            file=library.file,
+            texts=library.texts,
+            at=(rect[0], rect[3]),
+            view=view,
+            leader=leader,
+        )
+    )
+
+
 def draw_gdt(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     letters = spec.get("datums", [])
     drawn = ctx.extras.get("datums_drawn", set())
@@ -325,25 +465,30 @@ def draw_gdt(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             have = ", ".join(sorted(drawn)) or "none"
             msg = f"datum {letter} is not on this sheet (datums drawn: {have}): add a datum item with letter {letter}"
             raise ItemError(msg)
+    library = library_frame(ctx, spec)
     cells = [(c[0], c[1].replace("{value}", _value(ctx, spec["value"])), *c[2:]) for c in _cells(spec)]
     summary = f"{spec['char']} {_value(ctx, spec['value'])}" + (f" to {'-'.join(letters)}" if letters else "")
     if "on" in spec:
-        return _hang(ctx, spec, cells, summary)
+        return _hang(ctx, spec, cells, library, summary)
     face_id = spec["face"][0]
     att = attach_face(ctx, face_id, spec.get("view"), spec.get("side"))
 
     def build(anchor: Point, direction: tuple[float, float]) -> tuple[list[Entity], tuple[float, float, float, float]]:
-        boxed, rect = _frame_at(anchor, direction, cells)
+        boxed, rect = _frame_at(anchor, direction, cells, library.widths)
         tip = att.tip_towards(direction)
-        entities: list[Entity] = [
-            Line(tip[0], tip[1], anchor[0], anchor[1], DIMENSIONS),
-            arrow(tip, (-direction[0], -direction[1])),
-            *boxed,
-        ]
+        entities = Placed(
+            [
+                Line(tip[0], tip[1], anchor[0], anchor[1], DIMENSIONS),
+                arrow(tip, (-direction[0], -direction[1])),
+                *boxed,
+            ]
+        )
+        entities.tip, entities.anchor, entities.rect = tip, anchor, rect
         return entities, rect
 
     entities, free = place_label(ctx, att, build, spec.get("offset_mm"), asked(spec))
     ctx.add(entities)
+    _native_frame(ctx, spec, library, entities.rect, att.view.name, (entities.tip, entities.anchor))  # type: ignore[attr-defined]
     text = f"{summary} on {face_id} in the {att.view.name} view"
     return ("ok", text) if free else ("warning", f"{text}; it overlaps other things: move it with offset_mm or side")
 
@@ -353,8 +498,12 @@ def _value(ctx: Context, value: float) -> str:
     return text.replace(".", ",") if ctx.comma else text
 
 
-def _hang(ctx: Context, spec: dict[str, Any], cells: list[tuple[str, ...]], summary: str) -> tuple[str, str]:
-    """Hang the frame under the shelf of the callout of the dimension item ``on``."""
+def _hang(
+    ctx: Context, spec: dict[str, Any], cells: list[tuple[str, ...]], library: Library, summary: str
+) -> tuple[str, str]:
+    """Hang the frame from the shelf of the callout of the dimension item ``on``, under the size: its top edge is the
+    shelf line, as ISO 1101 draws it (a second frame goes under the first). The room was kept when the callout was
+    placed."""
     target = spec["on"]
     anchors = ctx.extras.get("anchors", {}).get(target)
     if not anchors:
@@ -363,27 +512,21 @@ def _hang(ctx: Context, spec: dict[str, Any], cells: list[tuple[str, ...]], summ
             "kind radius, diameter or chamfer, drawn without error); for a linear dimension use face= instead"
         )
         raise ItemError(msg)
-    anchor = anchors[0]
-    elbow, direction = anchor["elbow"], anchor["dir"]
-    _, width = frame(0.0, 0.0, cells)
+    elbow, direction = anchors[0]["elbow"], anchors[0]["dir"]
+    _, width = frame(0.0, 0.0, cells, library.widths)
     x0 = elbow[0] if direction > 0 else elbow[0] - width
-    stub_x = elbow[0] + direction * 3.0
-    first: tuple[list[Entity], tuple[float, float, float, float]] | None = None
-    free = False
-    for step in range(4):
-        y0 = elbow[1] - 2.5 - CELL_MM - step * (CELL_MM + 1.5)
-        boxed, _ = frame(x0, y0, cells)
-        entities: list[Entity] = [Line(stub_x, elbow[1], stub_x, y0 + CELL_MM, DIMENSIONS), *boxed]
-        rect = (x0, y0, x0 + width, elbow[1])
-        if first is None:
-            first = (entities, rect)
-        if ctx.free((x0, y0, x0 + width, y0 + CELL_MM)):
-            free = True
-            break
-    assert first is not None
-    chosen = (entities, rect) if free else first
-    ctx.reserve((chosen[1][0], chosen[1][1], chosen[1][2], chosen[1][1] + CELL_MM))
-    ctx.add(chosen[0])
+    hung = ctx.extras.setdefault("frames_hung", {})
+    y0 = elbow[1] - (hung.get(target, 0) + 1) * CELL_MM
+    hung[target] = hung.get(target, 0) + 1
+    boxed, _ = frame(x0, y0, cells, library.widths)
+    box = (x0, y0, x0 + width, y0 + CELL_MM)
+    slot = ctx.extras.get("frame_slots", {}).get(target)
+    free = (
+        slot is not None and box[0] >= slot[0] - 1e-6 and box[2] <= slot[2] + 1e-6 and box[1] >= slot[1] - 1e-6
+    ) or (ctx.free(box))
+    ctx.reserve(box)
+    ctx.add(boxed)
+    _native_frame(ctx, spec, library, box, _view_of(ctx, target), ())  # the frame touches the shelf of the callout: no leader
     text = f"{summary} hung from the callout of {target}"
     return (
         ("ok", text)
@@ -392,7 +535,35 @@ def _hang(ctx: Context, spec: dict[str, Any], cells: list[tuple[str, ...]], summ
     )
 
 
+def prepare_gdt(ctx: Context, specs: list[dict[str, Any]]) -> None:
+    """Before anything is drawn: the room each callout keeps under its shelf for the frames that hang from it, and the
+    holes a position frame tolerates (the dimensions that locate them are theoretically exact: boxed)."""
+    room: dict[str, tuple[float, int]] = {}
+    for spec in specs:
+        if "on" not in spec:
+            continue
+        try:
+            width = sum(library_frame(ctx, spec).widths)
+        except (KeyError, ItemError):
+            continue
+        old_width, count = room.get(spec["on"], (0.0, 0))
+        room[spec["on"]] = (max(old_width, width), count + 1)
+    ctx.extras["frame_room"] = room
+    holes = ctx.extras.setdefault("ted_holes", set())
+    from items_holes import _select  # noqa: PLC0415 - items_holes imports the sheet types this module is loaded with
+
+    others = {str(i["id"]): i for i in ctx.extras.get("sheet_items", []) if i.get("type") == "hole_dim"}
+    for spec in specs:
+        target = others.get(str(spec.get("on")))
+        if spec.get("char") != "position" or target is None:
+            continue
+        try:
+            holes |= {h.index for h in _select(ctx, target)}
+        except ItemError:
+            continue
+
+
 ITEMS = (
     ItemType("datum", "dt", check_datum, draw_datum, frozenset(DATUM_CHECKS), prepare_datum, phase=1),
-    ItemType("gdt", "gt", check_gdt, draw_gdt, frozenset(GDT_CHECKS), phase=2),
+    ItemType("gdt", "gt", check_gdt, draw_gdt, frozenset(GDT_CHECKS), prepare_gdt, phase=2),
 )

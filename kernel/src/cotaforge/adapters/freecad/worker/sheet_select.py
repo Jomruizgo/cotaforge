@@ -31,6 +31,7 @@ import Part
 import provenance as prov
 import registry as reg
 import sheet_mirror
+import sheet_native
 import sheet_refs
 import view_match as vm
 from protocol import WorkerError, invalid_request
@@ -71,8 +72,7 @@ class PageInfo:
 
 
 def tag_of(obj: Any) -> tuple[str, str] | None:
-    """What a page object stands for: ``("item", id)`` (an item of the sheet), ``("view", name)`` (a view of an ``hlr``
-    sheet), ``("extra", key)`` (thread arcs, the ISO 286 note) or ``("overall", name)`` (one of TechDraw's own overall
+    """What a page object stands for: ``("item", id)`` (an item of the sheet), ``("extra", key)`` (thread arcs, the ISO 286 note) or ``("overall", name)`` (one of TechDraw's own overall
     dimensions); ``None`` for what the engineer or TechDraw made."""
     props = obj.PropertiesList
     if PROP_NATIVE in props:  # one of TechDraw's own overall dimensions (it carries the item tag too)
@@ -594,10 +594,6 @@ def read_pick(sheets: Sheets, obj: Any, sub: str) -> dict[str, Any] | None:
             return _item_pick(sheets, info, name, obj, object_text(obj))
         if kind == "overall":
             return _item_pick(sheets, info, info.overall or "", obj, object_text(obj))
-        if kind == "view":
-            view = {"sheet": info.name, "kind": "view", "label": f"{name} view", "view": name}
-            view["detail"] = "a view of the sheet (an hlr sheet: drawn by us, its lines are not TechDraw's)"
-            return view
         return _extra_pick(info, name, object_text(obj))
     if "Dim" in type_id:
         return _dimension_pick(sheets, info, obj)
@@ -778,7 +774,9 @@ def _point_at(sheets: Sheets, infos: list[PageInfo], what: str, plan: Plan) -> N
                 paint.recolor.append(obj)
             else:
                 plan.notes.append(f"{name}: its {str(obj.TypeId).split('::')[-1]} cannot be coloured")
-        if not objects:
+        edges = sheet_native.cosmetic_paths(info.page, name)  # its centre lines and thread arcs are the views' own edges
+        paint.paths.extend(edges)
+        if not objects and not edges:
             plan.notes.append(
                 f"{name}: the item has nothing on the sheet now (it failed to draw, or it is a title block field)"
             )
@@ -806,13 +804,6 @@ def _point_at_view(info: PageInfo, name: str, paint: PagePaint) -> bool:
         paint.rects.append(_view_rect(info, view))
         paint.shown.append(f"view:{name}")
         return True
-    for obj in page_views(info.page):  # an hlr sheet's view is a symbol of ours
-        if tag_of(obj) == ("view", name) and "Symbol" in obj.PropertiesList:
-            rect = _symbol_rect(obj, (0.0, 0.0))
-            if rect is not None:
-                paint.rects.append(rect)
-                paint.shown.append(f"view:{name}")
-                return True
     return False
 
 

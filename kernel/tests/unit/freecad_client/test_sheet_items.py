@@ -134,6 +134,8 @@ def texts(ctx: sc.Context) -> list[str]:
 def test_the_registry_has_the_built_types_and_names_the_planned_ones() -> None:
     assert set(items.REGISTRY) == {
         "hole_dim",
+        "hole_positions",
+        "pattern_dim",
         "line",
         "dim",
         "datum_dims",
@@ -150,15 +152,22 @@ def test_the_registry_has_the_built_types_and_names_the_planned_ones() -> None:
         "balloons",
         "exploded",
         "finish",
+        "weld",
+        "parting_line",
+        "pull_direction",
+        "mould_zone",
+        "no_draft",
     }
     assert not set(items.PLANNED) & set(items.REGISTRY)
     assert not set(items.UNSUPPORTED) & set(items.REGISTRY)
 
 
-def test_a_weld_is_refused_by_freecad_in_its_own_words() -> None:
-    with pytest.raises(sc.ItemError, match=r"FreeCAD draws no weld symbols on a sheet, so nothing was drawn.*note"):
-        items.normalise({"type": "weld", "between": []}, set(), 1)
-    assert "weld" in items.all_types()
+def test_a_weld_needs_the_two_bodies_and_the_size() -> None:
+    with pytest.raises(sc.ItemError, match=r"two bodies that touch"):
+        items.normalise({"type": "weld", "between": [], "size_mm": 3}, set(), 1)
+    with pytest.raises(sc.ItemError, match=r"size_mm is required"):
+        items.normalise({"type": "weld", "between": ["body:1", "body:2"]}, set(), 1)
+    assert "weld" in items.all_types() and "weld" in items.REGISTRY
 
 
 def test_an_unknown_type_an_unknown_field_and_a_bad_id_are_refused() -> None:
@@ -568,6 +577,20 @@ def test_notes_are_numbered_and_the_block_has_a_header() -> None:
     assert ys["NOTAS:"] > ys["1. Romper aristas vivas 0,3 mm"] > ys["2. Sin rebabas"]
 
 
+def test_the_notes_block_keeps_a_text_height_off_a_dimension_and_moves_as_a_whole_when_it_does_not() -> None:
+    ctx = make_context()
+    draw(ctx, {"type": "note", "text": "Sin rebabas"})
+    block_x = next(t.x for t in ctx.sheet.entities if isinstance(t, model.Text) and t.text == "NOTAS:")
+    block_width = model.text_width("1. Sin rebabas")
+    ctx = make_context()
+    start = block_x + block_width + 1.5  # a dimension strip 1.5 mm from where the block ends: near, not overlapping
+    strip = (start, ctx.area[1], start + 25.0, ctx.area[1] + 30.0)
+    ctx.reserve(strip)
+    draw(ctx, {"type": "note", "text": "Sin rebabas"})
+    moved = next(t.x for t in ctx.sheet.entities if isinstance(t, model.Text) and t.text == "NOTAS:")
+    assert moved + block_width <= strip[0] - 3.5 or moved >= strip[2] + 3.5, (block_x, moved, strip)
+
+
 def test_a_long_note_wraps_and_a_note_can_sit_at_a_page_position() -> None:
     ctx = make_context()
     draw(ctx, {"type": "note", "text": "palabra " * 30})
@@ -630,3 +653,12 @@ def test_the_notes_block_only_reserves_the_width_of_its_lines() -> None:
     draw(ctx, {"type": "note", "text": "corto"})
     x0, _, x1, _ = ctx.occupied[0]
     assert x1 - x0 < 30.0  # not the 150 mm a full-width line would take
+
+
+def test_a_note_that_states_the_thickness_is_recognised_so_the_sheet_does_not_say_it_twice() -> None:
+    import items_notes  # noqa: PLC0415
+
+    assert items_notes.states_thickness("Espesor 19 mm. Romper aristas vivas 0,3 mm")
+    assert items_notes.states_thickness("Thickness: 6")
+    assert not items_notes.states_thickness("Fabricar de lámina rectificada de 19 mm")  # a stock form is not the thickness note
+    assert not items_notes.states_thickness("Espesor según plano")  # no number: it states nothing

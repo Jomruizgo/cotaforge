@@ -10,6 +10,7 @@ import sys
 import traceback
 from typing import Any
 
+import appearance
 import fc
 import FreeCAD as App
 import geometry as g
@@ -62,6 +63,12 @@ def _axis_dir_world(doc: reg.DocumentRec, rec: reg.FaceRec, comp: reg.ComponentR
         return g.rotate_direction(reg.component_placement(doc, comp), rec.axis_dir)
     body = reg.resolve_body(doc, rec.body, None)
     return g.rotate_direction(reg.body_placement(doc, body), rec.axis_dir)
+
+
+def face_is_planar(doc: reg.DocumentRec, rec: reg.FaceRec, comp: reg.ComponentRec | None) -> bool:
+    """Is the face a plane: what ``face_descriptor`` says by giving it a normal, without measuring the face (its
+    centre, area, box and normal) for a caller that only needs to know which kind of surface it is."""
+    return g.surface_kind(_face_shape(doc, rec, comp)) == "plane"
 
 
 def face_descriptor(doc: reg.DocumentRec, rec: reg.FaceRec, comp: reg.ComponentRec | None) -> dict[str, Any]:
@@ -135,10 +142,24 @@ def vertex_descriptor(doc: reg.DocumentRec, rec: reg.VertexRec, comp: reg.Compon
     return {"handle": {"id": handle}, "point": g.clean(point), "edges": [{"id": e} for e in edges]}
 
 
+def catalog_line(doc: reg.DocumentRec, body: reg.BodyRec) -> str:
+    """``DME 5104GL (guide pin GL, dia 0.875 in x 4.25 in)``: the catalogue properties of the body's own object."""
+    obj = doc.fc_doc.getObject(body.fc_body if body.kind == "partdesign" else body.result_obj)
+    if obj is None or "CotaforgeCatalogRef" not in obj.PropertiesList:
+        return ""
+
+    def prop(name: str) -> str:
+        return str(getattr(obj, name, "") or "") if name in obj.PropertiesList else ""
+
+    size = prop("CotaforgeCatalogSize")
+    return f"{prop('CotaforgeCatalogFamily')} {prop('CotaforgeCatalogRef')}" + (f" ({size})" if size else "")
+
+
 def body_descriptor(doc: reg.DocumentRec, body: reg.BodyRec) -> dict[str, Any]:
     shape = reg.world_shape(doc, body)
     empty = shape.isNull()
     return {
+        "catalog": catalog_line(doc, body),
         "handle": {"id": body.id},
         "volume_mm3": 0.0 if empty else float(sum(reg.body_volumes(doc, body))),
         "bbox": dict(g.ZERO_BBOX) if empty else reg.body_bbox(doc, body),
@@ -1325,7 +1346,9 @@ def test_view_color(params: dict[str, Any]) -> dict[str, Any]:
     """Test-only: the raw ``ViewObject`` colour property (``DiffuseColor``/``LineColorArray``, default
     ``DiffuseColor``) of any object in any OPEN document, addressed by FreeCAD's own document/object names
     -- never a harness handle id, so it also works on a document ``test_reopen_document`` just loaded
-    (which has no harness registry entries at all)."""
+    (which has no harness registry entries at all). Read from the object the 3D view paints (a PartDesign
+    body's Tip: the body's own property is not what is on the screen), the colours in FreeCAD 1.1's
+    ``(r, g, b, opacity)``."""
     op = params.get("operation_id")
     doc_name = str(params.get("document", ""))
     obj_name = str(params.get("object", ""))
@@ -1336,7 +1359,7 @@ def test_view_color(params: dict[str, Any]) -> dict[str, Any]:
     obj = fc_doc.getObject(obj_name)
     if obj is None or obj.ViewObject is None:
         raise invalid_reference(obj_name, op)
-    return {"value": [list(color) for color in getattr(obj.ViewObject, prop)]}
+    return {"value": [list(color) for color in getattr(appearance.paint_object(obj).ViewObject, prop)]}
 
 
 def _plain(value: Any) -> Any:
@@ -1396,6 +1419,13 @@ def test_view_state(params: dict[str, Any]) -> dict[str, Any]:
         if page is None:
             raise invalid_request("the document has no drawing sheet", op)
         return {"value": drawing.page_objects(page)}
+    if what == "sheet_exact":  # the labels of the dimensions the page frames as theoretically exact
+        import drawing  # noqa: PLC0415
+
+        page = drawing.find_page(fc_doc, params.get("sheet"))
+        if page is None:
+            raise invalid_request("the document has no drawing sheet", op)
+        return {"value": [str(v.Label) for v in page.Views if getattr(v, "TheoreticalExact", False)]}
     if what == "sheet_weights":  # the ISO 128 line weights now on the page's native objects
         import drawing  # noqa: PLC0415
         import sheet_mirror  # noqa: PLC0415

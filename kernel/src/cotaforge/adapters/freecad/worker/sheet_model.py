@@ -14,6 +14,8 @@ it to ``%%c``, ``%%p`` and ``%%d``.
 import math
 from dataclasses import dataclass, field
 
+import sheet_weights as sw
+
 CONTOUR = "CONTORNO"
 HIDDEN = "OCULTAS"
 DIMENSIONS = "COTAS"
@@ -22,7 +24,16 @@ TITLE_BLOCK = "ROTULO"
 AXES = "EJES"
 HATCH = "SOMBREADO"
 THREAD = "ROSCAS"
+THREAD_END = "ROSCA_FIN"  # ISO 6410: the line that ends the useful length of a thread, wide, across the whole major diameter
+FLAT_FACES = "CARAS_PLANAS"  # the diagonals of a flat face of a turned part: a layer no native object draws
 ISO_SHADE = "ISO_COLOR"  # the shaded picture under the lines of the isometric view (``Sheet.underlay``), never DXF
+PARTING = "PARTICION"  # the parting line of a moulded part: thick, its own line type (long dash, two short ones)
+ZONE = "ZONAS"  # the permitted zones of a moulded part (gate, ejector marks) and their symbols
+
+CENTRE_OVERSHOOT_MM = 3.0  # a centre line goes this far PAST the feature it marks (on paper), at EVERY end (ISO 128-24)
+CENTRE_OVERSHOOT_MIN_MM = 2.0  # ... a correct overhang is 2 to 5 mm on paper: shorter is trimmed by a dimension, longer is flagged
+CENTRE_OVERSHOOT_MAX_MM = 5.0
+CENTRE_CLEAR_MM = 1.0  # ... and stops this far short of a dimension line or a dimension text (it never reaches one)
 
 
 @dataclass(frozen=True)
@@ -36,30 +47,36 @@ class LayerStyle:
     dash: tuple[float, ...] = ()
 
 
-# ISO 128-20 line weights (mm): the visible outline is THICK, everything else THIN (about half), so a sheet reads by
-# its hierarchy. The DXF (R12) has no lineweight: each layer gets the ACI colour that a standard pen table maps to
-# that weight -- colour 7 (white/black) = 0.50 mm, colour 3 (green) = 0.25 mm for dimensions, text and leaders,
-# colour 1 (red) = 0.25 mm for centre lines, colours 8 / 9 (greys) = 0.25 / 0.18 mm for hidden lines and hatching.
-THICK_MM = 0.5
-THIN_MM = 0.25
-HAIR_MM = 0.18
+# The line weights (mm) are ``sheet_weights``' table (the owner's reference drawings, ISO 128-20 group 0.35). The DXF
+# (R12) has no lineweight: each layer gets the ACI colour that a standard pen table maps to that weight -- colour 7
+# (white/black) = 0.35 mm for the outline, the hidden lines, the title block and the parting line, colour 3 (green) =
+# 0.18 mm for dimensions, text, threads and zones, colour 1 (red) = 0.18 mm for centre lines, colour 9 (grey) = 0.07 mm
+# for hatching.
+THICK_MM = sw.weight(sw.VISIBLE)
+THIN_MM = sw.weight(sw.DIMENSION)
+HAIR_MM = sw.weight(sw.HATCH)
 TEXT_MM = 3.5  # every dimension and note is written at this height; only titles are larger
 
 LAYERS: dict[str, LayerStyle] = {
-    CONTOUR: LayerStyle(7, "CONTINUOUS", THICK_MM),
-    HIDDEN: LayerStyle(8, "HIDDEN", THIN_MM, (3.0, 1.5)),
-    DIMENSIONS: LayerStyle(3, "CONTINUOUS", THIN_MM),
-    TEXT: LayerStyle(3, "CONTINUOUS", THIN_MM),
-    TITLE_BLOCK: LayerStyle(7, "CONTINUOUS", 0.35),
-    AXES: LayerStyle(1, "CENTER", THIN_MM, (6.0, 0.75, 0.125, 0.75)),
-    HATCH: LayerStyle(9, "CONTINUOUS", HAIR_MM),
-    THREAD: LayerStyle(3, "CONTINUOUS", THIN_MM),  # ISO 6410: the thin arc at the major diameter of a thread
+    CONTOUR: LayerStyle(7, "CONTINUOUS", sw.weight(sw.VISIBLE)),
+    HIDDEN: LayerStyle(7, "HIDDEN", sw.weight(sw.HIDDEN), (3.0, 1.5)),
+    DIMENSIONS: LayerStyle(3, "CONTINUOUS", sw.weight(sw.DIMENSION)),
+    TEXT: LayerStyle(3, "CONTINUOUS", sw.weight(sw.DIMENSION)),
+    TITLE_BLOCK: LayerStyle(7, "CONTINUOUS", sw.weight(sw.TITLE_BLOCK)),
+    AXES: LayerStyle(1, "CENTER", sw.weight(sw.CENTRE), (6.0, 0.75, 0.125, 0.75)),
+    HATCH: LayerStyle(9, "CONTINUOUS", sw.weight(sw.HATCH)),
+    THREAD: LayerStyle(3, "CONTINUOUS", sw.weight(sw.THREAD)),  # ISO 6410: the thin arc at the major diameter
+    THREAD_END: LayerStyle(7, "CONTINUOUS", sw.weight(sw.VISIBLE)),  # colour 7: wide like the outline it ends on
+    FLAT_FACES: LayerStyle(3, "CONTINUOUS", sw.weight(sw.DIMENSION)),  # the diagonals of a flat face seen face-on
+    PARTING: LayerStyle(7, "PHANTOM", sw.weight(sw.VISIBLE), (12.0, 3.0, 1.5, 3.0, 1.5, 3.0)),  # colour 7
+    ZONE: LayerStyle(3, "CONTINUOUS", sw.weight(sw.DIMENSION)),
 }
 
 LINETYPES: dict[str, tuple[float, ...]] = {
     "CONTINUOUS": (),
     "HIDDEN": (3.0, -1.5),  # DXF pattern: positive = dash, negative = gap
     "CENTER": (6.0, -0.75, 0.125, -0.75),
+    "PHANTOM": (12.0, -3.0, 1.5, -3.0, 1.5, -3.0),  # long dash and two short ones: the parting line (ISO 10135)
 }
 
 TEXT_HEIGHT_MM = 3.5

@@ -130,9 +130,7 @@ def check_fits_datums_frames_finish_and_the_thread_arc_come_out_of_the_real_part
     sheet, _ = composed()
     found = texts(sheet)
     assert "Ø8 H8 (+0,022/0) pasante" in found, found
-    assert any(t.endswith("Tablas ISO 286 transcritas; verificar contra la norma") for t in found), (
-        found
-    )  # a numbered note
+    assert not any("transcritas" in t for t in found), found  # a fit prints its limits, never a note to verify them
     assert "Ra 1,6" in found and "Ra 3,2" in found and "Ø0,1" in found, found
     assert texts(sheet, model.DIMENSIONS).count("A") == 2  # the datum feature and the one the frame cites
     arcs = [e for e in sheet.entities if isinstance(e, model.Arc) and e.layer == model.THREAD]
@@ -604,8 +602,13 @@ def check_a_sheet_made_before_specs_existed_still_works_and_gets_a_spec_when_cha
 def check_bad_items_are_refused_with_a_reason() -> None:
     build_plate()
     call("create_drawing", op("d", template="A3"))
-    error = expect_error("invalid_request", "annotate_drawing", op("a", action="add", items=[{"type": "weld"}]))
-    assert "draws no weld symbols" in error.message and "item 1 of 1" in error.message
+    # a weld is drawn since PR #30 (feat/weld-symbols): a weld item without its two bodies is what is refused now
+    error = expect_error(
+        "invalid_request",
+        "annotate_drawing",
+        op("a", action="add", items=[{"type": "weld", "between": [], "size_mm": 3}]),
+    )
+    assert "two bodies that touch" in error.message and "item 1 of 1" in error.message
     expect_error(
         "invalid_request", "annotate_drawing", op("a", action="add", items=[{"type": "hole_dim", "all": True, "x": 1}])
     )

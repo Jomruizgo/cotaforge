@@ -15,6 +15,7 @@ USING IT
    triggered entry without an answer. For each: `get` it (an answer without reading it is refused), look at the part it
    is about, and `memory(action=answer, id, text="applies: how, in which part" | "does not apply: why")`. The answers
    are saved with the document (doc save) and the engineer reads them at the gate.
+   A MEASURED alert closes by fixing the model or by the ENGINEER's order (by=<him>), never by your 'does not apply'.
 3. The project's sector, processes and language: `memory(action=brief, sector, processes, language=es|en)`; ask
    the engineer, once (his language is set at install: change it only if he asks). Write what he
    says ("chapa y soldadura" is fine): it is resolved to canonical sector ids ({SECTOR_IDS}); several sectors are

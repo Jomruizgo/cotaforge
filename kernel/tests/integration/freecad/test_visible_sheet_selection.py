@@ -226,7 +226,7 @@ def test_highlighting_a_view_and_two_things_at_once(scene: Scene) -> None:
     baseline = scene.pixels()
     reply = scene.adapter.show_entities(ShowEntitiesRequest(operation_id="show", items=("view:top", "h1")))
     assert reply.shown == "highlight" and "view:top" in reply.detail and "h1" in reply.detail
-    assert scene.state("sheet_paint")[0] == 2
+    assert scene.state("sheet_paint")[0] >= 2  # the view box and the callout's centre lines (the views' own edges)
     assert scene.lit(baseline) >= MIN_PIXELS
     scene.shot("hl_view_top_and_h1")
     scene.adapter.show_entities(ShowEntitiesRequest(operation_id="clear", clear=True))
@@ -238,7 +238,8 @@ def test_a_new_highlight_replaces_the_old_one_and_a_change_of_the_sheet_takes_it
     scene.adapter.show_entities(ShowEntitiesRequest(operation_id="a", items=("d3",)))
     first = scene.lit(baseline)
     scene.adapter.show_entities(ShowEntitiesRequest(operation_id="b", items=("h1",)))
-    assert scene.state("sheet_paint") == [1, 1]  # the callout: its dimension recoloured, its centre marks boxed
+    painted = scene.state("sheet_paint")
+    assert painted[0] >= 1 and painted[1] == 1  # the callout: its dimension recoloured, its centre marks traced
     assert scene.lit(baseline) >= MIN_LINE_PIXELS and first >= MIN_LINE_PIXELS
     scene.adapter.annotate_drawing(
         AnnotateDrawingRequest(

@@ -32,7 +32,7 @@ GROUP_ITEM_ROLES = {
     "Rear": "rear",
     "Bottom": "bottom",
 }
-EXTRA_KEYS = {"threads": "thread arcs", "iso286": "ISO 286 note"}
+EXTRA_KEYS = {"threads": "thread arcs"}
 
 
 @dataclass
@@ -276,9 +276,7 @@ def view_role(type_id: str, name: str, label: str, projected: str = "") -> str |
 
 def parse_key(key: str) -> tuple[str, str]:
     """``(kind, name)`` of the unit key a page object carries (``CotaforgeKey``): ``view`` for ``view:front`` (a view of an
-    ``hlr`` sheet), ``extra`` for what no item owns, ``item`` otherwise."""
-    if key.startswith("view:"):
-        return "view", key[5:]
+    sheet), ``extra`` for what no item owns, ``item`` otherwise."""
     if key in EXTRA_KEYS:
         return "extra", key
     return "item", key

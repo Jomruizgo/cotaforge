@@ -26,8 +26,10 @@ def test_an_answer_names_what_it_answers_and_says_how() -> None:
             AnnotateDrawingRequest(operation_id="a", action="answer", **fields)
     with pytest.raises(ValidationError):
         AnnotateDrawingRequest(operation_id="a", action="answer", id="q", verdict="maybe", text="t")
-    with pytest.raises(ValidationError, match="answer takes no by"):
-        AnnotateDrawingRequest(operation_id="a", action="answer", id="q", verdict="applies", text="t", by="Ana")
+    ordered = AnnotateDrawingRequest(
+        operation_id="a", action="answer", id="q", verdict="not_applies", text="t", by="Ana"
+    )  # the engineer who ordered a does-not-apply the harness would not take on the agent's word
+    assert ordered.by == "Ana"
 
 
 def test_approve_is_the_engineer_naming_himself_and_quoting_his_words() -> None:
@@ -98,7 +100,7 @@ def test_a_report_names_who_wrote_it_when_and_its_remarks_which_may_be_none() ->
         ({"at": 1.0}, "review_report needs by"),
         ({"by": "vecino", "at": 1.0}, "review_report needs by"),
         ({"by": "fabricator"}, "review_report needs by"),
-        ({"by": "fabricator", "at": 1.0, "text": "t"}, "takes only sheet, by, remarks and at"),
+        ({"by": "fabricator", "at": 1.0, "text": "t"}, "takes only sheet, by, remarks, append and at"),
         ({"by": "fabricator", "at": 1.0, "remarks": ({"kind": "huge", "text": "x"},)}, "kind must be one of"),
         ({"by": "fabricator", "at": 1.0, "remarks": ({"kind": "missing"},)}, "text is required"),
         ({"by": "fabricator", "at": 1.0, "remarks": ({"text": "x", "prio": 1},)}, "unknown field"),
@@ -107,6 +109,17 @@ def test_a_report_names_who_wrote_it_when_and_its_remarks_which_may_be_none() ->
     ):
         with pytest.raises(ValidationError, match=match):
             AnnotateDrawingRequest(operation_id="a", action="review_report", **fields)
+
+
+def test_a_report_can_be_added_to_in_pieces_but_nothing_else_appends() -> None:
+    plain = AnnotateDrawingRequest(operation_id="a", action="review_report", by="engineer", at=1.0)
+    assert plain.append is False  # the default replaces the report
+    piece = AnnotateDrawingRequest(
+        operation_id="a", action="review_report", by="engineer", at=2.0, append=True, remarks=({"text": "x"},)
+    )
+    assert piece.append is True
+    with pytest.raises(ValidationError, match="update takes no append"):
+        AnnotateDrawingRequest(operation_id="a", action="update", append=True)
 
 
 def test_a_request_and_a_choice_take_only_what_they_need() -> None:
@@ -144,7 +157,7 @@ def test_the_sheet_info_carries_the_reports_the_request_and_the_choice_through_j
         },
         review_request=DrawingReviewRequest(at=2.0),
         review_choice="fabricator",
-        printed=("19 de espesor",),
+        printed=("Espesor 19",),
         edits=5,
     )
     again = DescribeDrawingResult.model_validate_json(DescribeDrawingResult(sheets=(info,)).model_dump_json()).sheets[0]

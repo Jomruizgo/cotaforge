@@ -33,6 +33,7 @@ class DocArgs(Strict):
         "switch",
         "set_material",
         "set_route",
+        "set_title",
         "set_purpose",
         "convention",
         "import",
@@ -85,9 +86,11 @@ class InspectArgs(Strict):
         "sweep",
         "holes",
         "validity",
+        "draft",
+        "parting",
     ]
     id: str | None = Field(
-        default=None, description="face/edge id (face, edge); joint step (sweep); CAD feature (tree)"
+        default=None, description="face/edge id (face, edge); joint step (sweep); CAD feature (tree); core|cavity (parting)"
     )
     range: list[float] | None = Field(default=None, min_length=3, max_length=3, description="sweep: [from, to, step]")
     op: str | None = Field(default=None, description="faces: only faces made/changed by this step")
@@ -100,6 +103,9 @@ class InspectArgs(Strict):
         default=None, description="faces: filter"
     )
     normal: list[float] | None = Field(default=None, min_length=3, max_length=3, description="faces: filter by normal")
+    pull: list[float] | None = Field(default=None, min_length=3, max_length=3, description="draft: pull direction")
+    min_draft_deg: float | None = Field(default=None, ge=0, le=45, description="draft: minimum, degrees (default 1)")
+    paint: bool = Field(default=False, description="draft: colour the faces")
     limit: int = Field(default=30, ge=1, le=200, description="max rows")
 
 
@@ -164,21 +170,25 @@ class DrawingArgs(Strict):
         "list",
         "read",
         "review",
+        "requirements",
         "capture",
         "answer",
         "approve",
         "request_review",
         "review_choice",
         "review_report",
+        "wait_review",
+        "plan",
+        "compose",
     ]
-    sheet: str | None = Field(default=None, description="sheet (default first)")
+    sheet: str | None = Field(default=None, description="default: first")
     template: Literal["A4", "A3", "A2", "A1", "A0", "Letter"] = "A4"  # create: landscape paper
     angle: Literal["first", "third"] = "first"  # create: projection angle
     title: str | None = None  # title block fields (create): the guide has them
     author: str | None = None
     date: str | None = None
     material: str | None = None
-    scale: str | None = Field(default=None, description="create: 1:2, 2:1 (default largest)")
+    scale: str | None = Field(default=None, description="create: 1:2 (default largest)")
     language: str | None = None  # create: es | en, default the project's (memory brief)
     drawing_number: str | None = None
     revision: str | None = None
@@ -191,15 +201,21 @@ class DrawingArgs(Strict):
     )
     title_block: dict[str, str] | None = Field(default=None, description="create, update")
     fresh: bool = Field(default=False, description="create: start over")
-    projection: Literal["techdraw", "hlr"] = Field(
-        default="techdraw", description="create: hlr = own (engineer's choice)"
-    )
+    symmetry: bool | None = None  # create, update: only when the design intent declares the part symmetric
     items: list[Any] | None = Field(default=None, description="add: items; remove: ids; review_report: remarks")
-    region: list[float] | None = Field(default=None, description="capture: zoom x0,y0,x1,y1 mm")
+    append: bool = Field(default=False, description="review_report: add")
+    region: list[float] | None = Field(default=None, description="capture: zoom x0,y0,x1,y1")
     id: str | None = None  # answer / approve / review_*: see cad_guide(topic="drawing:done")
     text: str | None = None
-    by: str | None = Field(default=None, description="approve: engineer; review_*: engineer|fabricator")
+    by: str | None = Field(default=None, description="approve, answer: engineer; review_*: engineer|fabricator")
     reason: str | None = None
+    decisions: dict[str, Any] | None = Field(
+        default=None,
+        description="compose: decisions",
+    )
+    recompose: bool = False  # compose again: only on the engineer's order (by, reason)
+    step: int | None = None  # plan: show this step (1-8) in full
+    full: bool = False  # plan: every step in full (the default gives the current step and one line for each other)
 
 
 class ExportArgs(Strict):
@@ -212,6 +228,11 @@ class ExportArgs(Strict):
     flat: str | None = Field(default=None, description="dxf: step id of an unfold: export its flat pattern")
     overwrite: bool = Field(default=False, description="replace the file when it already exists (default refuses)")
     sheet: str | None = Field(default=None, description="pdf/dxf: THE sheet to write, one file (needed with several)")
+    revision_by: str | None = Field(
+        default=None,
+        description="pdf of a sheet released before and changed since: who asked for the change (revision row; default the engineer)",
+    )
+    revision_reason: str | None = Field(default=None, description="pdf, same: why it changed (added to the revision row if it fits)")
 
 
 class CheckArgs(Strict):
@@ -233,6 +254,8 @@ class MemoryArgs(Strict):
 
     action: Literal["index", "get", "search", "save", "deactivate", "approve", "answer", "review", "brief"]
     id: str | None = Field(default=None, description="entry id")
+    ids: list[str] | None = Field(default=None, description="get: several")
+    answers: dict[str, str] | None = Field(default=None, description="answer: {id: text, ...}")
     text: str | None = Field(
         default=None,
         description="search: words; answer: 'applies: how, here' | 'does not apply: why'; approve: quote; index: 'all_cad' adds other software's",
@@ -245,6 +268,9 @@ class MemoryArgs(Strict):
         default=None, description="brief: drawing review mode[:wait min] (text: his words)"
     )
     language: str | None = None  # brief: es | en
+    drawing_flow: Literal["steps", "sheet"] | None = Field(
+        default=None, description="brief: how a sheet is built (the engineer's choice)"
+    )
     new: bool = Field(default=False, description="save: confirm it is new")
     entry: dict[str, Any] | None = Field(
         default=None,
@@ -340,7 +366,7 @@ def _doc_actions(session: "Session") -> list[str]:
         actions.append("close")
     actions.append("switch")
     if "set_design_attributes" in t:
-        actions.extend(["set_material", "set_route"])
+        actions.extend(["set_material", "set_route", "set_title"])
     actions.append("set_purpose")
     actions.append("convention")
     if "open_document" in t and "close_document" in t:
@@ -359,6 +385,10 @@ def _inspect_actions(session: "Session") -> list[str]:
         actions.append("sweep")
     if "list_holes" in t:
         actions.append("holes")
+    if "draft_analysis" in t:
+        actions.append("draft")
+    if "parting_analysis" in t:
+        actions.append("parting")
     return actions
 
 
@@ -412,10 +442,42 @@ def _drawing_actions(session: "Session") -> list[str]:
                 "review_report",
             ),
         ),
-        ("describe_drawing", ("list", "read", "review")),
+        ("describe_drawing", ("list", "read", "review", "requirements")),
         ("capture_drawing", ("capture",)),
     )
-    return [action for tool, actions in pairs if tool in t for action in actions]
+    found = [action for tool, actions in pairs if tool in t for action in actions]
+    if "describe_drawing" in t:
+        found.append("plan")  # the work sequence of this sheet and the rules of each step, in both flows
+        found.append("wait_review")  # waits for the review in one call, on the server: polling costs a turn each time
+    if sheet_flow(session) and {"create_drawing", "annotate_drawing", "describe_drawing"} <= set(t):
+        found.append("compose")  # the default flow; a project that chose drawing_flow=steps does not see it
+    return found
+
+
+def sheet_flow(session: "Session") -> bool:
+    """The project builds a sheet in one order (``drawing_flow: sheet`` of its brief): ``plan`` and ``compose`` exist."""
+    from cotaforge_mcp import design_memory  # noqa: PLC0415 - design_memory needs this module's world, not the reverse
+
+    try:
+        return design_memory.load_brief(session.settings).drawing_flow == "sheet"
+    except Exception:  # noqa: BLE001 - a schema is never refused for a brief it cannot read
+        return False
+
+
+def _drawing_hidden(session: "Session") -> tuple[str, ...]:
+    sheets = {"create_drawing", "annotate_drawing", "describe_drawing"} <= set(session.capabilities.tools)
+    return () if sheet_flow(session) and sheets else ("decisions", "recompose")
+
+
+def _memory_hidden(session: "Session") -> tuple[str, ...]:
+    return ("drawing_flow",)  # the engineer's rare choice (steps): accepted all the same, the drawing guide says how
+
+
+SHEET_FLOW_NOTE = (
+    ' plan (what the harness puts on the sheet by itself and what it asks) | compose(decisions) (the first proposal of '
+    'the whole sheet, in one order; every later fix is local: update / add / remove, a second compose only when the whole '
+    'sheet changes or recompose=true on the engineer\'s order; cad_guide(topic="drawing:compose")).'
+)
 
 
 TOOLS: tuple[ToolDef, ...] = (
@@ -423,13 +485,13 @@ TOOLS: tuple[ToolDef, ...] = (
         "doc",
         "Document lifecycle: new(name, kind?) | open(path: any native file of the CAD) | "
         "import(path: .step/.stp/.iges/.igs, name, sew?) | save(path?, overwrite?) | status | "
-        "close(discard?) | switch(name) | set_material(material) | set_route(route) | set_purpose(sketch|detail) | "
+        "close(discard?) | switch(name) | set_material(material) | set_route(route) | set_title(name) | set_purpose(sketch|detail) | "
         "convention(values?: hole colours; set only when the engineer asks) | "
         "reload (re-read the file). "
         "Several documents stay open; switch picks the one op acts on. Save refuses to replace another existing "
         "file unless overwrite=true.",
         DocArgs,
-        'doc(action="new|open|import|save|status|close|switch|set_material|set_route|set_purpose|convention", name?, '
+        'doc(action="new|open|import|save|status|close|switch|set_material|set_route|set_title|set_purpose|convention", name?, '
         "kind?, path?, discard?, overwrite?, force?, material?, route?, purpose?, values?)",
         'doc(action="new", name="bracket")',
         _doc_actions,
@@ -438,7 +500,9 @@ TOOLS: tuple[ToolDef, ...] = (
         "op",
         'Run ONE modelling operation and get measured facts. Parameters: cad_guide(topic="op:<name>"). '
         "edit=<step id> with the changed params sets a dimension; edit/delete also take a CAD feature name "
-        '(inspect tree): params are its CAD properties, e.g. {"Radius":4}.',
+        '(inspect tree): params are its CAD properties, e.g. {"Radius":4}. One designer feature is one op: a '
+        "counterbore, a countersink or a tapped hole is ONE hole (counterbore=, countersink=, standard=iso_tapped), "
+        "not a hole plus a cut.",
         OpArgs,
         "op(name, params, intent?, id?) | op(edit=<step id|feature>, params={changed only}, intent?) | "
         "op(delete=<step id|feature>, params={cascade:true}?)",
@@ -455,7 +519,7 @@ TOOLS: tuple[ToolDef, ...] = (
         "inspect",
         "Read-only measured facts about the document.",
         InspectArgs,
-        "inspect(action=..., id?, op?, face?, between?, where?, sketch?, body?, surface?, normal?, range?, limit?)",
+        "inspect(action=..., id?, op?, face?, between?, where?, sketch?, body?, surface?, normal?, range?, pull?, min_draft_deg?, paint?, limit?)",
         'inspect(action="faces", normal=[0,0,1])',
         _inspect_actions,
     ),
@@ -475,23 +539,30 @@ TOOLS: tuple[ToolDef, ...] = (
     ToolDef(
         "drawing",
         "Drawing sheets (one drawing = one sheet), a TechDraw page built live in the CAD's sheet window: create (views, overall "
-        "dimensions, Spanish title block) | add / remove items (dimensions, callouts, notes...: native TechDraw "
+        "dimensions, Spanish title block; fresh=true throws the sheet away: the engineer's order) | add / remove items "
+        "(dimensions, callouts, notes...: native TechDraw "
         "objects the engineer edits; values come from the model; a few per call) | add_view / remove_view | "
-        "remove_sheet | update (lay out again after the part changed) | list | read (texts the sheet prints only) | "
+        "remove_sheet (the engineer's order: by, reason) | update (items=[{id, fields}]: change ONE item in place, "
+        "nothing else moves; without items: lay out again after the part changed) | list | read (texts the sheet prints only) | "
         "capture (the PDF's own image; region "
-        "zooms) | review (findings) | "
-        "answer (id, text) | request_review, review_choice, review_report (by, items: who reviews it) | approve (the "
-        "ENGINEER's gate: by, reason). export(pdf|dxf) writes ONE sheet, refused until its review is done. Items, "
+        "zooms) | review (findings) | requirements (what the standards ask this part's sheet to carry, with the "
+        "questions to ask) | plan (the 8 work steps of THIS sheet, each with the rules that apply to this part and "
+        "their status on the page; the reply of create, add, update, remove, review, requirements, answer, compose and "
+        "export(pdf|dxf) ends with the step you are at) | "
+        "answer (id, text; by, reason: the engineer's order) | request_review, review_choice, review_report (by, items: who reviews it) | approve (the "
+        "ENGINEER's gate: by, reason). export(pdf|dxf) writes ONE sheet, refused until its review is done; wait_review is the ONE "
+        "call that waits for the review (blocks on the server, 1 min per call), never poll. Items, "
         'finishing: cad_guide(topic="drawing" | "drawing:done").',
         DrawingArgs,
-        "drawing(action=create|add|remove|remove_sheet|update|add_view|remove_view|list|read|review|capture|answer|approve|"
-        "request_review|review_choice|review_report, "
+        "drawing(action=create|add|remove|remove_sheet|update|add_view|remove_view|list|read|review|requirements|plan|capture|"
+        "answer|approve|request_review|review_choice|review_report|wait_review, step?, "
         "sheet?, items?, template?, angle?, title?, author?, date?, material?, scale?, language?, drawing_number?, "
-        "revision?, general_tolerances?, company?, title_block?, body?, isometric?, views?, projection?, region?, id?, "
-        "text?, by?, reason?)",
+        "revision?, general_tolerances?, company?, title_block?, body?, isometric?, views?, symmetry?, "
+        "region?, id?, text?, by?, reason?, append?)",
         'drawing(action="add", items=[{"type":"hole_dim","all":true}])',
         _drawing_actions,
         lambda session: bool(_drawing_actions(session)),
+        _drawing_hidden,
     ),
     ToolDef(
         "channel",
@@ -546,6 +617,9 @@ TOOLS: tuple[ToolDef, ...] = (
         'memory(action="index|get|search|save|deactivate|approve|answer|review|brief", id?, text?, entry?, scope?, '
         "by?, stage?, sector?, processes?, drawing_review?, new?)",
         'memory(action="get", id="torno-cnc-taller-a")',
+        None,
+        lambda session: True,
+        _memory_hidden,
         needs_cad=False,
     ),
     ToolDef(
@@ -586,7 +660,9 @@ def tool_description(tool: ToolDef, session: "Session") -> str:
     """What the agent reads about ``tool``: the adapter wording (``guide_topic("tool:<name>")``) when it has one."""
     own = session.adapter.guide_topic(f"tool:{tool.name}")
     if own:
-        return own
+        return own + (SHEET_FLOW_NOTE if tool.name == "drawing" and sheet_flow(session) else "")
+    if tool.name == "drawing" and sheet_flow(session):
+        return tool.description + SHEET_FLOW_NOTE
     extra = session.adapter.import_suffixes() if tool.name == "doc" else ()
     if extra:  # the formats this CAD reads besides STEP and IGES (Parasolid...)
         return tool.description.replace(".igs, name", f".igs/{'/'.join(extra)}, name")

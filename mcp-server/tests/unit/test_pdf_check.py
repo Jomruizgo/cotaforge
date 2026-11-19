@@ -134,3 +134,21 @@ def test_require_sound_raises_with_every_problem_found(tmp_path: Path) -> None:
     with pytest.raises(pdf_check.PdfCheckError) as raised:
         pdf_check.require_sound(path, pages=1)
     assert "scn has 0 number(s)" in str(raised.value) and not raised.value.report.ok
+
+
+def test_the_fill_colour_of_every_filled_path_is_read_so_white_text_is_told_from_black(tmp_path: Path) -> None:
+    """A text TechDraw exports is a filled path: in the white of a dark window theme it cannot be read on the paper."""
+    content = (
+        b"q 1 1 1 rg 10 10 20 8 re f Q\n"  # white, 20 x 8 pt: a text printed in the theme's colour
+        b"q /CSp cs 0 0 0 scn 50 50 30 9 re f Q\n"  # black
+        b"q 0.9 0.9 0.9 rg 0 0 100 100 re S Q\n"  # stroked, never a fill
+        b"0 0 0 0.05 k 120 10 10 10 re f\n"  # CMYK with hardly any ink: white too
+    )
+    found = pdf_check.filled_paths(write(tmp_path, content))
+    assert [pdf_check.is_light(colour) for colour, _ in found] == [True, False, True]
+    assert found[0][1] == pytest.approx((10 * 25.4 / 72, 10 * 25.4 / 72, 30 * 25.4 / 72, 18 * 25.4 / 72), abs=0.01)
+
+
+def test_a_light_grey_is_light_and_a_dark_grey_is_not() -> None:
+    assert pdf_check.is_light((0.95, 0.95, 0.96)) and pdf_check.is_light((1.0,))
+    assert not pdf_check.is_light((0.2, 0.2, 0.2)) and not pdf_check.is_light((0.0,)) and not pdf_check.is_light((0.0, 0.0, 0.0, 1.0))

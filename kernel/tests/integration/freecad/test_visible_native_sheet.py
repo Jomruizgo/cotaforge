@@ -62,7 +62,7 @@ def test_the_plate_is_built_item_by_item_with_techdraws_own_objects(visible: Fre
     bottom = _side(visible, base, (0.0, 0.0, -1.0))
     front_face = _side(visible, base, (0.0, -1.0, 0.0))
     steps: list[tuple[str, dict[str, Any], set[str]]] = [
-        ("vl", {"type": "view_lines", "id": "vl"}, {SYMBOL}),
+        ("vl", {"type": "view_lines", "id": "vl"}, set()),  # hidden and centre lines are the views' own
         (
             "dowels",
             {"type": "hole_dim", "id": "dowels", "at": [[x, y, 0] for x, y in DOWELS], "fit": "H7"},

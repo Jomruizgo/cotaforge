@@ -5,16 +5,20 @@ free (no FreeCAD import)."""
 import math
 from typing import Any
 
+import sheet_pattern
 from sheet_collide import segment_hits_rect, segments_cross, segments_of
-from sheet_context import Context, Point, Vec3, ViewInfo
-from sheet_draw import leader
-from sheet_model import CONTOUR, Entity
+from sheet_context import Context, HoleInfo, Point, Vec3, ViewInfo
+from sheet_draw import centre_mark, leader
+from sheet_model import AXES, CONTOUR, Entity, Line
 
 VIEW_ORDER = ("top", "front", "right")  # which view shows a hole first when several look along its axis
 CALLOUT_GAP_MM = 8.0  # the elbow of a leader is this far beyond the edge of the view
 NUDGE_MM = 6.0  # a callout that lands on another is moved this much farther out, up to NUDGE_TRIES times
 NUDGE_TRIES = 10
 MIN_LEADER_MM = 6.0
+RADIAL_OVER_MM = 2.0  # a radial centre mark reaches this far past its circle (as sheet_draw.centre_mark)
+RADIAL_MIN_RUN_MM = 0.5  # the chain line from the axis to a hole is drawn when it is longer than this
+RADIAL_CLEAR_DEG = 8.0  # a leader keeps this far (degrees) from the radial centre line of its hole
 
 
 def view_looking_along(ctx: Context, direction: Vec3, wanted: str | None) -> ViewInfo | None:
@@ -39,6 +43,28 @@ def mark_once(ctx: Context, view: ViewInfo, p: Point) -> bool:
         return False
     done.add(key)
     return True
+
+
+def hole_mark(ctx: Context, view: ViewInfo, hole: HoleInfo, p: Point, radius: float) -> list[Entity]:
+    """The centre mark of a hole at page point ``p`` (``radius`` its circle on the page): the cross of its centre lines, or, when
+    the hole is in a circular pattern seen along its axis, the cross turned along its radius (ISO 128: a radial and a tangential
+    bar) with the chain line that runs from the axis of the pattern to it."""
+    pattern = sheet_pattern.pattern_of(ctx, hole)
+    if pattern is None or not view.looks_along(pattern.direction):
+        return centre_mark(p[0], p[1], radius)
+    c = view.project(pattern.centre)
+    distance = math.dist(c, p)
+    if distance < 1e-6:
+        return centre_mark(p[0], p[1], radius)
+    ux, uy = (p[0] - c[0]) / distance, (p[1] - c[1]) / distance
+    reach = radius + RADIAL_OVER_MM
+    out: list[Entity] = [
+        Line(p[0] - ux * reach, p[1] - uy * reach, p[0] + ux * reach, p[1] + uy * reach, AXES),
+        Line(p[0] + uy * reach, p[1] - ux * reach, p[0] - uy * reach, p[1] + ux * reach, AXES),
+    ]
+    if distance - reach > RADIAL_MIN_RUN_MM:
+        out.insert(0, Line(c[0], c[1], p[0] - ux * reach, p[1] - uy * reach, AXES))
+    return out
 
 
 def outward_diagonal(view: ViewInfo, point: Point, side: str | None) -> tuple[float, float]:
@@ -77,6 +103,26 @@ def why_not(ctx: Context, rect: tuple[float, float, float, float], fits: bool, f
         f"la llamada ({where}) {' y '.join(problems)}: muévela con offset_mm o side",
         f"the callout ({where}) {' and '.join(problems)}: move it with offset_mm or side",
     )
+
+
+FRAME_CELL_MM = 7.0  # the height of a feature control frame
+
+
+def frame_slot(ctx: Context, elbow: Point, direction: float) -> tuple[float, float, float, float] | None:
+    """The room a tolerance frame needs under the shelf of the callout being placed (``None`` when none hangs from it): the
+    frames join the shelf at the elbow, one under the other, running the way the shelf runs (``ctx.extras["frame_room"]``
+    maps an item id to the width and the number of its frames; ``items_gdt`` fills it)."""
+    need = ctx.extras.get("frame_room", {}).get(ctx.extras.get("current"))
+    if not need:
+        return None
+    width, count = need
+    x0 = elbow[0] if direction > 0 else elbow[0] - width
+    return (x0, elbow[1] - count * FRAME_CELL_MM, x0 + width, elbow[1] - 0.05)
+
+
+def _slot_ok(ctx: Context, elbow: Point, direction: float) -> bool:
+    slot = frame_slot(ctx, elbow, direction)
+    return slot is None or (ctx.inside(slot) and ctx.free(slot) and _clear_of_views(ctx, slot))
 
 
 def _clear_of_views(ctx: Context, rect: tuple[float, float, float, float]) -> bool:
@@ -184,6 +230,7 @@ def place_callout(
     holes: list[tuple[Point, float]],
     lines: list[str],
     offset_mm: float | None = None,
+    radial: list[float | None] | None = None,
 ) -> tuple[list[Entity], int]:
     """The callout of a group of equal holes (each ``(centre, radius)`` on the page): ONE leader, short, to the hole and
     the side where it is cleanest. Every hole of the group, at every angle that is no centre line, is tried; the leader is
@@ -203,11 +250,14 @@ def place_callout(
         ),
     )[:MAX_CALLOUT_HOLES]
     best: (
-        tuple[tuple[int, float], list[Entity], tuple[float, float, float, float], Point, Point, float, int, str] | None
+        tuple[tuple[int, int, float], list[Entity], tuple[float, float, float, float], Point, Point, float, int, str]
+        | None
     ) = None
     for index in order:
         centre, radius = holes[index]
         for angle in LEADER_ANGLES:
+            if radial is not None and radial[index] is not None and abs(((angle - radial[index]) + 90.0) % 180.0 - 90.0) < RADIAL_CLEAR_DEG:
+                continue  # a leader never runs along the radial centre line of a hole of a circular pattern
             rad = math.radians(angle)
             u = (math.cos(rad), math.sin(rad))
             tip = (centre[0] + u[0] * radius, centre[1] + u[1] * radius)
@@ -238,6 +288,7 @@ def place_callout(
                     + DIMENSION_LINE_COST_MM * mains
                     + ANGLE_COST_PER_DEG * abs((angle % 90) - 45)
                 )
+                slot_bad = 0 if _slot_ok(ctx, elbow, sx) else 1  # no room for the frames: second to a clean place
                 bad = (0 if fits else 4) + 3 * crossing + 2 * max(0, cuts - 1) + (0 if free else 1)
                 problem = ""
                 if crossing:
@@ -246,17 +297,52 @@ def place_callout(
                     problem = f"crosses the outline of the part {cuts} times"
                 elif not fits or not free:
                     problem = why_not(ctx, rect, fits, free)
-                if best is None or (bad, cost) < best[0]:
-                    best = ((bad, cost), entities, rect, tip, elbow, sx, index, problem)
-                if bad == 0:
+                if best is None or (bad, slot_bad, cost) < best[0]:
+                    best = ((bad, slot_bad, cost), entities, rect, tip, elbow, sx, index, problem)
+                if bad == 0 and not slot_bad:
                     break  # the shortest length of this hole and angle that is clean
     assert best is not None
-    (bad, _), entities, rect, tip, elbow, sx, index, problem = best
+    (bad, _, _), entities, rect, tip, elbow, sx, index, problem = best
     if bad:
         ctx.note(problem or why_not(ctx, rect, ctx.inside(rect), ctx.free(rect)))
     ctx.reserve(rect)
     _remember(ctx, tip, elbow, sx, rect)
     return entities, index
+
+
+def planned_elbow(ctx: Context) -> Point | None:
+    """The ``elbow_mm`` of the item being drawn: the vector from the tip of its leader to the elbow the global layout chose."""
+    current = ctx.extras.get("current")
+    for spec in ctx.extras.get("items", []):
+        if spec.get("id") == current and spec.get("elbow_mm") is not None:
+            return (float(spec["elbow_mm"][0]), float(spec["elbow_mm"][1]))
+    return None
+
+
+def _clear_of_part_lines(ctx: Context, rect: tuple[float, float, float, float]) -> bool:
+    """Whether a rectangle over a view holds no visible line of the part (an area of the view that is clear)."""
+    ink = [e for e in ctx.extras.get("view_ink", []) if getattr(e, "layer", None) == CONTOUR]
+    return not any(segment_hits_rect(s, rect) for s in segments_of(ink))
+
+
+def leader_at(ctx: Context, tip: Point, elbow: Point, lines: list[str], inside_ok: bool = False) -> list[Entity]:
+    """A leader from ``tip`` to exactly ``elbow``, its shelf running the way the leader goes; when the place is not clean
+    the item's result says why (it is the layout's decision, not a search). ``inside_ok``: its text may stand on an area of
+    a view that holds no line of the part (the layout puts a hole callout there when every side outside is closed)."""
+    sx = 1.0 if elbow[0] - tip[0] >= 0 else -1.0
+    entities, rect = leader(tip, elbow, lines, "right" if sx > 0 else "left")
+    fits = ctx.inside(rect)
+    free = (
+        ctx.free(rect)
+        and (_clear_of_views(ctx, rect) or (inside_ok and _clear_of_part_lines(ctx, rect)))
+        and _leader_clear(ctx, tip, elbow)
+        and not _crosses_leaders(ctx, tip, elbow, rect, sx)
+    )
+    if not (fits and free):
+        ctx.note(why_not(ctx, rect, fits, free))
+    ctx.reserve(rect)
+    _remember(ctx, tip, elbow, sx, rect)
+    return entities
 
 
 def place_leader(
@@ -276,7 +362,11 @@ def place_leader(
     frame it is moved outward, and when that does not help the other diagonals are tried (the one asked for comes
     first) -- unless the item asked for its place (``explicit``: ``side`` / ``offset_mm``): then it goes exactly there
     and, when that is not a clean place, the item's result says why. The text's rectangle is reserved so the next
-    callout avoids it; a callout that finds no clean place at all is reported too."""
+    callout avoids it; a callout that finds no clean place at all is reported too. An item that carries ``elbow_mm`` (the
+    global layout put it there: the vector from the tip to the elbow, page mm, y up) ends exactly there."""
+    planned = planned_elbow(ctx)
+    if planned is not None:
+        return leader_at(ctx, tip, (tip[0] + planned[0], tip[1] + planned[1]), lines)
     gap = (CALLOUT_GAP_MM + ctx.nudge() * NUDGE_MM) if offset_mm is None else offset_mm
     box = view.box
     sx0, sy0 = diagonal
@@ -287,6 +377,7 @@ def place_leader(
         sx0, sy0 = (1.0 if step[0] >= 0 else -1.0), (1.0 if step[1] >= 0 else -1.0)
     candidates = [(sx0, sy0)] if explicit or step is not None else [(sx0, sy0), (-sx0, sy0), (sx0, -sy0), (-sx0, -sy0)]
     best: tuple[list[Entity], tuple[float, float, float, float], Point, float, bool, bool] | None = None
+    fallback = best  # the first clean place, kept when no clean place has room for the frames hung from the callout
     for sx, sy in candidates:
         need_x = (box[2] - tip[0] if sx > 0 else tip[0] - box[0]) + gap
         need_y = (box[3] - tip[1] if sy > 0 else tip[1] - box[1]) + gap
@@ -304,16 +395,21 @@ def place_leader(
                 and _leader_clear(ctx, tip, elbow)
                 and not _crosses_leaders(ctx, tip, elbow, rect, sx)
             )
+            roomy = _slot_ok(ctx, elbow, sx)
             if best is None or (fits and not best[4]):  # the first try, or the first that is inside the frame
                 best = (entities, rect, elbow, sx, fits, free)
             if fits and free:
-                ctx.reserve(rect)
-                _remember(ctx, tip, elbow, sx, rect)
-                return entities
+                if fallback is None:
+                    fallback = (entities, rect, elbow, sx, fits, free)
+                if roomy:
+                    ctx.reserve(rect)
+                    _remember(ctx, tip, elbow, sx, rect)
+                    return entities
             distance += NUDGE_MM
     assert best is not None
-    entities, rect, elbow, sx, fits, free = best
-    ctx.note(why_not(ctx, rect, fits, free))
+    entities, rect, elbow, sx, fits, free = fallback or best
+    if not (fits and free):
+        ctx.note(why_not(ctx, rect, fits, free))
     ctx.reserve(rect)
     _remember(ctx, tip, elbow, sx, rect)
     return entities
@@ -337,6 +433,10 @@ def _remember(
         }
     )
     item = ctx.extras.get("current")
+    slot = frame_slot(ctx, elbow, direction)
+    if slot is not None and item is not None:
+        ctx.reserve(slot)
+        ctx.extras.setdefault("frame_slots", {})[item] = slot
     if item is not None:
         ctx.extras.setdefault("anchors", {}).setdefault(item, []).append(
             {"tip": tip, "elbow": elbow, "dir": direction, "rect": rect}

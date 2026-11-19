@@ -3,27 +3,40 @@
 
 * ``dimension_side``: a dimension whose extension lines cross the part while the other side is free or clearly nearer;
 * ``dimension_crossing``: an extension line across the dimension line of another dimension (ISO 129);
+* ``dimension_stack_order`` / ``dimension_gap``: parallel dimensions go shortest nearest the part, longest outermost, at least
+  ``MIN_PARALLEL_GAP_MM`` apart (ISO 129-1);
 * ``datum_on_line``: the triangle, box or stem of a datum on a line of another item;
 * ``datum_unused``: a datum item whose letter no tolerance frame (``gdt``) cites;
 * ``leader_not_on_chamfer``: the leader of a chamfer callout not on the chamfer's line, not from outside or not perpendicular;
 * ``view_redundant``: a view that only carries a cutting line, or whose dimensions another view repeats;
+* ``dimension_twice``: the same measure given by two dimensions of one view (stacked, the same size twice); it HOLDS an export;
+* ``dimension_redundant``: lengths of one view along one axis that close a loop (one is the sum or difference of others); it holds the export;
+* ``dimension_on_hidden``: a dimension of the page that measures on a hidden line (``sheet_hiddendims``); it holds the export;
+* ``text_over_text``: two lines of text of the TechDraw page printed one on the other (the lines of a note); it HOLDS an export;
+* ``view_duplicate``: two views that draw the same thing (the same direction, or two sides of a part of revolution: the profile
+  twice); it HOLDS an export;
 * ``arrows_inside_short``: a short dimension with its arrows inside.
 
-They are style: listed and answerable, they never hold an export (``sheet_checks.NON_BLOCKING``).
+``dimension_crossing``, ``dimension_stack_order`` and ``dimension_gap`` are measurements of the sheet as drawn and HOLD an export
+(a shop reader takes an extension line across another dimension's line for the end of a measure); the others are style: listed
+and answerable, they never hold an export (``sheet_checks.NON_BLOCKING``).
 ``sheet_review.review`` calls ``check`` after its own checks.
 """
 
+import math
 from typing import Any
 
 import sheet_viewrules as rules
 from sheet_collide import ink_of, segments_of
 from sheet_context import Context, ViewInfo
 from sheet_model import CONTOUR, Line, Polyline, Solid
-from sheet_review import Finding, ReviewInput
+from sheet_review import Finding, ReviewInput, _end_view_of_coaxial_part, _unused_views
 from sheet_units import KIND_ITEM
 
 DIMENSION_TYPES = frozenset({"dim", "overall", "datum_dims"})
-CARRIES_OTHER = frozenset({"hole_dim", "balloons", "gdt", "datum", "finish", "detail", "aux_view", "weld"})
+CARRIES_OTHER = frozenset(
+    {"hole_dim", "balloons", "gdt", "datum", "finish", "detail", "aux_view", "weld", "parting_line", "pull_direction", "mould_zone", "no_draft"}
+)
 SAME_PLANE = 1e-3
 rules_point = tuple[float, float]
 
@@ -32,14 +45,219 @@ def check(data: ReviewInput) -> list[Finding]:
     return [
         *_sides(data),
         *_crossings(data),
+        *_stacks(data),
         *_datums(data),
         *_unused_datums(data),
         *_chamfers(data),
         *_short(data),
         *_redundant(data),
+        *_duplicate_views(data),
+        *_dimension_twice(data),
+        *_dimension_redundant(data),
+        *_text_over_text(data),
         *_hatches(data),
         *_underused(data),
+        *_paper_for_notes(data),
+        *_no_isometric(data),
+        *_crowded(data),
     ]
+
+
+# --- two views that draw the same thing -------------------------------------------------------------------------------------------
+
+
+def _revolution_axis(ctx: Context) -> tuple[float, float, float] | None:
+    """The axis of a part of revolution whose every feature is coaxial (a solid cover of stacked cylinders as much as a ring); ``None``
+    for any other part: a hole off the axis makes its two sides differ."""
+    if ctx.assembly is not None or ctx.weldment is not None or ctx.geometry is None:
+        return None
+    found = ctx.geometry.round_extent()
+    features = ctx.geometry.axial_features() if found is not None else None
+    return found[0] if found is not None and features is not None and features[0] else None
+
+
+def _duplicate_views(data: ReviewInput) -> list[Finding]:
+    """Two views of one sheet that show the same: looking the same way, or, on a part of revolution whose every feature is coaxial,
+    two views across its axis (the profile twice: the front and the top of a turned cover are the same drawing). The one that
+    carries the fewer items is the repeat (a tie leaves the first of front, top, right). It HOLDS the export: a shop reads the
+    second drawing as a second part, and the room it takes is the room the first one could have."""
+    ctx = data.ctx
+    use = ctx.extras.get("view_use", {})
+    axis = _revolution_axis(ctx)
+    named = [(name, v) for name, v in ctx.views.items() if not v.derived]
+    order = {"front": 0, "top": 1, "right": 2}
+    repeats: dict[str, str] = {}  # the repeat -> the view it repeats
+    for i, (na, a) in enumerate(named):
+        for nb, b in named[i + 1 :]:
+            same = math.isclose(sum(p * q for p, q in zip(a.direction, b.direction, strict=True)), 1.0, abs_tol=1e-6)
+            profiles = axis is not None and a.shows_axis_along(axis) and b.shows_axis_along(axis)
+            if not (same or profiles):
+                continue
+            keep, drop = sorted((na, nb), key=lambda n: (-len(use.get(n, ())), order.get(n, 9)))
+            repeats.setdefault(drop, keep)
+    out: list[Finding] = []
+    for name, keep in repeats.items():
+        text = ctx.say(
+            f"La vista {name} repite la vista {keep}: dibujan lo mismo (una pieza de revolución con todos sus rasgos coaxiales "
+            "se ve igual desde cualquier lado del eje). Quítala con "
+            f"drawing(action=\"remove_view\", views=[\"{name}\"]) y pon sus cotas en {keep}; solo se queda si el ingeniero lo ordena con su razón (by=, reason=).",
+            f"The {name} view repeats the {keep} view: they draw the same thing (a part of revolution with every feature coaxial "
+            "looks the same from any side of its axis). Drop it with "
+            f"drawing(action=\"remove_view\", views=[\"{name}\"]) and put its dimensions on {keep}; it stays only if the engineer orders it with his reason (by=, reason=).",
+        )
+        out.append(Finding("view_duplicate", "warning", text, (name,), key=name))
+    return out
+
+
+# --- the same measure twice ---------------------------------------------------------------------------------
+
+
+def _dimension_twice(data: ReviewInput) -> list[Finding]:
+    """Two dimensions of ONE view that say the same thing about the part (the same length between the same two places, the same
+    cylinder's diameter): the reader sees "80" twice, stacked, and asks which is the measure. ``dimension_repeated`` is the
+    same size in two views (a suggestion); in one view it is a defect and holds the export."""
+    ctx = data.ctx
+    said: dict[tuple[str, tuple[Any, ...]], list[str]] = {}
+    for item, view, key in ctx.extras.get("dim_records", []):
+        if item:
+            said.setdefault((view, tuple(key)), []).append(item)
+    out: list[Finding] = []
+    for (view, key), items in said.items():
+        ids = tuple(dict.fromkeys(items))
+        if len(ids) < 2:  # noqa: PLR2004 - one item may record a measure twice: that is its own business
+            continue
+        what = (
+            ctx.say(f"La cota {ctx.num(key[3] - key[2])} a lo largo de {key[1]}", f"The dimension {ctx.num(key[3] - key[2])} along {key[1]}")
+            if key[0] == "len"
+            else ctx.say(f"El diámetro Ø{ctx.num(key[1])}", f"The diameter Ø{ctx.num(key[1])}")
+        )
+        text = ctx.say(
+            f"{what} está dada dos veces en la vista {view} ({', '.join(ids)}): el lector ve la misma cota repetida y no sabe cuál "
+            "manda. Quita la que sobra con drawing(action=\"remove\", items=[\"<su id>\"]) (un id que empieza por rq_ pide además "
+            "reason=, y by= si lo midió el modelo); si las dos son del mismo item de varias cotas no hay herramienta que saque una sola: "
+            "cambia ese item con update.",
+            f"{what} is given twice in the {view} view ({', '.join(ids)}): the reader sees the same dimension repeated and cannot "
+            "tell which one rules. Remove the surplus one with drawing(action=\"remove\", items=[\"<its id>\"]) (an id that starts "
+            "with rq_ also needs reason=, and by= if the model measured it); if both belong to one item of several dimensions there is "
+            "no tool that takes a single one out: change that item with update.",
+        )
+        out.append(Finding("dimension_twice", "warning", text, ids, key=f"{view}/" + "/".join(str(k) for k in key)))
+    return out
+
+
+SNAP_MM = 0.02  # two places of one axis closer than this are the same place
+
+
+def _snap(values: list[float]) -> dict[float, int]:
+    """Number the places of one axis: values within ``SNAP_MM`` of each other get one number."""
+    numbers: dict[float, int] = {}
+    last: float | None = None
+    count = -1
+    for v in sorted(set(values)):
+        if last is None or v - last > SNAP_MM:
+            count += 1
+        numbers[v] = count
+        last = v
+    return numbers
+
+
+def _path(links: dict[int, list[tuple[int, str]]], start: int, goal: int) -> list[str] | None:
+    """The items of the dimensions that join place ``start`` to place ``goal`` in the forest ``links`` (``None``: not joined)."""
+    seen = {start}
+    queue: list[tuple[int, list[str]]] = [(start, [])]
+    while queue:
+        node, items = queue.pop(0)
+        if node == goal:
+            return items
+        for nxt, item in links.get(node, []):
+            if nxt not in seen:
+                seen.add(nxt)
+                queue.append((nxt, [*items, item]))
+    return None
+
+
+def _dimension_redundant(data: ReviewInput) -> list[Finding]:
+    """Lengths of one view along one axis that close a loop: a dimension that is the sum or the difference of others (the overall
+    length given with the segments that add up to it; 125 beside 168 and the 43 of the thread). Take each length as a link between
+    the two places it spans: a set of independent dimensions is a forest, and a link that closes a loop is a measure the others
+    already give (ISO 129-1: no redundant dimension). The same length twice is ``dimension_twice``; the defaults of the sheet never
+    close a loop by themselves (the hole location is a forest, the overall is left out when the others chain both ends), so a loop
+    is always a choice somebody made and holds the export. Part sheets only: on an assembly two parts share
+    coordinates by chance. A process stage, a diameter and a hole position are other records and never enter."""
+    ctx = data.ctx
+    if ctx.assembly is not None or ctx.weldment is not None:
+        return []
+    spans: dict[tuple[str, str], list[tuple[str, float, float]]] = {}
+    for item, view, key in ctx.extras.get("dim_records", []):
+        if item and len(key) == 4 and key[0] == "len":  # noqa: PLR2004 - ("len", axis, lo, hi)
+            spans.setdefault((view, str(key[1])), []).append((item, float(key[2]), float(key[3])))
+    out: list[Finding] = []
+    for (view, axis), rows in spans.items():
+        number = _snap([v for _, lo, hi in rows for v in (lo, hi)])
+        links: dict[int, list[tuple[int, str]]] = {}
+        joined: set[tuple[int, int]] = set()
+        for item, lo, hi in sorted(rows, key=lambda r: (r[1], r[2], r[0])):
+            a, b = number[lo], number[hi]
+            if a == b or (a, b) in joined:  # a zero length; the same length twice (``dimension_twice``)
+                continue
+            around = _path(links, a, b)
+            if around is not None:
+                ids = tuple(dict.fromkeys([*around, item]))
+                if ids:
+                    text = ctx.say(
+                        f"Las cotas {', '.join(ids)} de la vista {view} cierran un lazo a lo largo de {axis}: una es la suma o la "
+                        "diferencia de las otras y sobra. Quita la que el taller no necesita.",
+                        f"Dimensions {', '.join(ids)} of the {view} view close a loop along {axis}: one is the sum or the "
+                        "difference of the others and is redundant. Remove the one the shop does not need.",
+                    )
+                    out.append(Finding("dimension_redundant", "warning", text, ids, key=f"{view}/{axis}/" + "/".join(sorted(ids))))
+                continue  # the loop-closing link is not added: what stands stays a forest
+            links.setdefault(a, []).append((b, item))
+            links.setdefault(b, []).append((a, item))
+            joined.add((a, b))
+    return out
+
+
+OVERPRINT_MM = 1.0  # two texts that share more than this in both directions are printed on one another
+
+
+def _text_over_text(data: ReviewInput) -> list[Finding]:
+    """Two text annotations of the page whose rectangles lie on each other by more than ``OVERPRINT_MM`` both ways: the lines of a
+    note printed over one another read as nothing. Measured on the page, not on the composed sheet (the composed sheet plans the
+    lines apart; the window puts them where it puts them)."""
+    ctx = data.ctx
+    boxes: list[tuple[str, rules.Rect]] = list(ctx.extras.get("page_texts", []))
+    ids = {str(i["id"]) for i in data.items}
+    out: list[Finding] = []
+    for i, (la, a) in enumerate(boxes):
+        for lb, b in boxes[i + 1 :]:
+            across = min(a[2], b[2]) - max(a[0], b[0])
+            down = min(a[3], b[3]) - max(a[1], b[1])
+            if across <= OVERPRINT_MM or down <= OVERPRINT_MM:
+                continue
+            named = tuple(dict.fromkeys(k for k in (la.split(" ")[0], lb.split(" ")[0]) if k in ids))
+            text = ctx.say(
+                f"Dos líneas de texto de la hoja ({la}; {lb}) se imprimen una sobre otra en [{ctx.num(round(max(a[0], b[0]), 1))}, "
+                f"{ctx.num(round(max(a[1], b[1]), 1))}]: no se leen. Sepáralas (acorta la nota o muévela con at_mm).",
+                f"Two lines of text of the sheet ({la}; {lb}) are printed on one another at [{ctx.num(round(max(a[0], b[0]), 1))}, "
+                f"{ctx.num(round(max(a[1], b[1]), 1))}]: neither reads. Move them apart (shorten the note or move it with at_mm).",
+            )
+            out.append(Finding("text_over_text", "warning", text, named, key=f"{la}|{lb}"))
+    return out
+
+
+# --- the rules the step that built the sheet answers for -----------------------------------------------------------------------
+
+
+STEP_CODES = ("view_adds_nothing", "view_duplicate", "dimension_crossing", "sheet_underused")
+"""The findings a step of the sheet (``drawing`` add / update) answers for on the spot: a view with nothing on it or drawn twice,
+dimension lines crossed, a sheet left mostly empty. The rest of the review waits for ``review``."""
+
+
+def step_check(data: ReviewInput) -> list[Finding]:
+    """Only the rules of ``STEP_CODES``, each run on the context the step just drew (no check of the rest of the review)."""
+    found = [*_unused_views(data), *_end_view_of_coaxial_part(data), *_duplicate_views(data), *_crossings(data), *_underused(data)]
+    return [f for f in found if f.code in STEP_CODES]
 
 
 # --- the paper a sheet leaves blank ---------------------------------------------------------------------------------------------
@@ -59,10 +277,202 @@ def _footprint(ctx: Context) -> list[rules.Rect]:
     return out  # type: ignore[return-value]
 
 
+def _view_boxes(ctx: Context) -> list[rules.Rect]:
+    """The rectangles of the views alone (no dimension strips): what the part itself takes of the sheet."""
+    boxes: list[rules.Rect] = list(ctx.extras.get("view_boxes", [])) or [v.box for v in ctx.views.values()]
+    boxes += [v.box for v in ctx.extras.get("sections", {}).values()]
+    boxes += [v.box for v in ctx.extras.get("views_extra", {}).values()]
+    return [tuple(b) for b in boxes]  # type: ignore[misc]
+
+
+def _notes_room(ctx: Context) -> tuple[float, float] | None:
+    """``(width, height)`` of the numbered notes block (``items_notes``: ``NOTAS:`` and its lines, which stands in a free corner
+    of the drawing area), ``None`` when the sheet has none. A larger scale, a smaller paper or fewer views are offered only when
+    this block still fits with them: the notes are part of what the paper must hold."""
+    lines = int(ctx.extras.get("note_lines") or 0)
+    if lines <= 0:
+        return None
+    from items_notes import BLOCK_MARGIN_MM, LINE_STEP_MM  # noqa: PLC0415 - the notes block's own measures
+
+    width = float(ctx.extras.get("note_width") or 0.0) + 2 * BLOCK_MARGIN_MM
+    return width, (lines + 1) * LINE_STEP_MM + BLOCK_MARGIN_MM
+
+
+def _paper_for_notes(data: ReviewInput) -> list[Finding]:
+    """The numbered notes block lies on the views: the paper cannot hold both at this scale. The mirror of ``sheet_underused``: that
+    one never asks for what the paper cannot take, this one says which paper takes the views AND the notes at the scale the sheet
+    has (the smallest that does), so the loop of "the notes collide, take a bigger paper" ends at a paper that works."""
+    import sheet_layout  # noqa: PLC0415 - the paper sizes and the layout arithmetic
+
+    ctx = data.ctx
+    room = _notes_room(ctx)
+    scale = float(ctx.extras.get("main_scale") or 0.0)
+    if room is None or scale <= 0 or ctx.assembly is not None:
+        return []
+    kinds = {str(i["id"]): str(i.get("type")) for i in data.items}
+    hit = sorted(
+        {
+            (c.a if kinds.get(c.a) == "note" else c.b)
+            for c in ctx.extras.get("collisions", [])
+            if {c.a, c.b} & {"views"} and (kinds.get(c.a) == "note" or kinds.get(c.b) == "note")
+        }
+    )
+    if not hit:
+        return []
+    extent = ctx.extras.get("layout_mm") or ctx.extras.get("extent_mm")
+    names = [n for n in ctx.views if n in ("front", "top", "right")]
+    paper = ""
+    if extent is not None and "front" in names:
+        w, d, h = (float(v) for v in extent)
+        iso = "isometric" in ctx.extras.get("views_extra", {}) or len(ctx.extras.get("view_boxes", [])) > len(names)
+        here = ctx.sheet.width * ctx.sheet.height
+        for name in sheet_layout.AUTO_PAPERS:
+            pw, ph = sheet_layout.PAGES_MM[name]
+            if pw * ph <= here + 1e-6:
+                continue
+            layout = sheet_layout.plan(
+                w, d, h, pw, ph, scale, None, iso, "top" in names, "right" in names,
+                third=ctx.extras.get("angle") == "third", iso_dims=(w, d, h), notes=room,
+            )  # fmt: skip
+            if layout.fits:
+                paper = name
+                break
+    from sheet_model import fmt_scale  # noqa: PLC0415
+
+    sheet_name = f"{ctx.sheet.width:g} x {ctx.sheet.height:g} mm"
+    if paper:
+        fix_es, fix_en = (
+            f"en {paper} caben las vistas a esa escala y las notas (template={paper}); o acorta las notas",
+            f"on {paper} the views at that scale and the notes fit (template={paper}); or shorten the notes",
+        )
+    else:
+        fix_es, fix_en = (
+            "ninguna hoja hasta A0 las admite a esa escala: acorta las notas o baja la escala",
+            "no paper up to A0 holds them at that scale: shorten the notes or lower the scale",
+        )
+    text = ctx.say(
+        f"El bloque de notas ({ctx.num(room[0])} x {ctx.num(room[1])} mm) no cabe con las vistas en la hoja de {sheet_name} a "
+        f"{fmt_scale(scale)}: se solapa con ellas ({', '.join(hit)}); {fix_es}.",
+        f"The notes block ({ctx.num(room[0])} x {ctx.num(room[1])} mm) does not fit with the views on the {sheet_name} sheet at "
+        f"{fmt_scale(scale)}: it overlaps them ({', '.join(hit)}); {fix_en}.",
+    )
+    return [Finding("paper_too_small", "warning", text, tuple(hit[:3]), key="notes")]
+
+
+def _fewer_views(ctx: Context) -> list[tuple[str, float]]:
+    """``(views=[...], scale)`` for each set of FEWER standard views the part could be drawn in on this paper, with the
+    largest standard scale the layout arithmetic gives it (fewest views dropped first): what to take off to make the views
+    larger. Empty for an assembly or when the size of the part is not known."""
+    import itertools  # noqa: PLC0415
+
+    import sheet_layout  # noqa: PLC0415 - the layout arithmetic that chose the scale in the first place
+
+    extent = ctx.extras.get("layout_mm") or ctx.extras.get("extent_mm")
+    names = [n for n in ctx.views if n in ("front", "top", "right")]
+    if extent is None or ctx.assembly is not None or "front" not in names:
+        return []
+    iso = "isometric" in ctx.extras.get("views_extra", {}) or len(ctx.extras.get("view_boxes", [])) > len(names)
+    now = {"top": "top" in names, "right": "right" in names}  # the isometric stays: every sheet carries it
+    w, d, h = (float(v) for v in extent)
+    third = ctx.extras.get("angle") == "third"
+    found: list[tuple[int, str, float]] = []
+    held = [k for k, v in now.items() if v]
+    for size in range(len(held) - 1, -1, -1):
+        for keep in itertools.combinations(held, size):
+            chosen = ["front", *[k for k in ("top", "right") if k in keep], *(["iso"] if iso else [])]
+            layout = sheet_layout.plan(
+                w, d, h, ctx.sheet.width, ctx.sheet.height, None, None, iso, "top" in keep, "right" in keep,
+                third=third, iso_dims=(w, d, h), own_iso_scale=False, notes=_notes_room(ctx),
+            )  # fmt: skip
+            found.append((len(chosen), "views=[" + ", ".join(chosen) + "]", layout.scale))
+    found.sort(key=lambda row: -row[0])
+    return [(what, scale) for _, what, scale in found]
+
+
+def _iso_own(ctx: Context, scale: float) -> tuple[float, float] | None:
+    """``(main scale, isometric scale)`` when the isometric view drawn at a scale of its own (ISO 5455: a pictorial view may
+    have one, written under it) lets the main views take a larger standard scale on this paper: the automatic layout's
+    arithmetic. ``None`` for an assembly, a sheet without an isometric view or when nothing is gained."""
+    import sheet_layout  # noqa: PLC0415 - the layout arithmetic that chose the scale in the first place
+
+    extent = ctx.extras.get("layout_mm") or ctx.extras.get("extent_mm")
+    names = [n for n in ctx.views if n in ("front", "top", "right")]
+    iso = "isometric" in ctx.extras.get("views_extra", {}) or len(ctx.extras.get("view_boxes", [])) > len(names)
+    if extent is None or ctx.assembly is not None or "front" not in names or not iso:
+        return None
+    w, d, h = (float(v) for v in extent)
+    layout = sheet_layout.plan(
+        w, d, h, ctx.sheet.width, ctx.sheet.height, None, None, True, "top" in names, "right" in names,
+        third=ctx.extras.get("angle") == "third", iso_dims=(w, d, h), notes=_notes_room(ctx),
+    )  # fmt: skip
+    if layout.iso_scale > 0 and layout.scale > scale * (1 + 1e-9):
+        return layout.scale, layout.iso_scale
+    return None
+
+
+CROWD_TIP_MM = 6.0  # two callouts whose leaders touch the part this close are crowded at one spot
+CROWD_ROOM_FACTOR = 4.0  # ... and there is room nearby when the view is this many times longer than that distance
+
+
+def _crowded(data: ReviewInput) -> list[Finding]:
+    """Two callouts of different items whose leaders end within ``CROWD_TIP_MM`` of each other on a view that is much longer than
+    that (the thread callout and the chamfer callout both jammed at the end of a shaft while its length is free): move one
+    along the feature (``offset_mm`` / ``side`` of the item), where there is room."""
+    ctx = data.ctx
+    leaders = [lead for lead in ctx.extras.get("leaders", []) if lead.get("item")]
+    out: list[Finding] = []
+    seen: set[tuple[str, str]] = set()
+    for i, a in enumerate(leaders):
+        for b in leaders[i + 1 :]:
+            if a["item"] == b["item"] or tuple(sorted((a["item"], b["item"]))) in seen:
+                continue
+            gap = math.dist(a["tip"], b["tip"])
+            if gap >= CROWD_TIP_MM:
+                continue
+            roomy = any(
+                v.box[0] - 0.5 <= a["tip"][0] <= v.box[2] + 0.5
+                and v.box[1] - 0.5 <= a["tip"][1] <= v.box[3] + 0.5
+                and max(v.box[2] - v.box[0], v.box[3] - v.box[1]) >= CROWD_ROOM_FACTOR * CROWD_TIP_MM
+                for v in ctx.views.values()
+            )
+            if not roomy:
+                continue
+            seen.add(tuple(sorted((a["item"], b["item"]))))
+            text = ctx.say(
+                f"Las llamadas {a['item']} y {b['item']} se amontonan en el mismo sitio ({ctx.num(round(gap, 1))} mm entre "
+                "sus puntas) y la vista tiene sitio libre al lado: separa una a lo largo de la pieza (offset_mm o side).",
+                f"Callouts {a['item']} and {b['item']} are crowded at the same spot ({ctx.num(round(gap, 1))} mm between "
+                "their tips) and the view has free room beside it: move one along the part (offset_mm or side).",
+            )
+            out.append(Finding("callouts_crowded", "warning", text, (str(a["item"]), str(b["item"])), key=f"{a['item']},{b['item']}"))
+    return out
+
+
+def _no_isometric(data: ReviewInput) -> list[Finding]:
+    """A manufacturing sheet carries the isometric view (in colour by the harness's convention): it is how the shop sees the
+    part at a glance. A sheet made without it (``views=[...]`` with no ``iso``, or ``isometric=false``) is flagged; the engineer
+    may order it so."""
+    ctx = data.ctx
+    shown = ctx.extras.get("sheet_views")
+    if shown is None or "iso" in shown:
+        return []
+    text = ctx.say(
+        "La hoja no lleva vista isométrica: todo plano de fabricación la lleva (en color, por la convención del arnés). "
+        'Añádela: drawing(action=create, views=[..., "iso"]) o sin views para que el arnés elija; solo falta si el ingeniero '
+        "lo ordena (by=, reason=).",
+        "The sheet has no isometric view: every manufacturing sheet carries it (in colour, by the harness's convention). "
+        'Add it: drawing(action=create, views=[..., "iso"]) or leave views out so the harness chooses; it is missing only '
+        "if the engineer orders it (by=, reason=).",
+    )
+    return [Finding("no_isometric", "warning", text, (), key="iso")]
+
+
 def _underused(data: ReviewInput) -> list[Finding]:
     """The views and their dimensions cover too little of the free drawing area (a larger standard scale or a smaller paper
-    holds them), or sit in a corner with most of the room on one side. Style: listed and answerable, never holds an
-    export."""
+    holds them), or sit in a corner with most of the room on one side. ``sheet_underused`` is a measurement WITH a remedy (a
+    larger standard scale, a smaller paper, fewer views) and holds the export until it is applied or the engineer orders
+    otherwise; the same gap with no remedy (the automatic layout, nothing larger fits) is ``sheet_unbalanced``, a notice
+    that can be answered."""
     import sheet_layout  # noqa: PLC0415 - the paper sizes and the standard scales
     from sheet_model import fmt_scale  # noqa: PLC0415
 
@@ -86,6 +496,10 @@ def _underused(data: ReviewInput) -> list[Finding]:
         corner=ctx.assembly is None,
         scales=sheet_layout.STANDARD_SCALES,
         papers=papers,
+        views=_view_boxes(ctx),
+        fewer=_fewer_views(ctx),
+        iso_own=_iso_own(ctx, scale),
+        notes=_notes_room(ctx),
     )
     if found is None:
         return []
@@ -97,6 +511,20 @@ def _underused(data: ReviewInput) -> list[Finding]:
     if found.paper is not None:
         fix_es.append(f"cabe en una hoja menor (template={found.paper})")
         fix_en.append(f"it fits a smaller sheet (template={found.paper})")
+    if found.iso_main is not None and found.iso_scale is not None:
+        own_es, own_en = (
+            f"con la isométrica a su propia escala ({fmt_scale(found.iso_scale)}, escrita bajo la vista) las vistas "
+            f"principales caben a scale={ctx.num(found.iso_main)} ({fmt_scale(found.iso_main)}): pide esa escala y la "
+            "isométrica se ajusta sola",
+            f"with the isometric view at its own scale ({fmt_scale(found.iso_scale)}, written under the view) the main "
+            f"views fit at scale={ctx.num(found.iso_main)} ({fmt_scale(found.iso_main)}): ask for that scale and the "
+            "isometric view adjusts itself",
+        )
+        fix_es.append(own_es)
+        fix_en.append(own_en)
+    if found.fewer and found.fewer_scale is not None:
+        fix_es.append(f"con menos vistas ({found.fewer}) cabe la escala {fmt_scale(found.fewer_scale)}")
+        fix_en.append(f"with fewer views ({found.fewer}) the scale {fmt_scale(found.fewer_scale)} fits")
     if fix_es:
         advice = ctx.say("; ".join(fix_es), "; ".join(fix_en))
     else:
@@ -106,7 +534,16 @@ def _underused(data: ReviewInput) -> list[Finding]:
             "the layout is the automatic one and no larger standard scale or smaller sheet fits: if the gap is "
             "deliberate, answer with the reason (not_applies: <why>)",
         )
-    if found.reason == "small":
+    if found.reason == "small" and found.ink < rules.LOW_INK <= found.coverage:
+        text = ctx.say(
+            f"El bloque de vistas y cotas abarca la hoja ({ctx.num(found.block[0])} x {ctx.num(found.block[1])} mm de "
+            f"{ctx.num(found.area[0])} x {ctx.num(found.area[1])} mm), pero las vistas en sí ocupan solo el "
+            f"{ctx.num(round(found.ink * 100))} % del área de dibujo: la hoja desperdicia papel; {advice}.",
+            f"The block of views and dimensions spans the sheet ({ctx.num(found.block[0])} x {ctx.num(found.block[1])} mm of "
+            f"{ctx.num(found.area[0])} x {ctx.num(found.area[1])} mm), but the views themselves take only "
+            f"{ctx.num(round(found.ink * 100))}% of the drawing area: the sheet wastes paper; {advice}.",
+        )
+    elif found.reason == "small":
         text = ctx.say(
             f"Las vistas y sus cotas ocupan solo el {ctx.num(round(found.coverage * 100))} % del área de dibujo "
             f"({ctx.num(found.block[0])} x {ctx.num(found.block[1])} mm de {ctx.num(found.area[0])} x {ctx.num(found.area[1])} mm): "
@@ -123,7 +560,13 @@ def _underused(data: ReviewInput) -> list[Finding]:
             f"The block of views sits in a corner: {ctx.num(found.free_mm)} mm are free on the {found.side} and only "
             f"{ctx.num(found.opposite_mm)} mm on the opposite side; {advice}.",
         )
-    return [Finding("sheet_underused", "warning", text, (), key=found.reason)]
+    remedy = (
+        found.scale is not None
+        or found.paper is not None
+        or bool(found.fewer and found.fewer_scale is not None)
+        or found.iso_main is not None
+    )
+    return [Finding("sheet_underused" if remedy else "sheet_unbalanced", "warning", text, (), key=found.reason)]
 
 
 # --- the hatch of the bodies of a section ----------------------------------------------------------------------------------------
@@ -166,8 +609,10 @@ def _views(ctx: Context) -> dict[str, ViewInfo]:
     return {**ctx.views, **ctx.extras.get("sections", {})}
 
 
-def _outlines(ctx: Context, views: dict[str, ViewInfo]) -> dict[str, list[rules.Segment]]:
-    ink = [e for e in ctx.extras.get("view_ink", []) if getattr(e, "layer", None) == CONTOUR]
+def _outlines(
+    ctx: Context, views: dict[str, ViewInfo], layers: tuple[str, ...] = (CONTOUR,)
+) -> dict[str, list[rules.Segment]]:
+    ink = [e for e in ctx.extras.get("view_ink", []) if getattr(e, "layer", None) in layers]
     pieces = segments_of(ink)
     out: dict[str, list[rules.Segment]] = {}
     for name, view in views.items():
@@ -184,13 +629,27 @@ def _es(side: str) -> str:
 
 def _sides(data: ReviewInput) -> list[Finding]:
     ctx = data.ctx
-    shapes: list[rules.DimShape] = ctx.extras.get("dim_shapes", [])
-    if not shapes:
+    shapes: list[rules.DimShape] = ctx.extras.get("dim_shapes_drawn", ctx.extras.get("dim_shapes", []))
+    extents = ctx.extras.get("extent_dims", [])
+    if not shapes and not extents:
         return []
     views = _views(ctx)
-    found = rules.dimension_side(shapes, _outlines(ctx, views), {n: v.box for n, v in views.items()})
+    outlines = _outlines(ctx, views)
+    found = rules.dimension_side(shapes, outlines, {n: v.box for n, v in views.items()})
     types = {str(i["id"]): str(i.get("type")) for i in data.items}
     out: list[Finding] = []
+    for g in rules.extent_gaps(extents, outlines):  # TechDraw's own overall width: its extension lines are not the item's
+        text = ctx.say(
+            f"La cota {g.owner} (overall) de la vista {g.view} está {_es(g.now)} y sus líneas de extensión suben desde las "
+            f"esquinas inferiores de la vista y cuelgan {ctx.num(g.gap_mm)} mm sobre ninguna línea de la pieza (cruzan un hueco): "
+            "parecen una arista que no existe. Una cota va del lado donde sus líneas no cruzan la vista: muévela "
+            "(overall con side=below).",
+            f"Dimension {g.owner} (overall) in the {g.view} view stands {g.now} and its extension lines rise from the lower "
+            f"corners of the view and hang {ctx.num(g.gap_mm)} mm over no line of the part (they cross a gap): they look like "
+            "an edge that does not exist. A dimension goes on the side where its lines do not cross the view: move it "
+            "(overall with side=below).",
+        )
+        out.append(Finding("dimension_side", "warning", text, (g.owner,), key=g.owner))
     for f in found:
         name = f"{f.owner} ({types[f.owner]})" if f.owner in types else f.owner
         if f.reason == "length":
@@ -277,6 +736,50 @@ def _crossings(data: ReviewInput) -> list[Finding]:
     return out
 
 
+# --- the stack of parallel dimensions: order and gap -------------------------------------------------------------------------------
+
+
+def _stacks(data: ReviewInput) -> list[Finding]:
+    """Parallel dimensions on one side of a view go from the shortest, nearest the part, to the longest, outermost, at least
+    ``MIN_PARALLEL_GAP_MM`` apart (ISO 129-1). Measured on the lines as the sheet draws them: a 260 outside a 340 has its extension
+    lines across the 340's line and the two texts nearly touch. Blocking: the layout puts them in order, so what is left here is a
+    placement made by hand (side, offset_mm) or one the layout could not make."""
+    ctx = data.ctx
+    shapes: list[rules.DimShape] = ctx.extras.get("dim_shapes", [])
+    if len(shapes) < 2:
+        return []
+    types = {str(i["id"]): str(i.get("type")) for i in data.items}
+    views = _views(ctx)
+    out: list[Finding] = []
+    for f in rules.dimension_stacks(shapes, {n: v.box for n, v in views.items()}):
+        label = lambda k: f"{k} ({types[k]})" if k in types else k  # noqa: E731
+        named = tuple(dict.fromkeys(k for k in (f.owner, f.other) if k in types))
+        key = f"{f.owner}~{f.other}"
+        if f.kind == "order":
+            text = ctx.say(
+                f"En la vista {f.view} ({_es(f.side)}), {label(f.owner)} ({ctx.num(round(f.owner_mm, 1))} mm) está más cerca de la pieza que "
+                f"{label(f.other)} ({ctx.num(round(f.other_mm, 1))} mm) y es más larga: las cotas paralelas van de la más corta, junto a la "
+                "pieza, a la más larga, por fuera (ISO 129-1); así las líneas de extensión de la corta no cruzan la línea de la larga. "
+                "Intercámbialas (offset_mm / side) o quita la colocación a mano y deja que la hoja las ordene.",
+                f"In the {f.view} view ({f.side}), {label(f.owner)} ({ctx.num(round(f.owner_mm, 1))} mm) stands nearer the part than "
+                f"{label(f.other)} ({ctx.num(round(f.other_mm, 1))} mm) and is longer: parallel dimensions go from the shortest, nearest "
+                "the part, to the longest, outermost (ISO 129-1), so the extension lines of the short one do not cross the line of the "
+                "long one. Swap them (offset_mm / side) or drop the hand placement and let the sheet order them.",
+            )
+            out.append(Finding("dimension_stack_order", "warning", text, named, key=key))
+        else:
+            text = ctx.say(
+                f"En la vista {f.view} ({_es(f.side)}), las líneas de {label(f.owner)} y {label(f.other)} van una junto a otra a "
+                f"{ctx.num(round(f.gap_mm, 1))} mm: el mínimo entre cotas paralelas es {ctx.num(rules.MIN_PARALLEL_GAP_MM)} mm (la altura del texto, 3,5 mm, más el "
+                "sitio de las flechas; lo normal son 7 mm) y los textos casi se tocan. Sepáralas (offset_mm).",
+                f"In the {f.view} view ({f.side}), the lines of {label(f.owner)} and {label(f.other)} run side by side "
+                f"{ctx.num(round(f.gap_mm, 1))} mm apart: the minimum between parallel dimensions is {ctx.num(rules.MIN_PARALLEL_GAP_MM)} mm (the text height, 3.5 mm, plus "
+                "the room of the arrows; 7 mm is usual) and their texts nearly touch. Move them apart (offset_mm).",
+            )
+            out.append(Finding("dimension_gap", "warning", text, named, key=key))
+    return out
+
+
 # --- the datum symbol on a line of another item -----------------------------------------------------------------------------
 
 
@@ -342,7 +845,12 @@ def _datums(data: ReviewInput) -> list[Finding]:
 def _unused_datums(data: ReviewInput) -> list[Finding]:
     """A ``datum`` item whose letter no ``gdt`` item cites in its ``datums``: a datum symbol means nothing on its own."""
     ctx = data.ctx
-    declared = [(str(i["id"]), str(i["letter"])) for i in data.items if i.get("type") == "datum" and i.get("letter")]
+    located = any(i.get("type") == "datum_dims" for i in data.items)  # the positions count from a declared datum face
+    declared = [
+        (str(i["id"]), str(i["letter"]))
+        for i in data.items
+        if i.get("type") == "datum" and i.get("letter") and not (located and i.get("face"))
+    ]
     if not declared:
         return []
     cited = [list(i.get("datums") or ()) for i in data.items if i.get("type") == "gdt"]
@@ -414,7 +922,7 @@ def _chamfers(data: ReviewInput) -> list[Finding]:
 def _short(data: ReviewInput) -> list[Finding]:
     ctx = data.ctx
     out: list[Finding] = []
-    for d in rules.short_dimensions(ctx.extras.get("dim_shapes", [])):
+    for d in rules.short_dimensions(ctx.extras.get("dim_shapes_drawn", ctx.extras.get("dim_shapes", []))):
         text = ctx.say(
             f"La cota {d.owner} de la vista {d.view} mide {ctx.num(d.span or 0.0)} mm entre sus líneas de extensión: no caben "
             "el texto y las dos flechas. Pon las flechas por fuera (arrows=outside).",
@@ -499,16 +1007,16 @@ def _redundant(data: ReviewInput) -> list[Finding]:
         if r.reason == "cut_only":
             text = ctx.say(
                 f"La vista {r.name} solo lleva la línea de corte {labels}: otra vista que se queda puede llevarla y el corte "
-                f"lleva las cotas. Quítala (drawing action=remove_view, view={r.name}){move}.",
+                f"lleva las cotas. Quítala (drawing action=remove_view, views=[{r.name}]){move}.",
                 f"The {r.name} view only carries the cutting line {labels}: another view that stays can carry it and the "
-                f"section carries the dimensions. Drop it (drawing action=remove_view, view={r.name}){move}.",
+                f"section carries the dimensions. Drop it (drawing action=remove_view, views=[{r.name}]){move}.",
             )
         else:
             text = ctx.say(
                 f"Las cotas de la vista {r.name} las repite {', '.join(r.repeated_in)} y no lleva nada propio: es redundante. "
-                f"Quítala (drawing action=remove_view, view={r.name}){move}.",
+                f"Quítala (drawing action=remove_view, views=[{r.name}]){move}.",
                 f"The dimensions of the {r.name} view are repeated in {', '.join(r.repeated_in)} and it carries nothing of its "
-                f"own: it is redundant. Drop it (drawing action=remove_view, view={r.name}){move}.",
+                f"own: it is redundant. Drop it (drawing action=remove_view, views=[{r.name}]){move}.",
             )
         out.append(Finding("view_redundant", "warning", text, (r.name,), key=r.name))
     return out

@@ -50,6 +50,8 @@ from cotaforge.contract import (
     MateDistanceRequest,
     MirrorBodyRequest,
     MirrorRequest,
+    MouldComponentRequest,
+    MouldSplitRequest,
     MoveBodyRequest,
     OperationSpec,
     PlaceComponentRequest,
@@ -57,7 +59,9 @@ from cotaforge.contract import (
     Request,
     RevolveRequest,
     SetJointRequest,
+    SlideMechanismRequest,
     ShellRequest,
+    ShrinkBodyRequest,
     SketchFrame,
     SketchRequest,
     SplitRequest,
@@ -70,6 +74,7 @@ from cotaforge.contract import (
     plain_op_name,
     sketch_profiles,
     slide_onto_face,
+    stable_face_origin,
 )
 from cotaforge.executor.context import ExecutionContext
 from cotaforge.executor.errors import ResolutionError
@@ -317,7 +322,7 @@ def _hole_position_from_point(op: Any, face: Any, resolver: Resolver) -> tuple[f
                 "on the outer wall of a tube or shaft use position = [axial_mm, angle_deg]"
             ),
         )
-    frame = frame_for_face(face)
+    frame = frame_for_face(face, stable_face_origin(face))
     u, v, _ = frame.to_local(tuple(float(c) for c in op.at))
     point = frame.to_world(u, v)
     box = face.bbox
@@ -353,8 +358,31 @@ def build_hole(op: Any, ctx: ExecutionContext, resolver: Resolver) -> HoleReques
             ),
         )
     thread = HoleThread(size=op.size, depth_mm=op.thread_depth_mm) if op.standard is HoleStandard.iso_tapped else None
-    position = op.position if op.at is None else _hole_position_from_point(op, face, resolver)
-    origin = _held_origin(ctx, op.id, face) if op.at is None and face.surface is SurfaceType.plane else None
+    points = op.points()
+    if points is not None and face.surface is not SurfaceType.plane:
+        raise ResolutionError(
+            op_id=op.id,
+            path="face",
+            ref=op.face,
+            candidates=1,
+            message=(
+                f"several holes in one op (positions / bolt_circle) need a planar face, but {face.handle.id} is "
+                f"{face.surface.value}; on a tube or shaft wall give one op per hole with "
+                "position = [axial_mm, angle_deg]"
+            ),
+        )
+    if points is not None:
+        position = points[0]
+    elif op.at is None:
+        position = op.position
+    else:
+        position = _hole_position_from_point(op, face, resolver)
+    # (u, v) is measured from a point that holes drilled in the face do not move: the one a rebuild holds, else the
+    # centre of the face's bounding box (never its centre of mass)
+    origin = None
+    if face.surface is SurfaceType.plane:
+        held = _held_origin(ctx, op.id, face) if op.at is None else None
+        origin = held if held is not None else stable_face_origin(face)
     up_to = resolver.face(op.up_to_face, op.id, "up_to_face").handle if op.up_to_face is not None else None
     # FreeCAD's default point (angled) applies to a hole with a bottom on a flat face: a through hole has none, and a
     # hole across a tube wall is a plain cylinder; only an explicit request for a point there is passed on (and refused)
@@ -367,6 +395,7 @@ def build_hole(op: Any, ctx: ExecutionContext, resolver: Resolver) -> HoleReques
         operation_id=op.id,
         face=face.handle,
         position=position,
+        positions=points,
         origin=origin,
         standard=op.standard,
         size=op.size,
@@ -622,6 +651,73 @@ def build_copy_body(op: Any, ctx: ExecutionContext, resolver: Resolver) -> CopyB
     )
 
 
+def build_shrink_body(op: Any, ctx: ExecutionContext, resolver: Resolver) -> ShrinkBodyRequest:
+    """The source body and the scale per axis (``1 + shrinkage / 100``)."""
+    return ShrinkBodyRequest(operation_id=op.id, source=resolver.body(op.source, op.id, "source"), scale=op.scale())
+
+
+def build_mould_split(op: Any, ctx: ExecutionContext, resolver: Resolver) -> MouldSplitRequest:
+    """The shrunk source, the pull as a vector, the block, the decision on the walls with no draft and the slides."""
+    return MouldSplitRequest(
+        operation_id=op.id,
+        source=resolver.body(op.source, op.id, "source"),
+        pull=f.normalise(axis_vector(op.pull)),
+        block_size=tuple(op.block_size_mm) if op.block_size_mm is not None else None,
+        margin_mm=op.margin_mm,
+        zero_draft_to=op.zero_draft_to,
+        slides=op.slides,
+        min_draft_deg=op.min_draft_deg,
+    )
+
+
+def build_mould_component(op: Any, ctx: ExecutionContext, resolver: Resolver) -> MouldComponentRequest:
+    """The catalogue parts of the step, resolved to millimetres (``cotaforge.mouldparts``): the CAD draws numbers only."""
+    from cotaforge import mouldparts  # noqa: PLC0415 - the tables are only read when a step names a component
+
+    places = [
+        mouldparts.Placement(
+            origin=tuple(p.origin),  # type: ignore[arg-type]
+            z=f.normalise(axis_vector(p.axis)),
+            x=tuple(p.x) if p.x is not None else None,  # type: ignore[arg-type]
+        )
+        for p in op.at
+    ]
+    try:
+        parts = mouldparts.expand(op.kind, op.ref, op.size, places)
+    except mouldparts.ComponentError as exc:
+        raise _missing(op, "ref", str(exc)) from exc
+    return MouldComponentRequest(operation_id=op.id, parts=parts)
+
+
+def build_slide_mechanism(op: Any, ctx: ExecutionContext, resolver: Resolver) -> SlideMechanismRequest:
+    """The split step and the slide number, the part, the pull and the angles; the catalogue rows the CAD may pick the
+    angle pin and the wear plate from travel in the request (the CAD side reads no catalogue)."""
+    from cotaforge import mouldparts  # noqa: PLC0415 - the tables are only read when a step names a component
+
+    try:
+        pins = mouldparts.angle_pin_rows(round(op.pin_diameter_mm))
+        if abs(op.pin_diameter_mm - round(op.pin_diameter_mm)) > 1e-9:
+            raise mouldparts.ComponentError(f"pin_diameter_mm {op.pin_diameter_mm:g} is not a catalogue diameter (whole millimetres)")
+    except mouldparts.ComponentError as exc:
+        raise _missing(op, "pin_diameter_mm", str(exc)) from exc
+    return SlideMechanismRequest(
+        operation_id=op.id,
+        split=_feature(op, ctx, op.split, "split"),
+        slide=op.slide,
+        part=resolver.body(op.part, op.id, "part"),
+        pull=f.normalise(axis_vector(op.pull)),
+        angle_deg=op.angle_deg,
+        stroke_mm=op.stroke_mm,
+        clearance_mm=op.clearance_mm,
+        wedge_extra_deg=op.wedge_extra_deg,
+        host=op.host,
+        pin_diameter_mm=op.pin_diameter_mm,
+        pin_options=pins,
+        wear_options=mouldparts.wear_rows(),
+        sources={"angle_pin": mouldparts.dme.ANGLE_PIN_SOURCE, "wear_plate": mouldparts.dme.WEAR_SOURCE},
+    )
+
+
 def build_split(op: Any, ctx: ExecutionContext, resolver: Resolver) -> SplitRequest:
     """The source piece as a body handle and the parting plane as a frame (a base plane, a datum plane or a planar
     face; only its origin and normal matter)."""
@@ -752,6 +848,10 @@ DISPATCH: dict[str, tuple[str, Builder]] = {
     "draft": ("draft", build_draft),
     "mirror": ("mirror", build_mirror),
     "mirror_body": ("mirror_body", build_mirror_body),
+    "shrink_body": ("shrink_body", build_shrink_body),
+    "mould_split": ("mould_split", build_mould_split),
+    "mould_component": ("mould_component", build_mould_component),
+    "slide_mechanism": ("slide_mechanism", build_slide_mechanism),
     "split": ("split", build_split),
     "box": ("box", build_box),
     "cylinder": ("cylinder", build_cylinder),

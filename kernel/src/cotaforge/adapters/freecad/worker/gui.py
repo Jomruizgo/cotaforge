@@ -30,6 +30,7 @@ import traceback
 from collections.abc import Callable, Iterator
 from typing import Any
 
+import appearance
 import changes
 import fc
 import FreeCAD as App
@@ -59,11 +60,12 @@ VIEW_METHODS = {
 # Drag-selecting fires the observer once per sub-element; only the selection ``debounce_s`` after the
 # last one is reported (CAD-selection seam).
 SELECTION_DEBOUNCE_S = 0.15
-# Opaque orange: ``queries.show_entities``' one temporary paint colour (RGBA, FreeCAD's own convention for
-# ``DiffuseColor``/``LineColorArray`` entries).
-HIGHLIGHT_COLOR: highlight.RGBA = (1.0, 0.55, 0.0, 0.0)
+# Opaque orange: ``queries.show_entities``' one temporary paint colour, ``(r, g, b, opacity)``: on FreeCAD 1.1 the 4th
+# component of a face or edge colour is the OPACITY, so ``0.0`` is invisible (see ``appearance``).
+HIGHLIGHT_COLOR: highlight.RGBA = (1.0, 0.55, 0.0, 1.0)
 
 _highlight_state = highlight.HighlightState()
+_appearance_state: dict[tuple[str, str], list[Any]] = {}  # (document, object) -> the ShapeAppearance before a graded paint
 
 _keep_alive: list[Any] = []  # the bridge QObject and the reader thread must outlive ``serve()``
 _keep_alive_sub: list[Any] = []  # the sheet window last looked up: its (sub-window, widget) wrappers
@@ -484,8 +486,79 @@ def show_sheet(page: Any) -> None:
             page.ViewObject.doubleClicked()  # opens the window, or brings the open one to the front
         for _ in range(3):
             Gui.updateGui()
+        ink_black(page)
     except Exception:  # noqa: BLE001
         sys.stderr.write(traceback.format_exc())
+
+
+INK_LIGHT = 0.6  # a text lighter than this (0 black .. 1 white) does not show on the white sheet
+
+
+def ink_black(page: Any) -> int:
+    """Paint black every text of the sheet whose colour is too light for white paper, and return how many were repainted.
+
+    Some TechDraw texts (the texts of the tiles of a weld symbol, measured in 1.1.3) take the colour of the window's theme
+    instead of the sheet's ink: white in the dark theme, invisible on the page and in the exported PDF. The theme is a display
+    matter; the sheet the welder reads is the exported one, so this runs before the window is shown and before every export
+    and capture. No-op headless (nothing is painted there)."""
+    if not ACTIVE:
+        return 0
+    import TechDrawGui  # noqa: PLC0415 - only in the GUI binary
+
+    repainted = 0
+    black = QtGui.QColor(0, 0, 0)
+    for item in TechDrawGui.getSceneForPage(page).items():
+        if type(item).__name__ != "QGraphicsTextItem":
+            continue
+        colour = item.defaultTextColor()
+        if (colour.red() + colour.green() + colour.blue()) / 765.0 > INK_LIGHT:
+            item.setDefaultTextColor(black)
+            repainted += 1
+    return repainted
+
+
+def weld_offsets(page: Any, tile_texts: list[str]) -> list[tuple[str, float, float]]:
+    """Where each weld symbol of the window stands against the leader it hangs on: ``(a tile text of it, dx, dy)`` in mm, ``(0, 0)``
+    when it sits on its reference line. The window pulls an object whose origin comes near the origin of a view on to it (measured
+    in 1.1.3: the symbol of a weld sat 3.8 mm off its line), which no property of the object says. ``tile_texts`` are the texts of
+    the tiles of the page (a weld symbol is found by them); empty headless, where nothing is painted."""
+    if not ACTIVE or not tile_texts:
+        return []
+    import TechDrawGui  # noqa: PLC0415 - only in the GUI binary
+
+    found: list[tuple[str, float, float]] = []
+    seen: set[int] = set()
+    for item in TechDrawGui.getSceneForPage(page).items():
+        if type(item).__name__ != "QGraphicsTextItem" or str(item.toPlainText()).strip() not in tile_texts:
+            continue
+        tile = item.parentItem()
+        symbol = tile.parentItem() if tile is not None else None
+        if symbol is None or symbol.parentItem() is None or id(symbol) in seen:
+            continue
+        seen.add(id(symbol))
+        found.append((str(item.toPlainText()).strip(), symbol.pos().x() / SCENE_PER_MM, -symbol.pos().y() / SCENE_PER_MM))
+    return found
+
+
+@contextlib.contextmanager
+def paper_ink() -> Iterator[None]:
+    """For the length of the block the application's text colours are black, whatever the theme of the window: TechDraw makes the
+    texts of a weld tile (and of any item it draws without a colour of its own) in the application's text colour when it redraws
+    the sheet, which happens inside its own export (measured in 1.1.3: ``ink_black`` before the export was undone by it). The
+    palette is put back as it was. No-op headless."""
+    if not ACTIVE:
+        yield
+        return
+    app = QtWidgets.QApplication.instance()
+    old = QtGui.QPalette(app.palette())
+    palette = QtGui.QPalette(old)
+    for role in (QtGui.QPalette.Text, QtGui.QPalette.WindowText, QtGui.QPalette.ButtonText):
+        palette.setColor(role, QtGui.QColor(0, 0, 0))
+    app.setPalette(palette)
+    try:
+        yield
+    finally:
+        app.setPalette(old)
 
 
 def text_width_mm(text: str, size_mm: float, family: str = "osifont") -> float:
@@ -501,30 +574,41 @@ def text_width_mm(text: str, size_mm: float, family: str = "osifont") -> float:
 SCENE_PER_MM = 10.0  # the TechDraw scene is in tenths of a millimetre (``Rez``), y down
 
 
-def block_box(page: Any, x_mm: float, y_mm: float) -> tuple[float, float, float] | None:
+def block_box(page: Any, x_mm: float, y_mm: float, text: str | None = None) -> tuple[float, float, float] | None:
     """``(left, width, height)`` in mm of the text block TechDraw painted centred near the page point ``(x_mm, y_mm)`` (y
     up) -- an annotation: its own text item sits centred on its X, Y --, or ``None`` headless or when none is there. The
     line is where its Y says (the notes are 5 mm apart); its X is only an estimate from the font metrics, off by a few mm
-    for some strings, so the block is the widest text item of that line within 8 mm of the estimate."""
+    for some strings, so the block is the widest text item of that line within 8 mm of the estimate. With ``text`` the item
+    must SAY that text: a line whose own item is not painted yet is never taken for another text that happens to stand at
+    that height (the dimension text of a view: it moved a note line out of the frame), and ``None`` is the answer."""
     if not ACTIVE:
         return None
     import TechDrawGui  # noqa: PLC0415
 
+    import sheet_notefit  # noqa: PLC0415 - the pure choice of the item (unit-tested without a window)
+
     Gui.updateGui()
-    best: tuple[float, float, float] | None = None
+    boxes: list[sheet_notefit.TextBox] = []
     for item in TechDrawGui.getSceneForPage(page).items():
         if type(item).__name__ != "QGraphicsTextItem":
             continue
         rect = item.sceneBoundingRect()
-        cx, cy = (rect.x() + rect.width() / 2) / SCENE_PER_MM, -(rect.y() + rect.height() / 2) / SCENE_PER_MM
-        if abs(cx - x_mm) <= 8.0 and abs(cy - y_mm) <= 1.0 and (best is None or rect.width() > best[1] * SCENE_PER_MM):
-            best = (rect.x() / SCENE_PER_MM, rect.width() / SCENE_PER_MM, rect.height() / SCENE_PER_MM)
-    return best
+        boxes.append(
+            sheet_notefit.TextBox(
+                str(item.toPlainText()),
+                rect.x() / SCENE_PER_MM,
+                rect.width() / SCENE_PER_MM,
+                rect.height() / SCENE_PER_MM,
+                (rect.x() + rect.width() / 2) / SCENE_PER_MM,
+                -(rect.y() + rect.height() / 2) / SCENE_PER_MM,
+            )
+        )
+    return sheet_notefit.pick_block(boxes, x_mm, y_mm, text)
 
 
-def block_extent(page: Any, x_mm: float, y_mm: float) -> tuple[float, float] | None:
+def block_extent(page: Any, x_mm: float, y_mm: float, text: str | None = None) -> tuple[float, float] | None:
     """The size (mm) of the text block ``block_box`` finds, or ``None``."""
-    found = block_box(page, x_mm, y_mm)
+    found = block_box(page, x_mm, y_mm, text)
     return None if found is None else (found[1], found[2])
 
 
@@ -537,7 +621,11 @@ def export_pdf(page: Any, path: str) -> str:
     show_sheet(page)
     for _ in range(3):
         Gui.updateGui()
-    TechDrawGui.exportPageAsPdf(page, path)
+    # what is read is the PDF: no text may be the colour of the window's theme. TechDraw redraws the sheet when it exports, so
+    # the texts are made again then, in the application's text colour: black while the PDF is written
+    with paper_ink():
+        TechDrawGui.exportPageAsPdf(page, path)
+    ink_black(page)
     return "techdraw"
 
 
@@ -559,6 +647,7 @@ def render_png(
         Gui.updateGui()
     x0, y0, x1, y1 = region if region is not None else (0.0, 0.0, page_mm[0], page_mm[1])
     height_px = max(1, round(width_px * (y1 - y0) / (x1 - x0)))
+    ink_black(page)
     image = QtGui.QImage(width_px, height_px, QtGui.QImage.Format.Format_ARGB32)
     image.fill(QtGui.QColor("white"))
     painter = QtGui.QPainter(image)
@@ -817,7 +906,8 @@ def sheet_color_pixels(page: Any, rgb: tuple[int, int, int] = SHEET_COLOR, tol: 
 # itself, same separation ``queries.py`` already keeps for every other query. Deliberately NEVER touches
 # ``Gui.Selection``: doing so would feed back through the ``_SelectionObserver`` below exactly as if the
 # engineer had picked the entity themselves (BUG-class this feature exists to avoid), and would also
-# visibly steal the engineer's own current pick. Only ``ViewObject.DiffuseColor``/``LineColorArray`` are
+# visibly steal the engineer's own current pick. Only the per-face ``ShapeAppearance`` and the per-edge
+# ``LineColorArray`` of the ``ViewObject`` that paints (``appearance.paint_object``: a body's Tip) are
 # ever written here, computed by the FreeCAD-free ``highlight`` module so the colour arithmetic itself is
 # unit-testable without a real FreeCAD.
 
@@ -845,15 +935,65 @@ def clear_highlight(fc_doc: Any) -> None:
                 _highlight_state.discard(doc_name, object_name)  # gone: nothing left to restore
                 continue
             # The REAL current topology count, never the property's own live length: confirmed against
-            # real FreeCAD, a stale DiffuseColor/LineColorArray is left exactly as it was across a
+            # real FreeCAD, a stale ShapeAppearance/LineColorArray is left exactly as it was across a
             # topology change (a fillet, say) instead of being resized -- reading the property back would
             # never notice the mismatch ``highlight.restore_value`` needs to detect.
-            current_length = len(obj.Shape.Faces) if attr == "DiffuseColor" else len(obj.Shape.Edges)
-            setattr(obj.ViewObject, attr, highlight.restore_value(original, current_length))
-            _highlight_state.discard(doc_name, object_name)
+            if attr == "ShapeAppearance":
+                base = highlight.base_index([appearance.rgba(m) for m in original])
+                obj.ViewObject.ShapeAppearance = appearance.restore(list(original), len(obj.Shape.Faces), base)
+            else:
+                obj.ViewObject.LineColorArray = highlight.restore_value(original, len(obj.Shape.Edges))
+            _highlight_state.discard(doc_name, object_name, attr)
         except Exception:  # noqa: BLE001 - one bad restore must never block the rest or crash the worker
             sys.stderr.write(traceback.format_exc())
+    _restore_appearance(fc_doc)
     Gui.updateGui()
+
+
+def _restore_appearance(fc_doc: Any) -> None:
+    """Put back the per-face appearance ``paint_faces`` replaced (one object at a time, like ``clear_highlight``)."""
+    for key in [k for k in _appearance_state if k[0] == fc_doc.Name]:
+        try:
+            obj = fc_doc.getObject(key[1])
+            original = _appearance_state[key]
+            if obj is not None and obj.ViewObject is not None:
+                faces = len(obj.Shape.Faces)
+                # a list of another length than one entry or one per face is stale (the solid changed meanwhile)
+                obj.ViewObject.ShapeAppearance = original if len(original) in (1, faces) else original[:1]
+        except Exception:  # noqa: BLE001 - one bad restore must never block the rest or crash the worker
+            sys.stderr.write(traceback.format_exc())
+        finally:
+            _appearance_state.pop(key, None)
+
+
+def paint_faces(fc_doc: Any, targets: list[tuple[Any, int, highlight.RGBA]]) -> bool:
+    """Colour faces on screen until the next ``clear_highlight`` of this document: ``targets`` are ``(the object the
+    window shows, face index, colour)``. FreeCAD 1.1 draws a per-face colour from the ``ShapeAppearance`` of the view of
+    the object the window SHOWS (the Tip of a PartDesign body, never the body: confirmed on 1.1.3, where a
+    ``DiffuseColor`` set on the body's view paints nothing). A colour is ``(r, g, b, opacity)`` (``appearance``).
+    Returns whether something was painted; never marks the document modified."""
+    clear_highlight(fc_doc)
+    if not ACTIVE or not targets:
+        return False
+    by_object: dict[Any, list[tuple[int, highlight.RGBA]]] = {}
+    for obj, index, colour in targets:
+        by_object.setdefault(obj, []).append((index, colour))
+    painted = False
+    for obj, entries in by_object.items():
+        view = obj.ViewObject
+        if view is None or not hasattr(view, "ShapeAppearance"):
+            continue
+        original = list(view.ShapeAppearance)
+        faces = len(obj.Shape.Faces)
+        shown: list[Any] = list(original) if len(original) == faces else [original[0]] * faces
+        for index, colour in entries:
+            if 0 <= index < faces:
+                shown[index] = appearance.recolored(shown[index], colour)
+        _appearance_state[(fc_doc.Name, obj.Name)] = original
+        view.ShapeAppearance = shown
+        painted = True
+    Gui.updateGui()
+    return painted
 
 
 def drop_highlight(fc_doc_name: str) -> None:
@@ -861,6 +1001,8 @@ def drop_highlight(fc_doc_name: str) -> None:
     the document is about to be deleted (``_HighlightWatcher.slotDeletedDocument`` below): there is
     nothing left in FreeCAD to restore a colour on. No-op if nothing was remembered for it."""
     _highlight_state.discard_document(fc_doc_name)
+    for key in [k for k in _appearance_state if k[0] == fc_doc_name]:
+        del _appearance_state[key]
     import hole_colours  # noqa: PLC0415 - hole_colours imports this module lazily too
 
     hole_colours.forget(fc_doc_name)
@@ -872,8 +1014,9 @@ def drop_highlight(fc_doc_name: str) -> None:
 def highlight_entities(fc_doc: Any, targets: list[tuple[Any, str, int]]) -> None:
     """Temporarily recolour ``targets`` (``(object, "face"|"edge", index)``) with ``HIGHLIGHT_COLOR``.
     Always clears any highlight left over from a previous call on THIS document first (never another open
-    document's). Groups by object so an object with two highlighted faces has its ``DiffuseColor`` read
-    and written once, not twice. Never marks the document modified and never calls ``Gui.Selection`` (see
+    document's). Groups by object so an object with two highlighted faces has its ``ShapeAppearance`` read
+    and written once, not twice. The colours go to the object the 3D view paints (``appearance.paint_object``),
+    never to a PartDesign body, whose edge colours the view ignores. Never marks the document modified and never calls ``Gui.Selection`` (see
     the module note above)."""
     clear_highlight(fc_doc)
     if not ACTIVE or not targets:
@@ -882,20 +1025,23 @@ def highlight_entities(fc_doc: Any, targets: list[tuple[Any, str, int]]) -> None
     by_object: dict[Any, list[tuple[str, int]]] = {}
     for obj, kind, index in targets:
         by_object.setdefault(obj, []).append((kind, index))
-    for obj, entries in by_object.items():
+    for owner, entries in by_object.items():
+        obj = appearance.paint_object(owner)
         view = obj.ViewObject
         if view is None:
             continue
         face_indices = [i for k, i in entries if k == "face"]
         edge_indices = [i for k, i in entries if k == "edge"]
         if face_indices:
-            current = list(view.DiffuseColor)
-            _highlight_state.remember(doc_name, obj.Name, "DiffuseColor", current)
+            materials = appearance.read(view)
+            current = [appearance.rgba(m) for m in materials]
+            _highlight_state.remember(doc_name, obj.Name, "ShapeAppearance", materials)
             # ``current`` is a length-1 "uniform colour" list until now on a never-recoloured shape
             # (confirmed against real FreeCAD): expand it to one entry per face FIRST, or painting index
             # 0 into that length-1 list would set the shape's ONE colour and recolour the whole object.
             expanded = highlight.expand_to_length(current, len(obj.Shape.Faces))
-            view.DiffuseColor = highlight.recolor(expanded, face_indices, HIGHLIGHT_COLOR)
+            painted = highlight.recolor(expanded, face_indices, HIGHLIGHT_COLOR)
+            view.ShapeAppearance = appearance.from_rgba(painted, materials)
         if edge_indices:
             current = list(view.LineColorArray)
             _highlight_state.remember(doc_name, obj.Name, "LineColorArray", current)

@@ -8,6 +8,7 @@ import pytest
 
 from cotaforge.adapters.freecad import FreeCADAdapter, FreeCADSession, find_freecad_root
 from cotaforge.adapters.freecad.rpc import WORKER_DIR
+from tests.integration.freecad import sheet_gate
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 WORKER_MAIN = WORKER_DIR / "main.py"
@@ -40,3 +41,39 @@ def adapter(freecad_root: Path, tmp_path_factory: pytest.TempPathFactory) -> Ite
     log_dir = tmp_path_factory.mktemp("freecad-logs")
     with FreeCADSession(freecad_root=freecad_root, timeout_s=60.0, log_dir=log_dir) as connected:
         yield connected
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) -> Iterator[None]:
+    """A test that failed already says what is wrong: its sheet is not reviewed on top of that."""
+    outcome = yield
+    report = outcome.get_result()
+    if report.when == "call" and report.failed:
+        item.rep_call_failed = True  # type: ignore[attr-defined]
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:
+    """No test sheet without a review (``sheet_gate``): before the fixtures of the test are torn down (the CAD it built the sheet in
+    is still running), every adapter that built a sheet in it has its review run, and the test fails on a blocking finding of the
+    drawing rules it did not list with ``@pytest.mark.expected_findings(...)``."""
+    built = getattr(item, "sheet_gate_built", None)
+    if built and not getattr(item, "rep_call_failed", False):
+        expected = tuple(code for mark in item.iter_markers("expected_findings") for code in mark.args)
+        sheet_gate.check_built(built, expected)
+
+
+@pytest.fixture(autouse=True)
+def every_sheet_is_reviewed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remember the adapters that build a sheet in the test (``pytest_runtest_teardown`` reviews them)."""
+    built: list[FreeCADAdapter] = []
+    request.node.sheet_gate_built = built
+    original = FreeCADAdapter.create_drawing
+
+    def watched(self: FreeCADAdapter, *args: object, **kwargs: object) -> object:
+        result = original(self, *args, **kwargs)  # type: ignore[arg-type]
+        if self not in built:
+            built.append(self)
+        return result
+
+    monkeypatch.setattr(FreeCADAdapter, "create_drawing", watched)

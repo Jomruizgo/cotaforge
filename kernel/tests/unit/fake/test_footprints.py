@@ -49,7 +49,7 @@ def test_hole_inside_the_face_is_accepted_and_one_outside_is_geometry_failed(ses
     with pytest.raises(AdapterError) as outside:
         _hole(session, top, (48.0, 0.0))  # world x = 98: the 6.6 mm circle crosses the x = 100 edge
     assert outside.value.info.code is ErrorCode.geometry_failed
-    assert "not fully inside face" in outside.value.info.message and "(u, v) from the face centre" in (
+    assert "not fully inside face" in outside.value.info.message and "(u, v) from the centre of the face's bounding box" in (
         outside.value.info.message
     )
     with pytest.raises(AdapterError) as far_away:

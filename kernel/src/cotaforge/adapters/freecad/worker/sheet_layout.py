@@ -19,7 +19,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
-STANDARD_SCALES = (10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01)
+STANDARD_SCALES = (50.0, 20.0, 10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01)
 PAGES_MM = {
     "A4": (297.0, 210.0),
     "A3": (420.0, 297.0),
@@ -42,6 +42,8 @@ FRAME_MARGIN_MM = 10.0  # the frame of the ISO 5457 templates is this far from t
 TITLE_BLOCK_TOP_MM = 58.0  # the top edge of the title block, from the page's bottom (y up): a parts list sits on it
 TITLE_BLOCK_WIDTH_MM = 180.0
 PARTS_ROW_MM = 6.0  # a row of the parts list; an assembly sheet keeps room for as many rows as it has parts
+ISO_LABEL_MM = 8.0  # room under the isometric view for its own scale, written there when it is not the sheet's (ISO 5455)
+ISO_OWN_RATIO = 2.5  # the isometric view drawn at its own scale is at most one standard step smaller than the sheet's
 
 # Isometric view direction (towards the viewer) and the page's x axis in it, as TechDraw is told.
 ISO_DIRECTION = (1.0, -1.0, 1.0)
@@ -58,6 +60,7 @@ class Layout:
     front: tuple[float, float]  # centre of the front view
     iso: tuple[float, float]  # centre of the isometric view
     spacing: float = SPACING_MM
+    iso_scale: float = 0.0  # the isometric view's own scale; 0: the sheet's (``scale``)
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,17 @@ class Spec:
     left_mm: float = 0.0
     right_mm: float = 0.0
     spacing: float = SPACING_MM  # between the front view and the top / right ones
+    iso_scale: float = 0.0  # the isometric view's own scale (a pictorial view may have one); 0: the sheet's
+
+
+def own_iso(scale: float, s: Spec) -> bool:
+    """Whether the isometric view of ``s`` is drawn at a scale of its own (not the sheet's)."""
+    return s.iso[0] > 0 and s.iso_scale > 0 and abs(s.iso_scale - scale) > 1e-9
+
+
+def iso_factor(scale: float, s: Spec) -> float:
+    """The scale the isometric view is drawn at: its own when it has one, else the sheet's."""
+    return s.iso_scale if own_iso(scale, s) else scale
 
 
 def iso_extent(width: float, depth: float, height: float) -> tuple[float, float]:
@@ -147,7 +161,9 @@ def _needed_spec(scale: float, s: Spec) -> tuple[float, float]:
     """(width, height) the views, their dimensions and the isometric view take at ``scale``."""
     block_w, block_h, _, _ = _extents(scale, s)
     gap = ISO_GAP_MM if s.iso[0] > 0 else 0.0  # no isometric view: nothing to the right of the group
-    return block_w + gap + s.iso[0] * scale, max(block_h, s.iso[1] * scale + DIM_MARGIN_MM if s.iso[0] > 0 else block_h)
+    k = iso_factor(scale, s)
+    below = DIM_MARGIN_MM + (ISO_LABEL_MM if own_iso(scale, s) else 0.0)  # its scale is written under it
+    return block_w + gap + s.iso[0] * k, max(block_h, s.iso[1] * k + below if s.iso[0] > 0 else block_h)
 
 
 def _drop(needed_h: float, area_h: float | None) -> float:
@@ -170,7 +186,9 @@ def _blocks_spec(
     iso_x = start + block_w + ISO_GAP_MM
     blocks = [(start, top, start + block_w, top + block_h)]
     if s.iso[0] > 0:
-        blocks.append((iso_x, top, iso_x + s.iso[0] * scale, top + s.iso[1] * scale + DIM_MARGIN_MM))
+        k = iso_factor(scale, s)
+        below = DIM_MARGIN_MM + (ISO_LABEL_MM if own_iso(scale, s) else 0.0)
+        blocks.append((iso_x, top, iso_x + s.iso[0] * k, top + s.iso[1] * k + below))
     return blocks
 
 
@@ -211,10 +229,30 @@ def _spread(spec: Spec, fits: Callable[[Spec], bool]) -> Spec:
     return spec
 
 
-def _start(left: float, area_w: float, needed_w: float, iso: tuple[float, float]) -> float:
+def _start(left: float, area_w: float, needed_w: float, iso: tuple[float, float], centred: bool = False) -> float:
     """Where the group starts: centred across the area; without an isometric view it stays at the left, so the room that
-    is left over is one piece (an exploded view takes it)."""
-    return left + (max(0.0, area_w - needed_w) / 2 if iso[0] > 0 else 0.0)
+    is left over is one piece (an exploded view takes it) -- unless nothing will take it (``centred``: a part sheet, whose
+    views would sit in a corner of the paper)."""
+    return left + (max(0.0, area_w - needed_w) / 2 if iso[0] > 0 or centred else 0.0)
+
+
+NOTES_GAP_MM = 5.0  # between the views and the numbered notes block beside or under them
+
+
+def fits_round_notes(
+    width: float, height: float, area_w: float, area_h: float, notes: tuple[float, float] | None = None
+) -> bool:
+    """Whether a block of ``width`` x ``height`` fits the free area ``area_w`` x ``area_h`` together with the numbered notes
+    block (``notes``: its width and height; ``None``: there is none). The notes stand in a free corner and the block has no
+    say where, so the test is the careful one: the block fits above the notes (the whole width, the height that is left) or
+    beside them (the width that is left, the whole height). A scale or a paper offered on this arithmetic holds the notes too."""
+    fit_w, fit_h = width <= area_w + 1e-9, height <= area_h + 1e-9
+    if not notes:
+        return fit_w and fit_h
+    notes_w, notes_h = notes
+    above = fit_w and height + notes_h + NOTES_GAP_MM <= area_h + 1e-9
+    beside = fit_h and width + notes_w + NOTES_GAP_MM <= area_w + 1e-9
+    return above or beside
 
 
 def _clear_of(blocks: list[Box], reserved: Box) -> bool:
@@ -242,6 +280,10 @@ def plan(
     right_mm: float = 0.0,
     spacing_mm: float = SPACING_MM,
     iso_dims: tuple[float, float, float] | None = None,
+    own_iso_scale: bool = True,
+    notes: tuple[float, float] | None = None,
+    need_right_mm: float = 0.0,
+    need_spacing_mm: float = 0.0,
     _comfort_checked: bool = False,
 ) -> Layout:
     """The layout of a part ``w`` (x) by ``d`` (y) by ``h`` (z) mm on a page; ``scale`` is the ratio asked for
@@ -250,13 +292,25 @@ def plan(
     ``has_top`` / ``has_right`` / ``isometric`` say which views the sheet has: a view that is not there takes no room,
     so the others are laid out again and the scale grows to the largest standard one that fits. ``third`` is third-angle
     projection; ``below_mm`` / ``above_mm`` / ``left_mm`` the room the stacked baseline dimensions of the holes need beyond
-    the views; ``iso_dims`` the part's size for the isometric view when ``w``, ``d`` and ``h`` are those of another view."""
+    the views; ``iso_dims`` the part's size for the isometric view when ``w``, ``d`` and ``h`` are those of another view.
+    The isometric view is a pictorial one and may be drawn at a scale of its own (ISO 5455, written under it): when the
+    sheet's scale is chosen, or asked for, and the isometric view does not fit beside the main views at that scale, it takes
+    the largest standard scale that does (at most one step smaller; none for an assembly sheet or ``own_iso_scale=False``);
+    ``Layout.iso_scale`` is 0 when it has the sheet's. ``notes`` = (width, height) of the numbered notes block: it stands in a
+    free corner, so the views must leave the room for it (``fits_round_notes``); omitted, the views take the whole area.
+    ``need_right_mm`` / ``need_spacing_mm`` are the part of the room beside the views and between them that dimensions
+    stand in (the opposite side of a view that the default location of the holes uses): unlike the room of the callouts,
+    which is a comfort, no scale gives it up."""
+    right_mm, spacing_mm = max(right_mm, need_right_mm), max(spacing_mm, SPACING_MM + need_spacing_mm)
     if scale is None and not _comfort_checked and (right_mm or spacing_mm != SPACING_MM):
         # the room for the callouts is a comfort: a scale smaller than the sheet would have without it is not worth it
         args = (w, d, h, page_w, page_h, None, reserve, isometric, has_top, has_right)
-        keep = {"third": third, "below_mm": below_mm, "above_mm": above_mm, "left_mm": left_mm, "iso_dims": iso_dims}
+        keep = {
+            "third": third, "below_mm": below_mm, "above_mm": above_mm, "left_mm": left_mm, "iso_dims": iso_dims,
+            "own_iso_scale": own_iso_scale, "notes": notes,
+        }  # fmt: skip
         roomy = plan(*args, **keep, right_mm=right_mm, spacing_mm=spacing_mm, _comfort_checked=True)
-        tight = plan(*args, **keep, _comfort_checked=True)
+        tight = plan(*args, **keep, right_mm=need_right_mm, spacing_mm=SPACING_MM + need_spacing_mm, _comfort_checked=True)
         return roomy if roomy.scale >= tight.scale else tight
     left, top, right, bottom = drawing_area(page_w, page_h)
     area_w, area_h = right - left, bottom - top
@@ -276,13 +330,32 @@ def plan(
     free_h = (bottom if held is None else min(bottom, held[1])) - top
 
     def fits_at(s: float, sp: Spec = spec) -> bool:
-        if not _fits(_needed_spec(s, sp), area_w, area_h):
+        if not fits_round_notes(*_needed_spec(s, sp), area_w, area_h, notes):
             return False
         return held is None or _clear_of(_blocks_spec(s, sp, left, area_w, top, free_h), held)
 
+    def own_scales(main: float) -> list[Spec]:
+        """The isometric view at a scale of its own, the largest first: at most one standard step below the sheet's. Only a
+        part sheet (an assembly's exploded view and balloons are laid out at the sheet's scale)."""
+        if not iso[0] or reserve is not None or not own_iso_scale:
+            return []
+        return [
+            replace(spec, iso_scale=t)
+            for t in STANDARD_SCALES
+            if t < main * (1 - 1e-9) and t >= main / ISO_OWN_RATIO * (1 - 1e-9)
+        ]
+
     standard = True
     if scale is None:
-        chosen = next((s for s in STANDARD_SCALES if fits_at(s)), None)
+        chosen = None
+        for candidate in STANDARD_SCALES:  # the main views first: the largest scale at which they, with the isometric view
+            if fits_at(candidate):  # at the same scale, fit; else with the isometric view at a scale of its own
+                chosen = candidate
+                break
+            own = next((sp for sp in own_scales(candidate) if fits_at(candidate, sp)), None)
+            if own is not None:
+                chosen, spec = candidate, own
+                break
         if chosen is None:
             standard = False
             # no standard scale fits: solve for the largest one that does (every term is linear in the scale, except
@@ -295,16 +368,109 @@ def plan(
                     break
                 chosen *= 0.95
         scale = chosen
-    fits = fits_at(scale)
+    elif not fits_at(scale):  # a scale that was asked for: the isometric view gives way before the sheet overflows
+        own = next((sp for sp in own_scales(scale) if fits_at(scale, sp)), None)
+        spec = own or spec
+    fits = fits_at(scale, spec)
     if fits:  # room to spare: the views move apart (the scale stays what it was)
         spec = _spread(spec, lambda sp: fits_at(scale, sp))
     needed = _needed_spec(scale, spec)
-    start = _start(left, area_w, needed[0], iso)  # everything centred across the drawing area
+    start = _start(left, area_w, needed[0], iso, reserve is None)  # everything centred across the drawing area
     top += _drop(needed[1], free_h)  # ... and down it
     block_w, _, front_x, front_y = _extents(scale, spec)
     front = (start + front_x, top + front_y)
-    iso_centre = (start + block_w + ISO_GAP_MM + iso[0] * scale / 2, top + DIM_MARGIN_MM + iso[1] * scale / 2)
-    return Layout(scale=scale, standard=standard, fits=fits, front=front, iso=iso_centre, spacing=spec.spacing)
+    k = iso_factor(scale, spec)
+    iso_centre = (start + block_w + ISO_GAP_MM + iso[0] * k / 2, top + DIM_MARGIN_MM + iso[1] * k / 2)
+    return Layout(
+        scale=scale, standard=standard, fits=fits, front=front, iso=iso_centre, spacing=spec.spacing,
+        iso_scale=k if own_iso(scale, spec) else 0.0,
+    )  # fmt: skip
+
+
+ROW_FIRST_MM = 15.0  # the first row of dimension lines: 10 mm from the view, and its text above the line
+ROW_STEP_MM = 7.0  # each further row
+CALLOUT_SPACING_MM = 34.0  # between the front view and the top / right ones when the part has holes (a callout fits)
+CALLOUT_ROOM_MM = 24.0  # beside the views of a part with holes: where the leaders of their callouts end and their text goes
+
+
+def rows_room(
+    rows_x: dict[str, int],
+    far_x: dict[str, int],
+    rows_y: int,
+    far_y: int,
+    shown: tuple[str, ...],
+    third: bool,
+    with_holes: bool,
+) -> dict[str, float]:
+    """The room (mm of paper) round the views that ROWS of dimension lines take, as the keyword arguments of ``plan``:
+    ``rows_x`` / ``far_x`` the rows of x values of each standard view on its usual side and on the opposite one, ``rows_y`` /
+    ``far_y`` the rows of y values on the left and on the right of the views. The first row stands ``ROW_FIRST_MM`` from the view,
+    each further one ``ROW_STEP_MM`` beyond; the far rows are room no scale gives up (``need_*``), unlike the callouts'."""
+
+    def room(rows: int, extra: int = 0) -> float:
+        return ROW_FIRST_MM + ROW_STEP_MM * (rows - 1 + extra) if rows else 0.0
+
+    out: dict[str, float] = {
+        "left_mm": room(rows_y),
+        "right_mm": CALLOUT_ROOM_MM + ROW_STEP_MM * far_y if with_holes else 0.0,
+        "spacing_mm": CALLOUT_SPACING_MM + ROW_STEP_MM * far_x["top"] if with_holes else 0.0,  # between the views: callouts and the far rows of the top view go there
+        "need_right_mm": room(far_y),
+        "need_spacing_mm": room(far_x["top"]) if "front" in shown else 0.0,
+    }
+    standing_alone = "front" not in shown  # no other view on the far side of the top view: the room is the paper's
+    if third:  # the top view hangs above the front one: its rows go above it
+        out["above_mm"] = room(rows_x["top"])
+        out["below_mm"] = room(rows_x["front"], 1)
+        if standing_alone:
+            out["below_mm"] = room(far_x["top"])
+    else:  # the top view hangs below the front one: its rows go below it; the front one's go above (next to the overall)
+        out["below_mm"] = room(rows_x["top"])
+        out["above_mm"] = room(rows_x["front"], 1)
+        if standing_alone:
+            out["above_mm"] = room(far_x["top"], 1)
+    return {k: v for k, v in out.items() if v}
+
+
+AUTO_PAPERS = ("A4", "A3", "A2", "A1", "A0")
+FULL_SIZE_PAPERS = 2  # a part is first tried at full size on the papers a shop prints every day: A4 and A3
+LEGIBLE_SCALE = 0.2
+"""The legibility floor of a scale (ISO 5455 preferred scale 1:5): a feature of 20 mm is still 4 mm on the paper, so the 3 mm
+arrowheads and the 3.5 mm text of its dimension (ISO 129) fit beside it."""
+LEGIBLE_EXTENT_MM = 80.0
+"""The legibility floor of the part: its largest side is drawn at least this long (about two dimension lines of 7 mm and their
+text on each side of the smallest view still leave a part you can read); a small part at 1:5 is not legible, a bigger paper is
+then worth it. Above both floors a paper is never made bigger just to draw at a bigger scale."""
+
+
+def auto_paper(
+    w: float,
+    d: float,
+    h: float,
+    isometric: bool = True,
+    has_top: bool = True,
+    has_right: bool = True,
+    *,
+    third: bool = False,
+    iso_dims: tuple[float, float, float] | None = None,
+) -> tuple[str, float]:
+    """The paper and the standard scale (ISO 5455) a sheet gets when nobody chose a paper, so the views fill it instead of
+    floating on a sheet too big for them or shrinking on one too small (ISO 5457: the smallest paper on which the drawing is
+    legible): the smallest of A4 and A3 on which the automatic layout reaches full size or an enlargement; else the smallest
+    paper that reaches the legibility floor (``LEGIBLE_SCALE``, 1:5, with its largest side drawn at least ``LEGIBLE_EXTENT_MM``),
+    at the largest scale it fits there: never a bigger paper only to draw at a bigger scale; else (a part of several metres) the paper with the largest scale, the smaller one
+    on a tie. ``w`` / ``d`` / ``h`` are the sizes of the views as ``plan`` takes them."""
+    scales = {
+        name: plan(w, d, h, *PAGES_MM[name], None, None, isometric, has_top, has_right, third=third, iso_dims=iso_dims).scale
+        for name in AUTO_PAPERS
+    }
+    for name in AUTO_PAPERS[:FULL_SIZE_PAPERS]:
+        if scales[name] >= 1.0 - 1e-9:
+            return name, scales[name]
+    for name in AUTO_PAPERS:
+        if scales[name] >= LEGIBLE_SCALE - 1e-9 and max(w, d, h) * scales[name] >= LEGIBLE_EXTENT_MM - 1e-9:
+            return name, scales[name]
+    best = max(AUTO_PAPERS, key=lambda name: (round(scales[name], 9), -AUTO_PAPERS.index(name)))
+    return best, scales[best]
 
 
 def _fits(needed: tuple[float, float], area_w: float, area_h: float) -> bool:

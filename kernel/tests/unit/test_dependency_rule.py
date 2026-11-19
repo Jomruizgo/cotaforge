@@ -2,8 +2,9 @@
 
 Allowed "may import" arrows:
     contract       -> nothing internal (pydantic + stdlib only)
-    ir             -> contract
-    executor       -> ir, verification, contract
+    mouldparts     -> contract (catalogue tables of mould components: pure data and arithmetic)
+    ir             -> contract, mouldparts
+    executor       -> ir, verification, contract, mouldparts
     verification   -> ir, contract
     units          -> nothing from cotaforge (pydantic + stdlib only)
     memory         -> nothing from cotaforge (pydantic + pyyaml + stdlib only)
@@ -13,7 +14,8 @@ Allowed "may import" arrows:
     adapters     -> nothing from cotaforge but its own root-level shared modules (adapters/rpc.py: CAD-agnostic
                        transport; it uses adapters/procstats.py: what the OS says about a process)
     adapters.fake  -> contract (only)
-    adapters.freecad -> contract, adapters.rpc (the shared transport)
+    adapters.freecad -> contract, adapters.rpc (the shared transport), conventions, ir (only the references
+                       -- FaceRef... -- the models of its own extension operations are written with)
     adapters.freecad.worker -> nothing from cotaforge (runs inside freecadcmd on its own sys.path;
                        it imports no cotaforge module at all)
 
@@ -33,12 +35,13 @@ SRC = Path(__file__).resolve().parents[2] / "src" / "cotaforge"
 
 ALLOWED_IMPORTS: dict[str, frozenset[str]] = {
     "contract": frozenset(),
-    "ir": frozenset({"contract"}),
-    "executor": frozenset({"ir", "verification", "contract"}),
+    "mouldparts": frozenset({"contract"}),
+    "ir": frozenset({"contract", "mouldparts"}),
+    "executor": frozenset({"ir", "verification", "contract", "mouldparts"}),
     "verification": frozenset({"ir", "contract"}),
     "adapters": frozenset({"adapters.procstats"}),
     "adapters.fake": frozenset({"contract"}),
-    "adapters.freecad": frozenset({"contract", "adapters.rpc", "conventions"}),
+    "adapters.freecad": frozenset({"contract", "adapters.rpc", "conventions", "ir"}),
     "adapters.freecad.worker": frozenset(),
     "units": frozenset(),
     "memory": frozenset(),

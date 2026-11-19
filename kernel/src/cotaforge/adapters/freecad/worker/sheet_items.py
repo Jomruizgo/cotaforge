@@ -21,8 +21,12 @@ import items_finish
 import items_gdt
 import items_holes
 import items_lines
+import items_mould
 import items_notes
+import items_pattern
 import items_views
+import items_weld
+import sheet_centre
 from sheet_context import SECTION_LABEL, Context, ItemError, ItemResult, ItemType
 
 PHASE_ON_SECTION = 5  # after the views (3) and the balloons (4)
@@ -41,6 +45,9 @@ MODULES = (
     items_assembly,
     items_explode,
     items_lines,
+    items_weld,
+    items_mould,
+    items_pattern,
 )
 
 REGISTRY: dict[str, ItemType] = {t.name: t for module in MODULES for t in module.ITEMS}
@@ -51,9 +58,21 @@ PLANNED: dict[str, str] = {}
 # item types the contract takes that this CAD does not draw: refused with this text (the adapter says it in its own
 # words)
 UNSUPPORTED: dict[str, str] = {
-    "weld": (
-        "FreeCAD draws no weld symbols on a sheet, so nothing was drawn: say the weld in a note item (kind, size, "
-        "sides, all around or field)"
+    "keyway_dims": (
+        "keyway_dims is made into plain dim items when it is added (drawing add) and is never stored: if you read "
+        "this, the part has no keyway whose walls can be dimensioned"
+    ),
+    "baseline_dims": (
+        "baseline_dims is made into plain dim items when it is added (drawing add) and is never stored: if you read this, "
+        "the face it counts from is not a shoulder or an end of the part"
+    ),
+    "thread_dims": (
+        "thread_dims is made into plain dim items (kind diameter) when it is added (drawing add) and is never "
+        "stored: if you read this, every external thread of the part has its callout"
+    ),
+    "chamfer_dims": (
+        "chamfer_dims is made into plain dim items (kind chamfer) when it is added (drawing add) and is never "
+        "stored: if you read this, the part has no chamfer without a dimension"
     ),
 }
 
@@ -107,13 +126,71 @@ def normalise(spec: Any, taken: set[str], next_number: int) -> dict[str, Any]:
     return {"id": item_id, **checked}
 
 
+def refuse_repeated_note(done: dict[str, Any], others: list[dict[str, Any]]) -> None:
+    """A note that says what another note of the sheet already says never reaches it (the same words twice read as two
+    requirements): ``ItemError`` naming the note that has them."""
+    if done.get("type") != "note" or not isinstance(done.get("text"), str):
+        return
+    words = " ".join(done["text"].lower().split())
+    for other in others:
+        if other.get("type") == "note" and isinstance(other.get("text"), str) and " ".join(other["text"].lower().split()) == words:
+            msg = f"the sheet already has this note ({other.get('id')}): the same words are not written twice"
+            raise ItemError(msg)
+
+
+def edited(item: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    """The stored ``item`` with ``patch`` applied (a field set to ``None`` is taken off), checked by its own type. The id
+    and the type never change. Raises ``ItemError`` with what to change."""
+    kind = str(item["type"])
+    if patch.get("type", kind) != kind:
+        msg = f"an edit never changes the type ({kind}); remove the item and add the other one"
+        raise ItemError(msg)
+    merged = {k: v for k, v in item.items() if k != "id"}
+    for key, value in patch.items():
+        if key in ("id", "type"):
+            continue
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+    return {"id": item["id"], **REGISTRY[kind].check(merged)}
+
+
 def prepare_all(ctx: Context, items: list[dict[str, Any]]) -> None:
     """Let each item type see all its items before any is drawn (the title block needs the revisions, the notes block
     needs to know how many lines it has)."""
+    ctx.extras["sheet_items"] = items  # what a ``prepare`` needs of the other types
     for kind, group in _by_type(items).items():
         prepare = REGISTRY[kind].prepare if kind in REGISTRY else None
         if prepare is not None:
             prepare(ctx, group)
+
+
+def shortest_first(
+    ctx: Context, items: list[dict[str, Any]], order: list[int], group: Any
+) -> list[int]:
+    """``order`` with the distance dimensions that stack by the order they are drawn (those with no ``offset_mm``) put shortest
+    first inside each group (``group(position)``: the phase), the other items where they were. The lines stack outward in
+    the order they are drawn, so a length counted from a datum stands nearer the part than a longer one it runs along (ISO
+    129-1), whatever order the agent listed them in; the extension lines of the short one then never cross the line of the
+    long one."""
+    spans: dict[int, float] = {}
+    for position in order:
+        spec = items[position]
+        if spec.get("type") == "dim" and spec.get("kind") == "distance" and spec.get("offset_mm") is None:
+            span = items_dims.distance_span(ctx, spec)
+            if span is not None:
+                spans[position] = span
+    out = list(order)
+    seen: dict[Any, list[int]] = {}
+    for slot, position in enumerate(order):
+        if position in spans:
+            seen.setdefault(group(position), []).append(slot)
+    for slots in seen.values():
+        ranked = sorted((order[s] for s in slots), key=lambda p: (spans[p], p))
+        for slot, position in zip(slots, ranked, strict=True):
+            out[slot] = position
+    return out
 
 
 def draw_items(ctx: Context, items: list[dict[str, Any]]) -> list[ItemResult]:
@@ -122,15 +199,33 @@ def draw_items(ctx: Context, items: list[dict[str, Any]]) -> list[ItemResult]:
     order within a phase, so a callout looks for room around the dimensions whatever the order they were added in; the
     results come back in list order."""
     results: list[ItemResult | None] = [None] * len(items)
+    in_place = any(i.get("type") == "section" and i.get("in_place") for i in items)
 
     def phase(position: int) -> int:
         kind = items[position].get("type")
         own = REGISTRY[kind].phase if kind in REGISTRY else 0
         view = items[position].get("view")
+        if in_place and kind in ("hole_dim", "overall") and view is None:
+            # the bores are called out on the section that stands in the main view, and the overall size stands outside
+            # the dimensions of that section (ISO 129-1), so it is drawn after them
+            return max(own, PHASE_ON_SECTION)
         # an item on a section view is drawn after the sections: the view exists once its section item has been drawn
         return max(own, PHASE_ON_SECTION) if isinstance(view, str) and SECTION_LABEL.match(view) else own
 
-    for position in sorted(range(len(items)), key=lambda i: (phase(i), i)):
+    def outermost(position: int) -> int:
+        """The overall size is drawn after the other dimensions of its phase: the lines stack outward in the order they are
+        drawn and the overall one stands outside the smaller ones (ISO 129-1), so the extension lines of the dimensions
+        inside it never cross its line."""
+        spec = items[position]
+        if spec.get("type") == "overall":
+            return 1
+        # a diameter of a turned part stands on its step where its text touches no line of the dimensions already drawn: it is
+        # drawn after them
+        placed = any(spec.get(k) is not None for k in ("side", "offset_mm", "elbow_mm"))
+        return 1 if spec.get("type") == "dim" and spec.get("kind") == "diameter" and not placed else 0
+
+    order = sorted(range(len(items)), key=lambda i: (phase(i), outermost(i), i))
+    for position in shortest_first(ctx, items, order, lambda i: (phase(i), outermost(i))):
         spec = items[position]
         kind = spec.get("type", "?")
         item_id = str(spec.get("id", "?"))
@@ -147,6 +242,8 @@ def draw_items(ctx: Context, items: list[dict[str, Any]]) -> list[ItemResult]:
             ctx.extras.get("natives", {}).pop(item_id, None)
             if "dim_records" in ctx.extras:
                 ctx.extras["dim_records"] = [r for r in ctx.extras["dim_records"] if r[0] != item_id]
+            if "position_spans" in ctx.extras:
+                ctx.extras["position_spans"] = [r for r in ctx.extras["position_spans"] if r[0] != item_id]
             for users in ctx.extras.get("view_use", {}).values():
                 users.discard(item_id)
             del ctx.sheet.entities[mark[0] :]
@@ -161,6 +258,7 @@ def draw_items(ctx: Context, items: list[dict[str, Any]]) -> list[ItemResult]:
                 status, detail = "warning", "; ".join([detail, *notes]) if detail else "; ".join(notes)
             results[position] = ItemResult(item_id, kind, status, detail)
             ctx.extras.setdefault("item_slices", {})[item_id] = (mark[0], len(ctx.sheet.entities))
+    sheet_centre.trim(ctx)  # the centre lines stop short of the dimensions and texts the items put in their way
     return [r for r in results if r is not None]
 
 

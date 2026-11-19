@@ -16,6 +16,7 @@ from typing import Any
 
 import assembly_names
 import FreeCAD as App
+import geometry as g
 import Part
 import registry as reg
 import sheet_context as sc
@@ -23,7 +24,7 @@ import sheet_project
 
 META_MATERIAL = "cotaforge_design.material"
 META_SOURCE = "cotaforge_import.source"  # written by import_geometry: the file a part came from
-META_NAME = "cotaforge_doc.name"  # written by new_document / import_geometry: the name the engineer gave the document
+META_TITLE = "cotaforge_design.title"  # written by ``doc set_title``: the designation the designer gave the part
 MATERIAL_PROPERTY = "CotaforgeMaterial"
 SPEC_PROP = "CotaforgeSpec"
 BOUGHT = {"es": "comprado", "en": "purchased"}
@@ -91,11 +92,8 @@ def assembly_info(doc: reg.DocumentRec, language: str) -> sc.Assembly | None:
         source = str(meta.get(META_SOURCE, "") or "")
         bought = bool(source) or bool(comp.foreign)
         number = _sheet_field(fc_part, "drawing_number") if fc_part is not None else ""
-        name = assembly_names.display_name(
-            str(meta.get(META_NAME, "") or ""),
-            _sheet_field(fc_part, "title") if fc_part is not None else "",
-            str(getattr(fc_part, "FileName", "") or "") if fc_part is not None else "",
-            comp_id,
+        name = assembly_names.designation(
+            str(meta.get(META_TITLE, "") or ""), _sheet_field(fc_part, "title") if fc_part is not None else ""
         )
         groups[key] = sc.PartGroup(
             position=len(groups) + 1,
@@ -108,6 +106,62 @@ def assembly_info(doc: reg.DocumentRec, language: str) -> sc.Assembly | None:
             bought=bought,
         )
     return sc.Assembly(list(groups.values()))
+
+
+# --- the bodies of a welded part ---------------------------------------------------------------------------------------
+
+MAX_BODIES_MEASURED = 80
+ANGLE_STEP_DEG = 5
+
+
+def _tight_dims(shape: Any) -> tuple[float, float, float]:
+    """The sides of the smallest box around ``shape`` (longest first). The box along the axes of the document is tried
+    first, then boxes turned about each principal axis of the body, so a tube lying on a slant is measured along itself."""
+
+    def box(s: Any) -> tuple[float, float, float]:
+        try:
+            b = s.optimalBoundingBox(False, False)
+        except Exception:  # noqa: BLE001 - an older FreeCAD has no optimal box
+            b = s.BoundBox
+        return b.XLength, b.YLength, b.ZLength
+
+    best = box(shape)
+    try:
+        props = shape.PrincipalProperties
+        axes = [props["FirstAxisOfInertia"], props["SecondAxisOfInertia"], props["ThirdAxisOfInertia"]]
+    except Exception:  # noqa: BLE001 - no inertia: the axes of the document are all there is
+        axes = []
+    for axis in axes:
+        turn = App.Rotation(axis, V(0, 0, 1))
+        for angle in range(0, 90, ANGLE_STEP_DEG):
+            rotation = App.Rotation(V(0, 0, 1), angle).multiply(turn)
+            moved = shape.copy()
+            moved.Placement = App.Placement(V(0, 0, 0), rotation).multiply(moved.Placement)
+            sides = box(moved)
+            if sides[0] * sides[1] * sides[2] < best[0] * best[1] * best[2] * 0.995:
+                best = sides
+    return tuple(sorted(best, reverse=True))  # type: ignore[return-value]
+
+
+def weldment_info(doc: reg.DocumentRec, language: str) -> sc.Assembly | None:
+    """The cut list of a welded part: its live bodies grouped by what they measure (see ``sheet_weldment``); ``None`` when the
+    document is an assembly or has fewer than two bodies."""
+    import sheet_weldment  # noqa: PLC0415
+
+    if doc.kind == "assembly":
+        return None
+    material = _material(doc.fc_doc)
+    facts = []
+    for body in doc.live_bodies()[:MAX_BODIES_MEASURED]:
+        shape = reg.world_shape(doc, body)
+        if shape.isNull() or not shape.Solids:
+            continue
+        facts.append(
+            sheet_weldment.BodyFact(
+                body.id, shape.Volume, shape.Area, len(shape.Faces), _tight_dims(shape), material
+            )
+        )
+    return sheet_weldment.group_bodies(facts, language)
 
 
 # --- boxes and rays ---------------------------------------------------------------------------------------------------
@@ -155,19 +209,66 @@ def _samples(rects: list[tuple[float, ...]]) -> list[tuple[float, float]]:
     return centres + [p for r in front for p in _grid(r, 3) if p not in centres]
 
 
+_RAY_ANSWERS: dict[tuple[Any, ...], Any] = {}
+RAY_ANSWERS_CACHE = 500  # answers kept of "which instance shows at each point of a view" (a few per sheet)
+
+
+def _rays_key(doc_id: Any, what: str, units: list[_Unit], frame: tuple[sc.Vec3, ...], *rest: Any) -> tuple[Any, ...]:
+    """What a ray answer depends on: the shapes (a body that changed is another one), the frame they are seen in, and the ask."""
+    shapes = tuple((u.comp_id, u.shape.hashCode(), tuple(round(c, 6) for c in u.low), tuple(round(c, 6) for c in u.high)) for u in units)
+    return (doc_id, what, shapes, tuple(tuple(round(c, 9) for c in v) for v in frame), *rest)
+
+
+def _kept(key: tuple[Any, ...], make: Any) -> Any:
+    """The answer of ``make`` for ``key``, asked once while the shapes stay as they are: a sheet is composed several times per
+    request and the balloons cast the same hundreds of rays every time."""
+    if key not in _RAY_ANSWERS:
+        if len(_RAY_ANSWERS) >= RAY_ANSWERS_CACHE:
+            _RAY_ANSWERS.clear()
+        _RAY_ANSWERS[key] = make()
+    return _RAY_ANSWERS[key]
+
+
 class AssemblyRays:
     """The lookups of an assembly on the live document, mixed into ``LiveGeometry``."""
 
     doc: reg.DocumentRec
     op: str | None
 
+    def body_boxes(self) -> list[tuple[sc.Vec3, sc.Vec3]]:
+        out = []
+        for body in self.doc.live_bodies():
+            shape = reg.world_shape(self.doc, body)
+            if not shape.isNull():
+                b = shape.BoundBox
+                out.append(((b.XMin, b.YMin, b.ZMin), (b.XMax, b.YMax, b.ZMax)))
+        return out
+
+    def body_boxes_by_id(self) -> dict[str, tuple[sc.Vec3, sc.Vec3]]:
+        out = {}
+        for body in self.doc.live_bodies():
+            shape = reg.world_shape(self.doc, body)
+            if not shape.isNull():
+                b = shape.BoundBox
+                out[body.id] = ((b.XMin, b.YMin, b.ZMin), (b.XMax, b.YMax, b.ZMax))
+        return out
+
+    def _owner_ids(self) -> list[str]:
+        """What the balloons point at: the components of an assembly, or the live bodies of a welded part."""
+        if self.doc.components:
+            return list(self.doc.components)
+        return [b.id for b in self.doc.live_bodies()]
+
     def _body_units(self, comp_id: str) -> list[_Unit]:
         cache: dict[str, list[_Unit]] = self.__dict__.setdefault("_unit_cache", {})
         if comp_id not in cache:
-            comp = self.doc.components[comp_id]
             units = []
-            for body_id in comp.body_ids:
-                shape = reg.placed_component_body(self.doc, comp, body_id)
+            if comp_id in self.doc.components:
+                comp = self.doc.components[comp_id]
+                shapes = [reg.placed_component_body(self.doc, comp, body_id) for body_id in comp.body_ids]
+            else:  # a body of a welded part
+                shapes = [reg.world_shape(self.doc, self.doc.bodies[comp_id])]
+            for shape in shapes:
                 box = shape.BoundBox
                 units.append(_Unit(comp_id, shape, (box.XMin, box.YMin, box.ZMin), (box.XMax, box.YMax, box.ZMax)))
             cache[comp_id] = units
@@ -185,6 +286,38 @@ class AssemblyRays:
                 _Unit(unit.comp_id, shape, sc.add(unit.low, offset), sc.add(unit.high, offset))  # type: ignore[arg-type]
             )
         return moved
+
+    def assembly_holes(self) -> list[sc.AssemblyHole]:
+        """The full round holes (concave cylinders of at least half a circle) of the bodies of every component, placed in
+        the assembly: where the parts are fastened through, and so what the sheet must dimension."""
+        cached = self.__dict__.get("_asm_holes")
+        if cached is not None:
+            return cached
+        import holes as hole_reader  # noqa: PLC0415 - the hole reader of a part, used here on placed bodies
+
+        found: list[sc.AssemblyHole] = []
+        for comp_id in self.doc.components:
+            for unit in self._body_units(comp_id):
+                for face in unit.shape.Faces:
+                    try:
+                        kind = g.surface_kind(face)
+                        if kind == "cylinder":
+                            if not hole_reader._is_concave(face):
+                                continue
+                            cut = hole_reader._analytic_cut(hole_reader._FaceRef("", 0), face)
+                        elif kind == "other":  # a threaded or exported hole: a cylinder written as a B-spline
+                            cut = hole_reader._fitted_cut(hole_reader._FaceRef("", 0), face)
+                        else:
+                            continue
+                    except Exception:  # noqa: BLE001 - a face that cannot be read is not a hole
+                        continue
+                    if cut is None or cut.arc < hole_reader.MIN_ARC:
+                        continue
+                    middle = (cut.t0 + cut.t1) / 2
+                    centre = sc.add(cut.anchor, sc.scale(cut.direction, middle))
+                    found.append(sc.AssemblyHole(comp_id, centre, cut.direction, 2 * cut.radius))
+        self.__dict__["_asm_holes"] = found
+        return found
 
     def instance_box(self, comp_id: str) -> tuple[sc.Vec3, sc.Vec3]:
         comp = self.doc.components.get(comp_id)
@@ -240,12 +373,33 @@ class AssemblyRays:
         margin_mm: float,
         outward: bool = False,
     ) -> dict[str, list[sc.Vec3]]:
+        units: list[_Unit] = []
+        for cid in self._owner_ids():
+            units += self._displaced(cid, offsets.get(cid))
+        key = _rays_key(self.doc.id, "anchors", units, frame, tuple(instances), margin_mm, outward)
+        found = _kept(key, lambda: self._anchors_of(units, instances, frame, margin_mm, outward))
+        return {cid: list(points) for cid, points in found.items()}
+
+    def owner_at(
+        self, frame: tuple[sc.Vec3, sc.Vec3, sc.Vec3], local: tuple[float, float], offsets: dict[str, sc.Vec3]
+    ) -> str | None:
+        units: list[_Unit] = []
+        for cid in self._owner_ids():
+            units += self._displaced(cid, offsets.get(cid))
         centre, xdir, direction = frame
         ydir = sc.unit(sc.cross(direction, xdir))
-        everyone = list(self.doc.components)
-        units: list[_Unit] = []
-        for cid in everyone:
-            units += self._displaced(cid, offsets.get(cid))
+        rects = [_frame_rect(u, centre, xdir, ydir, direction) for u in units]
+        reach = 2.0 * max((math.dist(u.low, u.high) for u in units), default=1.0) + 2.0 * max(
+            (math.dist(centre, u.low) for u in units), default=1.0
+        )
+        found = self._owner(units, rects, (centre, xdir, ydir, direction), local[0], local[1], reach)
+        return None if found is None else found[0]
+
+    def _anchors_of(
+        self, units: list[_Unit], instances: list[str], frame: tuple[sc.Vec3, sc.Vec3, sc.Vec3], margin_mm: float, outward: bool
+    ) -> dict[str, list[sc.Vec3]]:
+        centre, xdir, direction = frame
+        ydir = sc.unit(sc.cross(direction, xdir))
         rects = [_frame_rect(u, centre, xdir, ydir, direction) for u in units]
         full = (centre, xdir, ydir, direction)
         reach = 2.0 * max((math.dist(u.low, u.high) for u in units), default=1.0) + 2.0 * max(
@@ -277,6 +431,39 @@ class AssemblyRays:
             out[cid] = [p for _, p in sorted(good, reverse=True)[:1]] if good else fallback[:1]
         return out
 
+    def visible_share(
+        self, instances: list[str], frame: tuple[sc.Vec3, sc.Vec3, sc.Vec3], offsets: dict[str, sc.Vec3]
+    ) -> dict[str, float]:
+        """For each instance, the share (0 to 1) of the outline it has in a view looking against ``frame`` = (centre,
+        xdir, direction) that is really its own surface: rays cast on a grid over the box of each of its bodies, counted when
+        the first surface they meet is the instance's. A spacer seen as a sliver between two plates has a small share."""
+        units: list[_Unit] = []
+        for cid in self._owner_ids():
+            units += self._displaced(cid, offsets.get(cid))
+        key = _rays_key(self.doc.id, "share", units, frame, tuple(instances))
+        return dict(_kept(key, lambda: self._share_of(units, instances, frame)))
+
+    def _share_of(self, units: list[_Unit], instances: list[str], frame: tuple[sc.Vec3, sc.Vec3, sc.Vec3]) -> dict[str, float]:
+        centre, xdir, direction = frame
+        ydir = sc.unit(sc.cross(direction, xdir))
+        rects = [_frame_rect(u, centre, xdir, ydir, direction) for u in units]
+        full = (centre, xdir, ydir, direction)
+        reach = 2.0 * max((math.dist(u.low, u.high) for u in units), default=1.0) + 2.0 * max(
+            (math.dist(centre, u.low) for u in units), default=1.0
+        )
+        out: dict[str, float] = {}
+        for cid in instances:
+            mine = [r for u, r in zip(units, rects, strict=True) if u.comp_id == cid]
+            samples = [p for r in mine[:MAX_BODIES_SAMPLED] for p in _grid(r, OUTWARD_GRID)]
+            if not samples:
+                out[cid] = 0.0
+                continue
+            own = sum(
+                1 for u, v in samples if (o := self._owner(units, rects, full, u, v, reach)) is not None and o[0] == cid
+            )
+            out[cid] = own / len(samples)
+        return out
+
     def assembly_projection(
         self, centre: sc.Vec3, xdir: sc.Vec3, direction: sc.Vec3, offsets: dict[str, sc.Vec3]
     ) -> sc.Projection:
@@ -296,3 +483,167 @@ class AssemblyRays:
         # (and again to capture and export): the same poses, offsets and frame give the same answer
         key = (self.doc.id, tuple(poses), centre, xdir, direction, tuple(sorted(offsets.items())))
         return sheet_project.project_view(key, shapes, centre, xdir, direction)
+
+
+# --- the joints of a welded part ------------------------------------------------------------------------------------------
+
+CONTACT_TOL_MM = 0.05  # two bodies this near touch
+MAX_BODIES_JOINTED = 60
+SEAM_DEFLECTION_MM = 0.2
+MIN_CONTACT_MM2 = 0.01
+RAY_OFFSET_MM = 0.3  # the ray that tells whether a seam is hidden starts this far in front of it
+HIDDEN_SEAMS_CACHE = 20000  # answers kept of "is this seam point hidden from this side" (a frame asks a few hundred)
+_HIDDEN_SEAMS: dict[tuple[Any, ...], bool] = {}
+
+
+def _plane_frame(face: Any) -> tuple[sc.Vec3, sc.Vec3] | None:
+    """A point and the outward unit normal of a planar face, ``None`` for any other face."""
+    if g.surface_kind(face) != "plane":
+        return None
+    u, v = face.Surface.parameter(face.CenterOfMass)
+    return g.vec(face.valueAt(u, v)), g.unit(g.vec(face.normalAt(u, v)))
+
+
+def _outline(face: Any) -> list[sc.Vec3]:
+    return [g.vec(p) for p in face.OuterWire.discretize(Deflection=SEAM_DEFLECTION_MM)]
+
+
+def _measure_joint(
+    a: str, b: str, sa: Any, sb: Any, thick: dict[str, float]
+) -> Any:
+    """The joint of two touching bodies: the faces of one that lie on faces of the other (the seam is the outer outline of
+    what overlaps) or, when no face lies on another, the edges where the surfaces meet. ``None`` when they only touch at a
+    point."""
+    import sheet_joints as sj  # noqa: PLC0415
+
+    flats_a = [(f, _plane_frame(f)) for f in sa.Faces]
+    flats_b = [(f, _plane_frame(f)) for f in sb.Faces]
+    big_a = max((f.Area for f, fr in flats_a if fr), default=0.0)
+    big_b = max((f.Area for f, fr in flats_b if fr), default=0.0)
+    overlap = 0.0
+    best: tuple[float, Any, Any, Any] | None = None
+    seams: list[tuple[sc.Vec3, ...]] = []
+    for fa, ra in flats_a:
+        if ra is None:
+            continue
+        for fb, rb in flats_b:
+            if rb is None or sc.dot(ra[1], rb[1]) > -0.9999:
+                continue
+            if abs(sc.dot(sc.sub(rb[0], ra[0]), ra[1])) > CONTACT_TOL_MM:
+                continue
+            box = App.BoundBox(fa.BoundBox)
+            box.enlarge(CONTACT_TOL_MM)
+            if not box.intersect(fb.BoundBox):
+                continue
+            try:
+                common = fa.common(fb)
+            except Exception:  # noqa: BLE001 - a boolean that fails is no contact face
+                continue
+            for piece in common.Faces:
+                if piece.Area < MIN_CONTACT_MM2:
+                    continue
+                overlap += piece.Area
+                seams.append(tuple(_outline(piece)))
+                if best is None or piece.Area > best[0]:
+                    best = (piece.Area, fa, fb, piece)
+    if best is not None:
+        _, fa, fb, piece = best
+        larger = fa if fa.Area >= fb.Area else fb
+        outline = larger.OuterWire
+        flush = False
+        for line in seams:
+            for p, q in zip(line, line[1:], strict=False):
+                mid = App.Vector((p[0] + q[0]) / 2, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2)
+                if outline.distToShape(Part.Vertex(mid))[0] < CONTACT_TOL_MM:
+                    flush = True
+        contact = sj.Contact(overlap, (fa.Area, fb.Area), (fa.Area <= sj.END_FACE_SHARE * big_a, fb.Area <= sj.END_FACE_SHARE * big_b), flush)
+    else:
+        try:
+            edges = sa.section(sb).Edges
+        except Exception:  # noqa: BLE001
+            return None
+        seams = [tuple(g.vec(p) for p in e.discretize(Deflection=SEAM_DEFLECTION_MM)) for e in edges]
+        if not seams:
+            return None
+        contact = sj.Contact(0.0, (0.0, 0.0), (False, False))
+    return sj.Joint((a, b), sj.classify(contact), tuple(seams), (thick[a], thick[b]), contact.area)
+
+
+class WeldJoints:
+    """The joints of a welded part on the live document, mixed into ``LiveGeometry``."""
+
+    doc: reg.DocumentRec
+
+    def weld_joints(self) -> list[Any]:
+        """Where the bodies of the part touch (``sheet_joints.Joint``), measured, in the order of their body ids; none for
+        an assembly or a part of one body."""
+        cached = self.__dict__.get("_weld_joints")
+        if cached is not None:
+            return cached
+        import sheet_joints as sj  # noqa: PLC0415
+
+        found: list[Any] = []
+        if self.doc.kind != "assembly":
+            shapes = {}
+            thick: dict[str, float] = {}
+            for body in self.doc.live_bodies()[:MAX_BODIES_JOINTED]:
+                shape = reg.world_shape(self.doc, body)
+                if shape.isNull() or not shape.Solids:
+                    continue
+                shapes[body.id] = shape
+                box = shape.BoundBox
+                dims = tuple(sorted((box.XLength, box.YLength, box.ZLength), reverse=True))
+                thick[body.id] = sj.wall_thickness(shape.Volume, shape.Area, dims)  # type: ignore[arg-type]
+            ids = sorted(shapes, key=sj.natural)
+            for i, a in enumerate(ids):
+                for b in ids[i + 1 :]:
+                    box = App.BoundBox(shapes[a].BoundBox)
+                    box.enlarge(CONTACT_TOL_MM)
+                    if not box.intersect(shapes[b].BoundBox):
+                        continue
+                    try:
+                        if shapes[a].distToShape(shapes[b])[0] > CONTACT_TOL_MM:
+                            continue
+                        joint = _measure_joint(a, b, shapes[a], shapes[b], thick)
+                    except Exception:  # noqa: BLE001 - a pair the kernel cannot measure has no joint listed
+                        continue
+                    if joint is not None:
+                        found.append(joint)
+        self.__dict__["_weld_joints"] = found
+        return found
+
+    def seam_hidden(self, point: sc.Vec3, towards: sc.Vec3) -> bool:
+        """Whether a body of the part stands between the seam point ``point`` and a viewer far away along ``towards`` (the
+        direction to the viewer): a ray from just in front of the point, tried against every live body."""
+        cache: list[Any] | None = self.__dict__.get("_ray_shapes")
+        if cache is None:
+            cache = []
+            for body in self.doc.live_bodies()[:MAX_BODIES_JOINTED]:
+                shape = reg.world_shape(self.doc, body)
+                if not shape.isNull() and shape.Solids:
+                    cache.append(shape)
+            self.__dict__["_ray_shapes"] = cache
+            self.__dict__["_ray_key"] = (self.doc.id, tuple((s.hashCode(), round(s.Volume, 3)) for s in cache))
+        direction = g.unit(towards)
+        # the same seam point seen from the same side of the same bodies is asked again by every pass and every request of
+        # a sheet (the weld symbols and the cut list read it): a body that changed is another shape, so it asks again
+        asked = (self.__dict__["_ray_key"], tuple(round(c, 6) for c in point), tuple(round(c, 9) for c in direction))
+        if asked not in _HIDDEN_SEAMS:
+            if len(_HIDDEN_SEAMS) >= HIDDEN_SEAMS_CACHE:
+                _HIDDEN_SEAMS.clear()
+            _HIDDEN_SEAMS[asked] = self._ray_blocked(cache, point, direction)
+        return _HIDDEN_SEAMS[asked]
+
+    def _ray_blocked(self, cache: list[Any], point: sc.Vec3, direction: sc.Vec3) -> bool:
+        """Whether a ray from just in front of ``point`` along ``direction`` meets any of the bodies ``cache``."""
+        far = (max(s.BoundBox.DiagonalLength for s in cache) if cache else 0.0) + 10.0
+        start = sc.add(point, sc.scale(direction, RAY_OFFSET_MM))
+        line = Part.makeLine(g.fcvec(start), g.fcvec(sc.add(point, sc.scale(direction, far))))
+        for shape in cache:
+            try:
+                found = shape.section(line)
+            except Exception:  # noqa: BLE001 - a body the kernel cannot cut by a line blocks nothing
+                continue
+            if found.Vertexes or found.Edges:
+                return True
+        return False

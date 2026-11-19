@@ -1,0 +1,322 @@
+# ruff: noqa: E501, SLF001
+"""What the table of requirements of a drawing reads from this sheet and this part (no FreeCAD import).
+
+The table lives in the MCP server (``cotaforge_mcp.drawing_requirements``: a row per thing the standards ask a sheet to
+carry, with what activates it, what shows it is met and the question to ask when it is not). This module is the CAD's half:
+``facts`` counts, on the part the sheet is of and on the sheet itself, what those rows name, and the server evaluates the
+rows. A fact is a plain integer (a count or 0/1) under a stable name; the names are the vocabulary the two sides share
+(``FACT_NAMES``, checked against the table by a test). When something cannot be told (an assembly has no rounds, a part too
+complex to test) its fact is 0: nothing is guessed in either direction.
+
+The facts about the PART (threaded holes, fit holes, rounds, bosses, a turned part, sheet metal, welds, keyways) are what
+the harness MEASURED, so an answer cannot dismiss the row they activate unless the engineer orders it; the facts about the
+SHEET (a thread designation printed, a class on a dimension, a note found) are what shows a row is met.
+"""
+
+import re
+from typing import Any
+
+import sheet_checks
+import sheet_joints
+import sheet_pattern
+import sheet_review
+import sheet_weldplan
+import sheet_weldreview
+from items_assembly import rows_of
+from items_holes import _select as select_callout_holes
+from sheet_context import ItemError
+
+FACT_NAMES = (
+    "sheet",
+    "part",
+    "assembly",
+    "weldment",
+    "holes",
+    "threaded_holes",
+    "fit_holes",
+    "fit_holes_uncalled",
+    "tolerance_classes_on_sheet",
+    "thread_designation_on_sheet",
+    "functional_faces",
+    "surface_texture_on_sheet",
+    "features",
+    "rounds",
+    "bosses",
+    "turned",
+    "boss_radii_undimensioned",
+    "sheet_metal",
+    "bend_note_on_sheet",
+    "gdt_items",
+    "datum_items",
+    "weld_items",
+    "weld_marked_on_sheet",
+    "weld_class_on_sheet",
+    "mould_items",
+    "mould_parting_on_sheet",
+    "mould_pull_on_sheet",
+    "mould_draft_on_sheet",
+    "mould_gate_on_sheet",
+    "mould_ejector_on_sheet",
+    "keyways",
+    "keyways_measured",
+    "keyway_fit_on_sheet",
+    "thread_features",
+    "title_material",
+    "title_general_tolerance",
+    "title_scale",
+    "title_projection",
+    "quantity_on_sheet",
+    "process_on_sheet",
+    "parts_lists",
+    "balloons",
+    "chamfers",
+    "hole_groups",
+    "circular_patterns",
+    "flats",
+    "sections",
+)
+
+THREAD_PRINTED = re.compile(r"(?<![A-Za-z0-9])M\s?\d{1,3}(?:\s?[x×]\s?\d+(?:[.,]\d+)?)?|UN[CF]\b|\bNPT\b|\bBSP\b|\bG\s?\d/\d", re.I)
+KEYWAY_FIT = re.compile(r"(?<![A-Za-z0-9])(?:P9|N9|JS9|Js9|D10)(?![A-Za-z0-9])")  # the classes of a keyway width (DIN 6885-1)
+KEYWAY = re.compile(r"keyway|key\s*seat|key\s*slot|chavetero|ranura\s+de\s+chaveta|asiento\s+de\s+chaveta", re.I)
+BEND = re.compile(r"doblez|doblado|pliegue|bend|fold|radio\s+interior|inside\s+radius|desarrollo|flat\s+pattern", re.I)
+WELD_NOTE = re.compile(r"solda|weld", re.I)
+WELD_CLASS = re.compile(r"5817", re.I)  # the quality levels of a weld (B, C, D); ISO 13920 is the general tolerance
+QUANTITY = re.compile(r"cantidad|quantity|\bqty\b|\b\d+\s*(?:pzas?|pcs|uds?|unidades|piezas|off)\b|\bx\s?\d+\s*(?:pzas?|pcs|uds?)\b", re.I)
+PROCESS = re.compile(
+    r"proceso|process|mecaniz|machin|torne|turn(?:ed|ing)|fres|mill|corte\s+(?:l[aá]ser|por\s+agua|plasma)|laser|waterjet|plasma|"
+    r"estamp|stamp|fundic|cast|forj|forg|solda|weld|doblez|sheet\s*metal|chapa|inyecci|injection|impres|print",
+    re.I,
+)
+
+
+def _stacks(data: Any) -> list[list[Any]]:
+    return sheet_checks._stack_list(data.ctx)
+
+
+def _called(data: Any) -> set[int]:
+    """The holes some ``hole_dim`` of the sheet calls out."""
+    out: set[int] = set()
+    for spec in sheet_review._of(data, "hole_dim"):
+        try:
+            out |= {h.index for h in select_callout_holes(data.ctx, spec)}
+        except ItemError:
+            continue
+    return out
+
+
+def _fit_stack(stack: list[Any]) -> bool:
+    first = stack[0]
+    return first.thread is None and (bool(first.fit) or first.hole_class == "precision")
+
+
+def _toleranced_items(data: Any) -> int:
+    return sum(
+        1
+        for kind in ("hole_dim", "dim")
+        for spec in sheet_review._of(data, kind)
+        if "fit" in spec or "tol" in spec
+    )
+
+
+def _boss_radii_undimensioned(data: Any) -> int:
+    """Distinct radii of the whole convex cylinders of the part (shaft steps, pins, bosses) that no diameter or radius
+    dimension, no overall diameter and no note of the sheet states."""
+    ctx = data.ctx
+    facts = ctx.extras.get("facts")
+    if facts is None or not facts.bosses:
+        return 0
+    said: set[float] = set()
+    for spec in sheet_review._of(data, "dim"):
+        if spec.get("kind") in ("radius", "diameter"):
+            try:
+                radius = ctx.geometry.face(spec["face"][0]).radius
+            except ItemError:
+                continue
+            if radius is not None:
+                said.add(round(radius, 2))
+    try:
+        found = ctx.geometry.round_extent()
+    except Exception:  # noqa: BLE001 - an overall size that cannot be told is simply not counted
+        found = None
+    if found is not None and sheet_review._of(data, "overall"):
+        said.add(round(found[1] / 2, 2))
+    for text in sheet_checks._notes(data):
+        for diameter in re.findall(r"[Ø⌀∅]\s*(\d+(?:[.,]\d+)?)", text):
+            said.add(round(float(diameter.replace(",", ".")) / 2, 2))
+    return len({round(b.radius, 2) for b in facts.bosses} - said)
+
+
+def _round_extent(data: Any) -> bool:
+    ctx = data.ctx
+    if ctx.extras.get("facts") is None or ctx.assembly is not None:  # an assembly is not a turned part
+        return False
+    try:
+        return ctx.geometry.round_extent() is not None
+    except Exception:  # noqa: BLE001 - a part that cannot be tested is not called turned
+        return False
+
+
+def _diameter_of_face(ctx: Any, spec: dict[str, Any]) -> float | None:
+    try:
+        radius = ctx.geometry.face(spec["face"][0]).radius
+    except (ItemError, KeyError, IndexError):
+        return None
+    return None if radius is None else (2 * radius if spec.get("kind") == "diameter" else radius)
+
+
+def measures(data: Any) -> dict[str, list[dict[str, Any]]]:
+    """What the dimensions of the sheet GIVE, one by one (the server matches them with the functional dimensions the intent
+    file declares): measures are the values a single dimension item states (a distance between two features, a diameter
+    or radius, the overall size, the diameter of a hole called out), each with whether it carries a tolerance or fit;
+    components the parts list of an assembly with the reference (the drawing number) each row prints. A value no
+    dimension states by itself (it could only be got by adding or subtracting others) is NOT in the list."""
+    ctx = data.ctx
+    out: list[dict[str, Any]] = []
+    for m in sheet_review._measure(data):
+        if "size_mm" in m.spec:  # an intermediate process stage states its own size, not the model's
+            continue
+        out.append(
+            {"id": m.spec["id"], "kind": "distance", "value_mm": round(m.hi - m.lo, 4), "toleranced": "fit" in m.spec or "tol" in m.spec}
+        )
+    for spec in sheet_review._of(data, "dim"):
+        if spec.get("kind") in ("diameter", "radius") and "size_mm" not in spec:
+            value = _diameter_of_face(ctx, spec)
+            if value is not None:
+                out.append({"id": spec["id"], "kind": spec["kind"], "value_mm": round(value, 4), "toleranced": "fit" in spec or "tol" in spec})
+    for spec in sheet_review._of(data, "overall"):
+        for axis in sheet_review.AXES:
+            extent = sheet_review._extent(ctx, axis)
+            if extent is not None:
+                out.append({"id": spec["id"], "kind": "overall", "value_mm": round(extent, 4), "toleranced": "tol" in spec})
+    for spec in sheet_review._of(data, "hole_dim"):
+        try:
+            holes = select_callout_holes(ctx, spec)
+        except ItemError:
+            continue
+        for hole in holes:
+            out.append({"id": spec["id"], "kind": "hole", "value_mm": round(hole.diameter, 4), "toleranced": bool(hole.fit) or "fit" in spec or "tol" in spec})
+    components: list[dict[str, str]] = []
+    if ctx.assembly is not None:
+        shown: dict[str, str] = {}
+        for spec in sheet_review._of(data, "parts_list"):
+            try:
+                for group, cells in rows_of(ctx, spec):
+                    shown[group.key] = cells[3]
+            except ItemError:
+                continue
+        for group in ctx.assembly.groups:
+            components.append({"name": group.name or group.instances[0], "reference": (shown.get(group.key, group.reference) or "").strip()})
+    return {"measures": out, "components": components, "weldment": _weldment(data)}
+
+
+def _weldment(data: Any) -> dict[str, Any] | None:
+    """What a welded part still asks of its designer (``sheet_weldplan``); ``None`` for any other part."""
+    ctx = data.ctx
+    if ctx.weldment is None or ctx.assembly is not None:
+        return None
+    named = frozenset(str(n) for n in ctx.extras.get("parts_list", {}).get("names", {}))
+    pairs = [p for spec in sheet_review._of(data, "weld") for p in sheet_weldreview.weld_pairs(spec)]
+    return sheet_weldplan.plan_of(
+        ctx.weldment.groups, sheet_weldreview.joints_of(ctx), named, sheet_joints.covers(pairs), ctx.geometry.body_boxes_by_id()
+    )
+
+
+def _mould(data: Any) -> dict[str, int]:
+    """What the sheet carries of the indications of a moulded part (``items_mould``): the parting line, the opening direction, a
+    draft value, a gate zone, ejector zones. They count the items, not the words of a note: ISO 10135 asks for the symbols."""
+    pulls = sheet_review._of(data, "pull_direction")
+    zones = sheet_review._of(data, "mould_zone")
+    parting = sheet_review._of(data, "parting_line")
+    return {
+        "mould_items": len(parting) + len(pulls) + len(zones) + len(sheet_review._of(data, "no_draft")),
+        "mould_parting_on_sheet": len(parting),
+        "mould_pull_on_sheet": len(pulls),
+        "mould_draft_on_sheet": sum(1 for p in pulls if p.get("draft_deg") is not None),
+        "mould_gate_on_sheet": sum(1 for z in zones if z.get("kind") == "gate"),
+        "mould_ejector_on_sheet": sum(1 for z in zones if z.get("kind") == "ejector"),
+    }
+
+
+def _groups(data: Any, stacks: list[list[Any]]) -> dict[str, int]:
+    """The holes of the part by how they are dimensioned: the circular patterns, and the groups of two or more equal holes
+    along one direction that are in no pattern (an assembly has neither: its holes are its parts')."""
+    if data.ctx.assembly is not None:
+        return {"hole_groups": 0, "circular_patterns": 0}
+    try:
+        patterns = [p for p in sheet_pattern.patterns_of(data.ctx) if not p.lone]
+    except Exception:  # noqa: BLE001 - a part whose patterns cannot be told has none counted
+        patterns = []
+    in_pattern = {i for p in patterns for i in p.indexes}
+    equal: dict[tuple[Any, ...], int] = {}
+    for stack in stacks:
+        if stack[0].index in in_pattern:
+            continue
+        key = (sheet_pattern._canonical(stack[0].direction), sheet_pattern._signature(stack))
+        equal[key] = equal.get(key, 0) + 1
+    return {"hole_groups": sum(1 for n in equal.values() if n >= 2), "circular_patterns": len(patterns)}
+
+
+def facts(data: Any) -> dict[str, int]:
+    """The counts of ``FACT_NAMES`` for the sheet ``data`` (a ``sheet_review.ReviewInput``)."""
+    ctx = data.ctx
+    part = ctx.extras.get("facts")
+    texts = [*data.sheet.texts()]
+    notes = sheet_checks._notes(data)
+    stacks = _stacks(data)
+    called = _called(data)
+    fit = [s for s in stacks if _fit_stack(s)]
+    toleranced = _toleranced_items(data)
+    gdt = len(sheet_review._of(data, "gdt"))
+    finishes = len(sheet_review._of(data, "finish"))
+    roughness_note = sum(1 for n in notes if sheet_checks._ROUGHNESS.search(n))
+    material = sheet_checks._material_text(data)
+    fields = sheet_checks._fields(ctx)
+    printed = "\n".join(texts)
+    out = {
+        "sheet": 1,
+        "part": 0 if ctx.assembly is not None else 1,
+        "assembly": 1 if ctx.assembly is not None else 0,
+        "weldment": 1 if ctx.weldment is not None else 0,
+        "holes": len(stacks),
+        "threaded_holes": sum(1 for s in stacks if any(h.thread is not None for h in s)),
+        "fit_holes": len(fit),
+        "fit_holes_uncalled": sum(1 for s in fit if not {h.index for h in s} & called),
+        "tolerance_classes_on_sheet": toleranced + sum(1 for s in fit if {h.index for h in s} & called),  # a callout shows the declared fit
+        "thread_designation_on_sheet": 1 if THREAD_PRINTED.search(printed) else 0,
+        "functional_faces": len(fit) + toleranced + gdt,
+        "surface_texture_on_sheet": finishes + roughness_note,
+        "features": len(data.features),
+        "rounds": len(part.rounds) if part is not None else 0,
+        "bosses": len(part.bosses) if part is not None else 0,
+        "turned": 1 if _round_extent(data) else 0,
+        "boss_radii_undimensioned": _boss_radii_undimensioned(data),
+        "sheet_metal": 1 if part is not None and part.sheet_metal else 0,
+        "bend_note_on_sheet": 1 if any(BEND.search(n) for n in notes) else 0,
+        "gdt_items": gdt,
+        "datum_items": len(sheet_review._of(data, "datum")),
+        "weld_items": len(sheet_review._of(data, "weld")),
+        # with joints measured the symbols are the weld: a note alone does not mark them
+        "weld_marked_on_sheet": len(sheet_review._of(data, "weld"))
+        + (1 if WELD_NOTE.search("\n".join(notes)) and not (ctx.weldment is not None and sheet_weldreview.joints_of(ctx)) else 0),
+        "weld_class_on_sheet": 1 if WELD_CLASS.search(printed) else 0,
+        **_mould(data),
+        "keyways": (part.keyways if part is not None else 0)
+        or sum(1 for f in data.features if KEYWAY.search(f"{f.id} {f.label}")),  # by geometry, else by name
+        "keyways_measured": part.keyways if part is not None else 0,
+        "keyway_fit_on_sheet": 1 if KEYWAY_FIT.search(printed) else 0,
+        "thread_features": part.thread_features if part is not None else 0,
+        "title_material": 1 if material else 0,
+        "title_general_tolerance": 1 if str(fields.get("general_tolerances", "")).strip() else 0,
+        "title_scale": 1 if float(ctx.extras.get("main_scale") or 0.0) > 0 else 0,
+        "title_projection": 1 if ctx.extras.get("angle") in ("first", "third") else 0,
+        "quantity_on_sheet": 1 if QUANTITY.search(printed) else 0,
+        "process_on_sheet": 1 if PROCESS.search("\n".join(notes)) else 0,
+        "parts_lists": len(sheet_review._of(data, "parts_list")),
+        "balloons": len(sheet_review._of(data, "balloons")),
+        "chamfers": sum(1 for f in data.features if f.kind == "chamfer"),
+        **_groups(data, stacks),
+        "flats": len(part.flats) if part is not None else 0,
+        "sections": len(sheet_review._of(data, "section")),
+    }
+    return out

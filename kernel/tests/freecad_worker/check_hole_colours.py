@@ -422,6 +422,7 @@ def check_the_png_and_the_pdf_carry_the_colours() -> None:
 
 
 def check_the_visible_worker_paints_the_faces_and_respects_a_hand_colour() -> None:
+    import appearance
     import gui
 
     if not gui.ACTIVE:
@@ -430,7 +431,7 @@ def check_the_visible_worker_paints_the_faces_and_respects_a_hand_colour() -> No
     rec = _rec()
     hole_colours.sync(rec)
     body = rec.live_bodies()[0]
-    obj = rec.fc_doc.getObject(hole_colours._owner(body))  # noqa: SLF001
+    obj = appearance.paint_object(rec.fc_doc.getObject(hole_colours._owner(body)))  # noqa: SLF001 - what the view paints
 
     def assert_painted() -> dict[int, tuple[int, int, int]]:
         colours = hole_colours.face_colours(rec, body)
@@ -449,7 +450,7 @@ def check_the_visible_worker_paints_the_faces_and_respects_a_hand_colour() -> No
     # the engineer paints one of those faces yellow by hand: it is his
     index = next(iter(colours))
     mine = list(obj.ViewObject.DiffuseColor)
-    mine[index] = (1.0, 1.0, 0.0, 0.0)
+    mine[index] = (1.0, 1.0, 0.0, 1.0)
     obj.ViewObject.DiffuseColor = mine
     hole_colours.sync(rec)
     assert tuple(obj.ViewObject.DiffuseColor[index][:3]) == (1.0, 1.0, 0.0)

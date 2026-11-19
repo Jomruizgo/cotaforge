@@ -6,6 +6,8 @@ FreeCAD review and the external adapter's review both build these facts and call
   least of the part. A spigot at the bottom is dimensioned below; the extension lines do not run across the whole part when
   the other side is free.
 * ``dimension_crossings``: no extension line of a dimension crosses the dimension line of another one (ISO 129).
+* ``dimension_stacks``: parallel dimensions that run along each other stand shortest nearest the part and longest outermost,
+  at least ``MIN_PARALLEL_GAP_MM`` apart (ISO 129-1).
 * ``datum_on_line``: the triangle and the frame of a datum do not lie on a line of another item.
 * ``datum_unused``: a datum item whose letter no tolerance frame (``gdt`` item) cites.
 * ``chamfer_leader_problems``: the leader of a chamfer callout ends on the chamfer's own line, comes from outside the part
@@ -201,6 +203,64 @@ def dimension_side(
     return out
 
 
+EXTENT_GAP_MM = 1.0  # an extension line of an overall dimension that hangs this long over no line of the part is across the view
+
+
+def uncovered_run(p: tuple[float, float], q: tuple[float, float], outline: Sequence[Segment], tol: float = 0.05) -> float:
+    """How much of the path ``p``-``q`` (an axis-aligned extension line, as long as the view it crosses) lies over NO line of
+    the part: the length not covered by the ``outline`` segments that lie on the same line (within ``tol``). A box dimensioned
+    over its width has its extension lines on its own two sides (0); two plates held apart by spacers have them across the
+    gap between the plates (the height of the gap): the reader takes that line for an edge of the part."""
+    length = math.hypot(q[0] - p[0], q[1] - p[1])
+    if length < 1e-9:
+        return 0.0
+    ux, uy = (q[0] - p[0]) / length, (q[1] - p[1]) / length
+    spans: list[tuple[float, float]] = []
+    for s in outline:
+        d1 = abs((s[0] - p[0]) * uy - (s[1] - p[1]) * ux)
+        d2 = abs((s[2] - p[0]) * uy - (s[3] - p[1]) * ux)
+        if d1 > tol or d2 > tol:
+            continue
+        a = (s[0] - p[0]) * ux + (s[1] - p[1]) * uy
+        b = (s[2] - p[0]) * ux + (s[3] - p[1]) * uy
+        lo, hi = max(0.0, min(a, b)), min(length, max(a, b))
+        if hi > lo:
+            spans.append((lo, hi))
+    covered = 0.0
+    reach = 0.0
+    for lo, hi in sorted(spans):
+        lo = max(lo, reach)
+        if hi > lo:
+            covered += hi - lo
+            reach = hi
+    return max(0.0, length - covered)
+
+
+@dataclass(frozen=True)
+class ExtentGap:
+    owner: str
+    view: str
+    now: str  # above | below
+    gap_mm: float  # what its extension lines hang over no line of the part
+
+
+def extent_gaps(
+    extents: Sequence[tuple[str, str, str, Sequence[Segment]]], outlines: Mapping[str, Sequence[Segment]]
+) -> list[ExtentGap]:
+    """The overall dimensions whose extension lines cross the view of the part over nothing: ``extents`` are
+    ``(owner, view, side, runs)`` with ``runs`` the extension lines as TechDraw draws them (from the far edge of the view to
+    the edge of the view the dimension is on); ``outlines`` is the visible outline of each view."""
+    out: list[ExtentGap] = []
+    for owner, view, side, runs in extents:
+        outline = outlines.get(view)
+        if not outline:
+            continue
+        gap = sum(uncovered_run((r[0], r[1]), (r[2], r[3]), outline) for r in runs)
+        if gap >= EXTENT_GAP_MM:
+            out.append(ExtentGap(owner, view, side, round(gap, 2)))
+    return out
+
+
 FREE_REACH_MM = 12.0  # how far out from the view the free strip of the other side is looked for (a row and its text)
 EDGE_MM = 0.2  # a dimension line this near the edge of its view is not outside it
 
@@ -341,6 +401,86 @@ def dimension_crossings(dims: Sequence[DimShape]) -> list[CrossingFinding]:
             seen.add((f.owner, f.other))
             unique.append(f)
     return unique
+
+
+# --- the stack of parallel dimensions (ISO 129-1) ----------------------------------------------------------------------------
+
+MIN_PARALLEL_GAP_MM = 6.5
+"""Two parallel dimension lines that run along each other stand at least this far apart: a text height (3.5 mm) plus the room
+of the arrows and the text of the line outside. The layout stacks them 7 mm apart (``sheet_plan_layout.MIN_PARALLEL_GAP_MM``
+is this value)."""
+STACK_SLACK_MM = 0.5  # the CAD sets a line a fraction of a millimetre off where the sheet measured it
+STACK_TOL_MM = 1.0  # two dimensions run along each other when they share more than this; their lengths differ when they differ by more
+
+
+@dataclass(frozen=True)
+class StackFinding:
+    """Two dimensions of one side of a view that run along each other and stand wrong: ``kind`` is ``order`` (``owner``, the
+    LONGER one, stands nearer the part than ``other``) or ``gap`` (the lines are ``gap_mm`` apart, less than the minimum)."""
+
+    owner: str
+    other: str
+    view: str
+    side: str
+    kind: str
+    gap_mm: float
+    owner_mm: float
+    other_mm: float
+
+
+def _run(dim: DimShape) -> tuple[float, float] | None:
+    """Where a dimension runs along its line: from the first to the last of its extension lines."""
+    axis = _axis(dim)
+    if axis is None or len(dim.extension) < 2:
+        return None
+    across = sorted((s[0] + s[2]) / 2 if axis == "h" else (s[1] + s[3]) / 2 for s in dim.extension)
+    return (across[0], across[-1]) if across[-1] - across[0] > 1e-6 else None
+
+
+def stack_position(dim: DimShape, box: Rect) -> tuple[str, float] | None:
+    """The side of its view a dimension stands on and how far its line is from the edge of the view (``None``: inside the view,
+    not axis-aligned or no line position). ``box`` is the view's rectangle, y up."""
+    axis = _axis(dim)
+    if axis is None or dim.line_at is None:
+        return None
+    lo, hi = (box[1], box[3]) if axis == "h" else (box[0], box[2])
+    if dim.line_at >= hi + EDGE_STACK_MM:
+        return ("above" if axis == "h" else "right"), dim.line_at - hi
+    if dim.line_at <= lo - EDGE_STACK_MM:
+        return ("below" if axis == "h" else "left"), lo - dim.line_at
+    return None
+
+
+EDGE_STACK_MM = 0.2
+
+
+def dimension_stacks(dims: Sequence[DimShape], boxes: Mapping[str, Rect]) -> list[StackFinding]:
+    """The pairs of parallel dimensions of one side of a view that stand wrong (ISO 129-1): the LONGER one nearer the part than
+    the shorter one it runs along (the shorter stands inside, the longer outside: a baseline stack goes from the shortest at the
+    part to the longest outermost), or two lines closer than ``MIN_PARALLEL_GAP_MM``. Dimensions that share no run (a chain)
+    are never compared. One finding per pair, the order first."""
+    placed: list[tuple[DimShape, str, str, float, tuple[float, float]]] = []
+    for d in dims:
+        box, run = boxes.get(d.view), _run(d)
+        where = stack_position(d, box) if box is not None else None
+        axis = _axis(d)
+        if where is not None and run is not None and axis is not None:
+            placed.append((d, where[0], axis, where[1], run))
+    out: list[StackFinding] = []
+    for i, (a, side_a, axis_a, dist_a, run_a) in enumerate(placed):
+        for b, side_b, axis_b, dist_b, run_b in placed[i + 1 :]:
+            if a.view != b.view or side_a != side_b or axis_a != axis_b:
+                continue
+            if min(run_a[1], run_b[1]) - max(run_a[0], run_b[0]) <= STACK_TOL_MM:
+                continue
+            near, far = ((a, run_a, dist_a), (b, run_b, dist_b)) if dist_a <= dist_b else ((b, run_b, dist_b), (a, run_a, dist_a))
+            span_near, span_far = near[1][1] - near[1][0], far[1][1] - far[1][0]
+            gap = far[2] - near[2]
+            if span_near > span_far + STACK_TOL_MM:
+                out.append(StackFinding(near[0].owner, far[0].owner, a.view, side_a, "order", gap, span_near, span_far))
+            elif gap < MIN_PARALLEL_GAP_MM - STACK_SLACK_MM:
+                out.append(StackFinding(far[0].owner, near[0].owner, a.view, side_a, "gap", gap, span_far, span_near))
+    return out
 
 
 # --- the datum symbol on a line of another item -----------------------------------------------------------------------
@@ -637,6 +777,7 @@ def redundant_views(views: Sequence[ViewUse]) -> list[RedundantView]:
 # --- the paper a sheet leaves blank -----------------------------------------------------------------------------------------
 
 LOW_COVERAGE = 0.35  # the views and their dimensions cover less than this share of the free drawing area: too small
+LOW_INK = 0.3  # the views THEMSELVES (not their dimensions, not the gaps) cover less than this share of it: too small
 CORNER_RATIO = 3.0  # the free room on one side is more than this many times the other ...
 CORNER_MIN_MM = 60.0  # ... and bigger than this: the block of views sits in a corner
 FIT_MARGIN_MM = 2.0  # a larger scale / a smaller paper must leave this much room round the block to be proposed
@@ -658,6 +799,11 @@ class Underused:
     side: str = ""  # corner: the side with the free room (left | right | above | below)
     free_mm: float = 0.0  # corner: how much room is there
     opposite_mm: float = 0.0  # corner: how much on the opposite side
+    ink: float = 0.0  # small: the share of the area the views themselves cover
+    fewer: str = ""  # small: what to take off so a larger standard scale fits ("views=[top]")
+    fewer_scale: float | None = None  # ... and the scale it would take
+    iso_main: float | None = None  # small: the scale the main views would take with the isometric view at a scale of its own
+    iso_scale: float | None = None  # ... and the scale that view would have (written under it)
 
 
 def _hull(rects: Sequence[Rect]) -> Rect | None:
@@ -674,6 +820,10 @@ def sheet_underused(
     corner: bool = True,
     scales: Sequence[float] = (),
     papers: Mapping[str, tuple[float, float]] | None = None,
+    views: Sequence[Rect] = (),
+    fewer: Sequence[tuple[str, float]] = (),
+    iso_own: tuple[float, float] | None = None,
+    notes: tuple[float, float] | None = None,
 ) -> Underused | None:
     """Whether the views of a sheet, with their dimensions (``rects``: the rectangles of the views and of the dimension
     strips, y up), waste the free drawing ``area``: ``None`` when the sheet is balanced.
@@ -682,8 +832,19 @@ def sheet_underused(
       ``scales``) would still fit it, or a smaller paper (from ``papers``: name -> (width, height) of its free area, at the
       scale the block has; ``page`` is the free area of the paper the sheet is on) would hold it. The block is judged as it is, not redrawn: a sheet whose scale was asked for and is already the
       largest that fits is not small, it is a small part.
+    * ``small`` also when the views themselves (``views``: their rectangles, no dimension strips and no gaps) cover less
+      than ``LOW_INK`` of the area and fewer views would take a larger standard scale (``fewer``: ``(what to take off, the
+      scale it allows)``, the caller's layout arithmetic): a plate drawn in four views at 1:1 on A3 has a block that spans the
+      sheet and views that are a fifth of it, and one view at 2:1 is the same drawing read better.
+    * ``small`` also when the isometric view, a pictorial one, could take a scale of its own (``iso_own``: ``(the scale the
+      main views then take, the scale of the isometric view)``, the caller's layout arithmetic) and the main views would be
+      larger: the sheet is not stuck at the scale the isometric view needs.
     * ``corner`` (only when ``corner``: an assembly keeps room for its parts list and the exploded view): the free room on one
-      side of the hull is more than ``CORNER_RATIO`` times the opposite one and bigger than ``CORNER_MIN_MM``."""
+      side of the hull is more than ``CORNER_RATIO`` times the opposite one and bigger than ``CORNER_MIN_MM``.
+
+    ``notes`` is the width and height of the numbered notes block, which stands in a free corner of the same area: a larger
+    scale or a smaller paper is offered only when the views AND the notes still fit (a remedy the review names is one the
+    agent can apply; the caller's own alternatives, ``fewer`` and ``iso_own``, are worked out with the same notes)."""
     hull = _hull(rects)
     if hull is None or scale <= 0:
         return None
@@ -696,13 +857,28 @@ def sheet_underused(
         s
         for s in scales
         if s > scale * (1 + 1e-9)
-        and width * (s / scale) + 2 * FIT_MARGIN_MM <= area_w
-        and height * (s / scale) + 2 * FIT_MARGIN_MM <= area_h
+        and _fits_round_notes(
+            width * (s / scale) + 2 * FIT_MARGIN_MM, height * (s / scale) + 2 * FIT_MARGIN_MM, area_w, area_h, notes
+        )
     ]
-    smaller_paper = _smaller_paper(width, height, page, papers or {})
+    smaller_paper = _smaller_paper(width, height, page, papers or {}, notes)
     block, free = (round(width, 1), round(height, 1)), (round(area_w, 1), round(area_h, 1))
-    if coverage < LOW_COVERAGE and (larger or smaller_paper):
-        return Underused("small", coverage, block, free, max(larger) if larger else None, smaller_paper)
+    ink = sum(max(0.0, v[2] - v[0]) * max(0.0, v[3] - v[1]) for v in views) / (area_w * area_h) if views else coverage
+    gain = next(((what, s) for what, s in fewer if s > scale * (1 + 1e-9)), None)
+    own = iso_own if iso_own is not None and iso_own[0] > scale * (1 + 1e-9) else None
+    iso_main, iso_scale = own if own else (None, None)
+    if coverage < LOW_COVERAGE and (larger or smaller_paper or own):
+        return Underused(
+            "small", coverage, block, free, max(larger) if larger else None, smaller_paper, ink=ink,
+            fewer=gain[0] if gain else "", fewer_scale=gain[1] if gain else None,
+            iso_main=iso_main, iso_scale=iso_scale,
+        )  # fmt: skip
+    if ink < LOW_INK and (gain is not None or own):
+        return Underused(
+            "small", coverage, block, free, max(larger) if larger else None, smaller_paper, ink=ink,
+            fewer=gain[0] if gain else "", fewer_scale=gain[1] if gain else None,
+            iso_main=iso_main, iso_scale=iso_scale,
+        )  # fmt: skip
     if not corner:
         return None
     gaps = {
@@ -731,16 +907,39 @@ def sheet_underused(
     return None
 
 
+NOTES_GAP_MM = 5.0  # between the views and the notes block (``sheet_layout.NOTES_GAP_MM``)
+
+
+def _fits_round_notes(
+    width: float, height: float, area_w: float, area_h: float, notes: tuple[float, float] | None
+) -> bool:
+    """Whether a block of ``width`` x ``height`` fits the area together with the notes block (``notes``: its width and height;
+    ``None``: none): above the notes (the whole width, the height that is left) or beside them (the width that is left, the
+    whole height) -- the same test as ``sheet_layout.fits_round_notes``."""
+    fit_w, fit_h = width <= area_w + 1e-9, height <= area_h + 1e-9
+    if not notes:
+        return fit_w and fit_h
+    above = fit_w and height + notes[1] + NOTES_GAP_MM <= area_h + 1e-9
+    beside = fit_h and width + notes[0] + NOTES_GAP_MM <= area_w + 1e-9
+    return above or beside
+
+
 def _smaller_paper(
-    width: float, height: float, page: tuple[float, float] | None, papers: Mapping[str, tuple[float, float]]
+    width: float,
+    height: float,
+    page: tuple[float, float] | None,
+    papers: Mapping[str, tuple[float, float]],
+    notes: tuple[float, float] | None = None,
 ) -> str | None:
-    """The smallest of ``papers`` (name: (width, height) of the free area) that holds a block of ``width`` x ``height`` and is
-    smaller than the sheet's own free area (``page``: the free area of the paper it is on)."""
+    """The smallest of ``papers`` (name: (width, height) of the free area) that holds a block of ``width`` x ``height`` (and
+    the notes block, when there is one) and is smaller than the sheet's own free area (``page``: the free area of the paper it
+    is on)."""
     if page is None:
         return None
     fitting = [
         (w * h, name)
         for name, (w, h) in papers.items()
-        if w * h < page[0] * page[1] - 1e-6 and width + 2 * FIT_MARGIN_MM <= w and height + 2 * FIT_MARGIN_MM <= h
+        if w * h < page[0] * page[1] - 1e-6
+        and _fits_round_notes(width + 2 * FIT_MARGIN_MM, height + 2 * FIT_MARGIN_MM, w, h, notes)
     ]
     return min(fitting)[1] if fitting else None

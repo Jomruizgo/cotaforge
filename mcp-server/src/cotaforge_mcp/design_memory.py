@@ -28,7 +28,7 @@ from cotaforge.memory import (
     triggered_at_milestone,
 )
 
-from cotaforge_mcp import rules
+from cotaforge_mcp import engineer_orders, measured_alerts, rules
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.reply import ToolError
 
@@ -41,6 +41,11 @@ DRAWING_REVIEWS = ("engineer_or_fabricator", "fabricator", "engineer", "own", "n
 in time, the manufacturer agent | the manufacturer agent | the engineer | the drawing agent itself (the points of the
 review) | nobody."""
 DEFAULT_DRAWING_REVIEW = "engineer_or_fabricator"
+DRAWING_FLOWS = ("steps", "sheet")
+"""How the drawing agent builds a sheet (``drawing_flow`` of the brief): ``steps`` (create, then a few items per add) |
+``sheet`` (plan, then ONE compose from the model and the engineer's decisions, then local fixes one item at a time:
+the hybrid flow, the default)."""
+DEFAULT_DRAWING_FLOW = "sheet"
 OLD_DRAWING_REVIEWS = {
     "ingeniero_o_fabricante": "engineer_or_fabricator",
     "fabricante": "fabricator",
@@ -61,7 +66,8 @@ DEFAULT_REVIEW_WAIT_MIN = 15
 ROLES_FILE = "roles.yaml"
 MAX_PUSH_LINES = 3
 MIN_ANSWER_WORDS = 3
-APPLIES_PREFIXES = ("applies:", "aplica:", "corregido:", "fixed:")  # corregido: what a reviewer asked for
+APPLIES_PREFIXES = ("applies:", "aplica:", "corregido:", "fixed:", "met:", "cumple:")
+# corregido / fixed: what a reviewer asked for; met / cumple: a requirement the sheet carries (where)
 NOT_APPLIES_PREFIXES = ("does not apply:", "no aplica:")
 
 # Roles of bodies and components: a closed default vocabulary, extensible by the engineer in ``roles.yaml``.
@@ -102,6 +108,8 @@ class Brief:
     """The engineer's words that set a mode other than the default (kept so the file says who decided)."""
     language: str | None = None
     """The engineer's language (``es`` / ``en``) as the project states it; ``None``: it never did (see ``lang``)."""
+    drawing_flow: str = DEFAULT_DRAWING_FLOW
+    """How a sheet is built (``DRAWING_FLOWS``); an unknown value reads as the default."""
 
     @property
     def lang(self) -> str:
@@ -139,9 +147,16 @@ def _brief_of(
     wait_min: int = DEFAULT_REVIEW_WAIT_MIN,
     said: str = "",
     language: str | None = None,
+    flow: str = DEFAULT_DRAWING_FLOW,
 ) -> Brief:
     resolution = table.resolve(sector)
-    return Brief(sector, processes, resolution.ids, resolution.ambiguous, review, wait_min, said, language)
+    return Brief(sector, processes, resolution.ids, resolution.ambiguous, review, wait_min, said, language, flow)
+
+
+def drawing_flow_mode(value: object) -> str:
+    """The flow a brief value names (``steps`` or ``sheet``); anything else reads as the default."""
+    text = str(value or "").strip().lower()
+    return text if text in DRAWING_FLOWS else DEFAULT_DRAWING_FLOW
 
 
 def _wait_minutes(value: Any) -> int:
@@ -199,6 +214,7 @@ def load_brief(settings: Settings) -> Brief:
         _wait_minutes(data.get("drawing_review_wait_min", DEFAULT_REVIEW_WAIT_MIN)),
         str(data.get("drawing_review_said") or "").strip(),
         normalize(data.get("language")),
+        drawing_flow_mode(data.get("drawing_flow")),
     )
 
 
@@ -210,6 +226,7 @@ def save_brief(
     wait_min: int | None = None,
     said: str | None = None,
     language: str | None = None,
+    drawing_flow: str | None = None,
 ) -> Brief:
     """Keep what the engineer wrote in ``sector`` and the ids it resolves to in ``sector_ids`` (informative: the ids
     are resolved again on every load, so a sector added to ``sectors.yaml`` later takes effect), and how his drawings
@@ -227,6 +244,7 @@ def save_brief(
         current.drawing_review_wait_min if wait_min is None else wait_min,
         current.drawing_review_said if said is None else " ".join(said.split()),
         normalize(language) or current.language,
+        current.drawing_flow if drawing_flow is None else drawing_flow_mode(drawing_flow),
     )
     data: dict[str, Any] = {}
     if brief.language:
@@ -243,7 +261,12 @@ def save_brief(
             data["drawing_review_said"] = brief.drawing_review_said
     if brief.drawing_review_wait_min != DEFAULT_REVIEW_WAIT_MIN:
         data["drawing_review_wait_min"] = brief.drawing_review_wait_min
+    if brief.drawing_flow != DEFAULT_DRAWING_FLOW:
+        data["drawing_flow"] = brief.drawing_flow
     path = settings.workspace / BRIEF_FILE
+    presence = _read_yaml(path).get(engineer_orders.PRESENCE_KEY)
+    if presence is not None:  # the engineer's own setting (how long he counts as present): kept as he wrote it
+        data[engineer_orders.PRESENCE_KEY] = presence
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return brief
 
@@ -295,6 +318,9 @@ class MemState:
     """Entries the agent read with ``memory get`` in this server session (never saved)."""
     pushed: set[str] = field(default_factory=set)
     """``entry|op`` already pushed in this server session: the same line is not repeated for the same op (never saved)."""
+    measured: dict[str, list[str]] | None = None
+    """The measured violations read during the tool call in progress (``measured_alerts.live``): one call reads the
+    model once however many times it asks. ``tools.call_tool`` empties it before every call; never saved."""
 
     def to_json(self) -> dict[str, Any]:
         return {"stage": self.stage, "answers": self.answers, "ops_seen": sorted(self.ops_seen)}
@@ -400,13 +426,16 @@ _cache: dict[str, Any] = {}
 
 def _signature(settings: Settings) -> tuple[Any, ...]:
     store = rules.memory_store(settings)
-    rows: list[tuple[str, int]] = []
+    rows: list[tuple[str, int, int, int]] = []
     for scope in (Scope.project, Scope.user, Scope.base):
         directory = store.directory(scope)
         if directory is None or not directory.is_dir():
             continue
         with os.scandir(directory) as scan:
-            rows.extend((entry.path, entry.stat().st_mtime_ns) for entry in scan if entry.name.endswith(".md"))
+            for entry in scan:
+                if entry.name.endswith(".md"):  # size and inode too: two writes in one clock tick share a time
+                    stat = entry.stat()
+                    rows.append((entry.path, stat.st_mtime_ns, stat.st_size, stat.st_ino))
     return tuple(sorted(rows))
 
 
@@ -469,7 +498,10 @@ def push(session: "Session", op: str, roles: frozenset[str]) -> list[str]:
     lines = [push_line(entry) for entry in hits[:MAX_PUSH_LINES]]
     if len(hits) > MAX_PUSH_LINES:
         lines.append(f"memory: +{len(hits) - MAX_PUSH_LINES} more: {', '.join(e.id for e in hits[MAX_PUSH_LINES:])}")
-    lines.append("memory: read the entry (memory get id=...) and answer at the milestone with memory(action=answer)")
+    lines.append(
+        "memory: read the entries (memory get, ids=[...] takes several) and answer at the milestone with "
+        "memory(action=answer, answers={id: text} takes several)"
+    )
     return lines
 
 
@@ -511,7 +543,10 @@ def answer_problem(text: str) -> str | None:
     prefixes = (*APPLIES_PREFIXES, *NOT_APPLIES_PREFIXES)
     prefix = next((p for p in prefixes if lowered.startswith(p)), None)
     if prefix is None:
-        return "start with 'applies:' (how; 'corregido:' for a change you made) or 'does not apply:' (why not)"
+        return (
+            "start with 'applies:' (how; 'corregido:' for a change you made; 'met:' for a requirement, and where on "
+            "the sheet) or 'does not apply:' (why not)"
+        )
     if len(lowered.removeprefix(prefix).split()) < MIN_ANSWER_WORDS:
         return "say how it applies to which part, or why it does not (a few words, not 'yes')"
     return None
@@ -555,7 +590,11 @@ def drawing_entries(session: "Session") -> list[MemoryEntry]:
     ]
 
 
-def record_answer(session: "Session", entry_id: str, text: str) -> str:
+def record_answer(session: "Session", entry_id: str, text: str, by: str | None = None) -> str:
+    """Record the answer to an entry. An entry whose trigger the harness MEASURED on the model (``measured_alerts``) and
+    that still fires is closed only by the engineer's order (``by`` his name; the ``text`` after the prefix is his
+    words, quoted): any answer of the agent alone is refused, and the model changes (the violation is fixed) when it
+    must be closed otherwise."""
     entries = {entry.id: entry for entry in active_entries(session.settings)}
     if entry_id not in entries:
         raise ToolError(
@@ -564,16 +603,54 @@ def record_answer(session: "Session", entry_id: str, text: str) -> str:
             field_name="id",
         )
     verdict, said = checked_answer(session, entry_id, text)
-    session.mem.answers[entry_id] = {"verdict": verdict, "text": said, "stage": current_stage(session).value}
-    return f"answered: {entry_id} ({'applies' if verdict == 'applies' else 'does not apply'}) at stage {current_stage(session).value}"
+    name = (by or "").strip()
+    answer = {"verdict": verdict, "text": said, "stage": current_stage(session).value}
+    firing = measured_alerts.live(session).get(entry_id, []) if measured_alerts.is_measured(entry_id) else []
+    if firing and not name:
+        raise ToolError(
+            measured_alerts.REFUSAL.format(entry=entry_id, lines=" | ".join(firing)),
+            code="measured_not_dismissable",
+            field_name="text",
+        )
+    if name:
+        engineer_orders.confirmed(f"an answer to {entry_id} ordered by the engineer (by={name})")
+        prefix = next(p for p in (*APPLIES_PREFIXES, *NOT_APPLIES_PREFIXES) if said.lower().startswith(p))
+        answer["text"] = f"{said} [ordered by {name}]"
+        answer["ordered_by"] = name
+        answer["order"] = said[len(prefix) :].strip()
+        answer["measured"] = measured_alerts.SEPARATOR.join(firing)
+    session.mem.answers[entry_id] = answer
+    said_verdict = "applies" if verdict == "applies" else "does not apply"
+    kept = f" (ordered by {name}; it covers what is measured now: {len(firing)} violation(s))" if name else ""
+    return f"answered: {entry_id} ({said_verdict}) at stage {current_stage(session).value}{kept}"
+
+
+def _measured_pending(session: "Session", entry_id: str, lines: list[str]) -> str:
+    read = "read" if entry_id in session.mem.read else "NOT read: memory(action=get) first"
+    return (
+        f"- {entry_id} — MEASURED on the model, still fires: {' | '.join(lines)} [{read}]; it closes only when the "
+        "model is fixed (the harness measures again) or the ENGINEER orders it kept: memory(action=answer, id, "
+        "by=<his name>, text=\"does not apply: <his words, quoted>\")"
+    )
 
 
 def review(session: "Session", stage: Stage) -> tuple[list[str], list[str]]:
-    """``(answered lines, pending lines)`` for the entries triggered in ``stage``."""
+    """``(answered lines, pending lines)`` for the entries triggered in ``stage``, and for every entry whose trigger the
+    harness measures on the model and that fires now (whatever the stage: the violation is there)."""
     session.mem.stage = stage.value
     answered: list[str] = []
     pending: list[str] = []
+    fired = measured_alerts.live(session)
+    for entry_id, lines in fired.items():
+        given = session.mem.answers.get(entry_id)
+        if measured_alerts.covered(given, lines):
+            assert given is not None
+            answered.append(f"- {entry_id}: ORDERED KEPT, measured: {' | '.join(lines)}: {given['text']}")
+        else:
+            pending.append(_measured_pending(session, entry_id, lines))
     for entry in triggered_for(session, stage):
+        if entry.id in fired:
+            continue
         given = session.mem.answers.get(entry.id)
         if given is not None and given.get("stage") == stage.value:
             label = "APPLIES" if given["verdict"] == "applies" else "DOES NOT APPLY"

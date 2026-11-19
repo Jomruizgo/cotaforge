@@ -38,7 +38,7 @@ def _found(page: str, scale: float, rects: list[vr.Rect], *, assembly: bool = Fa
     ctx.extras.update({"view_boxes": rects, "main_scale": scale})
     if assembly:
         ctx.assembly = object()  # type: ignore[assignment]
-    return [f for f in checks.check(review.ReviewInput([], {}, ctx, ctx.sheet)) if f.code == "sheet_underused"]
+    return [f for f in checks.check(review.ReviewInput([], {}, ctx, ctx.sheet)) if f.code in ("sheet_underused", "sheet_unbalanced")]
 
 
 def _rule(page: str, scale: float, rects: list[vr.Rect], corner: bool = True) -> vr.Underused | None:
@@ -60,8 +60,10 @@ def _rule(page: str, scale: float, rects: list[vr.Rect], corner: bool = True) ->
     )
 
 
-def test_the_a3_sheet_of_a_100_by_60_plate_at_1_to_1_is_balanced() -> None:
-    """The real example: the block (views and dimensions, 380 x 170 mm) centred in the area, a larger scale does not fit."""
+def test_the_block_of_a_100_by_60_plate_at_1_to_1_on_a3_spans_the_sheet_so_the_block_alone_is_balanced() -> None:
+    """The block (views and dimensions, 380 x 170 mm) centred in the area, a larger scale does not fit: judged by the block
+    alone the sheet is balanced. The views themselves are a fifth of the sheet: that is judged with their rectangles and the
+    fewer-view alternatives (``test_sheet_reqfacts``), and there that same sheet IS flagged."""
     assert _rule("A3", 1.0, [_centred(_area("A3"), 380.0, 170.0)]) is None
     assert _found("A3", 1.0, [_centred(_area("A3"), 380.0, 170.0)]) == []
 
@@ -77,8 +79,12 @@ def test_a_small_part_at_1_to_5_on_an_a1_sheet_is_flagged_with_a_larger_scale_an
     assert "desperdicia" in found.message
 
 
-def test_the_finding_never_holds_an_export() -> None:
-    assert "sheet_underused" in checks_module.NON_BLOCKING
+def test_a_gap_with_a_remedy_holds_the_export_and_one_without_never_does() -> None:
+    assert "sheet_underused" not in checks_module.NON_BLOCKING  # a larger scale or a smaller paper fits: apply it
+    assert "sheet_unbalanced" in checks_module.NON_BLOCKING  # the automatic layout, nothing larger fits: a notice
+    rows = [{"code": "sheet_underused"}, {"code": "sheet_unbalanced"}]
+    checks_module.assign_ids(rows)
+    assert [r["blocking"] for r in rows] == [True, False]
 
 
 def test_a_block_in_the_corner_is_flagged_even_when_it_covers_enough_paper() -> None:
@@ -89,6 +95,7 @@ def test_a_block_in_the_corner_is_flagged_even_when_it_covers_enough_paper() -> 
     assert rule.side == "right" and rule.free_mm > vr.CORNER_MIN_MM and rule.opposite_mm == 0.0
     (found,) = _found("A3", 1.0, [corner])
     assert "esquina" in found.message and "la disposición es la automática" in found.message  # no larger scale fits
+    assert found.code == "sheet_unbalanced"  # ... so there is no remedy to hold the export for
 
 
 def test_the_same_block_centred_is_not_in_a_corner() -> None:

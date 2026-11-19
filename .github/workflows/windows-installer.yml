@@ -2,19 +2,27 @@ name: windows-installer
 
 # Builds the Windows installer, installs it on the runner (silently), checks it and uninstalls it.
 # On a version tag it also leaves a DRAFT release with the .exe attached; publishing it is a human decision.
+# Pull requests run it only when they touch what the installer packs or runs at install time (packaging, plugin, package
+# metadata, the command line and launcher, the manuals). Every push to develop and main runs it, so a code change that
+# breaks the install is caught right after its merge.
 
 on:
   pull_request:
     paths:
-      - "kernel/**"
-      - "mcp-server/**"
-      - "plugin/**"
       - "packaging/**"
+      - "plugin/**"
       - ".claude-plugin/**"
+      - "kernel/pyproject.toml"
+      - "mcp-server/pyproject.toml"
+      - "mcp-server/src/cotaforge_mcp/cli.py"
+      - "mcp-server/src/cotaforge_mcp/launcher.py"
       - "docs/manual-usuario.md"
       - "docs/user-manual.md"
       - ".github/workflows/windows-installer.yml"
   push:
+    branches:
+      - develop
+      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -42,17 +50,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Unit tests (no FreeCAD)
-        run: |
-          python -m pip install --disable-pip-version-check -e "kernel[dev]" -e "mcp-server[dev]"
-          Push-Location kernel
-          python -m pytest tests/unit
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Pop-Location
-          Push-Location mcp-server
-          python -m pytest tests/unit
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Pop-Location
+      - name: Install the packages
+        # The unit suites run on Windows in the `unit` workflow (a required check); this job only builds and installs.
+        run: python -m pip install --disable-pip-version-check -e "kernel[dev]" -e "mcp-server[dev]"
 
       - name: Plugin and marketplace validate (Claude Code)
         run: |
@@ -146,7 +146,7 @@ jobs:
           $process = Start-Process -FilePath $env:SETUP -Wait -PassThru -ArgumentList @(
             "/VERYSILENT", "/LANG=english", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/SP-", "/LOG=$log")
           if ($process.ExitCode -ne 0) { Get-Content $log; throw "update exited with $($process.ExitCode)" }
-          if (-not $busy.HasExited) { Stop-Process -Id $busy.Id -Force; throw "the update left the running server alive" }
+          if (-not $busy.HasExited) { $busy.Kill(); throw "the update left the running server alive" }
           & $python -I -m cotaforge_mcp.cli version
           if ($LASTEXITCODE -ne 0) { Get-Content $log; throw "the updated program does not run" }
           Write-Host "updated over a running server; it was closed by its PID"
@@ -181,7 +181,7 @@ jobs:
           $deadline = (Get-Date).AddSeconds(180)
           while ((Test-Path $env:APP) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
           if (Test-Path $env:APP) { throw "$env:APP is still there after the uninstall" }
-          if (-not $busy.HasExited) { Stop-Process -Id $busy.Id -Force; throw "the uninstall left the running server alive" }
+          if (-not $busy.HasExited) { $busy.Kill(); throw "the uninstall left the running server alive" }
           # Projects are never touched by an uninstall.
           if (-not (Test-Path (Join-Path $env:RUNNER_TEMP "design space\.mcp.json"))) { throw "the design space was removed" }
           Write-Host "uninstalled; the design space is intact"
@@ -197,9 +197,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # A second copy without the version in its name: .../releases/latest/download/cotaforge-setup.exe
-          # always points at the newest published release (a draft is never "latest").
+          # One asset, without the version in its name, so .../releases/latest/download/cotaforge-setup.exe
+          # always points at the newest published release (a draft is never "latest"). The version is the tag's.
           $latest = Join-Path (Split-Path $env:SETUP) "cotaforge-setup.exe"
-          Copy-Item $env:SETUP $latest
-          gh release create "${{ github.ref_name }}" $env:SETUP $latest --draft --verify-tag --title "CotaForge ${{ github.ref_name }}" --generate-notes
+          Move-Item $env:SETUP $latest
+          gh release create "${{ github.ref_name }}" $latest --draft --verify-tag --title "CotaForge ${{ github.ref_name }}" --generate-notes
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

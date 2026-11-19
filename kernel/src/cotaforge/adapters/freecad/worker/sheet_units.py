@@ -1,32 +1,53 @@
+# ruff: noqa: E501
 """The pieces of a composed sheet the CAD window mirrors, as plain data (no FreeCAD import, unit-testable on its own).
 
 The compositor (``drawing.compose``) draws a whole sheet into ``sheet_model`` entities; the PDF, the PNG and the DXF are
 written from them. The engineer watches the TechDraw sheet window while the agent builds the sheet, so every piece that
-one item (or the thread arcs, the ISO 286 note, an ``hlr`` view) put on the sheet is also made as an object of the
+one item (or the thread arcs, the ISO 286 note) put on the sheet is also made as an object of the
 TechDraw page (``sheet_mirror``): a ``Unit`` is that piece -- a key, a label and the entities it drew, at their place on
-the page. The key is the item id (``h1``), ``view:front`` / ``view:top`` / ... for the views of an ``hlr`` sheet,
-``threads`` and ``iso286`` for what no item owns.
+the page. The key is the item id (``h1``); ``threads`` and ``iso286`` are for what no item owns.
 
 """
 
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sheet_clip import arc_points
-from sheet_model import DIMENSIONS, HIDDEN, TEXT, Arc, Circle, Entity, Glyph, Line, Polyline, Solid, Text, text_width
+from sheet_marks import MARK_TYPES, WHOLE, NativeBalloon, NativeLeader, NativeRevisionMark, NativeTable, NativeWeld
+from sheet_marks import count as marks_count
+from sheet_marks import dump as marks_dump
+from sheet_model import (
+    AXES,
+    DIMENSIONS,
+    FLAT_FACES,
+    HIDDEN,
+    PARTING,
+    TEXT,
+    THREAD,
+    THREAD_END,
+    ZONE,
+    Arc,
+    Circle,
+    Entity,
+    Glyph,
+    Line,
+    Polyline,
+    Solid,
+    Text,
+    text_width,
+)
 
 Rect = tuple[float, float, float, float]
 Point = tuple[float, float]
 
 KIND_ITEM = "item"
-KIND_VIEW = "view"
 KIND_EXTRA = "extra"
 TEXT_SLACK = 1.12  # the real font may be wider than ``text_width`` estimates: the SVG fragment is cut at its box
 MARGIN_MM = 1.5
 KEY_THREADS = "threads"
-KEY_ISO286 = "iso286"
+KEY_ISO_SCALE = "iso_scale"  # the scale written under the isometric view when it is not the sheet's
 NATIVE_LAYERS = frozenset({DIMENSIONS, TEXT})  # what TechDraw's own dimension / annotation objects draw
 
 
@@ -47,7 +68,8 @@ class NativeDim:
     truth of a native dimension. ``text`` is the whole text when the item's callout is not the measured number
     (``Ø9 pasante`` and a counterbore, a fit) -- TechDraw's Arbitrary text --; ``None`` shows what TechDraw measures.
     ``label`` is where the text sits (page mm, y up) and so where the dimension line goes; ``tol`` is the (upper,
-    lower) deviation TechDraw prints itself with the measured value; ``leader`` puts the text on a shelf (ISO 129-1
+    lower) deviation TechDraw prints with the measured value, as ``tol_text`` (mm: left to TechDraw's own unit schema a
+    deviation of 12 µm prints as ``-12``); ``suffix`` follows the measured value (a fit symbol); ``leader`` puts the text on a shelf (ISO 129-1
     referencing, for the diameters and radii whose text is long)."""
 
     item: str
@@ -63,6 +85,11 @@ class NativeDim:
     leader: bool = False
     rect: Rect | None = None  # the room the label and its line take (page mm), for the collision check
     arrows: str = "auto"  # inside | outside: TechDraw flips the arrowheads to match; auto leaves them to TechDraw
+    exact: bool = False  # a theoretically exact dimension: TechDraw frames its text (``TheoreticalExact``)
+    secondary: bool = False  # an intermediate process stage: drawn grey so the final size stands out
+    tol_text: tuple[str, str] | None = None  # the upper and lower deviation as the sheet writes them (mm, its decimal sign)
+    suffix: str = ""  # written after the measured value (the fit symbol of a toleranced size: ``P9``)
+    prefix: str = ""  # written before the measured value (``3×`` before the pitch of a row): TechDraw's own format spec, so the value follows the model
 
 
 @dataclass(frozen=True)
@@ -75,6 +102,7 @@ class NativeNote:
     at: Point
     size: float = 3.5
     step: float = 5.0  # between the baselines of two lines
+    fit: bool = True  # the window is asked where the line was painted and it is moved to the left edge asked (a short label is not)
 
 
 @dataclass(frozen=True)
@@ -88,7 +116,79 @@ class NativeFlag:
     prop: str = "HardHidden"
 
 
-Native = NativeDim | NativeNote | NativeFlag
+@dataclass(frozen=True)
+class NativeCosmetic:
+    """A line TechDraw draws ON a view: a centre line (``makeCenterLine`` between the two edges it lies midway between,
+    where the view has them) or a cosmetic edge (``makeCosmeticLine`` / ``makeCosmeticCircle`` / ``makeCosmeticCircleArc``):
+    the centre marks, the pitch circle, the thin arc of a thread, the parting line. It belongs to the view's own lists, so it
+    moves with the view, is edited there line by line and goes when the view does. ``values`` are in page mm (y up): a
+    ``line`` is x1, y1, x2, y2; a ``circle`` cx, cy, r; an ``arc`` cx, cy, r, start, end (degrees, counter-clockwise).
+    ``style`` is the line kind (``COSMETIC_STYLES``)."""
+
+    item: str
+    view: str  # front | top | right | isometric
+    kind: str  # line | circle | arc
+    values: tuple[float, ...]
+    style: str
+
+
+@dataclass(frozen=True)
+class NativeSymbol:
+    """A symbol of the library the harness inserts the way the engineer does (TechDraw's *Insert SVG Symbol*): a
+    ``DrawViewSymbol`` whose ``Symbol`` is the library file ``file`` and whose ``EditableTexts`` are ``texts`` (the tolerance, the
+    datum letters, the roughness: the engineer edits them in the property editor), owned by ``view`` so it follows the view
+    (``Owner``). ``at`` is where the ORIGIN of the drawing of the file lands (page mm, y up): the top-left corner of a feature
+    control frame, the middle of the base of a datum triangle, the vertex of a surface texture symbol. ``leader`` are the
+    waypoints (page mm) of the native ``DrawLeaderLine`` that joins it to the feature or the dimension it controls: the first
+    on the feature (with the arrow when ``arrow``), the last at the symbol; empty when the symbol stands on the feature itself."""
+
+    item: str
+    name: str
+    kind: str  # frame | datum | finish
+    file: str  # path inside the symbol library (``gdt_frames``)
+    texts: tuple[str, ...]
+    at: Point
+    view: str  # front | top | right | isometric: the view it belongs to
+    leader: tuple[Point, ...] = ()
+    arrow: bool = True
+
+
+CENTRE_LINE_MARK = "centre-line objects"  # in a cosmetic signature: its straight centre lines are TechDraw's centre-line objects
+COSMETIC_STYLES = {  # the layer the compositor draws on -> the kind of line TechDraw is asked for
+    AXES: "centre",
+    THREAD: "thin",
+    THREAD_END: "thick",  # the end of the useful length of a thread: wide, like the outline
+    FLAT_FACES: "thin",
+    PARTING: "parting",
+    ZONE: "thin",
+}
+
+
+@dataclass(frozen=True)
+class NativeView:
+    """A view TechDraw makes of the part: a ``DrawViewSection`` (the cut, its hatch, the cutting line and letter in the parent
+    view), a ``DrawViewDetail`` (a circle of the parent enlarged) or, for an auxiliary view, a ``DrawViewPart`` looked at square
+    to a face. ``box`` is the page rectangle (mm, y up) of what the sheet draws in it: the object is put where that box sits,
+    at ``scale``. ``direction`` is the model vector towards the viewer and ``xdir`` the model vector along the page's x; a section
+    cuts at the plane through ``at`` and a detail is the circle of ``radius`` model mm at ``anchor`` (the parent's own
+    coordinates: model mm from the parent's origin, y up). ``parent`` is the view it hangs from; ``name`` is what the other
+    items call it (``A-A``). Every dimension of the view is a ``NativeDim`` whose ``view`` is that name."""
+
+    item: str
+    name: str
+    kind: str  # section | detail | aux
+    parent: str  # front | top | right | isometric
+    box: Rect
+    scale: float
+    direction: tuple[float, float, float]
+    xdir: tuple[float, float, float]
+    letter: str
+    at: tuple[float, float, float] | None = None
+    anchor: Point | None = None
+    radius: float = 0.0
+
+
+Native = NativeDim | NativeNote | NativeFlag | NativeCosmetic | NativeWeld | NativeBalloon | NativeTable | NativeLeader | NativeRevisionMark | NativeView | NativeSymbol
 
 
 @dataclass(frozen=True)
@@ -102,6 +202,7 @@ class Unit:
     item_type: str = ""
     native: dict[str, Any] | None = field(default=None, compare=False)  # TechDraw's own objects hold this unit
     natives: tuple[Native, ...] = field(default=(), compare=False)  # TechDraw objects that replace its dimension lines
+    covered: frozenset[int] = field(default=frozenset(), compare=False)  # ids of the entities a NativeCosmetic draws
 
     @property
     def rect(self) -> Rect:
@@ -126,8 +227,11 @@ class Unit:
         marks of a hole callout); without, everything."""
         if not self.natives:
             return self.entities
-        gone = NATIVE_LAYERS | ({HIDDEN} if any(isinstance(n, NativeFlag) for n in self.natives) else set())
-        return tuple(e for e in self.entities if getattr(e, "layer", None) not in gone)
+        if any(isinstance(n, (*WHOLE, NativeView)) for n in self.natives):
+            return ()  # welds, balloons, tables and the views TechDraw makes: the objects are the whole of the item
+        objects = any(isinstance(n, NativeDim | NativeNote | NativeSymbol) for n in self.natives)
+        gone = (NATIVE_LAYERS if objects else set()) | ({HIDDEN} if any(isinstance(n, NativeFlag) for n in self.natives) else set())
+        return tuple(e for e in self.entities if getattr(e, "layer", None) not in gone and id(e) not in self.covered)
 
 
 def text_rect(e: Text) -> Rect:
@@ -191,26 +295,23 @@ def collect(
     slices: dict[str, tuple[int, int]],
     statuses: dict[str, str],
     extras: dict[str, tuple[int, int]],
-    views: dict[str, list[Entity]] | None,
     native: dict[str, dict[str, Any]] | None = None,
     natives: dict[str, list[Native]] | None = None,
 ) -> list[Unit]:
     """The units of a composed sheet, in the order they should stack on the page.
 
     ``slices`` maps an item id to the range of ``entities`` it drew; an item that failed (status ``error``) or drew
-    nothing makes no unit. ``extras`` is the same for the pieces no item owns (``threads``, ``iso286``). ``views`` are
-    the views of an ``hlr`` sheet (they are not TechDraw objects there, so the window needs them). ``native`` maps the
+    nothing makes no unit. ``extras`` is the same for the pieces no item owns (``threads``). ``views`` are
+    ``native`` maps the
     id of an item that TechDraw's own objects hold (the overall dimensions of a ``techdraw`` sheet) to what the
     mirror needs to put them where the sheet draws them. ``natives`` maps an item id to the TechDraw dimension and
     annotation objects it asks for (``NativeDim`` / ``NativeNote``)."""
     units: list[Unit] = []
-    for name, group in (views or {}).items():
-        if group:
-            units.append(Unit(f"view:{name}", f"view {name}", KIND_VIEW, tuple(group)))
-    if "threads" in extras:
-        a, b = extras["threads"]
-        if b > a:
-            units.append(Unit(KEY_THREADS, "thread arcs", KIND_EXTRA, tuple(entities[a:b])))
+    for key, what in ((KEY_THREADS, "thread arcs"), (KEY_ISO_SCALE, "isometric view scale")):
+        if key in extras:
+            a, b = extras[key]
+            if b > a:
+                units.append(Unit(key, what, KIND_EXTRA, tuple(entities[a:b])))
     for item in items:
         item_id = str(item["id"])
         if statuses.get(item_id) == "error" or item_id not in slices:
@@ -230,10 +331,6 @@ def collect(
                 tuple((natives or {}).get(item_id, ())),
             )
         )
-    if "iso286" in extras:
-        a, b = extras["iso286"]
-        if b > a:
-            units.append(Unit(KEY_ISO286, "ISO 286 note", KIND_EXTRA, tuple(entities[a:b])))
     return units
 
 
@@ -261,17 +358,69 @@ def signature(unit: Unit) -> str:
                 n.orient,
                 n.tol,
                 n.leader,
+                *(["exact"] if n.exact else []),  # only when set: a sheet made before keeps its objects
+                *(["secondary"] if n.secondary else []),
+                *([["tol_text", list(n.tol_text), n.suffix]] if n.tol_text else []),
+                *([["prefix", n.prefix]] if n.prefix else []),
             ]
         if isinstance(n, NativeFlag):
             return ["f", n.view, n.prop]
-        return ["n", n.name, list(n.lines), [round(v, 2) for v in n.at], n.size, n.step]
+        if isinstance(n, NativeSymbol):
+            return ["s", n.name, n.kind, n.file, list(n.texts), [round(v, 2) for v in n.at], n.view, [[round(v, 2) for v in p] for p in n.leader], n.arrow]
+        if isinstance(n, MARK_TYPES):
+            return marks_dump(n)
+        if isinstance(n, NativeView):
+            return [
+                "v",
+                n.kind,
+                n.name,
+                n.parent,
+                [round(v, 2) for v in n.box],
+                round(n.scale, 4),
+                [round(v, 4) for v in n.direction],
+                [round(v, 4) for v in n.xdir],
+                n.letter,
+                None if n.at is None else [round(v, 3) for v in n.at],
+                None if n.anchor is None else [round(v, 3) for v in n.anchor],
+                round(n.radius, 3),
+            ]
+        return ["n", n.name, list(n.lines), [round(v, 2) for v in n.at], n.size, n.step, *([] if n.fit else ["loose"])]
 
-    return json.dumps([dump(n) for n in unit.natives], separators=(",", ":"), default=str)
+    return json.dumps(
+        [dump(n) for n in unit.natives if not isinstance(n, NativeCosmetic)], separators=(",", ":"), default=str
+    )
+
+
+def cosmetic_signature(natives: Any) -> str:
+    """What the cosmetic edges of one view for one unit must be (a view that already carries it is left alone)."""
+    natives = list(natives)
+    rows: list[Any] = [[n.kind, [round(v, 2) for v in n.values], n.style] for n in natives]
+    if any(n.style == "centre" and n.kind == "line" for n in natives):
+        rows.append(CENTRE_LINE_MARK)  # a view whose centre lines were made as cosmetic edges gets them made again
+    return json.dumps(rows, separators=(",", ":"))
 
 
 def object_count(unit: Unit) -> int:
-    """How many native objects ``unit`` is: a dimension each, a note one annotation per line."""
-    return sum(1 if isinstance(n, NativeDim) else len(n.lines) for n in unit.natives if not isinstance(n, NativeFlag))
+    """How many native objects ``unit`` is: a dimension or a view each, a note one annotation per line, a symbol the symbol and
+    its leader."""
+    total = 0
+    for n in unit.natives:
+        if isinstance(n, NativeFlag | NativeCosmetic):
+            continue
+        if isinstance(n, NativeSymbol):
+            total += 2 if n.leader else 1
+        elif isinstance(n, NativeDim | NativeView):
+            total += 1
+        elif isinstance(n, MARK_TYPES):
+            total += marks_count(n)
+        else:
+            total += len(n.lines)
+    return total
+
+
+def view_of(unit: Unit) -> NativeView | None:
+    """The view ``unit`` is, when it is one (a section, detail or auxiliary view item)."""
+    return next((n for n in unit.natives if isinstance(n, NativeView)), None)
 
 
 def measured_problem(obj: Any, dim: NativeDim) -> str | None:
@@ -287,3 +436,160 @@ def measured_problem(obj: Any, dim: NativeDim) -> str | None:
     if abs(abs(got) - dim.expected) > tol:
         return f"{dim.item} {dim.name}: TechDraw measures {got:.3f} and the model says {dim.expected:.3f}"
     return None
+
+
+# --- the cosmetic edges of a unit (pure) --------------------------------------------------------------------------------
+
+COSMETIC_MARGIN_MM = 30.0  # a line this near the box of a TechDraw view (a centre line past the part) is the view's
+
+
+def _segments(e: Entity) -> list[tuple[str, tuple[float, ...]]]:
+    """What a cosmetic edge can be made of ``e``: ``(kind, values)``, none when it has no cosmetic form."""
+    if isinstance(e, Line):
+        return [("line", (e.x1, e.y1, e.x2, e.y2))]
+    if isinstance(e, Polyline):
+        points = list(e.points) + ([e.points[0]] if e.closed and e.points else [])
+        return [("line", (a[0], a[1], b[0], b[1])) for a, b in zip(points, points[1:], strict=False)]
+    if isinstance(e, Arc):
+        return [("arc", (e.cx, e.cy, e.r, e.start, e.end))]
+    if isinstance(e, Circle):
+        return [("circle", (e.cx, e.cy, e.r))]
+    return []
+
+
+def _anchor(kind: str, values: tuple[float, ...]) -> Point:
+    if kind == "line":
+        return (values[0] + values[2]) / 2, (values[1] + values[3]) / 2
+    return values[0], values[1]
+
+
+def _inside(p: Point, rect: Rect, margin: float = 0.0) -> bool:
+    return rect[0] - margin <= p[0] <= rect[2] + margin and rect[1] - margin <= p[1] <= rect[3] + margin
+
+
+def with_cosmetics(units: list[Unit], views: dict[str, Rect], derived: list[Rect]) -> list[Unit]:
+    """``units`` with the lines of the layers TechDraw has a cosmetic edge for (``COSMETIC_STYLES``) asked of the view they lie
+    on (``views``: TechDraw's own views by name, with the page box of what they draw; ``derived``: boxes of views the sheet drew
+    itself, whose lines are not any TechDraw view's). A line that lies on no view stays what it was: part of the unit's drawing.
+    The unit of a view (a section, detail or auxiliary view) is all TechDraw's: its centre and thread lines inside the view are
+    cosmetic edges of it, and the rest of what it drew (the cut, the hatch, the cutting line, the letters) is the view's own."""
+    out: list[Unit] = []
+    for unit in units:
+        made: list[NativeCosmetic] = []
+        covered: set[int] = set()
+        seen: set[tuple[str, str, tuple[float, ...], str]] = set()  # the same line drawn twice is one edge
+        own = view_of(unit)
+        for e in unit.entities:
+            style = COSMETIC_STYLES.get(getattr(e, "layer", ""))
+            if own is not None:
+                covered.add(id(e))
+                if style is not None:
+                    for kind, values in _segments(e):
+                        if _inside(_anchor(kind, values), own.box):
+                            n = NativeCosmetic(unit.key, own.name, kind, values, style)
+                            key = (n.view, n.kind, tuple(round(v, 2) for v in n.values), n.style)
+                            if key not in seen:
+                                seen.add(key)
+                                made.append(n)
+                continue
+            if style is None:
+                continue
+            parts = _segments(e)
+            if not parts:
+                continue
+            placed: list[NativeCosmetic] = []
+            for kind, values in parts:
+                point = _anchor(kind, values)
+                if any(_inside(point, box) for box in derived):
+                    placed = []
+                    break
+                near = [
+                    (((box[0] + box[2]) / 2 - point[0]) ** 2 + ((box[1] + box[3]) / 2 - point[1]) ** 2, name)
+                    for name, box in views.items()
+                    if _inside(point, box)
+                ] or [
+                    (((box[0] + box[2]) / 2 - point[0]) ** 2 + ((box[1] + box[3]) / 2 - point[1]) ** 2, name)
+                    for name, box in views.items()
+                    if _inside(point, box, COSMETIC_MARGIN_MM)
+                ]
+                if not near:
+                    placed = []
+                    break
+                placed.append(NativeCosmetic(unit.key, min(near)[1], kind, values, style))
+            if placed:
+                for n in placed:
+                    key = (n.view, n.kind, tuple(round(v, 2) for v in n.values), n.style)
+                    if key not in seen:
+                        seen.add(key)
+                        made.append(n)
+                covered.add(id(e))
+        marks, marked = mould_marks(unit, views, derived, covered)
+        made = [*made, *marks]
+        covered |= marked
+        out.append(replace(unit, natives=(*unit.natives, *made), covered=frozenset(covered)) if made else unit)
+    return out
+
+
+# --- the marks of a moulded part (ISO 10135): leaders, notes and cosmetic lines (pure) ----------------------------------------
+
+MOULD_ITEMS = frozenset({"parting_line", "pull_direction", "mould_zone", "no_draft"})
+SHAFT_TOL_MM = 0.05  # the shaft of an arrow ends on the tip of its head
+
+
+def _nearest_view(points: list[Point], views: dict[str, Rect]) -> str | None:
+    """The TechDraw view whose box the ``points`` are nearest to (the one a mark stands beside), ``None`` when there is none."""
+    best: tuple[float, str] | None = None
+    for name, box in views.items():
+        for p in points:
+            dx = max(box[0] - p[0], 0.0, p[0] - box[2])
+            dy = max(box[1] - p[1], 0.0, p[1] - box[3])
+            if best is None or dx * dx + dy * dy < best[0]:
+                best = (dx * dx + dy * dy, name)
+    return None if best is None else best[1]
+
+
+def mould_marks(
+    unit: Unit, views: dict[str, Rect], derived: list[Rect], taken: set[int]
+) -> tuple[list[Native], set[int]]:
+    """What of a moulded-part item is made of TechDraw's own objects: an arrow with its shaft is a leader line with an
+    arrowhead (the opening direction, a draft exception), every other line, arc and circle (the bar at the tail of the
+    arrow, the draft wedge, the hatch of a zone) a cosmetic edge of the view it stands beside, every text an annotation. The
+    entities handled are returned by id so the sheet draws none of them again. ``taken`` are the ones already asked for."""
+    if unit.item_type not in MOULD_ITEMS:
+        return [], set()
+    made: list[Native] = []
+    covered: set[int] = set()
+    shafts: dict[int, Line] = {}
+    for solid in unit.entities:
+        if not isinstance(solid, Solid) or len(solid.points) != 3 or getattr(solid, "layer", None) != DIMENSIONS:  # noqa: PLR2004
+            continue
+        tip = solid.points[0]
+        for e in unit.entities:
+            if not isinstance(e, Line) or id(e) in shafts or getattr(e, "layer", None) != DIMENSIONS:
+                continue
+            for end, tail in (((e.x1, e.y1), (e.x2, e.y2)), ((e.x2, e.y2), (e.x1, e.y1))):
+                if math.dist(end, tip) <= SHAFT_TOL_MM:
+                    view = _nearest_view([tip, tail], views)
+                    if view is not None and not any(_inside(tip, box) for box in derived):
+                        made.append(NativeLeader(unit.key, view, (tip, tail)))
+                        covered |= {id(solid), id(e)}
+                        shafts[id(e)] = e
+                    break
+            if id(solid) in covered:
+                break
+    for e in unit.entities:
+        if id(e) in covered or id(e) in taken or isinstance(e, Text | Solid):
+            continue
+        parts = _segments(e)
+        view = _nearest_view([_anchor(k, v) for k, v in parts], views) if parts else None
+        if view is None or any(_inside(_anchor(k, v), box) for k, v in parts for box in derived):
+            continue
+        made += [NativeCosmetic(unit.key, view, k, v, "thin") for k, v in parts]
+        covered.add(id(e))
+    texts = [e for e in unit.entities if isinstance(e, Text)]
+    for number, e in enumerate(texts, start=1):
+        width = text_width(e.text, e.height)
+        left = e.x - (width / 2 if e.anchor == "center" else width if e.anchor == "right" else 0.0)
+        made.append(NativeNote(unit.key, f"m{number}", (e.text,), (left, e.y + e.height), e.height, e.height * 1.4, False))
+        covered.add(id(e))
+    return made, covered

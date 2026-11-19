@@ -40,7 +40,17 @@ from cotaforge.contract import (
 from cotaforge.ir import FaceRef
 from pydantic import ValidationError
 
-from cotaforge_mcp import design_memory, drawing_gate, feature_tools, pdf_check, rules
+from cotaforge_mcp import (
+    design_memory,
+    drawing_compose,
+    drawing_gate,
+    drawing_look,
+    drawing_plan,
+    engineer_orders,
+    feature_tools,
+    pdf_check,
+    rules,
+)
 from cotaforge_mcp.reply import Image, Reply, ToolError, first_validation_issues, ok
 from cotaforge_mcp.schemas import DrawingArgs, ExportArgs, ViewArgs
 from cotaforge_mcp.session import Session
@@ -381,7 +391,7 @@ def _item_line(item: Any) -> str:
     )
 
 
-REBUILD_SETTINGS = ("template", "angle", "language", "scale", "projection", "body")
+REBUILD_SETTINGS = ("template", "angle", "language", "scale", "body")
 # the settings of create a rebuild leaves as the sheet has them when the caller does not state them
 
 
@@ -395,12 +405,6 @@ def _rebuild_lines(result: Any) -> list[str]:
     if result.discarded:
         lines.append(f"fresh: threw away {'; '.join(result.discarded)}")
     return lines
-
-
-HLR_NOTICE = (
-    "projection: hlr (our own hidden-line projection, not TechDraw's view objects): the views in the FreeCAD window "
-    "are drawings of that projection (symbols), the same as the PDF; TechDraw's own views are projection=techdraw"
-)
 
 
 def _sheet_summary(result: Any, brief: bool = False) -> list[str]:
@@ -420,13 +424,23 @@ def _sheet_summary(result: Any, brief: bool = False) -> list[str]:
             lines.append(f"sheets: {', '.join(result.sheets)}")
         return lines
     lines = [head + f"; views: {', '.join(result.views)}", f"dimensions: {', '.join(result.dimensions)}"]
-    if result.projection == "hlr":
-        lines.append(HLR_NOTICE)
     if len(result.sheets) > 1:
         lines.append(f"sheets: {', '.join(result.sheets)}")
     if result.items:
         lines += ["items:", *[_item_line(i) for i in result.items]]
     return lines
+
+
+def _step_lines(result: Any) -> list[str]:
+    """The blocking findings this step brought (a view with nothing on it or drawn twice, dimension lines crossed, a sheet left
+    mostly empty): they hold the export, so they are said where they were made, with their remedy."""
+    found = list(getattr(result, "step_findings", ()))
+    if not found:
+        return []
+    return [
+        f"this step left {len(found)} blocking finding(s) (the review lists them and the export waits for them):",
+        *[f"  BLOCKING {row}" for row in found],
+    ]
 
 
 def _item_id(value: Any) -> str:
@@ -458,55 +472,144 @@ def _sheet_as_read(sheet: Any) -> list[str]:
     return lines
 
 
+def _requirements_block(session: Session, sheet: str) -> tuple[list[str], Any]:
+    """The requirements of the sheet a create just made (what the standards ask it to carry, with the questions), for the
+    reply of ``create``, and the sheet as reviewed for them (the step line reads it: the sheet is not reviewed again). Never
+    fails the create: a CAD that cannot describe the sheet, or any error, says nothing."""
+    if "describe_drawing" not in session.capabilities.tools:
+        return [], None
+    try:
+        info = drawing_gate.sheet_info(session, sheet, review=True)
+        if info is None or not info.facts or drawing_gate.mode_of(session) == "none":
+            return [], None
+        info, adds = drawing_gate.determine(session, info)
+        return [*drawing_gate.added_lines(adds), *drawing_gate.requirements_lines(session, info, session.language)], info
+    except Exception:  # noqa: BLE001 - the list is help, not part of the create
+        return [], None
+
+
+def _create_request(session: Session, args: DrawingArgs) -> DrawingRequest:
+    """The request of a ``create``: what the call states; what it leaves out stays as the sheet has it on a rebuild."""
+    return DrawingRequest(
+        operation_id="drawing",
+        template=args.template,
+        title=args.title or session.doc_name or None,
+        author=args.author,
+        date=args.date,
+        material=args.material or session.design_attributes().material,
+        scale=_parse_scale(args.scale),
+        angle=args.angle,
+        title_block=args.title_block or {},
+        language=args.language or session.language,
+        drawing_number=args.drawing_number,
+        revision=args.revision,
+        general_tolerances=args.general_tolerances or "ISO 2768-mK",
+        company=args.company,
+        sheet=args.sheet,
+        body=BodyHandle(id=args.body) if args.body else None,
+        isometric=args.isometric,
+        views=tuple(args.views) if args.views else None,
+        fresh=args.fresh,
+        symmetry=args.symmetry,
+        unset=tuple(n for n in REBUILD_SETTINGS if n not in args.model_fields_set),
+    )
+
+
+LOOK_NEXT = (
+    "next: look at every image and read what was measured; fix each point, then capture again: export waits for a "
+    "whole-sheet capture taken after the last change"
+)
+STEPS_NEXT = (
+    'next: ask what the requirements above lack BEFORE drawing it, then drawing(action="add", items=[...]) a '
+    "few at a time (one feature or group per call: the engineer "
+    'watches the sheet window and each item shows as it is added; cad_guide(topic="drawing")); '
+    'drawing(action="plan") gives the work sequence and the rules of each step for THIS part; '
+    'export(action="pdf" or "dxf") to write it'
+)
+SHEET_NEXT = (
+    'next: this project builds a sheet in one order: drawing(action="plan") says what the harness puts on it by itself and '
+    'what it asks; then drawing(action="compose", decisions={...}); cad_guide(topic="drawing:compose"); '
+    'export(action="pdf" or "dxf") to write it'
+)
+
+
+def wait_review(session: Session, args: DrawingArgs, cancelled: Any = None) -> Reply:
+    """``drawing(action=wait_review)``: the one call that waits for the review. It is not under the CAD lock (it would hold the
+    CAD for minutes): the gate takes the lock only to read the sheet."""
+    session.need("describe_drawing", "drawing wait_review")
+    return ok(drawing_gate.wait_review(session, args.sheet, cancelled))
+
+
 def drawing(session: Session, args: DrawingArgs) -> Reply:
     with session.lock:
         session.require_executor()
         action = args.action
+        if args.append and action != "review_report":
+            raise ToolError(
+                f"append belongs to review_report only (it adds items to a reviewer's report); {action} takes none",
+                code="invalid_input",
+                field_name="append",
+            )
+        if action == "plan" and drawing_compose.flow_of(session) != "sheet":
+            session.need("describe_drawing", "drawing plan")
+            info = drawing_gate.sheet_info(session, args.sheet, review=True)
+            if info is None:
+                raise ToolError(
+                    'the document has no drawing sheet: drawing(action="create") makes one, then plan gives its steps',
+                    code="invalid_input",
+                    field_name="sheet",
+                )
+            return ok("\n".join(drawing_plan.lines(session, info, args.step, args.full)), limit=drawing_compose.REPLY_CHARS)
+        if action in ("plan", "compose"):
+            drawing_compose.require_sheet_flow(session, action)
+            run = drawing_compose.plan if action == "plan" else drawing_compose.compose
+            return run(session, args, _create_request)
         if action == "create":
             session.need("create_drawing", "drawing create")
-            request = DrawingRequest(
-                operation_id="drawing",
-                template=args.template,
-                title=args.title or session.doc_name or None,
-                author=args.author,
-                date=args.date,
-                material=args.material or session.design_attributes().material,
-                scale=_parse_scale(args.scale),
-                angle=args.angle,
-                title_block=args.title_block or {},
-                language=args.language or session.language,
-                drawing_number=args.drawing_number,
-                revision=args.revision,
-                general_tolerances=args.general_tolerances or "ISO 2768-mK",
-                company=args.company,
-                sheet=args.sheet,
-                body=BodyHandle(id=args.body) if args.body else None,
-                isometric=args.isometric,
-                views=tuple(args.views) if args.views else None,
-                projection=args.projection,
-                fresh=args.fresh,
-                unset=tuple(n for n in REBUILD_SETTINGS if n not in args.model_fields_set),
-            )
+            if args.fresh:
+                engineer_orders.confirmed("create with fresh=true (throwing the sheet away and starting it again)", discards=True)
+                drawing_plan.forget_review(session, args.sheet)  # what an earlier review said is of a sheet that is going
+            request = _create_request(session, args)
             result = session.adapter.create_drawing(request)
             session.dirty = True
             summary = _sheet_summary(result)
+            block, reviewed = _requirements_block(session, result.sheet)
             lines = [
                 summary[0],
                 *_rebuild_lines(result),  # before the items: a long list of them is clipped at the end
                 *summary[1:],
                 f"ready: every view finished computing ({result.waited_s:g} s)",
                 *[f"warning: {w}" for w in result.warnings],
-                'next: drawing(action="add", items=[...]) a few at a time (one feature or group per call: the engineer '
-                'watches the sheet window and each item shows as it is added; cad_guide(topic="drawing")); '
-                'export(action="pdf" or "dxf") to write it',
+                *block,
+                SHEET_NEXT if drawing_compose.flow_of(session) == "sheet" else STEPS_NEXT,
             ]
-            return ok("\n".join(lines))
+            # the line reads the sheet the requirements were reviewed on (none in a project that asks no review: the next
+            # add brings it, and `plan` is there); a create never reads the sheet again for it
+            return ok("\n".join(lines), limit=REVIEW_REPLY_CHARS, tail=drawing_plan.step_line(session, reviewed))
         if action in ("add", "remove", "remove_sheet", "update", "add_view", "remove_view"):
             session.need("annotate_drawing", f"drawing {action}")
+            if action == "remove_sheet":
+                engineer_orders.confirmed(f"removing the whole sheet {args.sheet or ''}".strip())
+                drawing_plan.forget_review(session, args.sheet)
             items = list(args.items or [])
+            auto_rows: list[str] = []
+            handed: list[str] = []
+            edit = action == "update" and bool(items)  # one item (or a few) changed IN PLACE; the sheet is not laid out again
+            if edit and (args.title_block or args.symmetry is not None):
+                raise ToolError(
+                    "update takes either items (edits of items: nothing else moves) or title_block / symmetry (the "
+                    "sheet is laid out again): two calls",
+                    code="invalid_input",
+                    field_name="items",
+                    usage='drawing(action="update", items=[{"id":"d3","offset_mm":12}])',
+                )
+            if action == "add":
+                handed = drawing_gate.hand_over(session, args.sheet, items)
+            elif action == "remove":
+                auto_rows = drawing_gate.guard_removal(session, args.sheet, [_item_id(i) for i in items], args.reason, args.by)
             usage = (
                 'drawing(action="add", items=[{"type":"hole_dim","all":true}]) | drawing(action="remove", items=["h2"]) '
-                '| drawing(action="remove_sheet", sheet="Drawing")'
+                '| drawing(action="update", items=[{"id":"d3","offset_mm":12}]) | drawing(action="remove_sheet", sheet="Drawing")'
             )
             if action == "remove" and not items:
                 raise ToolError(
@@ -520,12 +623,13 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
             try:
                 request = AnnotateDrawingRequest(
                     operation_id="drawing",
-                    action=action,
+                    action="edit" if edit else action,
                     sheet=args.sheet,
-                    items=tuple(items) if action == "add" else (),
+                    items=tuple(items) if action == "add" or edit else (),
                     ids=tuple(_item_id(i) for i in items) if action == "remove" else (),
                     view=args.views[0] if args.views else None,
                     title_block=args.title_block or {} if action == "update" else {},
+                    symmetry=args.symmetry if action == "update" else None,
                 )
             except ValidationError as exc:
                 raise ToolError(
@@ -540,15 +644,30 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                 ) from exc
             result = session.adapter.annotate_drawing(request)
             session.dirty = True
+            if action == "remove" and args.reason:
+                drawing_gate.record_removal(session, args.sheet, auto_rows, [_item_id(i) for i in items], args.reason, args.by)
             if result.removed:
+                drawing_plan.forget_review(session, result.sheet)
                 return ok(f"drawing {result.sheet}: sheet removed; sheets left: {', '.join(result.sheets) or 'none'}")
             lines = [
-                *_sheet_summary(result, brief=action != "update"),
+                *_sheet_summary(result, brief=action != "update" or edit),
+                *handed,
                 *[f"warning: {w}" for w in result.warnings],
-                "next: the engineer sees it in the sheet window; fix a placement with offset_mm / side, or remove + add; "
-                "add the next few items",
+                *_step_lines(result),
+                (
+                    f"edited in place: {', '.join(result.changed)} (pinned: nothing else moved, a later layout or compose "
+                    "leaves them where they are); drawing(action=\"capture\") to look at it"
+                    if edit
+                    else "next: the engineer sees it in the sheet window; fix an item with drawing(action=\"update\", "
+                    'items=[{"id":"d3","offset_mm":12}]) (nothing else moves), add the next few items'
+                ),
             ]
-            return ok("\n".join(lines))
+            return ok("\n".join(lines), tail=drawing_plan.step_line(session, result.page_state, quick=True))
+        if action == "requirements":
+            session.need("describe_drawing", "drawing requirements")
+            seen: list[Any] = []
+            report = drawing_gate.requirements_report(session, args.sheet, seen)
+            return ok(report, limit=REVIEW_REPLY_CHARS, tail=drawing_plan.step_line(session, seen[0]))
         if action in ("list", "read", "review"):
             session.need("describe_drawing", f"drawing {action}")
             described = session.adapter.describe_drawing(
@@ -561,13 +680,20 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                 for sheet in described.sheets:
                     lines += _sheet_as_read(sheet)
                 return ok("\n".join(lines), limit=REVIEW_REPLY_CHARS)
+            added: dict[str, list[Any]] = {}
+            step_lines: list[str] = []
+            if action == "review":  # what the harness is sure of goes on the sheet before the agent reads the review
+                determined = []
+                for sheet in described.sheets:
+                    sheet, added[sheet.sheet] = drawing_gate.determine(session, sheet)
+                    determined.append(sheet)
+                described = described.model_copy(update={"sheets": tuple(determined)})
             for sheet in described.sheets:
                 fields = ", ".join(f"{k}={v}" for k, v in sheet.fields.items())
                 lines.append(
                     f"sheet {sheet.sheet}: {sheet.template} at {_ratio(sheet.scale)}, {sheet.language}"
                     + (", third angle" if sheet.angle == "third" else "")
                     + (f", body {sheet.body}" if sheet.body else "")
-                    + (", projection hlr (views drawn by our own projection)" if sheet.projection == "hlr" else "")
                     + (f"; {fields}" if fields else "")
                 )
                 for item in sheet.items:
@@ -583,21 +709,34 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
                         "them; the capture shows them): " + " | ".join(sheet.native)
                     )
                 if action == "review":
+                    lines += drawing_gate.added_lines(added.get(sheet.sheet, []))
                     lines += drawing_gate.review_lines(session, sheet)
-            return ok("\n".join(lines), limit=REVIEW_REPLY_CHARS)
+                    line = drawing_plan.step_line(session, sheet)
+                    if line:  # one per sheet, each named when there are several
+                        step_lines.append(f"sheet {sheet.sheet}: {line}" if len(described.sheets) > 1 else line)
+            return ok("\n".join(lines), limit=REVIEW_REPLY_CHARS, tail="\n".join(step_lines))
         if action in ("answer", "approve", "request_review", "review_choice", "review_report"):
             session.need("annotate_drawing", f"drawing {action}")
+            seen_sheet: list[Any] = []  # the sheet as the answer reviewed it, the answer put on it: the step line reads it
             if action == "answer":
-                return ok(drawing_gate.answer(session, args.sheet, args.id, args.text))
-            if action == "request_review":
-                return ok(drawing_gate.request_review(session, args.sheet), limit=REVIEW_REPLY_CHARS)
-            if action == "review_choice":
-                return ok(drawing_gate.review_choice(session, args.sheet, args.by))
-            if action == "review_report":
-                return ok(
-                    drawing_gate.review_report(session, args.sheet, args.by, args.items), limit=REVIEW_REPLY_CHARS
-                )
-            return ok(drawing_gate.approve(session, args.sheet, args.by, args.reason))
+                said = drawing_gate.answer(session, args.sheet, args.id, args.text, args.by, args.reason, seen=seen_sheet)
+            elif action == "request_review":
+                said = drawing_gate.request_review(session, args.sheet)
+            elif action == "review_choice":
+                said = drawing_gate.review_choice(session, args.sheet, args.by)
+            elif action == "review_report":
+                said = drawing_gate.review_report(session, args.sheet, args.by, args.items, args.append)
+            else:
+                said = drawing_gate.approve(session, args.sheet, args.by, args.reason)
+            # the line comes from a review this call already has (``answer``: the one that guards it), or, for an answer to a
+            # memory entry (it changes nothing of the sheet), from the last full review: never from a review of its own. The
+            # review-process actions (approve, request_review, review_choice, review_report) carry none: they change what the
+            # review step waits for, which no review already read says
+            line = ""
+            if action == "answer":
+                known = seen_sheet[0] if seen_sheet else drawing_plan.last_review(session, args.sheet)
+                line = drawing_plan.step_line(session, known)
+            return ok(said, limit=REVIEW_REPLY_CHARS, tail=line)
         session.need("capture_drawing", "drawing capture")
         region = _region(args.region)
         width = _capture_width(region)
@@ -606,14 +745,25 @@ def drawing(session: Session, args: DrawingArgs) -> Reply:
             path = folder / "sheet.png"
             result = session.adapter.capture_drawing(
                 CaptureDrawingRequest(
-                    operation_id="drawing_capture", path=str(path), width=width, sheet=args.sheet, region=region
+                    operation_id="drawing_capture",
+                    path=str(path),
+                    width=width,
+                    sheet=args.sheet,
+                    region=region,
+                    crops=region is None,
+                    crops_given_at=drawing_look.crops_given_at(session, args.sheet),
                 )
             )
             data = path.read_bytes()
+            give, look = drawing_look.attach(session, result, region, None)
+            crops = drawing_look.crop_images(result, lambda p: Path(p).read_bytes()) if give else []
         finally:
             with contextlib.suppress(OSError):
                 shutil.rmtree(folder)
-        return Reply("\n".join(_capture_lines(result, len(data))), images=[Image(data)])
+        lines = [*_capture_lines(result, len(data)), *look]
+        if region is None:
+            lines.append(LOOK_NEXT)
+        return Reply("\n".join(lines), images=[Image(data), *crops])
 
 
 def _region(value: list[float] | None) -> tuple[float, float, float, float] | None:
@@ -871,7 +1021,16 @@ def export(session: Session, args: ExportArgs) -> Reply:
         if needed == "export_drawing" and not outline:
             # a drawing sheet (pdf, or the dxf of the sheet): only a finished one is written, ONE sheet to ONE file. The
             # DXF of a face cut or of a sheet-metal flat pattern is not a drawing and does not pass here.
-            sheet = drawing_gate.require_finished(session, args.sheet, args.action)
+            try:
+                sheet = drawing_gate.require_finished(
+                    session, args.sheet, args.action, args.revision_by, args.revision_reason
+                )
+            except ToolError as exc:  # a revision row put on the sheet by this try is a change somebody must look at
+                notes = getattr(session, "revision_notes", []) if args.action == "pdf" else []
+                if notes:
+                    exc.message += "\n" + "\n".join(notes)
+                    exc.args = (exc.message,)
+                raise
         target = session.settings.resolve(args.path or f"{session.doc_name or 'part'}{extension}")
         if target.exists() and not args.overwrite:
             raise ToolError(
@@ -883,11 +1042,19 @@ def export(session: Session, args: ExportArgs) -> Reply:
         target.parent.mkdir(parents=True, exist_ok=True)
         request: ExportRequest | ExportMeshRequest
         wrote = ""
+        line = ""
         if outline:
             _export_dxf(session, args, target)
         elif args.action in ("pdf", "dxf"):
             done = _export_sheet(session, args, needed is not None, target, sheet)
             wrote = _renderer_note(args.action, done)
+            if args.action == "pdf":
+                released = drawing_gate.record_release(session, sheet)  # the next export of this sheet is compared with what it stated now
+                wrote += "".join(f"\n{note}" for note in getattr(session, "revision_notes", []))
+            else:  # the dxf of a sheet writes no release record; the line reads the sheet the gate reviewed for it all the same
+                released = getattr(session, "gate_info", None)
+                session.gate_info = None
+            line = drawing_plan.step_line(session, released)  # the sheet the gate reviewed for this export: not reviewed again
         elif args.action == "step":
             session.adapter.export_step(ExportRequest(operation_id="export", path=str(target)))
         elif args.action == "parasolid":
@@ -901,4 +1068,4 @@ def export(session: Session, args: ExportArgs) -> Reply:
             session.adapter.export_macro(ExportRequest(operation_id="export", path=str(target)))
         if not target.is_file():
             raise ToolError(f"the CAD reported success but {target} was not written", code="export_failed")
-        return ok(f"exported {args.action}: {target} ({target.stat().st_size} bytes){wrote}")
+        return ok(f"exported {args.action}: {target} ({target.stat().st_size} bytes){wrote}", tail=line)

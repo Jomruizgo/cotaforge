@@ -7,6 +7,7 @@ is cp1252 as the header declares (the diameter, plus-minus and degree signs are 
 section with its colour and line type (so a hidden or centre line is dashed in the CAD, not just on a layer named so).
 """
 
+import sheet_weights as sw
 from sheet_model import (
     LAYERS,
     LINETYPES,
@@ -121,14 +122,14 @@ def _tables(w: _Writer, layers: dict[str, LayerStyle]) -> None:
     w.put(0, "TABLE")
     w.put(2, "LTYPE")
     w.put(70, len(LINETYPES))
-    descriptions = {"CONTINUOUS": "Solid line", "HIDDEN": "Hidden __ __ __", "CENTER": "Center ____ _ ____ _"}
+    descriptions = {"CONTINUOUS": "Solid line", "HIDDEN": "Hidden __ __ __", "CENTER": "Center ____ _ ____ _", "PHANTOM": "Phantom ____ _ _ ____ _ _"}
     for name, pattern in LINETYPES.items():
         _ltype(w, name, descriptions[name], pattern)
     w.put(0, "ENDTAB")
     w.put(0, "TABLE")
     w.put(2, "LAYER")
     w.put(70, len(layers) + 1)
-    for name, style in [("0", LayerStyle(7, "CONTINUOUS", 0.25)), *layers.items()]:
+    for name, style in [("0", LayerStyle(7, "CONTINUOUS", sw.weight(sw.TITLE_BLOCK))), *layers.items()]:
         w.put(0, "LAYER")
         w.put(2, name)
         w.put(70, 0)
@@ -230,7 +231,7 @@ def to_dxf(sheet: Sheet) -> bytes:
             used.add(e.layer)
     layers = dict(LAYERS)  # all of them, used or not: the CAD lists the roles
     for extra in sorted(used - set(layers)):
-        layers[extra] = LayerStyle(7, "CONTINUOUS", 0.25)
+        layers[extra] = LayerStyle(7, "CONTINUOUS", sw.weight(sw.TITLE_BLOCK))
     w = _Writer()
     _header(w, sheet)
     _tables(w, layers)

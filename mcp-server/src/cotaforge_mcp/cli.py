@@ -4,7 +4,8 @@ Also ``cotaforge plugin register|unregister|status`` (plugin_registry.py), ``cot
 the Windows installer's shortcuts, ``cotaforge new`` and ``cotaforge open`` (``nuevo`` and ``abrir`` still work) (launcher.py).
 
 What a plugin cannot carry is written here, with the paths of this machine: the ``.mcp.json`` that starts the ``cad``
-server with the interpreter that has the product installed, the permissions and the ``run_native`` safety hook in
+server with the interpreter that has the product installed, the permissions, the ``run_native`` safety hook and the
+hook through which the engineer confirms each order of his (``engineer_orders``) in
 ``.claude/settings.local.json``, the conduct file (``CLAUDE.md``), an empty ``memory/`` and the language of the project
 (``language`` of ``brief.yaml``).
 
@@ -35,7 +36,7 @@ from cotaforge.language import DEFAULT_LANGUAGE, LANGUAGES, normalize, say
 from cotaforge.native import hook as kernel_hook
 
 import cotaforge_mcp
-from cotaforge_mcp import conduct, design_memory, layout, plugin_registry, register
+from cotaforge_mcp import conduct, design_memory, engineer_orders, layout, plugin_registry, register
 from cotaforge_mcp.config import ADAPTERS, ENV_ADAPTER, ENV_FREECAD_ROOT, ENV_VISIBLE, ENV_WORKSPACE
 
 SERVER_NAME = "cad"
@@ -43,6 +44,7 @@ SERVER_MODULE = "cotaforge_mcp"
 HOOK_MODULE = kernel_hook.__name__
 RUN_NATIVE_MATCHER = f"mcp__{SERVER_NAME}__run_native"
 HOOK_TIMEOUT_SECONDS = 10
+ORDERS_HOOK_MODULE = engineer_orders.__name__
 
 TEMPLATE_PARTS = ("data", "design-space")
 CLAUDE_MD = "CLAUDE.md"
@@ -137,9 +139,11 @@ def hook_command(
     windows: bool | None = None,
     short_path: Callable[[str], str | None] | None = None,
     save_methods: Sequence[str] = (),
+    module: str = HOOK_MODULE,
 ) -> str:
     """The shell command of the ``run_native`` hook. ``save_methods`` are the calls that save a document in the CAD
-    (``Adapter.save_methods``): the hook then knows them as well as FreeCAD's.
+    (``Adapter.save_methods``): the hook then knows them as well as FreeCAD's. ``module``: another hook of the product
+    (the one of the engineer's orders), run by the same interpreter.
 
     On Windows an interpreter path with a space is replaced by its short form when that exists and has no space, so
     the command is one plain word even if Claude Code runs the hook without Git Bash; otherwise it is quoted for Git
@@ -152,9 +156,9 @@ def hook_command(
         if short and " " not in short:
             word = short.replace("\\", "/")
             if SHORT_PATH_WORD.fullmatch(word):  # "~" is only special at the start of a word: no quotes needed
-                return f"{word} -m {HOOK_MODULE}{flag}"
+                return f"{word} -m {module}{flag}"
             interpreter = short
-    return f"{shell_path(interpreter, windows=windows)} -m {HOOK_MODULE}{flag}"
+    return f"{shell_path(interpreter, windows=windows)} -m {module}{flag}"
 
 
 # --- JSON helpers ---------------------------------------------------------------------------------------------------
@@ -398,6 +402,48 @@ def upsert_hook(settings: dict[str, Any], command: str) -> None:
     entries.append({"matcher": RUN_NATIVE_MATCHER, "hooks": [handler]})
 
 
+def prefilter(command: str) -> str:
+    """``command`` run only for a tool call whose JSON may carry an order (``engineer_orders.ORDER_MARKERS``): the shell
+    reads the call (one line, as Claude Code writes it) and looks for the markers itself, so a call that carries none
+    costs no Python start. What matches is handed on to ``command`` unchanged. POSIX ``sh`` and Git Bash only."""
+    patterns = "|".join(f"*{shlex.quote(marker)}*" for marker in engineer_orders.ORDER_MARKERS)
+    return f"IFS= read -r _call; case \"$_call\" in {patterns}) printf '%s\\n' \"$_call\" | {command};; esac"
+
+
+def upsert_orders_hooks(settings: dict[str, Any], command: str) -> None:
+    """Put the hook of the engineer's orders (``engineer_orders``) in the settings, on the two events it answers:
+    before a ``drawing``, ``memory`` or ``channel`` call (it asks him to confirm an order) and when a message starts
+    a turn (it hands over what waited for him). A previous one of ours is replaced; every other hook is left alone.
+    Without it no order of his is recorded."""
+    hooks = settings.setdefault("hooks", {})
+    for event, matcher in ((engineer_orders.PRE_TOOL_EVENT, engineer_orders.MATCHER), (engineer_orders.PROMPT_EVENT, None)):
+        # a message that starts a turn happens once per message: only a tool call needs the cheap look first
+        handler = {
+            "type": "command",
+            "command": prefilter(command) if event == engineer_orders.PRE_TOOL_EVENT else command,
+            "timeout": HOOK_TIMEOUT_SECONDS,
+        }
+        entries = hooks.setdefault(event, []) if isinstance(hooks, dict) else None
+        if not isinstance(entries, list):
+            msg = _say(
+                f"{SETTINGS.as_posix()}: 'hooks.{event}' no es una lista; corrígelo o bórralo",
+                f"{SETTINGS.as_posix()}: 'hooks.{event}' is not a list; fix or delete it",
+            )
+            raise InitError(msg)
+        for entry in entries:
+            handlers = entry.get("hooks") if isinstance(entry, dict) else None
+            if not isinstance(handlers, list):
+                continue
+            mine = [i for i, h in enumerate(handlers) if isinstance(h, dict) and ORDERS_HOOK_MODULE in str(h.get("command", ""))]
+            if mine:
+                handlers[mine[0]] = {**handlers[mine[0]], **handler}
+                if matcher is not None:
+                    entry["matcher"] = matcher
+                break
+        else:
+            entries.append({"matcher": matcher, "hooks": [handler]} if matcher is not None else {"hooks": [handler]})
+
+
 def inherited_claude_md(folder: Path, home: Path) -> list[str]:
     """Absolute paths of the ``CLAUDE.md`` files that exist above ``folder`` and in ``~/.claude``.
 
@@ -414,11 +460,20 @@ def inherited_claude_md(folder: Path, home: Path) -> list[str]:
 
 
 def build_settings(
-    existing: dict[str, Any], template: dict[str, Any], excludes: list[str], command: str
+    existing: dict[str, Any],
+    template: dict[str, Any],
+    excludes: list[str],
+    command: str,
+    orders_command: str | None = None,
 ) -> dict[str, Any]:
+    """The settings of a design space. ``command``: the ``run_native`` hook. ``orders_command``: the hook of the
+    engineer's orders; not given (a caller written before it existed), it is the same interpreter as ``command``."""
     settings = merge(existing, template)
     settings["claudeMdExcludes"] = merge(settings.get("claudeMdExcludes", []), excludes)
     upsert_hook(settings, command)
+    if orders_command is None:
+        orders_command = f"{command.split(f' -m {HOOK_MODULE}', 1)[0]} -m {ORDERS_HOOK_MODULE}"
+    upsert_orders_hooks(settings, orders_command)
     return settings
 
 
@@ -476,7 +531,11 @@ def init_space(
     template_settings = json.loads((template_root() / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
     excludes = inherited_claude_md(folder, home)
     settings_data = build_settings(
-        load_json_object(settings_path), template_settings, excludes, hook_command(interpreter)
+        load_json_object(settings_path),
+        template_settings,
+        excludes,
+        hook_command(interpreter),
+        hook_command(interpreter, module=ORDERS_HOOK_MODULE),
     )
 
     folder.mkdir(parents=True, exist_ok=True)
@@ -494,8 +553,8 @@ def init_space(
         folder,
         settings_data,
         report.say(
-            f"hook de run_native, {len(excludes)} CLAUDE.md excluidos",
-            f"run_native hook, {len(excludes)} CLAUDE.md excluded",
+            f"hook de run_native, hook de las órdenes del ingeniero, {len(excludes)} CLAUDE.md excluidos",
+            f"run_native hook, engineer's orders hook, {len(excludes)} CLAUDE.md excluded",
         ),
     )
     if language is not None or new:  # an older project that stated none keeps the language it always had

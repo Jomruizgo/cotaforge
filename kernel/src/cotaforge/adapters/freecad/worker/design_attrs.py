@@ -20,6 +20,7 @@ MATERIAL_PROPERTY = "CotaforgeMaterial"
 META_MATERIAL = "cotaforge_design.material"
 META_ROUTE = "cotaforge_design.route"
 META_ROLES = "cotaforge_design.roles"
+META_TITLE = "cotaforge_design.title"
 SEPARATOR = " / "
 
 
@@ -44,7 +45,13 @@ def read(doc: reg.DocumentRec) -> dict[str, Any]:
         if value and value not in values:
             values.append(value)
     route = [part.strip() for part in str(meta.get(META_ROUTE, "") or "").split(",") if part.strip()]
-    return {"material": SEPARATOR.join(values) if values else None, "route": route, "roles": _read_roles(meta)}
+    title = str(meta.get(META_TITLE, "") or "").strip()
+    return {
+        "material": SEPARATOR.join(values) if values else None,
+        "route": route,
+        "title": title or None,
+        "roles": _read_roles(meta),
+    }
 
 
 def _read_roles(meta: dict[str, Any]) -> dict[str, str]:
@@ -81,6 +88,12 @@ def write(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]:
             meta[META_ROUTE] = ",".join(steps)
         else:
             meta.pop(META_ROUTE, None)
+    title = params.get("title")
+    if title is not None:
+        if str(title).strip():
+            meta[META_TITLE] = str(title).strip()
+        else:
+            meta.pop(META_TITLE, None)
     roles = params.get("roles")
     if roles is not None:
         if roles:

@@ -183,7 +183,7 @@ def test_a_label_may_touch_a_plane_at_its_own_tip_first_and_then_slide_along_its
     plane = attach.Attach(view, (60.0, 30.0), (1.0, 0.0), "plane", trace=((60.0, 2.0), (60.0, 58.0)))
     tips = plane.tips()
     assert tips[0] == (60.0, 30.0) and len(tips) == len(attach.SLIDES)
-    assert {round(t[0], 6) for t in tips} == {60.0} and {round(t[1], 1) for t in tips[1:]} == {16.0, 44.0, 8.7, 51.3}
+    assert {round(t[0], 6) for t in tips} == {60.0} and {round(t[1], 1) for t in tips[1:]} == {16.0, 44.0, 8.7, 51.3, 5.4, 54.6, 23.3, 36.7}
     assert attach.Attach(view, (60.0, 30.0), (1.0, 0.0), "plane").tips() == [(60.0, 30.0)]  # no trace: one place
 
 
@@ -227,6 +227,8 @@ def test_a_view_with_no_dimension_is_flagged_whatever_it_shows() -> None:
     found = _views_review({"d1": "dim"}, {"front": {"d1"}, "top": {"d1"}})
     assert [(f.code, f.severity, f.items) for f in found] == [("view_adds_nothing", "warning", ("right",))]
     assert "no lleva ninguna cota" in found[0].message and "remove_view" in found[0].message
+    assert "views=[right]" in found[0].message and "view=right" not in found[0].message  # the argument the tool takes: views=[...]
+    assert "ni «aplica» ni «no aplica» del agente" in found[0].message  # no word of the agent closes it
 
 
 def test_a_dimension_a_hole_callout_or_a_balloon_gives_a_view_its_job() -> None:
@@ -319,3 +321,15 @@ def test_a_dimension_the_engineer_put_on_the_page_by_hand_gives_the_view_its_job
     assert [f.items for f in review._unused_views(data)] == [("front",), ("top",)]
     ctx.extras["hand_marks"] = {"top": 1}  # plain data the worker read from the TechDraw page
     assert [f.items for f in review._unused_views(data)] == [("front",)]
+
+
+def test_a_notes_block_is_widened_until_its_x_is_not_a_few_mm_from_another_object() -> None:
+    """The window pulls an object whose X is within a few mm of another one onto it: a dimension centred 3 mm from the X of the
+    notes moved every line of them 3.3 mm and the fit could not put them back (a plate with the default location, A4 1:2)."""
+    import sheet_notefit as fit  # noqa: PLC0415
+
+    left, block = 27.0, 175.0  # the notes' X is 114.5
+    widened = fit.block_clear_of_others([111.2, 114.5], left, block)  # one 3.3 mm off, one on the very X
+    assert widened > block and abs(left + widened / 2 - 111.2) >= fit.NOTE_SNAP_MM
+    assert fit.block_clear_of_others([114.5], left, block) == block  # the same X is no risk
+    assert fit.block_clear_of_others([], left, block) == block

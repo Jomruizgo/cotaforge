@@ -1,0 +1,150 @@
+# ruff: noqa: E501
+"""The guard of the native-only rule: a drawing is made of FreeCAD's own TechDraw objects, never of a symbol the harness drew.
+
+A ``DrawViewSymbol`` carrying an SVG the harness generated does not follow its view, cannot be edited line by line and stays
+behind when its view is deleted. Only ``sheet_symbols`` (the files of FreeCAD's own symbol library) may make one. Any other
+worker module that makes a ``DrawViewSymbol`` or sets the ``Symbol`` of one fails here.
+
+``STILL_DRAWN_BY_HARNESS`` is the debt of the migration, by module: each entry is a module that still makes harness symbols
+and the items it makes them for. The list only shrinks; a new entry is refused by review. The items that left it are in
+``sheet_symbols.MIGRATED_ITEMS``: a loose symbol for one of them is a blocking finding of the review, not a debt.
+"""
+
+import ast
+import re
+import sys
+from pathlib import Path
+
+WORKER_DIR = Path(__file__).resolve().parents[3] / "src" / "cotaforge" / "adapters" / "freecad" / "worker"
+if str(WORKER_DIR) not in sys.path:
+    sys.path.append(str(WORKER_DIR))
+
+import sheet_symbols  # noqa: E402
+
+ALLOWED = {"sheet_symbols.py"}
+STILL_DRAWN_BY_HARNESS: dict[str, str] = {
+    "sheet_mirror.py": (
+        "the units with no native form yet: detail and auxiliary views drawn as sheet geometry (datums, GD&T frames, "
+        "finish symbols and the hole table are native: ``MIGRATED_ITEMS``)"
+    ),
+}
+MAKES_A_SYMBOL = re.compile(r"addObject\(\s*(?:SYMBOL|[\"']TechDraw::DrawViewSymbol[\"'])|\.Symbol\s*=[^=]")
+
+
+def _docstring_lines(text: str) -> set[int]:
+    """The lines of every docstring: an example written in prose makes no object."""
+    lines: set[int] = set()
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+                lines.update(range(first.lineno, (first.end_lineno or first.lineno) + 1))
+    return lines
+
+
+def _hits(text: str) -> list[int]:
+    prose = _docstring_lines(text)
+    return [
+        n
+        for n, line in enumerate(text.splitlines(), start=1)
+        if MAKES_A_SYMBOL.search(line) and not line.lstrip().startswith("#") and n not in prose
+    ]
+
+
+def _makers() -> dict[str, list[int]]:
+    found: dict[str, list[int]] = {}
+    for path in sorted(WORKER_DIR.glob("*.py")):
+        hits = _hits(path.read_text(encoding="utf-8"))
+        if hits:
+            found[path.name] = hits
+    return found
+
+
+def test_no_worker_module_makes_a_symbol_of_its_own_drawing() -> None:
+    makers = _makers()
+    unknown = {name: lines for name, lines in makers.items() if name not in ALLOWED | set(STILL_DRAWN_BY_HARNESS)}
+    assert not unknown, (
+        f"these modules make a DrawViewSymbol: {unknown}. A drawing is made of FreeCAD's own objects; a symbol comes "
+        "only from FreeCAD's library through sheet_symbols.make"
+    )
+
+
+def test_the_debt_lists_only_modules_that_still_make_symbols() -> None:
+    makers = _makers()
+    assert set(STILL_DRAWN_BY_HARNESS) <= set(makers), (
+        f"already clean, remove from STILL_DRAWN_BY_HARNESS: {sorted(set(STILL_DRAWN_BY_HARNESS) - set(makers))}"
+    )
+
+
+VIEW_MAKERS = ("draw_section", "_draw_in_place", "draw_detail", "draw_aux")
+
+
+def test_a_section_detail_or_auxiliary_view_is_never_only_sheet_geometry() -> None:
+    """Each function that draws a derived view asks TechDraw for the view (``NativeView``): the cut, its hatch, the cutting
+    line and the letters are TechDraw's, and the sheet keeps its own drawing of them only for the headless PDF."""
+    tree = ast.parse((WORKER_DIR / "items_views.py").read_text(encoding="utf-8"))
+    functions = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    for name in VIEW_MAKERS:
+        names = {n.id for n in ast.walk(functions[name]) if isinstance(n, ast.Name)}
+        assert names & {"NativeView", "_native_section"}, f"{name} draws a view without asking TechDraw for it"
+
+
+def test_a_docstring_example_is_not_a_maker() -> None:
+    lines = ["def f():", '    """Use it so::', "", "        symbol.Symbol = svg", '    """', "    obj.Symbol = svg"]
+    assert _hits(chr(10).join(lines) + chr(10)) == [6]
+
+
+def test_the_library_module_is_the_only_one_allowed() -> None:
+    assert ALLOWED == {"sheet_symbols.py"}
+    assert (WORKER_DIR / "sheet_symbols.py").is_file()
+
+
+def test_a_library_symbol_is_told_from_one_the_harness_drew(tmp_path: Path) -> None:
+    folder = tmp_path / "Mod" / "TechDraw" / "Symbols" / "misc"
+    folder.mkdir(parents=True)
+    (folder / "Datum_Up.svg").write_text("<svg><g/></svg>\n", encoding="utf-8")
+    root = str(tmp_path)
+    sheet_symbols._cache.pop(root, None)
+    assert sheet_symbols.library(root) == {"misc/Datum_Up.svg": "<svg><g/></svg>\n"}
+    assert sheet_symbols.is_library_text(root, "<svg><g/></svg>")
+    assert not sheet_symbols.is_library_text(root, '<svg viewBox="0 0 10 10"><path d="M 0 0 L 5 5"/></svg>')
+    assert sheet_symbols.library_file(root, "misc/Datum_Up.svg").startswith("<svg>")
+    try:
+        sheet_symbols.library_file(root, "misc/Nope.svg")
+    except KeyError as exc:
+        assert "Nope.svg" in str(exc)
+    else:
+        raise AssertionError("a file the library lacks must be refused")
+
+
+def _installed_library() -> Path | None:
+    import os
+
+    roots = [os.environ.get("COTAFORGE_FREECAD_ROOT", ""), r"C:\Program Files\FreeCAD 1.1"]
+    for root in roots:
+        folder = Path(root, "data", "Mod", "TechDraw", "Symbols") if root else None
+        if folder is not None and folder.is_dir():
+            return folder
+    return None
+
+
+def test_the_gdt_map_names_files_of_freecads_library_or_says_it_has_none() -> None:
+    folder = _installed_library()
+    if folder is None:
+        return  # no FreeCAD library on this machine: the names are checked where it is
+    named = {f for entry in sheet_symbols.GDT_LIBRARY.values() for f in entry.values() if f}
+    missing = sorted(f for f in named if not (folder / f).is_file())
+    assert not missing, f"not in FreeCAD's symbol library: {missing}"
+    assert sheet_symbols.GDT_LIBRARY["straightness"] == {"frame": None, "symbol": None}  # a gap, said as one
+
+
+def test_the_items_that_are_native_are_no_longer_in_the_debt_and_make_no_symbol_in_their_modules() -> None:
+    debt = " ".join(STILL_DRAWN_BY_HARNESS.values())
+    for word in ("datum and GD&T", "finish symbols,", "datum_dims table"):
+        assert word not in debt, f"{word!r} is native now: it does not belong in the debt"
+    assert sheet_symbols.MIGRATED_ITEMS == {"datum", "gdt", "finish", "datum_dims"}
+    for module in ("items_gdt.py", "items_finish.py", "items_datum.py", "items_attach.py"):
+        text = (WORKER_DIR / module).read_text(encoding="utf-8")
+        assert not _hits(text), f"{module} makes a DrawViewSymbol of its own: {_hits(text)}"
+        assert "sheet_svg" not in text, f"{module} writes SVG: a symbol comes from the library file (sheet_symbols)"
+    assert "STILL_DRAWN_BY_HARNESS" not in (WORKER_DIR / "sheet_symbols.py").read_text(encoding="utf-8")

@@ -347,7 +347,7 @@ def test_nothing_is_pushed_for_what_is_not_a_change_of_the_design(visible: _Time
     _hand(visible, "camera")
     _view_hook(visible, "test_set_view_color", object="Box", property="Visibility", value=False)
     _view_hook(visible, "test_set_view_color", object="Box", property="Visibility", value=True)
-    _view_hook(visible, "test_set_view_color", object="Box", property="DiffuseColor", value=[[1.0, 0.0, 0.0, 0.0]])
+    _view_hook(visible, "test_set_view_color", object="Box", property="DiffuseColor", value=[[1.0, 0.0, 0.0, 1.0]])
     _view_hook(visible, "test_select_entity", entity={"id": box.created_faces[0].id})
     time.sleep(0.5)
     visible.set_view(ViewRequest(operation_id="v", name="top"))

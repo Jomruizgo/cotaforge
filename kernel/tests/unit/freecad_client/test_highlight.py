@@ -24,10 +24,10 @@ def _load_highlight() -> Any:
 
 highlight = _load_highlight()
 
-RED = (1.0, 0.0, 0.0, 0.0)
-GREEN = (0.0, 1.0, 0.0, 0.0)
-BLUE = (0.0, 0.0, 1.0, 0.0)
-ORANGE = (1.0, 0.55, 0.0, 0.0)
+RED = (1.0, 0.0, 0.0, 1.0)
+GREEN = (0.0, 1.0, 0.0, 1.0)
+BLUE = (0.0, 0.0, 1.0, 1.0)
+ORANGE = (1.0, 0.55, 0.0, 1.0)
 
 
 def test_recolor_replaces_only_the_named_indices() -> None:

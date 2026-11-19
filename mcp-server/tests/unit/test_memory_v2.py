@@ -105,7 +105,7 @@ def test_an_op_that_matches_an_entry_gets_one_line_and_the_same_line_is_not_repe
     text = welded_plate(call)
     lines = [line for line in text.splitlines() if line.startswith("memory:")]
     assert lines[0].startswith("memory: precision-del-ensamble — recognize: Una pieza soldada con un patrón")
-    assert "memory(action=answer)" in lines[1]
+    assert "memory(action=answer, answers={id: text}" in lines[1]
     again = call.ok("op", name="extrude", params={"sketch": "s1", "depth_mm": 3, "role": "soldado"})
     assert "memoria:" not in again  # same entry, same op: said once
 
@@ -116,7 +116,7 @@ def test_a_proposed_entry_is_not_pushed_and_approving_it_starts_the_push(call: C
     call.ok("doc", action="new", name="plate")
     call.ok("op", name="sketch", params=PLATE_SKETCH)
     assert "memoria:" not in call.ok("op", name="extrude", params={"sketch": "s1", "depth_mm": 8})
-    call.ok("memory", action="approve", id="precision-del-ensamble", by="Ana", text="Ana: apruébala")
+    call.ok("memory", action="approve", id="precision-del-ensamble", by="Ana", text=call.says("apruébala"))
     assert "memory: precision-del-ensamble" in call.ok("op", name="extrude", params={"sketch": "s1", "depth_mm": 4})
 
 
@@ -157,6 +157,37 @@ def test_review_refuses_until_the_entry_is_read_and_answered(call: Caller, setti
     ready = call.ok("memory", action="review", stage="detail")
     assert "ready - 1 entry answered" in ready and "APPLIES: applies: la placa s2" in ready
     assert "memory answers: 1 given" in call.ok("doc", action="status")
+
+
+def test_several_entries_are_read_and_answered_in_one_call_each(call: Caller, settings: Settings) -> None:
+    second = {
+        **PRINCIPLE,
+        "id": "soldadura-sin-distorsion",
+        "title": "Prever la distorsión del cordón antes de fijar la cota",
+        "applies_when": "Una pieza soldada con cotas de posición críticas",
+        "not_when": "La pieza se mecaniza completa después de soldar",
+        "recognize": "Una placa soldada cuya cota de posición se mide después del cordón",
+        "typical_error": "Fijar la cota antes de soldar sin sobremedida de mecanizado",
+    }
+    approved(settings)
+    approved(settings, second)
+    call.ok("memory", action="brief", sector="fixtures", processes=["soldadura"])
+    welded_plate(call)
+    ids = ["precision-del-ensamble", "soldadura-sin-distorsion"]
+    batch = {i: "applies: la placa s2 se suelda con el patrón" for i in ids}
+
+    assert "not_read" in call.err("memory", action="answer", answers=batch)  # nothing read yet: the first stops it
+    got = call.ok("memory", action="get", ids=ids)
+    assert got.count("memory entry (") == 2 and "precision-del-ensamble" in got and "soldadura-sin-distorsion" in got
+    assert "at most" in call.err("memory", action="get", ids=[f"x{n}" for n in range(13)])
+
+    bad = {ids[0]: batch[ids[0]], ids[1]: "applies: sí"}  # the second is not an answer
+    refused = call.err("memory", action="answer", answers=bad)
+    assert "answer 2 (soldadura-sin-distorsion)" in refused and "1 of 2 recorded before it" in refused
+    done = call.ok("memory", action="answer", answers=batch)
+    assert done.count("answered:") == 2
+    ready = call.ok("memory", action="review", stage="detail")
+    assert "ready - 2 entries answered" in ready
 
 
 def test_a_stage_without_triggered_entries_is_ready(call: Caller, settings: Settings) -> None:
@@ -258,10 +289,10 @@ def test_user_scope_is_proposed_whatever_the_provenance(call: Caller) -> None:
 def test_approve_is_the_engineers_gate(call: Caller, settings: Settings) -> None:
     call.ok("memory", action="save", entry=PRINCIPLE)
     assert "approve is the engineer's gate" in call.err("memory", action="approve", id="precision-del-ensamble")
-    done = call.ok("memory", action="approve", id="precision-del-ensamble", by="Ana", text="Ana: sí, es regla")
-    assert done.startswith("approved: precision-del-ensamble in project memory by Ana (Ana: sí, es regla)")
+    done = call.ok("memory", action="approve", id="precision-del-ensamble", by="Ana", text=call.says("sí, es regla"))
+    assert done.startswith("approved: precision-del-ensamble in project memory by Ana (sí, es regla)")
     assert "not_proposed" in call.err(
-        "memory", action="approve", id="precision-del-ensamble", by="Ana", text="otra vez"
+        "memory", action="approve", id="precision-del-ensamble", by="Ana", text=call.says("otra vez")
     )
 
 

@@ -203,9 +203,13 @@ class HoleRequest(Request):
 
     face: FaceHandle
     position: tuple[float, float]
+    positions: tuple[tuple[float, float], ...] | None = None
+    """Several holes of the same kind in one feature (planar face only): every ``(u, v)``, the first one equal to
+    ``position``. ``None`` = one hole at ``position``."""
     origin: Vec3 | None = None
     """On a planar face: the point ``position`` is measured from (a point of the plane of the face); ``None`` = the
-    centre of the face. See ``SketchRequest.origin``."""
+    centre of the face. The executor always sends the stable origin of the face (``stable_face_origin``). See
+    ``SketchRequest.origin``."""
     standard: HoleStandard
     size: str | None = None
     diameter_mm: float = Field(gt=0)
@@ -399,6 +403,25 @@ class CopyBodyRequest(Request):
     transform: Transform
     scale: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     scale_about: Vec3 = (0.0, 0.0, 0.0)
+
+
+class ShrinkBodyRequest(Request):
+    """Derive a NEW body from ``source``, LINKED to it (it follows the source when the source changes), scaled by
+    ``scale`` per axis (the mould's cavity of a shrinking plastic: 1.006 = the 0.6 % the plastic will shrink). The
+    scaling is about the source body's own origin. The source is untouched. A scale equal on all three axes is exact
+    (planes stay planes, cylinders stay cylinders); an unequal one is affine and turns curved faces into B-spline
+    surfaces, as in every CAD."""
+
+    source: BodyHandle
+    scale: Vec3
+
+    @field_validator("scale")
+    @classmethod
+    def _scale_positive(cls, value: Vec3) -> Vec3:
+        if not all(c > 0.0 for c in value):
+            msg = "scale must be above 0 on every axis"
+            raise ValueError(msg)
+        return value
 
 
 class SplitRequest(Request):
@@ -616,17 +639,16 @@ class DrawingRequest(Request):
     fresh: bool = False
     """A sheet of that name that exists is replaced from scratch: its items, its answers and its chosen reviewer are
     thrown away (the reply says which)."""
+    symmetry: bool | None = None
+    """The design intent declares the part symmetric: the plane of symmetry is then a reference the positions of the
+    holes are counted from and its centre line is drawn. Never inferred from the shape: a plate can be symmetric by
+    chance. ``None`` leaves a rebuilt sheet as it was (no symmetry on a new one)."""
     unset: tuple[str, ...] = ()
     """On a rebuild: the settings the caller did not state (``template``, ``angle``, ``language``, ``scale``,
-    ``projection``, ``body``), which stay as the sheet has them instead of taking the default."""
+    ``body``), which stay as the sheet has them instead of taking the default."""
     iso_colour: bool = False
     """The isometric view is shaded in colour (the holes show how they are made). Filled by the adapter from the
     convention in force, not by the caller; the other views stay line drawings."""
-    projection: Literal["techdraw", "hlr"] = "techdraw"
-    """How the front / top / right / isometric views are made. techdraw (FreeCAD's own default): TechDraw view
-    objects (slow on a big assembly). hlr: our own hidden-line projection (TechDraw.projectEx, the one the derived
-    views use); the PDF / PNG / DXF are the same sheet and the views in the FreeCAD window are drawings of that
-    projection (symbols, not TechDraw view objects). A choice of the engineer: never made silently."""
 
 
 class AnnotateDrawingRequest(Request):
@@ -642,12 +664,26 @@ class AnnotateDrawingRequest(Request):
     ``answer`` stores in the sheet (so it survives save and reopen) the answer ``text`` (``verdict`` applies |
     not_applies) to the finding or question ``id`` of the review; ``memory`` says ``id`` names a memory entry the
     caller checked itself. ``approve`` puts the engineer ``by`` in the title block, quoting his words in ``text``: the
-    one way that field is written, and any later change of the sheet empties it.
+    one way that field is written, and any later change of the sheet empties it. An ``answer`` may carry ``by`` too: the
+    engineer who ordered a ``not_applies`` the harness does not accept on its own (his words are in ``text``).
 
     ``review_report`` stores a reviewer's report in the sheet (``by``: fabricator | engineer; ``remarks``: the points,
     possibly none; ``at``: epoch seconds, the server's clock); ``request_review`` stores when the engineer was asked
     to review the sheet (``at``); ``review_choice`` stores who he chose to review it (``by``: engineer | fabricator).
-    None of them changes the sheet and none is made old by a later change of it."""
+    A report that is long is recorded in pieces: the first replaces the reviewer's report, each next one has
+    ``append`` and adds its ``remarks`` to it (ids continue). None of them changes the sheet and none is made old by
+    a later change of it.
+
+    ``layout`` places the annotations of the whole sheet at once (``drawing_flow: sheet``): the dimensions and leaders
+    that asked for no place are given a side and an offset (or an elbow) by the global layout planner, which sees every
+    view and item; what it cannot place is listed in the result (``layout_unplaced``), never dropped, and the paper is
+    not touched (the caller steps it up when ``layout_fits`` is false).
+
+    ``edit`` changes ONE or more items in place: each entry of ``items`` is ``{"id": "d3", <fields to change>}`` (a
+    field set to ``null`` is taken off; the type never changes). Nothing else on the sheet moves: when the edited item
+    would lie on another one, or would make another item move, the whole call is refused and says why. An edited item
+    is pinned: the global layout and a later compose leave it where it is. ``record`` stores in the sheet (so it survives save and
+    reopen) what the order that composed it decided (``composed``); it changes nothing on the sheet."""
 
     iso_colour: bool | None = None
     """Filled by the adapter from the convention in force (see DrawingRequest.iso_colour); None leaves the sheet as
@@ -664,15 +700,26 @@ class AnnotateDrawingRequest(Request):
         "request_review",
         "review_choice",
         "review_report",
+        "layout",
+        "edit",
+        "record",
     ]
     sheet: str | None = Field(default=None, pattern=SHEET_NAME_PATTERN)
     items: tuple[dict[str, Any], ...] = ()
+    composed: dict[str, Any] | None = None
+    """``record`` only: what the order that composed the sheet decided (the signature of the decisions that affect the
+    whole sheet)."""
     remarks: tuple[dict[str, Any], ...] = ()
+    append: bool = False
+    """``review_report`` only: add ``remarks`` to the reviewer's current report (their ids continue, ``at`` is this
+    call's) instead of replacing it; with no report yet it starts one."""
     at: float | None = None
     ids: tuple[str, ...] = ()
     view: Literal["front", "top", "right", "iso", "isometric"] | None = None
     title_block: dict[str, str] = {}
     """``update`` only: title-block fields to set by name (see ``DrawingRequest.title_block``); "" clears one."""
+    symmetry: bool | None = None
+    """``update`` only: whether the part's symmetry is part of the design intent (see ``DrawingRequest.symmetry``)."""
     id: str | None = Field(default=None, min_length=1)
     verdict: Literal["applies", "not_applies"] | None = None
     text: str | None = Field(default=None, min_length=1)
@@ -692,6 +739,9 @@ class AnnotateDrawingRequest(Request):
         if self.title_block and self.action != "update":
             msg = f"{self.action} takes no title_block (create and update do)"
             raise ValueError(msg)
+        if self.symmetry is not None and self.action != "update":
+            msg = f"{self.action} takes no symmetry (create and update do)"
+            raise ValueError(msg)
         self._check_review_fields()
         if self.action == "add":
             if not self.items:
@@ -700,8 +750,18 @@ class AnnotateDrawingRequest(Request):
             found = drawing_items.problems(self.items)
             if found:
                 raise ValueError("; ".join(found))
+        elif self.action == "edit":
+            found = drawing_items.edit_problems(self.items)
+            if found:
+                raise ValueError("; ".join(found))
         elif self.items:
             msg = f"{self.action} takes no items (remove takes ids)"
+            raise ValueError(msg)
+        if self.action == "record" and self.composed is None:
+            msg = "record needs composed"
+            raise ValueError(msg)
+        if self.composed is not None and self.action != "record":
+            msg = f"{self.action} takes no composed"
             raise ValueError(msg)
         if self.ids and self.action != "remove":
             msg = f"{self.action} takes no ids"
@@ -734,7 +794,7 @@ class AnnotateDrawingRequest(Request):
                 msg = f"review_report needs by ({' | '.join(drawing_items.REPORT_AUTHORS)}) and at"
                 raise ValueError(msg)
             if any((self.id, self.verdict, self.text, self.memory)):
-                msg = "review_report takes only sheet, by, remarks and at"
+                msg = "review_report takes only sheet, by, remarks, append and at"
                 raise ValueError(msg)
             found = drawing_items.remark_problems(self.remarks)
             if found:
@@ -756,11 +816,11 @@ class AnnotateDrawingRequest(Request):
         elif any((self.id, self.verdict, self.text, self.by, self.memory)):
             msg = f"{self.action} takes no id, verdict, text, by or memory"
             raise ValueError(msg)
-        if self.action == "answer" and self.by is not None:
-            msg = "answer takes no by"
-            raise ValueError(msg)
         if self.remarks and self.action != "review_report":
             msg = f"{self.action} takes no remarks"
+            raise ValueError(msg)
+        if self.append and self.action != "review_report":
+            msg = f"{self.action} takes no append"
             raise ValueError(msg)
         if self.at is not None and self.action not in ("review_report", "request_review"):
             msg = f"{self.action} takes no at"
@@ -785,6 +845,12 @@ class CaptureDrawingRequest(Request):
     width: int = Field(default=1400, ge=64, le=6000)
     sheet: str | None = Field(default=None, pattern=SHEET_NAME_PATTERN)
     region: tuple[float, float, float, float] | None = None
+    crops: bool = False
+    """Also write zoomed crops (``<path stem>-crop<n>.png``) of the annotated area of each view and of every measured
+    finding, at about 10 px per mm, capped in number and size. Whole sheet only: ignored with a ``region``."""
+    crops_given_at: int | None = None
+    """The change counter (``edits``) of the sheet at which its crops were last handed over: with ``crops``, a sheet that is
+    still at that counter draws none (the same images again are tokens for nothing and seconds of painting)."""
 
 
 class ExportDrawingRequest(Request):

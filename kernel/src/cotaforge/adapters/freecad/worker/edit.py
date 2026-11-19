@@ -59,12 +59,14 @@ import registry as reg
 import sketch_defined
 from FreeCAD import Placement, Rotation, Vector
 from protocol import WorkerError, error, geometry_failed, invalid_request
-from queries import face_descriptor
+from queries import face_descriptor, face_is_planar
 
 PRIMITIVE_TYPES = {"box": "Part::Box", "cylinder": "Part::Cylinder"}
 EDITABLE_KINDS = frozenset({"box", "cylinder", "move_body"})
-LIVE_KINDS = frozenset({"box", "cylinder", "move_body", "boolean"})
-EXPLICIT_INPUT_KINDS = frozenset({"box", "cylinder", "boolean", "move_body", "copy_body", "mirror_body", "split"})
+LIVE_KINDS = frozenset({"box", "cylinder", "move_body", "boolean", "shrink_body"})
+EXPLICIT_INPUT_KINDS = frozenset(
+    {"box", "cylinder", "boolean", "move_body", "copy_body", "mirror_body", "shrink_body", "split"}
+)
 EDITED_PROPERTIES = {
     "box": ("Length", "Width", "Height", "Placement"),
     "cylinder": ("Radius", "Height", "Placement"),
@@ -337,6 +339,8 @@ class Analysis:
         self.recomputed: list[reg.FeatureRec] = []
         self.pd = False  # some edit is a PartDesign feature (its dimensions or those of its sketch)
         self.sets: dict[str, list[tuple[Any, str, Any]]] = {}  # feature id -> (object, property, value) to set
+        self.moves: dict[str, list[tuple[int, str, float]]] = {}  # hole id -> datums of its sketch that move it
+        self.keeps_places = False  # only holes moved, nothing refers to an edge: no sketch or edge is placed again
 
 
 def analyse(doc: reg.DocumentRec, edits: list[Edit]) -> Analysis:
@@ -437,6 +441,13 @@ def analyse(doc: reg.DocumentRec, edits: list[Edit]) -> Analysis:
         logical = rec.id in wanted or any(rec in deps for deps in result.dependents.values())
         if in_graph or logical:
             result.recomputed.append(rec)
+    # a pure move of holes: no plane of any face changes (a cut leaves planes where they are), so every sketch on a
+    # face keeps its frame, and with no fillet or chamfer among the features nothing refers to a numbered edge
+    result.keeps_places = (
+        bool(result.moves)
+        and all(e.kind == "hole" and e.sketch is None and not result.sets.get(e.rec.id) for e in edits)
+        and not any(_edge_objects(doc, rec) for rec in result.recomputed)
+    )
     return result
 
 
@@ -512,6 +523,15 @@ def _analyse_feature(doc: reg.DocumentRec, edit: Edit, graph: set[str], result: 
     ]
     if bound:
         return f"{', '.join(bound)} is bound to an expression: a value set directly would be overwritten"
+    moves: list[tuple[int, str, float]] = []
+    if edit.kind == "hole":
+        try:
+            moves = _hole_moves(doc, edit)
+        except dim_edit.NotInPlaceError as exc:
+            return str(exc)
+        held = dim_edit.bound_by_expression(_expression_paths(_profile_sketch(obj)), moves)
+        if held:
+            return f"{', '.join(held)} of the sketch of {rec.label} is bound to an expression"
     dependents, bodies, blocker = _feature_dependents(doc, edit)
     if blocker is None:
         for dep in dependents:
@@ -524,7 +544,33 @@ def _analyse_feature(doc: reg.DocumentRec, edit: Edit, graph: set[str], result: 
     result.dependents[rec.id] = dependents
     result.bodies |= bodies
     result.sets[rec.id] = sets
+    if moves:
+        result.moves[rec.id] = moves
     return None
+
+
+def _hole_moves(doc: reg.DocumentRec, edit: Edit) -> list[tuple[int, str, float]]:
+    """The datums of the sketch of a hole that put its circles at the new points (empty: they do not move). The hole
+    stays where the recorded origin puts it: only the distances from that origin change, so the feature is edited in
+    place and the document is recomputed once. A hole across a tube wall is placed by its entry point, not by a
+    distance: only a rebuild moves it."""
+    old, new = edit.rec.params, edit.request
+    if dim_edit.hole_points(old) == dim_edit.hole_points(new):
+        return []
+    face = old.get("face")
+    if not isinstance(face, dict) or not isinstance(face.get("id"), str):
+        raise dim_edit.NotInPlaceError("the face of the hole is not recorded")
+    try:
+        rec, comp = reg.resolve_face(doc, face["id"], None)
+        planar = face_is_planar(doc, rec, comp)
+    except WorkerError as exc:
+        raise dim_edit.NotInPlaceError(f"the face {face['id']} the hole sits on no longer exists") from exc
+    if not planar:
+        raise dim_edit.NotInPlaceError("the position of a hole across a curved face is set by its entry point")
+    sk = _profile_sketch(edit.obj)
+    if sk is None:
+        raise dim_edit.NotInPlaceError(f"the hole {edit.rec.label} has no sketch")
+    return dim_edit.hole_position_changes(old, new, _rows(sk), [float(c.Value) for c in sk.Constraints])
 
 
 # --- measures ---------------------------------------------------------------------------------------------------------
@@ -579,19 +625,63 @@ def _same_measure(a: dict[str, Any], b: dict[str, Any]) -> bool:
 
 
 def _body_shape(doc: reg.DocumentRec, body: reg.BodyRec) -> Any:
-    body.invalidate()
-    return reg.world_shape(doc, body)
+    return reg.reread_shape(doc, body)
 
 
-def _object_volume(fc_doc: Any, name: str | None) -> tuple[float, int]:
+def _measure_body(doc: reg.DocumentRec, body: reg.BodyRec, shape: Any, full: bool) -> dict[str, Any]:
+    """``measure`` of a body's world shape, taken through the measures the registry keeps with the body: a shape
+    that did not change since it was last measured (the state before an edit is the state the last edit, or the last
+    reading of the part, left) costs nothing, and what is measured here is what ``mass_properties``,
+    ``bounding_box`` and ``is_valid`` find kept afterwards."""
+    if shape.isNull():
+        return measure(shape, full)
+    volumes = reg.body_volumes(doc, body)
+    volume = sum(volumes)
+    out: dict[str, Any] = {
+        "volume_mm3": volume,
+        "bbox": dict(g.ZERO_BBOX),
+        "centroid": None,
+        "solids": len(volumes),
+        "faces": shape.countElement("Face"),
+        "edges": shape.countElement("Edge"),
+        "valid": True,
+    }
+    if not full:
+        return out
+    out["bbox"] = reg.body_bbox(doc, body)
+    if body._valid is None:
+        body._valid = bool(shape.isValid())
+    out["valid"] = body._valid
+    if volumes and abs(volume) > 1e-12:
+        weighted = g.ORIGIN
+        for v, centre in reg.body_parts(doc, body):
+            weighted = g.add(weighted, g.scale(centre, v))
+        out["centroid"] = g.clean(g.scale(weighted, 1.0 / volume))
+    return out
+
+
+def _object_volume(
+    fc_doc: Any, name: str | None, kept: dict[str, tuple[Any, float, int]] | None = None
+) -> tuple[float, int]:
+    """``(volume, solids)`` of one object. ``kept`` holds the shape each object had when it was measured: the same shape
+    (same ``TShape`` and location) has the same volume and is not measured again."""
     obj = fc_doc.getObject(name) if name else None
     if obj is None:
         return 0.0, 0
+    # the shape the object holds is the key (``Part.getShape`` places a copy of it: never the same one twice)
+    held = getattr(obj, "Shape", None)
+    if held is not None and held.isNull():
+        held = None
+    if kept is not None and held is not None and name in kept and kept[name][0].isSame(held):
+        return kept[name][1], kept[name][2]
     shape = Part.getShape(obj)
     if shape.isNull():
         return 0.0, 0
     solids = _solid_list(shape)
-    return sum(float(s.Volume) for s in solids), len(solids)
+    volume = sum(float(s.Volume) for s in solids)
+    if kept is not None and held is not None and name is not None:
+        kept[name] = (held, volume, len(solids))
+    return volume, len(solids)
 
 
 def _interference(doc: reg.DocumentRec, bodies: set[str]) -> dict[tuple[str, str], float]:
@@ -659,23 +749,38 @@ def capture(doc: reg.DocumentRec, analysis: Analysis, *, interference: bool) -> 
     state = State()
     fc_doc = doc.fc_doc
     for body in doc.live_bodies():
-        state.bodies[body.id] = measure(_body_shape(doc, body), full=body.id in analysis.bodies)
+        # (measured through the registry's own caches: the validity, volumes and box land with the body and the
+        # readings that follow the edit find them there)
+        state.bodies[body.id] = _measure_body(doc, body, _body_shape(doc, body), body.id in analysis.bodies)
+    # The document does not change while it is captured, and the volume a feature leaves is the base of the next one
+    # (a chain of holes asks for each object twice or more): every object is measured once, and an object whose shape
+    # did not change since the last capture (the state before an edit is the one the last edit left) is not measured
+    # again.
+    volumes: dict[str | None, tuple[float, int]] = {}
+
+    def volume_of(name: str | None) -> tuple[float, int]:
+        if name not in volumes:
+            volumes[name] = _object_volume(fc_doc, name, doc.object_volumes)
+        return volumes[name]
+
     dependent = {rec.id: rec for rec in analysis.recomputed}
     for rec in dependent.values():
         if rec.kind in ("boolean", "box", "cylinder") or rec.kind in dim_edit.FEATURE_KINDS:
-            state.results[rec.id] = _object_volume(fc_doc, rec.fc_main)
+            state.results[rec.id] = volume_of(rec.fc_main)
         obj = fc_doc.getObject(rec.fc_main) if rec.fc_main else None
         if rec.kind == "boolean" and rec.params.get("kind") == "subtract":
             base = getattr(obj, "Base", None) if obj is not None else None
-            base_volume, _ = _object_volume(fc_doc, base.Name if base is not None else None)
-            result_volume, _ = _object_volume(fc_doc, rec.fc_main)
+            base_volume, _ = volume_of(base.Name if base is not None else None)
+            result_volume, _ = volume_of(rec.fc_main)
             state.cuts[rec.id] = base_volume - result_volume
         elif rec.kind in ("cut", "hole") and obj is not None:  # a pocket or a hole removes what its base feature had
             base = getattr(obj, "BaseFeature", None)
             if base is not None:
-                base_volume, _ = _object_volume(fc_doc, base.Name)
-                result_volume, _ = _object_volume(fc_doc, rec.fc_main)
+                base_volume, _ = volume_of(base.Name)
+                result_volume, _ = volume_of(rec.fc_main)
                 state.cuts[rec.id] = base_volume - result_volume
+    for gone in [name for name in doc.object_volumes if name not in volumes]:
+        del doc.object_volumes[gone]  # an object no capture reads any more keeps no shape alive
     # (a feature inside a body has a Placement the recompute derives; the bodies and the loose objects are what moves)
     state.poses = {
         o.Name: _pose_key(o.Placement)
@@ -766,6 +871,23 @@ def evaluate(
         if name in before.bad:
             continue
         health.append({"feature": handle(_feature_of(doc, name)), "object": name, "state": state, "message": status})
+
+    # guard 3a: a hole that was moved (and every hole after it) must still start on the face it is drilled in
+    if analysis.moves:
+        for rec in analysis.recomputed:
+            if rec.kind == "hole":
+                why = _hole_off_face(doc, rec)
+                if why is not None:
+                    flags.append(
+                        {
+                            "kind": "hole_off_face",
+                            "severity": "failure",
+                            "message": f"{rec.label}: {why}",
+                            "features": [{"id": rec.id}],
+                            "bodies": [],
+                            "value": None,
+                        }
+                    )
 
     # guard 3: semantic checks on the dependents
     for rec in analysis.recomputed:
@@ -985,8 +1107,10 @@ def _rebind(
     out: dict[str, list[str]] = {"created": [], "removed": [], "modified": []}
     fallback = edits[0].rec
     for body in doc.live_bodies():
+        kept = body.measures()  # the shape the checks just measured: its measures survive when the shape is still it
         body.invalidate()
         if body.id not in analysis.bodies:
+            reg.restore_measures(doc, body, kept)
             continue
         shape = reg.topo_shape(doc, body)
         if shape.isNull():
@@ -997,6 +1121,7 @@ def _rebind(
             if _is_rigid_move(body, shape, edits)
             else reg.refresh(doc, body, shape, owner.id, mark=False, follow=follow)
         )
+        reg.restore_measures(doc, body, kept)
         saved_created.setdefault(owner.id, (list(owner.created_faces), list(owner.created_edges)))
         # a face the edit made again (a bore resized, a feature a hair off) stays with the feature of the face it
         # replaces: its colour and its record are that feature's, not the edited one's
@@ -1157,10 +1282,13 @@ def _apply_sketch(
 def _sync_hole_sketch(edit: Edit) -> None:
     """A hole keeps its diameter in the feature and in the circle of its own sketch: both follow."""
     sk = _profile_sketch(edit.obj)
-    for index, c in enumerate(sk.Constraints if sk is not None else ()):
+    found = False
+    for index, c in enumerate(sk.Constraints if sk is not None else ()):  # a multi-hole feature has one per circle
         if str(c.Type) == "Diameter" and bool(c.Driving):
             fc.call(sk, "setDatum", index, float(edit.request["diameter_mm"]))
-            return
+            found = True
+    if found:
+        return
     raise dim_edit.NotInPlaceError(f"the sketch of {edit.rec.label} has no diameter to set")
 
 
@@ -1387,7 +1515,7 @@ def _settle(
     would place it (the origin of the face frame is the centre of the face, which moves with the edit); repeat until
     nothing moves (a sketch on a face of a feature that sits on a moved face)."""
     refs: dict[str, list[str]] = {"created": [], "removed": [], "modified": []}
-    placed = _placed_sketches(doc, analysis)
+    placed = [] if analysis.keeps_places else _placed_sketches(doc, analysis)
     follow = frozenset(face_id for _, _, face_id, _ in placed)
     for _ in range(len(placed) + 1):
         diff = _rebind(doc, analysis, edits, saved_created, follow)
@@ -1474,7 +1602,9 @@ def edit_feature(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]
         if not _same_pose(pose, obj.Placement, DRIFT_TOL):
             sets.append(("Placement", pose))
         plan.append((obj, sets))
-    has_feature_change = any(analysis.sets.values()) or any(e.sketch is not None for e in edits)
+    has_feature_change = (
+        any(analysis.sets.values()) or any(analysis.moves.values()) or any(e.sketch is not None for e in edits)
+    )
     if not has_feature_change and not any(sets for _, sets in plan):
         return finish(warnings=["nothing changed: the new requests equal the values the document already has"])
 
@@ -1505,12 +1635,16 @@ def edit_feature(doc: reg.DocumentRec, params: dict[str, Any]) -> dict[str, Any]
                 fc.set_prop(obj, prop, value)
             if edit.kind == "hole" and any(p == "Diameter" for _, p, _ in analysis.sets.get(edit.rec.id, ())):
                 _sync_hole_sketch(edit)
+            for index, _, value in analysis.moves.get(edit.rec.id, ()):
+                fc.call(_profile_sketch(edit.obj), "setDatum", index, float(value))
             if edit.kind == "linear_pattern" and edit.sketch is None:
                 saved_features.setdefault(edit.rec.id, (dict(edit.rec.named_dimensions), edit.rec.instance_count))
                 edit.rec.instance_count = int(edit.request["count"]) * int(edit.request.get("count2") or 1)
         for sketch_plan in sketch_plans:
             _apply_sketch(doc, sketch_plan, saved_features)
-        if analysis.pd:  # the sketches on faces are placed one by one, each on the shape it was built on
+        if (
+            analysis.pd and not analysis.keeps_places
+        ):  # sketches on faces are placed one by one, each on the shape it was built on
             _place_in_order(doc, analysis, edge_refs)
         fc.recompute(fc_doc)
         if analysis.pd:  # the faces the later sketches sit on moved: place them again before anything is measured
@@ -1667,3 +1801,51 @@ def _rollback(
         ) from exc
     finally:
         del fc.recorder.lines[recorded:]
+
+
+HOLE_FACE_TOL = 1e-4  # mm: the same tolerance the hole op uses to say a point is on its face
+
+
+def _hole_off_face(doc: reg.DocumentRec, rec: reg.FeatureRec) -> str | None:
+    """Why a hole of a planar face no longer starts ON the face (``None``: it does), as the hole op says it when a
+    rebuild drills it: every centre must lie on the face of the shape the hole is built on (the feature before it), not
+    merely in its box, so a point over a hole drilled before it, or off the edge of the plate, is refused."""
+    obj = doc.fc_doc.getObject(rec.fc_main) if rec.fc_main else None
+    sk = _profile_sketch(obj) if obj is not None else None
+    base = getattr(obj, "BaseFeature", None) if obj is not None else None
+    shape = getattr(base, "Shape", None)
+    if sk is None or shape is None or shape.isNull():
+        return None
+    face = rec.params.get("face")
+    if not isinstance(face, dict) or not isinstance(face.get("id"), str):
+        return None
+    try:
+        frec, comp = reg.resolve_face(doc, face["id"], None)
+        if not face_is_planar(doc, frec, comp):
+            return None  # across a curved face: its sketch is placed by its entry point
+    except WorkerError:
+        return None
+    pose = sk.getGlobalPlacement()
+    normal = g.vec(pose.Rotation.multVec(Vector(0, 0, 1)))
+    here = g.vec(pose.Base)
+    planes = []
+    for f in shape.Faces:  # the plane of a face is read off its surface: no mass properties, no normals per face
+        surface = f.Surface
+        if type(surface).__name__ != "Plane":
+            continue
+        axis = g.vec(surface.Axis)
+        if (
+            abs(abs(g.dot(axis, normal)) - 1.0) < 1e-9
+            and abs(g.dot(g.sub(g.vec(surface.Position), here), normal)) <= 1e-6
+        ):
+            planes.append(f)
+    for u, v in dim_edit.hole_points(rec.params):
+        point = pose.multVec(Vector(u, v, 0))
+        if not any(f.distToShape(Part.Vertex(point))[0] <= HOLE_FACE_TOL for f in planes):
+            return (
+                f"position {[u, v]} is not on face {face['id']}: the point ({point.x:.3f}, {point.y:.3f}, "
+                f"{point.z:.3f}) lies in the bounding box of the face but outside the face itself (a hole in it, or "
+                "a feature standing on it covers that spot). To drill the top of a boss select the "
+                "boss's own top face, not the face it stands on"
+            )
+    return None

@@ -43,7 +43,7 @@ def test_hole_at_is_projected_and_refused_outside_the_face_by_how_much(call: Cal
 def test_hole_needs_exactly_one_of_position_and_at(call: Caller) -> None:
     plate(call)
     both = call.err("op", name="hole", params={**HOLE_AT, "position": [0, 0]})
-    assert "exactly one of position" in both and "got both" in both
+    assert "exactly one of position" in both and "got position and at" in both
     neither = call.err("op", name="hole", params={**HOLE_AT, "at": None})
     assert "got neither" in neither
 

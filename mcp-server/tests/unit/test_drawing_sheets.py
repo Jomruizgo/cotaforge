@@ -10,12 +10,13 @@ from cotaforge.contract import drawing_items
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.guide import guide
 from cotaforge_mcp.schemas import TOOLS_BY_NAME, input_schema
-from tests.conftest import Caller, DrawingFake, MakeSession, plate, set_review
+from tests.conftest import Caller, DrawingFake, MakeSession, plate, set_flow, set_review
 
 
 @pytest.fixture
 def sheet(make: MakeSession, settings: Settings) -> tuple[Caller, DrawingFake]:
     set_review(settings, "ninguno")  # these tests are about the sheet, not about who reviews it
+    set_flow(settings, "steps")  # the small-steps flow; the default has its own tests
     adapter = DrawingFake()
     call = Caller(make(adapter))
     plate(call)
@@ -107,9 +108,9 @@ def test_a_create_says_which_settings_it_did_not_get_so_a_rebuild_can_keep_the_s
     call, adapter = sheet
     call.ok("drawing", action="create", template="A3", scale="1:2")
     request = adapter.created[-1]
-    assert request.fresh is False and request.unset == ("angle", "language", "projection", "body")
-    call.ok("drawing", action="create", fresh=True, projection="techdraw")
-    assert adapter.created[-1].fresh is True and "projection" not in adapter.created[-1].unset
+    assert request.fresh is False and request.unset == ("angle", "language", "body")
+    call.ok("drawing", action="create", fresh=True, by="Ana", reason=call.says("rehazla desde cero"))
+    assert adapter.created[-1].fresh is True
 
 
 def test_a_rebuild_reply_says_what_it_kept_what_no_longer_resolves_and_what_a_fresh_one_threw_away(
@@ -124,7 +125,7 @@ def test_a_rebuild_reply_says_what_it_kept_what_no_longer_resolves_and_what_a_fr
     assert "rebuilt: kept items o1, hd (placed again on the new views); 2 answer(s) to the review" in text
     assert "no longer resolve (fix or remove them): dz (dim): the sheet has no 'right' view" in text
     adapter.rebuilt = {"discarded": ("items hd", "the chosen reviewer (fabricante)")}
-    text = call.ok("drawing", action="create", fresh=True)
+    text = call.ok("drawing", action="create", fresh=True, by="Ana", reason=call.says("tírala y empieza de nuevo"))
     assert "fresh: threw away items hd; the chosen reviewer (fabricante)" in text and "rebuilt:" not in text
 
 
@@ -197,8 +198,28 @@ def test_remove_takes_items_off_by_id_and_never_the_sheet(sheet: tuple[Caller, D
 def test_remove_sheet_is_the_one_way_to_take_a_sheet_away(sheet: tuple[Caller, DrawingFake]) -> None:
     call, adapter = sheet
     call.ok("drawing", action="create")
-    gone = call.ok("drawing", action="remove_sheet")
+    gone = call.ok("drawing", action="remove_sheet", by="Ana", reason=call.says("quita la hoja entera"))
     assert "sheet removed" in gone and "none" in gone and adapter.annotated[-1].action == "remove_sheet"
+
+
+def test_throwing_a_sheet_away_or_removing_it_needs_the_engineers_order(sheet: tuple[Caller, DrawingFake]) -> None:
+    """``fresh=true`` and ``remove_sheet`` destroy what is on the sheet: the tool refuses both unless the engineer
+    ordered them (by, reason: his words, confirmed in Claude Code's dialog); the agent's own word is not an order."""
+    call, adapter = sheet
+    call.ok("drawing", action="create")
+    made, kept = len(adapter.created), len(adapter.annotated)
+    for arguments in ({"action": "create", "fresh": True}, {"action": "remove_sheet"}):
+        assert "is the engineer's order" in call.err("drawing", **arguments)  # no by, no reason: not even put to him
+    assert call.engineer.dialogs == []  # a call that carries no order is never put to him
+    for arguments in ({"action": "create", "fresh": True}, {"action": "remove_sheet"}):
+        call.err("drawing", **arguments, by="Ana", reason="lo decido yo")  # typed by the agent, never said: rejected
+    assert len(call.engineer.dialogs) == 2
+    assert len(adapter.created) == made and len(adapter.annotated) == kept  # nothing reached the CAD
+    call.ok("drawing", action="create", fresh=True, by="Ana", reason=call.says("hazla de nuevo"))
+    assert "throwing the sheet" in call.engineer.dialogs[-1] or "tirar la hoja" in call.engineer.dialogs[-1]
+    assert adapter.created[-1].fresh is True
+    call.ok("drawing", action="remove_sheet", by="Ana", reason=call.says("ya no hace falta"))
+    assert adapter.annotated[-1].action == "remove_sheet" and not adapter.drawings
 
 
 def test_update_lays_the_sheet_out_again(sheet: tuple[Caller, DrawingFake]) -> None:
@@ -221,7 +242,8 @@ def test_list_shows_every_item_with_what_was_stored(sheet: tuple[Caller, Drawing
 def test_every_action_needs_a_sheet_to_work_on(sheet: tuple[Caller, DrawingFake]) -> None:
     call, _ = sheet
     for action in ("update", "remove_sheet"):
-        assert "create it first" in call.err("drawing", action=action)
+        order = {"by": "Ana", "reason": call.says("quítala")} if action == "remove_sheet" else {}
+        assert "create it first" in call.err("drawing", action=action, **order)
     assert "create it first" in call.err("drawing", action="add", items=[{"type": "overall"}])
     assert "no sheets" in call.ok("drawing", action="list")
 
@@ -287,7 +309,7 @@ def test_review_asks_the_cad_for_findings_and_lists_warnings_first(sheet: tuple[
     text = call.ok("drawing", action="review")
     assert fake.described[-1].review is True
     assert "review: 1 warning(s), 1 to confirm" in text
-    assert "warning hole_no_callout [feature:4]: Agujero sin llamada" in text and "info no_view_lines" in text
+    assert "BLOCKS EXPORT hole_no_callout [feature:4]: Agujero sin llamada" in text and "BLOCKS EXPORT no_view_lines" in text
     fake.findings = ()
     assert "nothing found" in call.ok("drawing", action="review")
     call.ok("drawing", action="list")
@@ -303,14 +325,16 @@ def test_the_drawing_schema_names_the_new_arguments_and_stays_small(make: MakeSe
     properties = schema["properties"]
     for name in ("sheet", "items", "language", "drawing_number", "revision", "general_tolerances", "company", "body"):
         assert name in properties, name
-    assert len(json.dumps(schema)) < 2000  # 1800 + the capture region
+    assert len(json.dumps(schema)) < 2250  # 1800 + the capture region + decisions, recompose, plan and compose (the default flow)
     assert "sheet" in input_schema(TOOLS_BY_NAME["export"], session)["properties"]
 
 
 DRAWING_TOPICS = (
     "drawing",
     "drawing:items",
+    "drawing:dims",
     "drawing:marks",
+    "drawing:mould",
     "drawing:views",
     "drawing:assembly",
     "drawing:output",
@@ -333,7 +357,10 @@ def test_every_topic_of_the_drawing_guide_fits_what_cad_guide_returns(make: Make
     assert "drawing:items" in guide(session, "drawing") and "TECHDRAW DRAWING" in guide(session, "drawing")
 
 
-def test_the_guide_has_the_item_reference_and_says_the_sheet_is_built_live_in_the_window(make: MakeSession) -> None:
+def test_the_guide_has_the_item_reference_and_says_the_sheet_is_built_live_in_the_window(
+    make: MakeSession, settings: Settings
+) -> None:
+    set_flow(settings, "steps")  # the text of the small-steps flow; the default flow says its own (test_drawing_compose)
     text = _whole_drawing_guide(make)
     for item_type in drawing_items.ITEM_FIELDS:
         assert item_type in text, item_type  # every built item type is in the reference

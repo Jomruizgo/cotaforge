@@ -13,12 +13,16 @@ from cotaforge_mcp import (
     bearing_seats,
     channel_tools,
     design_memory,
+    drawing_gate,
+    engineer_orders,
     feature_tools,
     guide,
     inspect_tools,
     memory_tools,
     parts_tools,
+    pocket_corners,
     rules,
+    turned_ends,
     view_export,
 )
 from cotaforge_mcp.overflow import REPORTS_DIRNAME, Overflow
@@ -97,6 +101,8 @@ def _fitted(session: Session, name: str, lines: list[str], limit: int) -> Reply:
 
 def _doc(session: Session, args: DocArgs, progress: Reporter | None = None) -> Reply:
     action = args.action
+    if action in ("new", "open", "reload", "close", "import"):
+        drawing_gate.forget_waits(session)  # the waits noted were of the sheets of the document that goes
     if action == "new":
         if not args.name:
             raise ToolError(
@@ -132,11 +138,13 @@ def _doc(session: Session, args: DocArgs, progress: Reporter | None = None) -> R
         return ok("\n".join(session.set_material(args.material)))
     if action == "set_route":
         return ok("\n".join(session.set_route(args.route)))
+    if action == "set_title":
+        return ok("\n".join(session.set_title(args.name)))
     if action == "set_purpose":
         return ok("\n".join(session.set_purpose(args.purpose)))
     if action == "convention":
         return ok("\n".join(session.convention(args.values)))
-    return _fitted(session, "status", session.status(), STATUS_RESULT_CHARS)
+    return _fitted(session, "status", [*session.status(), *drawing_gate.wait_notice(session)], STATUS_RESULT_CHARS)
 
 
 def _drawing_action(args: DrawingArgs) -> str | None:
@@ -175,6 +183,8 @@ def _run(
             lines = feature_tools.delete_feature(session, args.delete, args.params, args.intent)
             lines += design_memory.after_action(session, "delete_feature", {"step": args.delete})
             lines += bearing_seats.after_action(session, "delete_feature")
+            lines += pocket_corners.after_action(session, "delete_feature")
+            lines += turned_ends.after_action(session, "delete_feature")
             return ok("\n".join(lines), limit=2500)
         if (args.name is None) == (args.edit is None):
             both = ", not both" if args.name else ""
@@ -194,10 +204,15 @@ def _run(
                     return ok("\n".join(design_memory.set_role(session, args.edit, role)))
             if feature_tools.targets_feature(session, args.edit):
                 lines = feature_tools.edit_feature(session, args.edit, args.params, args.intent)
+                moves_holes = False
             else:
+                moves_holes = session.only_moves_holes(args.edit, args.params)  # asked before the edit changes the plan
                 lines = session.edit_step(args.edit, args.params, args.intent)
             lines += design_memory.after_action(session, "edit_feature", {"step": args.edit})
             lines += bearing_seats.after_action(session, "edit_feature")
+            if not moves_holes:  # a hole moved is no new sharp end nor pocket corner: the faces are not read again
+                lines += pocket_corners.after_action(session, "edit_feature")
+                lines += turned_ends.after_action(session, "edit_feature")
             return ok("\n".join(lines), limit=2500)
         with session.listening(progress):
             return ok("\n".join(session.run_op(args.name, args.params, args.intent, args.id)))
@@ -270,12 +285,16 @@ def call_tool(
     arguments: dict[str, Any] | None,
     progress: Reporter | None = None,
     cancelled: threading.Event | None = None,
+    call_id: str | None = None,
 ) -> Reply:
-    """Run one tool. Whatever the engineer changed by hand since the last call heads the reply, once, whatever the
+    """Run one tool. ``call_id``: the id Claude Code gave this call (an engineer's order is admitted only with the
+    ticket of that id: ``engineer_orders``). Whatever the engineer changed by hand since the last call heads the reply, once, whatever the
     tool and whether it worked (``hand_edits``). ``cancelled`` is set by the server when the client gave the call up:
     the call still runs to its end (the CAD cannot interrupt what it is doing), but nobody is left to read its reply, so
     what a reply would carry (the hand edits) stays for the next one."""
-    reply = _call_tool(session, name, arguments, progress, cancelled)
+    session.mem.measured = None  # what a call measured on the model is good for that call only
+    reply = _call_tool(session, name, arguments, progress, cancelled, call_id)
+    session.mem.measured = None
     if cancelled is not None and cancelled.is_set():
         return reply
     heads = [line for line in (session.hand_edits.take(session), *_adapter_notices(session)) if line is not None]
@@ -300,6 +319,7 @@ def _call_tool(
     arguments: dict[str, Any] | None,
     progress: Reporter | None,
     cancelled: threading.Event | None = None,
+    call_id: str | None = None,
 ) -> Reply:
     tool = TOOLS_BY_NAME.get(name)
     if tool is None or not tool.visible(session):
@@ -326,10 +346,15 @@ def _call_tool(
                 code="not_supported",
                 field_name="action",
             )
-        if not tool.needs_cad:
-            return _run(session, tool, args, progress, cancelled)
-        with session.holding(name, cancelled):  # one call at a time in the CAD; waiting for another is bounded
-            return _run(session, tool, args, progress)
+        order = engineer_orders.admit(session.settings, name, arguments, call_id)  # refuses an order he did not confirm
+        with engineer_orders.confirming(order):
+            if not tool.needs_cad:
+                return _run(session, tool, args, progress, cancelled)
+            if isinstance(args, DrawingArgs) and args.action == "wait_review":
+                # blocks for minutes: it holds the CAD only to read the sheet, never while it waits, and Esc ends it
+                return view_export.wait_review(session, args, cancelled)
+            with session.holding(name, cancelled):  # one call at a time in the CAD; waiting for another is bounded
+                return _run(session, tool, args, progress)
     except ValidationError as exc:
         return fail(_invalid(tool, exc, session))
     except ToolError as failure:

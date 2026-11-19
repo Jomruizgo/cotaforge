@@ -142,6 +142,40 @@ TERMS: tuple[Term, ...] = (
         "source body, plane: a new mirrored body",
         "mirror_body",
     ),
+    Term(
+        ("contracción", "merma", "shrinkage", "cavidad", "cavity"),
+        "op shrink_body",
+        "source body, shrinkage_percent (a number or [x, y, z]), factor_source (datasheet, moulder, engineer)",
+        "shrink_body",
+    ),
+    Term(
+        ("análisis de desmoldeo", "contrasalida", "draft analysis", "undercut"),
+        "inspect draft",
+        "pull [x, y, z], min_draft_deg, paint: the draft of every face and the faces that cannot be released",
+    ),
+    Term(
+        ("superficie de partición", "postizo", "macho y cavidad", "core and cavity"),
+        "op mould_split",
+        "source (shrunk part), pull, block_size_mm or margin_mm, zero_draft_to, slides; see inspect parting",
+        "mould_split",
+    ),
+    Term(
+        ("base de molde", "portamolde", "porta-molde", "mould base", "columna guía", "casquillo guía", "anillo centrador", "casquillo de bebedero", "expulsor", "eyector"),
+        "op mould_component",
+        "kind (mould_base|guide_pin|guide_bush|locating_ring|sprue_bush|ejector_pin|return_pin|angle_pin|wear_plate), ref (DME item) or size, at",
+        "mould_component",
+    ),
+    Term(
+        ("corredera", "cuña de bloqueo", "pasador angular", "mecanismo de corredera", "slide", "angle pin"),
+        "op slide_mechanism",
+        "split (the mould_split step), slide (region), part, pull, angle_deg, stroke_mm?, clearance_mm, wedge_extra_deg, host?",
+        "slide_mechanism",
+    ),
+    Term(
+        ("línea de partición", "parting line", "parting analysis"),
+        "inspect parting",
+        "pull [x, y, z], id (core|cavity for walls with no draft): the parting loops, the walls to decide, the slides",
+    ),
     Term(("dividir", "split", "partir"), "op split", "source body, plane, keep both|positive|negative", "split"),
     Term(
         ("copiar cuerpo", "move/copy bodies", "mover/copiar cuerpos"),

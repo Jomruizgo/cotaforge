@@ -5,6 +5,7 @@ primitives imported from ``ops_primitives`` plus the feature, pattern and assemb
 ops defined here. ``OP_NAMES`` is the set of all their ``op`` names.
 """
 
+import math
 from typing import Annotated, Any, Literal
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -87,6 +88,11 @@ __all__ = [
     "RefPlaneOperation",
     "RevolveOperation",
     "ShellOperation",
+    "ShrinkBodyOperation",
+    "MouldSplitOperation",
+    "MouldComponentOperation",
+    "MouldPlacement",
+    "SlideMechanismOperation",
     "SketchOperation",
     "SplitOperation",
     "SweepOperation",
@@ -300,14 +306,44 @@ class Countersink(IRModel):
     """Included angle of the cone (FreeCAD's default: 90)."""
 
 
+class BoltCircle(IRModel):
+    """``count`` holes equally spaced on a circle of ``diameter_mm`` (the pitch circle diameter), in the face frame."""
+
+    diameter_mm: float = Field(gt=0)
+    count: int = Field(ge=2, le=64)
+    center: tuple[float, float] = (0.0, 0.0)
+    """(u, v) of the circle centre, from the same origin as ``position``."""
+    start_angle_deg: float = 0.0
+    """Angle of the first hole, from the face's +u axis towards +v."""
+
+    def points(self) -> tuple[tuple[float, float], ...]:
+        radius = self.diameter_mm / 2.0
+        return tuple(
+            (
+                self.center[0] + radius * math.cos(math.radians(self.start_angle_deg + 360.0 * i / self.count)),
+                self.center[1] + radius * math.sin(math.radians(self.start_angle_deg + 360.0 * i / self.count)),
+            )
+            for i in range(self.count)
+        )
+
+
 class HoleOperation(OperationBase):
     model_config = ConfigDict(json_schema_extra=_hole_schema)
 
     op: Literal["hole"] = "hole"
     face: FaceRef
     position: tuple[float, float] | None = None
-    """(u, v) from the face centre in the face frame (a convex cylindrical face: axial_mm, angle_deg). Exactly one of
-    ``position`` and ``at``."""
+    """(u, v) in the face frame, from the CENTRE OF THE FACE'S BOUNDING BOX (not its centre of mass: that one moves when
+    holes are drilled in the face, the box centre does not), so every hole of a face is measured from the same point.
+    On a face that is not a rectangle (an L, a disc with a notch) that point can lie outside the material: it is only
+    the reference, so give the (u, v) from it (a convex cylindrical face: axial_mm, angle_deg). Exactly one of ``position``, ``positions``, ``bolt_circle`` and
+    ``at``."""
+    positions: tuple[tuple[float, float], ...] | None = None
+    """Several holes of the same kind in ONE feature, each (u, v) as ``position`` (planar face; at least 2, no two
+    closer than one diameter). A rectangular pattern is its four corners."""
+    bolt_circle: BoltCircle | None = None
+    """Holes equally spaced on a circle (pitch circle diameter, count, centre, start angle) in one feature. Planar
+    face only."""
     at: Vec3 | None = None
     """A world point (mm) instead of ``position``: it is projected onto the planar ``face`` along its normal and must
     land inside the face (its bounding box); the hole is stored as this world point."""
@@ -375,11 +411,50 @@ class HoleOperation(OperationBase):
 
     @model_validator(mode="after")
     def _check_position_xor_at(self) -> "HoleOperation":
-        if (self.position is None) == (self.at is None):
-            msg = (
-                "hole needs exactly one of position ((u, v) from the face centre) and at (a world point [x, y, z] mm), "
-                + ("got both" if self.position is not None else "got neither")
+        given = [
+            name
+            for name, value in (
+                ("position", self.position),
+                ("positions", self.positions),
+                ("bolt_circle", self.bolt_circle),
+                ("at", self.at),
             )
+            if value is not None
+        ]
+        if len(given) != 1:
+            msg = (
+                "hole needs exactly one of position ((u, v) from the centre of the face's bounding box), positions "
+                "(a list of them), bolt_circle and at (a world point [x, y, z] mm), "
+                + (f"got {' and '.join(given)}" if given else "got neither")
+            )
+            raise ValueError(msg)
+        return self
+
+    def points(self) -> tuple[tuple[float, float], ...] | None:
+        """Every (u, v) of a multi-hole op (``positions`` or ``bolt_circle``), ``None`` for one hole."""
+        if self.positions is not None:
+            return self.positions
+        return self.bolt_circle.points() if self.bolt_circle is not None else None
+
+    @model_validator(mode="after")
+    def _check_several_points(self) -> "HoleOperation":
+        points = self.points()
+        if points is None:
+            return self
+        if len(points) < 2:
+            msg = "positions needs at least 2 points (one hole is position)"
+            raise ValueError(msg)
+        wide = max([self.diameter_mm, *(w.diameter_mm for w in (self.counterbore, self.countersink) if w is not None)])
+        for i, a in enumerate(points):
+            for b in points[i + 1 :]:
+                if math.dist(a, b) < wide - 1e-9:
+                    msg = (
+                        f"two of the holes are {math.dist(a, b):.3f} mm apart, closer than their widest diameter "
+                        f"({wide:g} mm): they would merge"
+                    )
+                    raise ValueError(msg)
+        if self.end_condition == EndCondition.up_to_face:
+            msg = "several holes in one op take through_all or blind, not up_to_face (one hole per face distance)"
             raise ValueError(msg)
         return self
 
@@ -548,6 +623,311 @@ class MirrorBodyOperation(OperationBase):
     op: Literal["mirror_body"] = "mirror_body"
     source: BodyRef
     plane: PlaneRef | FaceRef
+
+
+MAX_SHRINKAGE_PERCENT = 10.0
+"""Above this a shrinkage is not a plastic's but a typing mistake (no moulding material shrinks a tenth of its size)."""
+
+
+def _shrinkage_note(percent: Any, source: str) -> str:
+    """The sentence the step's intent carries: the shrinkage as given (a number, or X / Y / Z) and its source."""
+    if isinstance(percent, (list, tuple)):
+        values = [f"{float(v):g}" for v in percent]
+        if len(set(values)) > 1:
+            return f"shrinkage X {values[0]} % / Y {values[1]} % / Z {values[2]} % (source: {source})"
+        percent = percent[0]
+    return f"shrinkage {float(percent):g} % isotropic (source: {source})"
+
+
+class ShrinkBodyOperation(OperationBase):
+    """Derive the CAVITY of a mould from ``source`` (the plastic part): a NEW body scaled up by the plastic's
+    shrinkage, so the part comes out at its nominal size once it has cooled. The new body is LINKED to the source: when
+    the part changes, the cavity follows (the source itself is untouched). ``shrinkage_percent`` is one number (the same
+    on every axis) or ``[x, y, z]`` when the material's data differs along the flow and across it; the scale on an axis
+    is ``1 + percent / 100``. ``factor_source`` says where the number comes from (the material datasheet, the moulder,
+    the engineer): it is mandatory, and the step's intent always ends up carrying the shrinkage and its source. The
+    scaling is about the source body's own origin. A per-axis shrinkage turns curved faces into B-spline surfaces
+    (an affine map of a cylinder is not one); an equal one keeps every surface exact."""
+
+    op: Literal["shrink_body"] = "shrink_body"
+    source: BodyRef
+    shrinkage_percent: float | Vec3
+    factor_source: str = Field(min_length=3)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _intent_carries_the_shrinkage(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        percent, source, intent = data.get("shrinkage_percent"), data.get("factor_source"), data.get("intent")
+        if percent is None or not isinstance(source, str) or not isinstance(intent, str) or not intent.strip():
+            return data
+        try:
+            note = _shrinkage_note(percent, source.strip())
+        except (TypeError, ValueError, IndexError):
+            return data  # the field validators say what is wrong with the numbers
+        return data if note in intent else {**data, "intent": f"{intent.rstrip()} [{note}]"}
+
+    @field_validator("shrinkage_percent")
+    @classmethod
+    def _shrinkage_is_plausible(cls, value: float | Vec3) -> float | Vec3:
+        values = (value,) if isinstance(value, (int, float)) else value
+        if not all(math.isfinite(v) and 0.0 < v <= MAX_SHRINKAGE_PERCENT for v in values):
+            msg = f"shrinkage_percent must be above 0 and at most {MAX_SHRINKAGE_PERCENT:g} on every axis"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("factor_source")
+    @classmethod
+    def _source_is_said(cls, value: str) -> str:
+        if not value.strip():
+            msg = "factor_source must say where the shrinkage comes from (datasheet, moulder, engineer)"
+            raise ValueError(msg)
+        return value.strip()
+
+    def scale(self) -> Vec3:
+        """The scale per axis: ``1 + percent / 100``."""
+        values = (
+            (self.shrinkage_percent,) * 3
+            if isinstance(self.shrinkage_percent, (int, float))
+            else self.shrinkage_percent
+        )
+        return (1.0 + values[0] / 100.0, 1.0 + values[1] / 100.0, 1.0 + values[2] / 100.0)
+
+
+def _split_note(data: dict[str, Any]) -> str:
+    """The sentence a ``mould_split`` step's intent carries: the pull, the block, the decision on the walls with no draft
+    and the slides asked for. The parting line itself is measured by the CAD and reported by the step."""
+    pull = data.get("pull")
+    pull_text = pull if isinstance(pull, str) else "(" + ", ".join(f"{float(c):g}" for c in pull) + ")"
+    size, margin = data.get("block_size_mm"), data.get("margin_mm")
+    if size is not None:
+        block = "block " + " x ".join(f"{float(c):g}" for c in size) + " mm (given by the engineer)"
+    elif margin is not None:
+        block = f"block = the part's box grown {float(margin):g} mm on every side (given by the engineer)"
+    else:
+        block = "block = the part's box grown by the proposed margin (the larger of 25 mm and a fifth of its longest side)"
+    walls = data.get("zero_draft_to")
+    slides = data.get("slides", "none")
+    slide_text = (
+        "no slides"
+        if slides == "none"
+        else "slides: all the proposed"
+        if slides == "all"
+        else "slides accepted: " + ", ".join(str(n) for n in slides)
+    )
+    return (
+        f"mould split: pull {pull_text} (the core opens along it), {block}, "
+        + (f"walls with no draft go to the {walls}" if walls else "no decision on walls with no draft")
+        + f", {slide_text}"
+    )
+
+
+class MouldSplitOperation(OperationBase):
+    """Split the negative of ``source`` (the SHRUNK part, from ``shrink_body``) into the mould's two inserts: cut the part
+    out of an insert block and slice what is left along the parting surface into two NEW bodies, the CAVITY (fixed half)
+    and the CORE (moving half). ``pull`` is the direction the core opens along: the faces of the part that look along it
+    are the core's, the ones that look against it the cavity's. The parting line is the edge loop between them, measured
+    by the CAD on the real model (see ``inspect action=parting``); the parting surface is a plane when the line lies in
+    one, else a run-off surface (every edge pushed outward, corners mitred, steps as walls), plus a flat shut-off for each
+    opening through the part. The block is ``block_size_mm`` (x, y, z, centred on the part) or the part's box grown by
+    ``margin_mm`` (a proposed 25 mm or a fifth of the longest side when neither is given: not a standard).
+    ``zero_draft_to`` says which half forms the walls with no draft that touch both (required when there are some).
+    ``slides`` lists the undercut regions formed by a slide (``all`` or their numbers): a part with an undercut that no
+    slide forms is refused, it would be trapped. Each accepted slide is one more new body. The source stays. The step
+    checks that each half is one valid solid, that core + cavity + slides + part add up to the block within 0.01 %, and
+    that the part leaves each half along the pull and each slide leaves along its own direction. The step's intent always
+    ends up carrying the pull, the block, the decision and the slides. The inserts are plain solids, NOT linked to the
+    part: after changing the part, run the step again. The core and the slides have no step name of their own (the
+    step names the cavity): ask for their ids."""
+
+    op: Literal["mould_split"] = "mould_split"
+    source: BodyRef
+    pull: AxisName | Vec3
+    block_size_mm: Vec3 | None = None
+    margin_mm: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    zero_draft_to: Literal["core", "cavity"] | None = None
+    slides: Literal["none", "all"] | tuple[int, ...] = "none"
+    min_draft_deg: float = Field(default=1.0, ge=0, le=45, allow_inf_nan=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _intent_carries_the_split(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or data.get("pull") is None:
+            return data
+        intent = data.get("intent")
+        if not isinstance(intent, str) or not intent.strip():
+            return data
+        try:
+            note = _split_note(data)
+        except (TypeError, ValueError, IndexError):
+            return data  # the field validators say what is wrong
+        return data if note in intent else {**data, "intent": f"{intent.rstrip()} [{note}]"}
+
+    @model_validator(mode="after")
+    def _one_block(self) -> "MouldSplitOperation":
+        if self.block_size_mm is not None and self.margin_mm is not None:
+            msg = "give the block as block_size_mm or margin_mm, not both"
+            raise ValueError(msg)
+        if self.block_size_mm is not None and not all(c > 0 for c in self.block_size_mm):
+            msg = "block_size_mm must be above 0 on every axis"
+            raise ValueError(msg)
+        return self
+
+
+class MouldPlacement(IRModel):
+    """Where a mould component sits: ``origin`` (a point in the document), ``axis`` the direction its own z axis points to
+    (for a pin: head to tip; for the base kit: from the parting face towards the core, i.e. the pull) and ``x`` a hint
+    for its x axis (made perpendicular to the axis; for the base kit x is along the base length)."""
+
+    origin: Vec3 = (0.0, 0.0, 0.0)
+    axis: AxisName | Vec3 = AxisName.Z
+    x: Vec3 | None = None
+
+
+MouldKind = Literal[
+    "mould_base",
+    "guide_pin",
+    "guide_bush",
+    "locating_ring",
+    "sprue_bush",
+    "ejector_pin",
+    "return_pin",
+    "angle_pin",
+    "wear_plate",
+]
+
+
+def _vec_text(value: Any) -> str:
+    if isinstance(value, str):
+        return str(value)
+    return "(" + ", ".join(f"{float(c):g}" for c in value) + ")"
+
+
+def _component_note(data: dict[str, Any]) -> str:
+    """The sentence a ``mould_component`` step's intent carries: what it is in the catalogue and where it goes."""
+    what = data.get("ref") or data.get("size") or "(default configuration)"
+    at = data.get("at")
+    places = [at] if isinstance(at, dict) else list(at or [{}])
+    where = "; ".join(
+        f"at {_vec_text(p.get('origin', (0, 0, 0)))} along {_vec_text(p.get('axis', 'Z'))}"
+        for p in places
+        if isinstance(p, dict)
+    )
+    return f"mould component: {data.get('kind')} {what}, DME catalogue, {where}"
+
+
+class MouldComponentOperation(OperationBase):
+    """Build a standard mould component from the DME catalogue (family DME: public tables, sources in the part's
+    properties) as native parametric bodies: every body is the CAD's own sketches, pads, pockets and revolutions, so the
+    engineer can edit any dimension by hand. Each body carries its catalogue reference, size and source as properties
+    (and they reach the bill of materials). ``kind`` and ``ref`` (the catalogue item number):
+
+    * ``mould_base``: the kit of a 2-plate base, ref ``XPA1012-17-17-35`` (size, A plate code, B plate code, rail code of
+      the catalogue page) or just ``size`` ``1012`` (the catalogue's example plates): nine plates (top clamp, A, B,
+      support, two rails, ejector retainer, ejector, bottom clamp), four leader pins and shoulder bushings, four return
+      pins, the locating ring and the sprue bushing. Base axes: origin at the centre of the parting face, z towards the
+      core (set ``at.axis`` to the pull), x along the base length. Only size 1012 (A-series) is encoded;
+    * ``guide_pin`` (``5104GL``), ``guide_bush`` (``5712``), ``locating_ring`` (``6501``), ``sprue_bush`` (``B0271``),
+      ``ejector_pin`` (``EJP-EHN-030-0160`` or size ``3x160``), ``return_pin`` (``7514``), ``angle_pin`` (``APD1260``),
+      ``wear_plate`` (``SLP0604``): one body per entry of ``at`` (none: one at the origin along Z).
+
+    A reference or size that is not in the tables is refused with what is. The step's intent always ends up carrying the
+    component and where it goes. The first body is the step's own; the others are labelled ``<step>_<role>``."""
+
+    op: Literal["mould_component"] = "mould_component"
+    kind: MouldKind
+    ref: str | None = None
+    size: str | None = None
+    at: tuple[MouldPlacement, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _intent_carries_the_component(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or data.get("kind") is None:
+            return data
+        if isinstance(data.get("at"), dict):
+            data = {**data, "at": [data["at"]]}
+        intent = data.get("intent")
+        if not isinstance(intent, str) or not intent.strip():
+            return data
+        try:
+            note = _component_note(data)
+        except (TypeError, ValueError, AttributeError):
+            return data
+        return data if note in intent else {**data, "intent": f"{intent.rstrip()} [{note}]"}
+
+    @model_validator(mode="after")
+    def _in_the_catalogue(self) -> "MouldComponentOperation":
+        from cotaforge import mouldparts  # noqa: PLC0415 - the tables are only read when a step names a component
+
+        places = [mouldparts.Placement() for _ in self.at]
+        try:
+            mouldparts.expand(self.kind, self.ref, self.size, places)
+        except mouldparts.ComponentError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
+
+
+def _slide_note(data: dict[str, Any]) -> str:
+    stroke = data.get("stroke_mm")
+    stroke_text = (
+        f"stroke {float(stroke):g} mm"
+        if stroke is not None
+        else f"stroke = undercut depth + {float(data.get('clearance_mm', 2.0)):g} mm"
+    )
+    return (
+        f"slide mechanism: slide {data.get('slide')} of {data.get('split')}, angle pin {float(data['angle_deg']):g} deg, "
+        f"locking heel +{float(data.get('wedge_extra_deg', 2.0)):g} deg, {stroke_text}, "
+        f"pin dia {float(data.get('pin_diameter_mm', 12.0)):g} mm"
+    )
+
+
+class SlideMechanismOperation(OperationBase):
+    """Add the mechanism of one slide that a ``mould_split`` step made (``split`` is that step, ``slide`` the region
+    number its report lists): a carrier behind the forming insert with a T-groove on each side and a slanted bore, two
+    T-gibs, a DME metric angle pin leaning ``angle_deg`` from the pull, a locking heel ``wedge_extra_deg`` (2 by default)
+    steeper than the pin, a ball detent that holds the open position and a DME wear plate under the carrier. Every part
+    is a native body positioned relative to the slide. The stroke is the depth the slide must travel to clear ``part``
+    (the shrunk body the split cut) plus ``clearance_mm`` (2), or ``stroke_mm`` when given (it must clear the undercut).
+    The step is REFUSED unless the stroke clears the undercut, the heel is steeper than the pin, the angle pin stays in
+    its bore over the whole stroke and no two parts overlap in the closed or in the open position (the open one is
+    worked out by moving the slide by the stroke and the pin half by the travel the angle pin needs). ``host`` is the
+    mould half the slide rides in (worked out from where the slide lies when omitted). The pockets in the plates and
+    inserts for the mechanism are not cut. The step's intent always ends up carrying the numbers."""
+
+    op: Literal["slide_mechanism"] = "slide_mechanism"
+    split: OpId
+    slide: int = Field(ge=1)
+    part: BodyRef
+    pull: AxisName | Vec3 = AxisName.Z
+    angle_deg: float = Field(gt=0, lt=45, allow_inf_nan=False)
+    stroke_mm: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    clearance_mm: float = Field(default=2.0, ge=0, allow_inf_nan=False)
+    wedge_extra_deg: float = Field(default=2.0, gt=0, le=10, allow_inf_nan=False)
+    host: Literal["cavity", "core"] | None = None
+    pin_diameter_mm: float = Field(default=12.0, gt=0, allow_inf_nan=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _intent_carries_the_mechanism(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or data.get("angle_deg") is None:
+            return data
+        intent = data.get("intent")
+        if not isinstance(intent, str) or not intent.strip():
+            return data
+        try:
+            note = _slide_note(data)
+        except (TypeError, ValueError):
+            return data
+        return data if note in intent else {**data, "intent": f"{intent.rstrip()} [{note}]"}
+
+    @model_validator(mode="after")
+    def _wedge_stays_below_the_limit(self) -> "SlideMechanismOperation":
+        if self.angle_deg + self.wedge_extra_deg >= 45:
+            msg = "the heel angle (angle_deg + wedge_extra_deg) must stay under 45 degrees"
+            raise ValueError(msg)
+        return self
 
 
 class SplitOperation(OperationBase):
@@ -725,6 +1105,10 @@ OP_NAMES: frozenset[str] = frozenset(
         "draft",
         "mirror",
         "mirror_body",
+        "shrink_body",
+        "mould_split",
+        "mould_component",
+        "slide_mechanism",
         "split",
         "base_flange",
         "edge_flange",
@@ -775,6 +1159,10 @@ OP_CATEGORY: dict[str, OpCategory] = {
     "rotate": "multibody",
     "copy_body": "multibody",
     "mirror_body": "multibody",
+    "shrink_body": "multibody",
+    "mould_split": "multibody",
+    "mould_component": "multibody",
+    "slide_mechanism": "multibody",
     "split": "multibody",
     # sheet_metal: only offered by a CAD that has the sheet-metal capability (a bent part, its flat pattern).
     "base_flange": "sheet_metal",
@@ -819,6 +1207,10 @@ Operation = Annotated[
     | DraftOperation
     | MirrorOperation
     | MirrorBodyOperation
+    | ShrinkBodyOperation
+    | MouldSplitOperation
+    | MouldComponentOperation
+    | SlideMechanismOperation
     | SplitOperation
     | BaseFlangeOperation
     | EdgeFlangeOperation

@@ -15,8 +15,10 @@ the same for both items because both read the same ``Assembly``.
 
 import math
 import textwrap
+from collections.abc import Sequence
 from typing import Any
 
+import sheet_weights as sw
 from items_attach import _point_segment, _segment_distance, _segment_hits_rect
 from items_views import room_ok
 from sheet_context import (
@@ -32,8 +34,10 @@ from sheet_context import (
     v_enum,
     v_str,
 )
-from sheet_layout import FRAME_MARGIN_MM, TITLE_BLOCK_TOP_MM
-from sheet_model import DIMENSIONS, TEXT, TITLE_BLOCK, Circle, Entity, Line, Solid, Text
+from sheet_layout import FRAME_MARGIN_MM, TITLE_BLOCK_TOP_MM, TITLE_BLOCK_WIDTH_MM
+from sheet_marks import NativeBalloon, NativeTable
+from sheet_model import DIMENSIONS, TEXT, TITLE_BLOCK, Circle, Entity, Line, Solid, Text, text_width
+from sheet_units import TEXT_SLACK
 
 # --- the parts list -----------------------------------------------------------------------------------------------------
 
@@ -42,6 +46,11 @@ HEADERS = {
     "es": ("Pos.", "Cant.", "Denominación", "Nº de plano / Referencia", "Material", "Observaciones"),
     "en": ("Item", "Qty", "Description", "Drawing no. / Reference", "Material", "Remarks"),
 }
+CUT_HEADERS = {  # the cut list of a weldment: what the welder cuts, and the length or blank of each piece
+    "es": ("Pos.", "Cant.", "Designación", "Longitud / medida (mm)", "Material", "Observaciones"),
+    "en": ("Item", "Qty", "Designation", "Length / size (mm)", "Material", "Remarks"),
+}
+UNNAMED = {"es": "(por definir)", "en": "(to define)"}
 CELL_HEIGHT_MM = 3.0
 CHAR_MM = CELL_HEIGHT_MM * 0.6
 LINE_STEP_MM = 3.6
@@ -86,10 +95,12 @@ def check_parts_list(spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def _assembly(ctx: Context, what: str) -> Assembly:
-    if ctx.assembly is None or not ctx.assembly.groups:
-        msg = f"{what} belong to an assembly drawing: this document has no components (insert parts first)"
+    """The things the list and the balloons number: the components of an assembly, or the bodies of a weldment."""
+    found = ctx.assembly if ctx.assembly is not None and ctx.assembly.groups else ctx.weldment
+    if found is None or not found.groups:
+        msg = f"{what} belong to an assembly drawing (or a welded part of several bodies): this document has no components or welded bodies (insert parts, or model the bodies, first)"
         raise ItemError(msg)
-    return ctx.assembly
+    return found
 
 
 def _wrap(text: str, width_mm: float) -> list[str]:
@@ -108,7 +119,7 @@ def rows_of(ctx: Context, spec: dict[str, Any]) -> list[tuple[PartGroup, list[st
         position = assembly.position_of(row["component"])
         if position is None:
             known = ", ".join(assembly.instances())
-            msg = f"{row['component']!r} is not a component of this assembly (its components: {known})"
+            msg = f"{row['component']!r} is not a component or body of this drawing (they are: {known})"
             raise ItemError(msg)
         overrides.setdefault(position, {}).update({k: v for k, v in row.items() if k != "component"})
     out = []
@@ -129,9 +140,12 @@ def draw_parts_list(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
         msg = "the sheet has a parts list already: one list per sheet (change its rows with remove and add)"
         raise ItemError(msg)
     rows = rows_of(ctx, spec)
-    widths = COLUMNS_MM
-    header = HEADERS[ctx.language]
+    welded = ctx.assembly is None and ctx.weldment is not None
+    if welded:  # an empty designation stays visible as a question, never a file or object name
+        rows = [(g, [*cells[:2], cells[2] or UNNAMED[ctx.language], *cells[3:]]) for g, cells in rows]
+    header = (CUT_HEADERS if welded else HEADERS)[ctx.language]
     right = ctx.sheet.width - FRAME_MARGIN_MM
+    widths = fit_widths(ctx, header, [cells for _, cells in rows], right) if welded else COLUMNS_MM
     left = right - sum(widths)
     bottom = TITLE_BLOCK_TOP_MM
     wrapped = [[_wrap(cell, w) for cell, w in zip(cells, widths, strict=True)] for _, cells in rows]
@@ -143,22 +157,100 @@ def draw_parts_list(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     top = edges[-1]
     out: list[Entity] = []
     for index, y in enumerate(edges):
-        out.append(Line(left, y, right, y, TITLE_BLOCK, 0.35 if index in (0, 1, len(edges) - 1) else 0.25))
+        out.append(Line(left, y, right, y, TITLE_BLOCK, sw.weight(sw.TITLE_BLOCK if index in (0, 1, len(edges) - 1) else sw.TABLE_GRID)))
     x = left
     for edge in (0.0, *widths):
         x += edge
-        out.append(Line(x, bottom, x, top, TITLE_BLOCK, 0.35 if x in (left, right) else 0.25))
+        out.append(Line(x, bottom, x, top, TITLE_BLOCK, sw.weight(sw.TITLE_BLOCK if x in (left, right) else sw.TABLE_GRID)))
     for cells_lines, (y0, y1) in zip([head_lines, *wrapped], zip(edges, edges[1:], strict=False), strict=True):
         out += _cells(cells_lines, left, y0, y1, widths)
     ctx.add(out)
+    ctx.native(_native_table(spec, header, [cells for _, cells in rows], widths, right, bottom, welded))
     rect: Rect = (left, bottom, right, top)
     ctx.reserve(rect)
-    ctx.extras["parts_list"] = {"rect": rect, "positions": [g.position for g, _ in rows]}
+    ctx.extras["parts_list"] = {
+        "rect": rect,
+        "positions": [g.position for g, _ in rows],
+        "unnamed": [g.position for g, cells in rows if welded and cells[2] == UNNAMED[ctx.language]],
+        "names": {g.position: cells[2] for g, cells in rows if welded and cells[2] != UNNAMED[ctx.language]},
+    }
     ctx.table_bottom = bottom
     note = f"{len(rows)} position(s), {sum(g.quantity for g, _ in rows)} component(s), above the title block"
     if top > ctx.area[3]:
         return "warning", f"{note}; the list is taller than the free area of the sheet: use A3 or fewer positions"
     return "ok", note
+
+
+NATIVE_ROW_MM = 6.0
+NATIVE_TEXT_MM = 3.0
+NATIVE_TEXT_MIN_MM = 1.8
+
+
+def _native_table(
+    spec: dict[str, Any], header: Sequence[str], rows: list[list[str]], widths: tuple[float, ...], right: float, bottom: float, welded: bool
+) -> NativeTable:
+    """The list as TechDraw's own ``DrawViewSpreadsheet`` (ISO 7573 order: the header at the bottom, the positions upward, like
+    the sheet's own table). A spreadsheet cell holds one line, so a text longer than its column is not wrapped: the text of the
+    whole table is set as small as the longest text asks (never below ``NATIVE_TEXT_MIN_MM``)."""
+    ordered = (*reversed([tuple(r) for r in rows]), tuple(header))
+    size = NATIVE_TEXT_MM
+    for column, width in enumerate(widths):
+        longest = max(text_width(r[column], 1.0) for r in ordered)
+        if longest > 0:
+            size = min(size, (width - 2 * CELL_PAD_MM) / (longest * TEXT_SLACK))
+    return NativeTable(
+        str(spec["id"]),
+        "cut_list" if welded else "parts_list",
+        ordered,
+        tuple(widths),
+        tuple(NATIVE_ROW_MM for _ in ordered),
+        right,
+        bottom,
+        max(NATIVE_TEXT_MIN_MM, round(size, 2)),
+    )
+
+
+FIT_MIN_MM = 16.0  # the narrowest a text column gets
+FIT_MAX_MM = 70.0
+GUIDE_CLEAR_MM = 7.0  # the sheet window pulls a symbol whose centre is within 6 mm of a view's origin onto it
+CUT_FIXED_MM = COLUMNS_MM[:2]
+
+
+def _guides_x(ctx: Context) -> list[float]:
+    views = [*ctx.views.values(), *ctx.extras.get("views_extra", {}).values()]
+    return [v.x for v in views]
+
+
+def fit_widths(ctx: Context, header: Sequence[str], rows: list[list[str]], right: float) -> tuple[float, ...]:
+    """The columns of a cut list: the two narrow ones as always, the four text ones as wide as their longest text (headers
+    included) up to ``FIT_MAX_MM``, all of it never wider than the title block (what is left over wraps). The right edge stays
+    on the frame; if the centre of the table would sit where the sheet window snaps a symbol onto a view's origin, the
+    designation column takes a few millimetres more (the table grows to the left) so the centre is clear of it."""
+    texts = [[header[c], *(r[c] for r in rows)] for c in range(2, 6)]
+    wanted = [
+        min(FIT_MAX_MM, max(FIT_MIN_MM, max(text_width(t, CELL_HEIGHT_MM) for t in col) * TEXT_SLACK + 2 * CELL_PAD_MM + 1.0))
+        for col in texts
+    ]
+    room = TITLE_BLOCK_WIDTH_MM - sum(CUT_FIXED_MM)
+    if sum(wanted) > room:  # shrink the longest ones first, the rest keep what they need
+        wanted = _shrink(wanted, room)
+    widths = [*CUT_FIXED_MM, *wanted]
+    guides = _guides_x(ctx)
+    grow = 0.0
+    while grow < TITLE_BLOCK_WIDTH_MM - sum(widths) and any(abs(right - (sum(widths) + grow) / 2 - g) <= GUIDE_CLEAR_MM for g in guides):
+        grow += 1.0
+    widths[2] += grow
+    return tuple(widths)
+
+
+def _shrink(wanted: list[float], room: float) -> list[float]:
+    out = list(wanted)
+    while sum(out) > room + 1e-9:
+        biggest = max(range(len(out)), key=lambda i: out[i])
+        if out[biggest] <= FIT_MIN_MM:
+            break
+        out[biggest] = max(FIT_MIN_MM, out[biggest] - min(1.0, sum(out) - room))
+    return out
 
 
 def _row_height(cells: list[list[str]]) -> float:
@@ -194,9 +286,19 @@ LEADER_CLEAR_MM = 1.2
 DOT_CLEAR_MM = 2.0
 MARGIN_PAGE_MM = 2.5  # the same instance all round the dot, on the sheet
 BALLOON_VIEWS = ("front", "top", "right", "isometric", "exploded")
+NATIVE_VIEWS = ("front", "top", "right", "isometric")  # the views that are TechDraw's own (a balloon hangs on one)
 SIDES = ("above", "below", "left", "right")
 
-BALLOON_CHECKS = {"view": v_enum(*BALLOON_VIEWS), "side": v_enum(*SIDES)}
+SPREAD_MARGIN = 0.05  # a later view takes a position only when it shows this much more of its part
+
+
+def v_positions(value: Any) -> list[int]:
+    if not isinstance(value, list) or not value or not all(isinstance(n, int) and not isinstance(n, bool) and n > 0 for n in value):
+        raise ValueError("positions is a list of position numbers of the parts list, like [1, 3]")
+    return value
+
+
+BALLOON_CHECKS = {"view": v_enum(*BALLOON_VIEWS), "side": v_enum(*SIDES), "positions": v_positions}
 
 
 def check_balloons(spec: dict[str, Any]) -> dict[str, Any]:
@@ -334,10 +436,29 @@ def place_balloons(
     return placed, failed, crossing
 
 
-def _view_name(ctx: Context, spec: dict[str, Any]) -> str:
-    if spec.get("view"):
-        return spec["view"]
-    return "exploded" if "exploded" in ctx.extras.get("views_extra", {}) else "front"
+def _view_names(ctx: Context) -> list[str]:
+    """The views of the sheet a balloon can hang on, the standard ones first (a tie goes to them, not to the isometric)."""
+    extra = ctx.extras.get("views_extra", {})
+    return [n for n in NATIVE_VIEWS if n in ctx.views or n in extra]
+
+
+def spread(ctx: Context, assembly: Assembly, names: list[str]) -> dict[str, set[int]]:
+    """Each position on ONE view: the one that shows most of its part (the owner's practice: balloons spread over all the
+    views, never all on the isometric). A view later in ``names`` takes a position only when it shows clearly more of it."""
+    best: dict[int, tuple[float, str]] = {}
+    for name in names:
+        view = ctx.any_view(name)
+        shown, _ = visible_dots(ctx, assembly, view, {})
+        pointed = {n: first for n, (first, _) in shown.items()}
+        shares = ctx.geometry.visible_share(list(pointed.values()), (view.centre, view.xdir, view.direction), {}) if pointed else {}
+        for number, instance in pointed.items():
+            share = float(shares.get(instance, 0.0))
+            if number not in best or share > best[number][0] + SPREAD_MARGIN:
+                best[number] = (share, name)
+    out: dict[str, set[int]] = {}
+    for number, (_, name) in best.items():
+        out.setdefault(name, set()).add(number)
+    return out
 
 
 def visible_dots(
@@ -348,7 +469,7 @@ def visible_dots(
     frame = (view.centre, view.xdir, view.direction)
     margin = MARGIN_PAGE_MM / view.scale
     pending = {g.position: list(g.instances) for g in assembly.groups}
-    names = {g.position: g.name for g in assembly.groups}
+    names = {g.position: g.label for g in assembly.groups}
     shown: dict[int, tuple[str, Point]] = {}
     while pending:
         batch = [instances[0] for instances in pending.values()]
@@ -368,26 +489,54 @@ def visible_dots(
 
 def draw_balloons(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     assembly = _assembly(ctx, "the balloons")
-    name = _view_name(ctx, spec)
-    view = ctx.any_view(name)
-    offsets = ctx.extras.get("explosion", {}).get("offsets", {}) if name == "exploded" else {}
-    shown, hidden = visible_dots(ctx, assembly, view, offsets)
-    dots = {n: p for n, (_, p) in shown.items()}
-    placed, failed, crossing = place_balloons(ctx, view, dots, spec.get("side"))
-    entities: list[Entity] = []
-    for number, centre in placed.items():
-        entities += _balloon(centre, dots[number], str(number))
-    ctx.add(entities)
+    only = set(spec["positions"]) if spec.get("positions") else None
+    plan: dict[str, set[int] | None]
+    if spec.get("view"):
+        plan = {spec["view"]: only}
+    elif "exploded" in ctx.extras.get("views_extra", {}):
+        plan = {"exploded": only}  # an exploded view shows every part apart: it carries them all
+    else:
+        names = _view_names(ctx) or ["front"]
+        plan = dict(spread(ctx, assembly, names)) or {names[0]: only}
+        if only is not None:
+            plan = {name: wanted & only for name, wanted in plan.items() if wanted and wanted & only}
     book = ctx.extras.setdefault("balloons", {"drawn": set(), "hidden": {}, "view": {}})
-    book["drawn"] |= set(placed)
-    book["hidden"].update({n: (w, name) for n, w in hidden.items()})
-    for number in placed:
-        book["view"][number] = name
+    labels = {g.position: g.label for g in assembly.groups}
+    done: list[str] = []
+    failed: list[int] = []
+    crossing: list[int] = []
+    total: set[int] = set()
+    entities: list[Entity] = []
+    for name, wanted in plan.items():
+        view = ctx.any_view(name)
+        offsets = ctx.extras.get("explosion", {}).get("offsets", {}) if name == "exploded" else {}
+        shown, _ = visible_dots(ctx, assembly, view, offsets)
+        shown = {n: found for n, found in shown.items() if wanted is None or n in wanted}
+        dots = {n: p for n, (_, p) in shown.items()}
+        placed, missed, crossed = place_balloons(ctx, view, dots, spec.get("side"))
+        for number, centre in placed.items():
+            entities += _balloon(centre, dots[number], str(number))
+            if name in NATIVE_VIEWS:  # TechDraw's own balloon on its view (the entities are the headless sheet)
+                ctx.native(NativeBalloon(str(spec["id"]), name, str(number), centre, dots[number]))
+            book["view"][number] = name
+        pointed = {n: first for n, (first, _) in shown.items()}
+        shares = ctx.geometry.visible_share(list(pointed.values()), (view.centre, view.xdir, view.direction), offsets) if pointed else {}
+        book.setdefault("share", {}).update({n: shares[i] for n, i in pointed.items() if i in shares})  # how much of each part the view shows
+        total |= set(placed)
+        failed += missed
+        crossing += crossed
+        done.append(f"{len(placed)} in the {name} view")
+    ctx.add(entities)
+    book["drawn"] |= total
+    asked = set(labels) if only is None else only & set(labels)
+    hidden = {n: labels[n] for n in sorted(asked - total - set(failed))}
+    where = ", ".join(plan)
+    book["hidden"].update({n: (w, where) for n, w in hidden.items()})
     problems = []
     if hidden:
-        listed = ", ".join(f"{n} ({w})" for n, w in sorted(hidden.items()))
+        listed = ", ".join(f"{n} ({w})" for n, w in hidden.items())
         problems.append(
-            f"no balloon for position(s) {listed}: the {name} view shows no instance of them; choose a view that does"
+            f"no balloon for position(s) {listed}: the {where} view shows no instance of them; choose a view that does"
         )
     if failed:
         problems.append(
@@ -398,7 +547,7 @@ def draw_balloons(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
             f"the leader of position(s) {', '.join(str(n) for n in sorted(crossing))} crosses a dimension or a text: "
             "no cleaner place was free (side= or another view may help)"
         )
-    detail = f"{len(placed)} balloon(s) in the {name} view"
+    detail = f"{len(total)} balloon(s) in the {where} view" if len(plan) == 1 else f"{len(total)} balloon(s): " + ", ".join(done)
     if problems:
         return "warning", f"{detail}; " + "; ".join(problems)
     return "ok", detail

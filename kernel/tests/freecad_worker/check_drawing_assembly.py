@@ -30,8 +30,8 @@ def _block(name: str, width: float, depth: float, height: float, material: str |
     new_document(name)
     sk = sketch(f"{name}_sk", "XY", [rect("outline", (width / 2, depth / 2), width, depth)])
     extrude(f"{name}_ex", sk, height)
-    if material:
-        call("set_design_attributes", op("mat", material=material))
+    # the parts list prints the designation the designer gave (doc set_title), never the document or file name
+    call("set_design_attributes", op("attrs", title=name, **({"material": material} if material else {})))
     return linkable({"handle": {"id": _rec().id}})
 
 
@@ -44,6 +44,7 @@ def _imported_shaft(tmp: str) -> dict[str, Any]:
     Import.export([obj], path)
     App.closeDocument(maker.Name)
     call("import_geometry", op("imp", path=path, name="eje_d10.step"))
+    call("set_design_attributes", op("attrs", title="eje_d10"))
     return linkable({"handle": {"id": _rec().id}})
 
 

@@ -6,10 +6,10 @@ page position (``at_mm``). A revision is a row of the revision table in the titl
 the last five revisions show) and sets the ``revision_index`` field to the latest one.
 """
 
+import re
 import textwrap
 from typing import Any
 
-import iso286
 from sheet_context import (
     SECTION_LABEL,
     Context,
@@ -20,8 +20,9 @@ from sheet_context import (
     v_point2,
     v_str,
 )
-from sheet_model import TEXT, Text, text_width
-from sheet_units import NativeNote
+from sheet_marks import NativeRevisionMark
+from sheet_model import DIMENSIONS, TEXT, TEXT_HEIGHT_MM, Polyline, Text, text_width
+from sheet_units import NativeDim, NativeNote
 
 NOTE_CHARS = 70  # a note longer than this wraps
 VIEW_NOTE_CHARS = 40  # a note that belongs to a view is a short block under it
@@ -29,7 +30,7 @@ LINE_STEP_MM = 5.0
 NOTE_HEIGHT = 3.5
 BLOCK_MARGIN_MM = 2.0
 
-AUTO_NOTES = ("thickness", "iso286")  # the notes the sheet writes by itself (``drawing`` adds and takes them off)
+AUTO_NOTES = ("thickness",)  # the notes the sheet writes by itself (``drawing`` adds and takes them off)
 
 
 def _v_section(value: Any) -> str:
@@ -40,13 +41,28 @@ def _v_section(value: Any) -> str:
 
 
 NOTE_CHECKS = {"text": v_str(240), "at_mm": v_point2, "auto": v_enum(*AUTO_NOTES), "view": _v_section}
-REVISION_CHECKS = {"index": v_str(4), "description": v_str(80), "date": v_str(12), "by": v_str(12)}
+MAX_REVISION_MARKS = 6
+ITEM_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,23}(?::\d{1,5}(?:\.\d{1,4})?)?$")
+"""An item id, optionally with ``:<value>`` (``hd:11``): the value the changed dimension states, to pick it among the several
+dimensions one item may have (a callout per group of holes)."""
+MARK_W_MM, MARK_H_MM = 11.5263 * 0.6, 10.25 * 0.6  # FreeCAD's revision triangle at the scale the sheet gives it
+
+
+def _v_item_ids(value: Any) -> list[str]:
+    items = value if isinstance(value, list | tuple) else [value]
+    if not items or len(items) > MAX_REVISION_MARKS or any(not isinstance(i, str) or not ITEM_ID_RE.match(i) for i in items):
+        msg = f"must be the id of the changed dimension item, or a list of at most {MAX_REVISION_MARKS}"
+        raise ItemError(msg)
+    return [str(i) for i in items]
+
+
+REVISION_CHECKS = {"index": v_str(4), "description": v_str(80), "date": v_str(12), "by": v_str(12), "at": _v_item_ids}
 
 
 def check_note(spec: dict[str, Any]) -> dict[str, Any]:
     out = check_fields(spec, NOTE_CHECKS)
     if "auto" in out and ("text" in out or "at_mm" in out or "view" in out):
-        msg = "auto is a note the sheet writes itself (thickness, iso286): it takes no text, no at_mm and no view"
+        msg = "auto is a note the sheet writes itself (thickness): it takes no text, no at_mm and no view"
         raise ItemError(msg)
     if "view" in out and "at_mm" in out:
         msg = "a note on a view goes under it: give view or at_mm, not both"
@@ -57,26 +73,86 @@ def check_note(spec: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+TITLE_BLOCK_NOTES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("part_material", re.compile(r"^\s*(?:material|mat\.)\s*[:=\-–]\s*(?P<value>\S.*)$", re.I | re.S)),
+    (
+        "general_tolerances",
+        re.compile(
+            r"^\s*(?:tolerancias?\s+generales?|general\s+tolerances?)\s*[:=\-–]?\s*(?P<value>\S.*)$", re.I | re.S
+        ),
+    ),
+    ("scale", re.compile(r"^\s*(?:escala|scale)\s*[:=]\s*(?P<value>\d+\s*[:/]\s*\d+)\s*$", re.I)),
+    (
+        "drawing_number",
+        re.compile(r"^\s*(?:n[uú]mero\s+de\s+plano|n[º°]\s*de\s+plano|drawing\s+(?:number|no\.?))\s*[:=\-–]\s*(?P<value>\S.*)$", re.I | re.S),
+    ),
+    ("creator", re.compile(r"^\s*(?:dibuj[oó]|dibujado\s+por|drawn\s+by)\s*[:=\-–]\s*(?P<value>\S.*)$", re.I | re.S)),
+    ("approval_person", re.compile(r"^\s*(?:aprob[oó]|aprobado\s+por|approved\s+by)\s*[:=\-–]\s*(?P<value>\S.*)$", re.I | re.S)),
+    ("legal_owner_1", re.compile(r"^\s*(?:empresa|company)\s*[:=\-–]\s*(?P<value>\S.*)$", re.I | re.S)),
+)
+"""A datum the title block has a field for never goes into the notes: the note that states it is the field."""
+
+
+def route_title_block_notes(
+    requested: list[Any], field_names: set[str], fields: dict[str, str], assembly: bool = False, current: dict[str, str] | None = None
+) -> tuple[list[Any], list[str]]:
+    """Take out of ``requested`` the free notes that state a datum the title block has a field for (the material, the general
+    tolerances, the scale) and put the datum in that field (``fields``, the sheet's own texts): the engineer reads and edits it
+    where a drawing has it and the notes block does not repeat it. A note on a view or at a place stays a note, and so does one
+    that says something else than what the title block already says (``current``: what each field shows now): the review then
+    reports the difference for the engineer to settle; nothing declared is overwritten. Returns the items left and what was
+    moved, for the agent."""
+    shown = current or {}
+    kept: list[Any] = []
+    moved: list[str] = []
+    for raw in requested:
+        free = isinstance(raw, dict) and raw.get("type") == "note" and "at_mm" not in raw and "view" not in raw
+        text = str(raw.get("text", "")) if free else ""
+        hit = next(((f, m) for f, p in TITLE_BLOCK_NOTES if f in field_names and (m := p.match(text))), None)
+        if hit is None or (hit[0] == "part_material" and assembly):
+            kept.append(raw)
+            continue
+        field, found = hit
+        if field == "scale":
+            moved.append("the scale is written by the sheet in the title block: that note was not added")
+            continue
+        value = " ".join(found.group("value").split())
+        there = " ".join(str(shown.get(field, "")).split())
+        if there and there.casefold() != value.casefold():
+            kept.append(raw)  # it contradicts the title block: it stays, and the review says so
+            continue
+        fields[field] = value
+        moved.append(f"{field} ({value}) is in its field of the title block, so it is not a note")
+    return kept, moved
+
+
 def note_text(ctx: Context, spec: dict[str, Any]) -> str:
     """What a note says: its text, or -- for the notes the sheet writes itself -- the thickness of a part drawn in ONE view
-    (measured on the model, along the way that view looks) or the ISO 286 transcription note."""
+    (measured on the model, along the way that view looks)."""
     kind = spec.get("auto")
     if kind is None:
         return str(spec["text"])
-    if kind == "iso286":
-        return iso286.TRANSCRIPTION_NOTE["es" if ctx.language == "es" else "en"]
     extent = ctx.extras.get("extent_mm")
     if extent is None or not ctx.views:
         msg = "the thickness is measured on the part: the sheet has no part geometry here"
         raise ItemError(msg)
     view = next(iter(ctx.views.values()))
     thickness = sum(abs(a) * e for a, e in zip(view.direction, extent, strict=True))
-    return ctx.say(f"{ctx.num(round(thickness, 2))} de espesor", f"{ctx.num(round(thickness, 2))} thick")
+    return ctx.say(f"Espesor {ctx.num(round(thickness, 2))}", f"Thickness {ctx.num(round(thickness, 2))}")
+
+
+THICKNESS_NOTE = re.compile(r"\b(?:espesor|thickness)\b\s*[:=]?\s*\d", re.IGNORECASE)
+
+
+def states_thickness(text: str) -> bool:
+    """Whether a note says the thickness itself (``Espesor 19 mm``): the sheet's own thickness note is then left out, never
+    repeated."""
+    return THICKNESS_NOTE.search(text) is not None
 
 
 def _rank(spec: dict[str, Any]) -> int:
-    """The order of the numbered notes: the part's thickness first, then the engineer's, the ISO 286 footnote last."""
-    return {"thickness": 0, "iso286": 2}.get(str(spec.get("auto")), 1)
+    """The order of the numbered notes: the part's thickness first, then the engineer's."""
+    return {"thickness": 0}.get(str(spec.get("auto")), 1)
 
 
 def check_revision(spec: dict[str, Any]) -> dict[str, Any]:
@@ -119,11 +195,13 @@ def _block_x(ctx: Context, left: float, low: float, total: int) -> float:
     """Where the numbered block stands: at the left of the drawing area, or -- when dimensions already took that room --
     the first place to the right that is free (the block moves as a whole)."""
     width = ctx.extras["note_width"]
-    x = left + BLOCK_MARGIN_MM
-    while x + width < ctx.area[2]:
-        if ctx.free((x, low, x + width, low + BLOCK_MARGIN_MM + (total + 1) * LINE_STEP_MM)):
-            return x
-        x += BLOCK_STEP_MM
+    top = low + BLOCK_MARGIN_MM + (total + 1) * LINE_STEP_MM
+    for clear in (TEXT_HEIGHT_MM, 0.0):  # a text height off the dimensions first (the block moves as a whole), else any free place
+        x = left + BLOCK_MARGIN_MM
+        while x + width < ctx.area[2]:
+            if ctx.free((x - clear, low - clear, x + width + clear, top + clear)):
+                return x
+            x += BLOCK_STEP_MM
     return left + BLOCK_MARGIN_MM
 
 
@@ -213,10 +291,53 @@ def draw_revision(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     shown = ctx.revisions[-5:]
     if not any(r["index"] == spec["index"] for r in shown):
         return "warning", f"revision {spec['index']} is not shown: the title block has room for the last 5 revisions"
-    return "ok", f"revision {spec['index']} in the revision table"
+    marked = [_mark_at(ctx, str(spec["index"]), str(target)) for target in spec.get("at", [])]
+    missing = [t for t, done in zip(spec.get("at", []), marked, strict=True) if not done]
+    if missing:
+        return "warning", (
+            f"revision {spec['index']} in the revision table, but no marker next to {', '.join(missing)}: "
+            "no dimension of that id is on the sheet (or no free place beside it)"
+        )
+    where = f", marked at {', '.join(spec['at'])}" if spec.get("at") else ""
+    return "ok", f"revision {spec['index']} in the revision table{where}"
+
+
+def _mark_at(ctx: Context, letter: str, target: str) -> bool:
+    """Put FreeCAD's revision triangle with ``letter`` beside the dimension of item ``target``: the first free place right,
+    left, above or below the room its text and line take. False: there is no such dimension, or no place."""
+    target, _, stated = target.partition(":")
+    dims = [n for n in ctx.extras.get("natives", {}).get(target, []) if isinstance(n, NativeDim) and n.rect is not None]
+    if not dims:
+        return False
+    if stated and len(dims) > 1:  # the dimension of the item that states the changed value (a hole's callout may measure its radius)
+        value = float(stated)
+        dims.sort(key=lambda d: min(abs((d.expected or 0.0) - value), abs(2 * (d.expected or 0.0) - value)))
+    rect = dims[0].rect
+    assert rect is not None
+    xm, ym = (rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2
+    half_w, half_h = MARK_W_MM / 2, MARK_H_MM / 2
+    for cx, cy in (
+        (rect[2] + 1.5 + half_w, ym),
+        (rect[0] - 1.5 - half_w, ym),
+        (xm, rect[3] + 1.5 + half_h),
+        (xm, rect[1] - 1.5 - half_h),
+    ):
+        box = (cx - half_w, cy - half_h, cx + half_w, cy + half_h)
+        if ctx.free(box) and ctx.inside(box):
+            ctx.reserve(box)
+            ctx.native(NativeRevisionMark(str(ctx.extras["current"]), letter, (cx, cy)))
+            # the same triangle as ink, for the sheet written without a window (a sheet with its native objects drops it)
+            ctx.add(
+                [
+                    Polyline(((cx - half_w, cy - half_h), (cx + half_w, cy - half_h), (cx, cy + half_h)), DIMENSIONS, closed=True),
+                    Text(cx, cy - half_h + 0.8, letter, 2.5, TEXT, "center"),
+                ]
+            )
+            return True
+    return False
 
 
 ITEMS = (
-    ItemType("note", "n", check_note, draw_note, frozenset(NOTE_CHECKS), prepare_notes, phase=2),
+    ItemType("note", "n", check_note, draw_note, frozenset(NOTE_CHECKS), prepare_notes, phase=4),
     ItemType("revision", "r", check_revision, draw_revision, frozenset(REVISION_CHECKS), prepare_revisions, phase=2),
 )

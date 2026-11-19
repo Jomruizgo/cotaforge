@@ -55,7 +55,7 @@ async def test_the_manufacturer_review_gates_the_export(workspace: Path, tmp_pat
     lines: list[str] = []
     async with running_server(workspace, visible=True) as (cad, _):
         await clean_plate_sheet(cad)
-        await cad.ok("memory", action="brief", drawing_review="fabricante", text="Ana: que la revise el fabricante")
+        await cad.ok("memory", action="brief", drawing_review="fabricante", text=cad.says("que la revise el fabricante"))
         listing = await cad.ok("drawing", action="list")
         assert "printed on the sheet" in listing and "Material: AISI 1045" in listing  # what the manufacturer reads
         await close_findings(cad)  # the CAD's own findings hold the export in every mode but ninguno
@@ -129,7 +129,7 @@ async def test_the_engineer_chooses_or_the_manufacturer_is_assumed(workspace: Pa
 
         assert "nobody has been asked who reviews" in await cad.err("export", action="pdf", path="a.pdf")
         asked = await cad.ok("drawing", action="request_review", sheet="Drawing")
-        assert "¿Revisas tú la hoja Drawing o la revisa el agente fabricante?" in asked and "sleep 0" in asked
+        assert "¿Revisas tú la hoja Drawing o la revisa el agente fabricante?" in asked and 'drawing(action="wait_review", sheet="Drawing")' in asked
         # no answer from the engineer and no wait: the manufacturer is assumed
         assumed = await cad.err("export", action="pdf", path="a.pdf")
         assert "the engineer did not choose within 0 min: the manufacturer review counts" in assumed
@@ -150,26 +150,59 @@ async def test_the_engineer_chooses_or_the_manufacturer_is_assumed(workspace: Pa
             action="review_report",
             sheet="Drawing",
             by="engineer",
+            reason=cad.says("Falta el número de plano"),
             items=[
                 {"kind": "other", "where": "rótulo", "text": "Falta el número de plano", "fix": "Llenar drawing_number"}
             ],
         )
-        assert ids(recorded, "ing") == ["ing2.1"]
-        assert "ing2.1" in await cad.err("export", action="pdf", path="b.pdf")
-        await cad.ok("drawing", action="answer", id="ing2.1", text="applies: puse el número de plano en el rótulo")
+        assert ids(recorded, "eng") == ["eng2.1"]
+        assert "eng2.1" in await cad.err("export", action="pdf", path="b.pdf")
+        await cad.ok("drawing", action="answer", id="eng2.1", text="applies: puse el número de plano en el rótulo")
         await cad.ok("export", action="pdf", path="b.pdf")
         assert (workspace / "b.pdf").read_bytes().startswith(b"%PDF")
+
+
+async def test_a_long_report_of_the_engineer_goes_in_two_pieces_and_the_gate_sees_every_remark(workspace: Path) -> None:
+    """Nine remarks do not fit in one dialog (1500 characters): the first call replaces his report, the next adds to it."""
+    async with running_server(workspace, visible=True) as (cad, _):
+        await clean_plate_sheet(cad)
+        await cad.ok("memory", action="brief", drawing_review="engineer", text=cad.says("lo reviso yo"))
+        await close_findings(cad)
+        remarks = [
+            {
+                "kind": "missing",
+                "where": f"vista superior {n}",
+                "text": f"Punto {n}: " + "falta la cota funcional de esta zona y su tolerancia. " * 3 + f"fin{n}",
+            }
+            for n in range(1, 10)
+        ]
+        refused = await cad.err("drawing", action="review_report", sheet="Drawing", by="engineer", items=remarks, reason=cad.says("mis nueve observaciones"))
+        assert "too long" in refused and "append=true" in refused
+        first = await cad.ok("drawing", action="review_report", sheet="Drawing", by="engineer", items=remarks[:5], reason=cad.says("las cinco primeras"))
+        assert ids(first, "eng") == [f"eng1.{n}" for n in range(1, 6)]
+        last = await cad.ok("drawing", action="review_report", sheet="Drawing", by="engineer", items=remarks[5:], append=True, reason=cad.says("las cuatro últimas"))
+        assert ids(last, "eng")[-1] == "eng1.9" and "9 remark(s)" in last and "this call added 4" in last
+        blocked = await cad.err("export", action="pdf", path="largo.pdf")
+        assert all(f"eng1.{n}" in blocked for n in range(1, 10))  # the gate sees all nine, the last piece too
+        listed = await cad.ok("drawing", action="review")
+        assert "engineer report 1" in listed and "9 remark(s)" in listed
+        for n in range(1, 10):
+            await cad.ok("drawing", action="answer", id=f"eng1.{n}", text="applies: puse la cota funcional y su tolerancia")
+        await cad.ok("export", action="pdf", path="largo.pdf")
+        assert (workspace / "largo.pdf").read_bytes().startswith(b"%PDF")
+        again = await cad.ok("drawing", action="review_report", sheet="Drawing", by="engineer", items=remarks[:1], reason=cad.says("una sola"))
+        assert ids(again, "eng") == ["eng2.1"]  # no append: a new report, as always
 
 
 async def test_propio_asks_the_agent_and_ninguno_asks_nothing(workspace: Path) -> None:
     async with running_server(workspace, visible=True) as (cad, _):
         await clean_plate_sheet(cad)
-        await cad.ok("memory", action="brief", drawing_review="propio", text="Ana: lo revisa el agente")
+        await cad.ok("memory", action="brief", drawing_review="propio", text=cad.says("lo revisa el agente"))
         review = await cad.ok("drawing", action="review")
-        assert "drawing review mode: propio" in review and "q.callouts" in review and "q.views" not in review
+        assert "drawing review mode: own" in review and "q.callouts" in review and "q.views" not in review
         assert "drawing_unfinished" in await cad.err("export", action="pdf", path="c.pdf")
         await cad.ok(
-            "memory", action="brief", drawing_review="ninguno", text="Ana: sin revisión, es un borrador de prueba"
+            "memory", action="brief", drawing_review="ninguno", text=cad.says("sin revisión, es un borrador de prueba")
         )
         listed = await cad.ok("drawing", action="review")
         assert "export of this sheet is open: the project asks no review" in listed

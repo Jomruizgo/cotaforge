@@ -7,8 +7,9 @@ ISO 286-1:2010 (tolerance grades, clause 4 table) and ISO 286-2:2010 (fundamenta
 they are reproduced in the usual engineering handbooks. The text of the standard was NOT at hand when they were typed:
 they have been checked for internal consistency (the hole deviations are derived from the shaft ones by the standard's
 general and special rules, and the ``DELTA`` column must equal the difference of two neighbouring grades) and against
-the ~30 canonical fits the unit tests list, but not against the printed standard. Until the owner confirms them every
-sheet that uses a fit prints ``TRANSCRIPTION_NOTE`` (set ``SHOW_TRANSCRIPTION_NOTE = False`` to remove it).
+the ~30 canonical fits the unit tests list, but not against the printed standard. The sheet prints the class and the
+limits these tables give for it (``Ø20 H7 (+0,021/0)``) and never a note that tells the shop to verify them: a drawing
+is a statement, not a request to check it.
 
 Size ranges are written "over a up to and including b": a nominal size of exactly 10 mm is in the 6..10 range.
 """
@@ -17,11 +18,6 @@ import bisect
 import re
 
 EDITION = "ISO 286-1:2010 / ISO 286-2:2010"
-SHOW_TRANSCRIPTION_NOTE = True
-TRANSCRIPTION_NOTE = {
-    "es": "Tablas ISO 286 transcritas; verificar contra la norma",
-    "en": "ISO 286 tables transcribed; verify against the standard",
-}
 
 MAX_SIZE_MM = 500.0
 GRADES = (5, 6, 7, 8, 9, 10, 11)  # the grades a fit may use here

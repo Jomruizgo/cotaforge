@@ -10,7 +10,7 @@ ids of the items and features involved.
 Findings: holes and cut features nobody dimensions or calls out, features whose position is not given, a distance given
 twice (an ordinate set plus a chain between the same holes, a chain that closes on the overall size, the same pair twice),
 threads (a threaded hole without its callout, holes whose thread is unknown), datums a GD&T frame cites and no datum item
-defines, items that cannot be drawn (stale ids), and layout (views overlapping each other or the title block, text outside
+defines, a geometric tolerance written as the text of a note instead of a frame, items that cannot be drawn (stale ids), and layout (views overlapping each other or the title block, text outside
 the frame).
 """
 
@@ -20,13 +20,17 @@ from typing import Any
 
 import sheet_callout
 import sheet_checks
+import sheet_isoview
 import sheet_thread
+import sheet_turned
+import sheet_weldrules
 from items_assembly import rows_of
 from items_dims import AXES, _along, coordinate, resolve_ref
 from items_holes import _declared_thread as items_holes_declared
 from items_holes import _select as select_callout_holes
 from items_holes import _stacks
-from sheet_context import Context, HoleInfo, ItemError, ItemResult, Rect
+from sheet_context import Context, HoleInfo, ItemError, ItemResult, Rect, dot, parallel
+from sheet_context import unit as unit_vector
 from sheet_model import TITLE_BLOCK, Sheet, Text, text_width
 
 SAME_MM = 0.1  # two positions are the same
@@ -54,6 +58,8 @@ class FeatureInfo:
     label: str
     faces: list[str]
     edges: list[str] = field(default_factory=list)
+    outline: bool = False
+    """A corner the outline sketch cut (seen whole in the view along the thickness), not a feature of its own."""
 
 
 @dataclass
@@ -74,13 +80,22 @@ def review(data: ReviewInput) -> list[Finding]:
         _feature_dimensions,
         _over_dimensioning,
         _datums,
+        _gdt_as_note,
+        _gdt_location_exact,
+        _gdt_axis_oriented,
         _gdt_located,
         _view_lines,
         _unused_views,
+        _end_view_of_coaxial_part,
         _collisions,
         _layout,
         _assembly_lists,
+        _weldment_lists,
+        _assembly_joints,
         _hidden_instances,
+        _marks_run_over_themselves,
+        _view_labels,
+        _title_block_overflow,
         sheet_checks.checks,  # the finished-drawing list (F6)
     ):
         found += check(data)
@@ -90,7 +105,81 @@ def review(data: ReviewInput) -> list[Finding]:
     import sheet_viewchecks  # noqa: PLC0415 - the three drawing rules of the views and their dimensions
 
     found += sheet_viewchecks.check(data)
-    return sorted(found, key=lambda f: 0 if f.severity == "warning" else 1)
+    return sorted(one_weight_per_defect(found), key=lambda f: 0 if f.severity == "warning" else 1)
+
+
+def one_weight_per_defect(found: list[Finding]) -> list[Finding]:
+    """``found`` without the ``dimension_redundant`` loops that ``over_dimensioned`` already reports. A chain that closes on the
+    overall size (or on the datum ordinates) is one defect: ``over_dimensioned`` holds the export for it, and listing it again
+    as ``dimension_redundant`` (which only warns) would say the same thing with two weights. The loop is the same one when every
+    dimension of the ``over_dimensioned`` finding is among those of the loop (the loop adds the overall that closes it)."""
+    reported = [set(f.items) for f in found if f.code == "over_dimensioned" and f.items]
+    return [f for f in found if not (f.code == "dimension_redundant" and any(r <= set(f.items) for r in reported))]
+
+
+# --- what a shop reader sees at a glance ----------------------------------------------------------------------------------
+
+
+def _marks_run_over_themselves(data: ReviewInput) -> list[Finding]:
+    """A mould mark (opening direction and draft, parting line, zones) whose text is crossed by a line of the same mark: the label of
+    an arrow printed over its shaft, a draft value over its wedge. It cannot be read."""
+    import sheet_pagechecks  # noqa: PLC0415
+    import sheet_units  # noqa: PLC0415
+
+    ctx = data.ctx
+    out: list[Finding] = []
+    for unit in ctx.extras.get("units", []):
+        if getattr(unit, "item_type", "") not in sheet_units.MOULD_ITEMS:
+            continue
+        crossed = sheet_pagechecks.self_overlaps(unit.entities)
+        if crossed:
+            shown = ", ".join(f"«{t}»" for t in crossed[:4])
+            text = ctx.say(
+                f"{unit.key} ({unit.item_type}) tiene texto cruzado por una línea de la misma marca: {shown}. Sepáralos "
+                "(side u offset_mm): así no se lee.",
+                f"{unit.key} ({unit.item_type}) has text crossed by a line of the same mark: {shown}. Separate them "
+                "(side or offset_mm): it cannot be read like that.",
+            )
+            out.append(Finding("mark_overlaps_itself", "warning", text, (unit.key,), key=unit.key))
+    return out
+
+
+def _view_labels(data: ReviewInput) -> list[Finding]:
+    """The label of a view (the scale of the isometric one) stands under its own view: never nearer to another view, where it reads as
+    that view's label."""
+    import sheet_pagechecks  # noqa: PLC0415
+
+    ctx = data.ctx
+    labels = ctx.extras.get("view_labels", {})
+    if not labels:
+        return []
+    boxes = {n: v.box for n, v in {**ctx.views, **ctx.extras.get("views_extra", {}), **ctx.extras.get("sections", {})}.items()}
+    out: list[Finding] = []
+    for name, other, own, near in sheet_pagechecks.label_problems(labels, boxes):
+        text = ctx.say(
+            f"La etiqueta de la vista {name} está a {own} mm de ella y a {near} mm de la vista {other}: se lee como la etiqueta de "
+            f"{other}. Cada etiqueta va bajo su vista, más cerca de ella que de cualquier otra.",
+            f"The label of the {name} view is {own} mm from it and {near} mm from the {other} view: it reads as {other}'s label. "
+            "Each label goes under its own view, nearer to it than to any other.",
+        )
+        out.append(Finding("view_label_ambiguous", "warning", text, (), key=name))
+    return out
+
+
+def _title_block_overflow(data: ReviewInput) -> list[Finding]:
+    """A title-block text wider than its field runs over the next field (TechDraw does not shrink a template text): the value is
+    shortened, or its detail goes to a note the field refers to."""
+    ctx = data.ctx
+    out: list[Finding] = []
+    for name, width, limit in ctx.extras.get("title_overflow", []):
+        text = ctx.say(
+            f"El campo «{name}» del cuadro de rotulación mide {width} mm y su casilla {limit} mm: el texto invade el campo vecino. "
+            "Acorta el valor (o pasa el detalle a una nota y pon en el campo la referencia a ella).",
+            f"The title-block field «{name}» takes {width} mm and its box is {limit} mm: the text runs into the next field. "
+            "Shorten the value (or move the detail to a note and put a reference to it in the field).",
+        )
+        out.append(Finding("title_block_overflow", "warning", text, (), key=name))
+    return out
 
 
 # --- helpers ------------------------------------------------------------------------------------------------------------
@@ -171,28 +260,118 @@ def _unused_views(data: ReviewInput) -> list[Finding]:
         return []
     out: list[Finding] = []
     by_hand = ctx.extras.get("hand_marks", {})  # {view: count} of dimensions / balloons the engineer put on the page
+    stands_for = ctx.extras.get("in_place_views", {})  # a section that stands in the main view: the dimensions on either one
     for name in [*ctx.views, *sections, *extra]:
         if by_hand.get(name) or any(types.get(i) in CARRYING_TYPES for i in use.get(name, ())):
             continue
+        if name in stands_for and any(
+            types.get(i) in CARRYING_TYPES - {"section"} for i in use.get(stands_for[name], ())
+        ):
+            continue
         owner = ctx.extras.get("section_items", {}).get(name, "")
-        if name in sections and owner:
-            how = ctx.say(
-                f"quita su elemento {owner} (drawing action=remove, ids=[{owner}])",
-                f"remove its item {owner} (drawing action=remove, ids=[{owner}])",
-            )
-        else:
-            how = ctx.say(
-                f"quítala (drawing action=remove_view, view={name}) y las demás se reparten el espacio",
-                f"drop it (drawing action=remove_view, view={name}) and the others share the room",
-            )
+        out.append(_view_without_job(ctx, name, name in sections, owner))
+    return out
+
+
+def _coaxial_axis(ctx: Context) -> tuple[float, float, float] | None:
+    """The axis of a part of revolution whose every feature is coaxial and that has something inside (a washer, a bush, a
+    stepped ring, a hollow spacer): one axial section in the main view says it all; ``None`` for any other part."""
+    if ctx.assembly is not None or ctx.weldment is not None or ctx.geometry is None:
+        return None
+    found = ctx.geometry.round_extent()
+    features = ctx.geometry.axial_features() if found is not None else None
+    if found is None or features is None or not sheet_turned.section_only(*features):
+        return None
+    return found[0]
+
+
+def _end_view_of_coaxial_part(data: ReviewInput) -> list[Finding]:
+    """An end view on a part whose features are all coaxial that DOES carry dimensions: the circles it dimensions are the
+    diameters the section gives (``view_adds_nothing``, like the one that carries nothing: ``_unused_views``)."""
+    ctx = data.ctx
+    axis = _coaxial_axis(ctx)
+    if axis is None:
+        return []
+    types = {str(s["id"]): str(s.get("type")) for s in data.items}
+    use = ctx.extras.get("view_use", {})
+    by_hand = ctx.extras.get("hand_marks", {})
+    out: list[Finding] = []
+    for name, view in ctx.views.items():
+        carried = by_hand.get(name) or any(types.get(i) in CARRYING_TYPES for i in use.get(name, ()))
+        if view.derived or not view.looks_along(axis) or not carried:
+            continue  # one that carries nothing is the other check's
+        out.append(Finding("view_adds_nothing", "warning", _coaxial_text(ctx, name), (name,)))
+    return out
+
+
+def _coaxial_text(ctx: Context, name: str) -> str:
+    how = ctx.say(
+        f"quítala (drawing action=remove_view, views=[{name}]) y deja el corte en la vista principal "
+        '(item section holes="axis" in_place=true), que da cada Ø y cada altura',
+        f"drop it (drawing action=remove_view, views=[{name}]) and leave the section in the main view "
+        '(item section holes="axis" in_place=true), which gives every Ø and every height',
+    )
+    return ctx.say(
+        f"La vista {name} es la vista de extremo de una pieza de revolución con todos sus rasgos coaxiales: un solo corte "
+        f"axial más la isométrica la definen entera y la vista de extremo no añade nada ({how}). Solo se queda si enseña "
+        "algo que el corte no enseña; o el ingeniero lo ordena con su razón.",
+        f"The {name} view is the end view of a part of revolution with every feature coaxial: one axial section plus the "
+        f"isometric view define it whole and the end view adds nothing ({how}). It stays only if it shows something the "
+        "section does not; or the engineer orders it with his reason.",
+    )
+
+
+def _view_without_job(ctx: Context, name: str, is_section: bool, owner: str) -> Finding:
+    """The finding for a view that carries nothing (``view_adds_nothing``), worded for the case: the end view of a turned part
+    that only repeats circles the diameters already give, the section of an assembly (which may stay without a dimension only
+    if it shows what the other views do not: how the parts fit, the fits), any other view."""
+    turned = ctx.geometry.round_extent() if ctx.assembly is None and ctx.geometry is not None else None
+    view = ctx.views.get(name)
+    if is_section and owner:
+        how = ctx.say(
+            f"quita su elemento {owner} (drawing(action=\"remove\", items=[\"{owner}\"]); un id que empieza por rq_ pide además reason=)",
+            f"remove its item {owner} (drawing(action=\"remove\", items=[\"{owner}\"]); an id that starts with rq_ also needs reason=)",
+        )
+    else:
+        how = ctx.say(
+            f"quítala (drawing action=remove_view, views=[{name}]) y las demás se reparten el espacio",
+            f"drop it (drawing action=remove_view, views=[{name}]) and the others share the room",
+        )
+    coaxial = _coaxial_axis(ctx)
+    if coaxial is not None and view is not None and not view.derived and view.looks_along(coaxial):
+        text = _coaxial_text(ctx, name)
+    elif turned is not None and view is not None and view.looks_along(turned[0]):
+        text = ctx.say(
+            f"La vista {name} es la vista de extremo de una pieza torneada y no lleva ninguna cota: solo repite círculos que "
+            f"ya dan los Ø y la rosca de la vista principal, que lo lleva todo. {how[0].upper() + how[1:]}. Solo se queda si "
+            "enseña lo que la principal no enseña (un chavetero visto de frente, caras planas, un patrón de agujeros en la "
+            "cara): acótalo entonces; o el ingeniero lo ordena con su razón.",
+            f"The {name} view is the end view of a turned part and carries no dimension: it only repeats circles that the "
+            f"diameters and the thread of the main view already give, and the main view carries everything. {how[0].upper() + how[1:]}. "
+            "It stays only if it shows what the main view does not (a keyway seen end-on, flats, a hole pattern on the face): "
+            "dimension it then; or the engineer orders it with his reason.",
+        )
+    elif is_section and ctx.assembly is not None:
+        text = ctx.say(
+            f"El corte {name} no lleva ninguna cota. En un plano de conjunto un corte solo se queda sin cotas si enseña lo "
+            "que las otras vistas no enseñan: el montaje (cómo encajan las piezas entre sí) o los ajustes. Acota el ajuste o "
+            f"el espesor que muestra, o {how}; si enseña el montaje o los ajustes, el ingeniero lo ordena diciendo qué "
+            "enseña (by=, reason=).",
+            f"Section {name} carries no dimension. In an assembly sheet a section may stay without one only if it shows what "
+            "the other views do not: the assembly (how the parts fit together) or the fits. Dimension the fit or the "
+            f"thickness it shows, or {how}; if it shows the assembly or the fits, the engineer orders it saying what it "
+            "shows (by=, reason=).",
+        )
+    else:
         text = ctx.say(
             f"La vista {name} no lleva ninguna cota, llamada de agujero ni globo: acótala (dim, overall, hole_dim) o {how}. "
-            "Si debe quedarse así, responde con la razón (no aplica: <por qué>).",
+            "Solo se queda sin nada si el ingeniero lo ordena con su razón (by=, reason=): ni «aplica» ni «no aplica» del "
+            "agente la cierran, la vista se arregla o se quita.",
             f"The {name} view carries no dimension, hole callout or balloon: dimension it (dim, overall, hole_dim) or {how}. "
-            "If it must stay as it is, answer with the reason (not_applies: <why>).",
+            "It stays with nothing only if the engineer orders it with his reason (by=, reason=): neither 'applies' nor "
+            "'not_applies' from the agent closes it, the view is fixed or dropped.",
         )
-        out.append(Finding("view_adds_nothing", "warning", text, (name,)))
-    return out
+    return Finding("view_adds_nothing", "warning", text, (name,))
 
 
 def _ok(data: ReviewInput, spec: dict[str, Any]) -> bool:
@@ -228,6 +407,21 @@ def _distance_dims(data: ReviewInput) -> list[dict[str, Any]]:
     return [i for i in _of(data, "dim") if i.get("kind") == "distance"]
 
 
+def _bores_on_axis(ctx: Context) -> set[int]:
+    """The holes that lie on the axis of revolution of the part itself (a bore of a bush, a ring, a spacer): the axis locates
+    them, no dimension has to."""
+    found = ctx.geometry.round_extent() if ctx.assembly is None and ctx.weldment is None else None
+    box = ctx.extras.get("model_box")
+    if found is None or box is None:
+        return set()
+    middle = tuple((lo + hi) / 2 for lo, hi in zip(box[0], box[1], strict=True))
+    return {
+        h.index
+        for h in ctx.holes
+        if parallel(h.direction, found[0]) and h.on_axis(tuple(middle))  # type: ignore[arg-type]
+    }
+
+
 def _located_holes(data: ReviewInput) -> set[int]:
     """The holes some ``datum_dims`` or distance dimension positions."""
     ctx = data.ctx
@@ -251,24 +445,28 @@ def _located_holes(data: ReviewInput) -> set[int]:
         for end in ("from", "to"):
             for h in _hole_of_ref(ctx, spec[end]):
                 located.add(h.index)
+    located |= set(ctx.extras.get("polar_located", ()))  # a bolt circle by its pitch circle and angle (items_pattern)
     return located
 
 
 def ask_reference(ctx: Context, indexes: set[int]) -> str:
     """What to add to a finding about holes whose position the default location could not reference: the axes with no
-    reference (the part is not symmetric across them and no datum item faces across them) and who decides."""
+    reference (the part has no flat face a caliper reaches across them -- a round outline, a rounded end -- and no datum item
+    faces across them) and who decides."""
     missing = ctx.extras.get("loc_missing", {})
     axes = sorted({a for i in indexes for a in missing.get(i, ())})
     if not axes:
         return ""
     where = ", ".join(axes)
     return ctx.say(
-        f" Falta una referencia en {where}: la pieza no es simétrica en ese sentido y ningún datum la cubre. Pregunta al "
-        "ingeniero desde qué cara o arista se cuentan esas posiciones, declárala con un ítem datum (face) y la ubicación "
-        "por defecto la usa.",
-        f" No reference along {where}: the part is not symmetric across it and no datum covers it. Ask the engineer which "
-        "face or edge those positions are counted from, declare it with a datum item (face) and the default location "
-        "uses it.",
+        f" Falta una referencia en {where}: la pieza no tiene ahí una cara plana, vista de canto, desde la que un calibre pueda "
+        "medir (contorno redondo, extremo redondeado) y ningún datum la cubre. Pregunta al ingeniero desde qué cara, arista o eje "
+        "se cuentan esas posiciones (un círculo de agujeros se ubica con pattern_dim); si es una cara, declárala con un ítem "
+        "datum (face) y la ubicación por defecto la usa.",
+        f" No reference along {where}: the part has no flat face seen edge-on there that a caliper can be set against (a round "
+        "outline, a rounded end) and no datum covers it. Ask the engineer which face, edge or axis those positions are counted "
+        "from (a circle of holes is located with pattern_dim); if it is a face, declare it with a datum item (face) and the "
+        "default location uses it.",
     )
 
 
@@ -348,7 +546,7 @@ def _hole_callouts(data: ReviewInput) -> list[Finding]:
             called.setdefault(h.index, []).append(spec["id"])
         if "text" in spec:  # the engineer's own callout: what it states must agree with the measured hole
             out += _callout_text_findings(ctx, spec, holes)
-    located = _located_holes(data)
+    located = _located_holes(data) | _bores_on_axis(ctx)
     for stack in _stacks(list(ctx.holes)):
         indexes = {h.index for h in stack}
         features = tuple(dict.fromkeys(h.feature for h in stack if h.feature))
@@ -462,7 +660,10 @@ def _feature_dimensions(data: ReviewInput) -> list[Finding]:
                     f"{feature.kind} {feature.id} has no dimension or note: dimension it or cover it with a general "
                     f"note.",
                 )
-                out.append(Finding("feature_no_dimension", "info", text, (), (feature.id,)))
+                if feature.kind == "chamfer":  # the harness measures a chamfer and dimensions it itself (``chamfer_dims``)
+                    out.append(Finding("chamfer_no_dimension", "info", text, (), (feature.id,)))
+                else:
+                    out.append(Finding("feature_no_dimension", "info", text, (), (feature.id,)))
             continue
         if not size and not place:
             text = ctx.say(
@@ -537,9 +738,12 @@ def _over_dimensioning(data: ReviewInput) -> list[Finding]:
                     f"{m.spec['id']} and {n.spec['id']}.",
                 )
                 out.append(Finding("duplicate_dimension", "warning", text, (m.spec["id"], n.spec["id"])))
-    # 1b. a dimension that repeats an overall extent
+    # 1b. a dimension that repeats an overall extent (an axis the overall left out, because the others chain it, is not given)
+    left_out = ctx.extras.get("overall_skipped", set())
     for overall in _of(data, "overall"):
         for m in measured:
+            if m.axis in left_out:
+                continue
             extent = _extent(ctx, m.axis)
             if extent is not None and abs((m.hi - m.lo) - extent) < SAME_MM * 2:
                 text = ctx.say(
@@ -578,22 +782,35 @@ def _over_dimensioning(data: ReviewInput) -> list[Finding]:
                 out.append(Finding("over_dimensioned", "warning", text, (table["id"], m.spec["id"])))
     # 3. a chain that closes on the overall size
     if _of(data, "overall"):
+        positional = [
+            _Measured({"id": item}, axis, lo, hi, (set(), set())) for item, axis, lo, hi in ctx.extras.get("position_spans", [])
+        ]
+        pool = [*measured, *positional]
         for axis in AXES:
+            if axis in left_out:  # the overall item did not draw this axis: there is no size to close on
+                continue
             overall = _extent(ctx, axis)
-            same = sorted((m for m in measured if m.axis == axis), key=lambda m: m.lo)
+            # the lengths of ``dim`` items and the spacings and locators of hole positions (8 + 44 + 8 = 60 on a plate): a spacing
+            # or a locator never says "the same distance twice", but chained it closes on the overall like any other length
+            same = sorted((m for m in pool if m.axis == axis), key=lambda m: (m.lo, m.hi))
+            same = [m for i, m in enumerate(same) if not any(abs(m.lo - n.lo) < SAME_MM and abs(m.hi - n.hi) < SAME_MM for n in same[:i])]
             if overall is None or len(same) < 2:
                 continue
             chain = [same[0]]
             for m in same[1:]:
                 if abs(m.lo - chain[-1].hi) < SAME_MM:
                     chain.append(m)
-            if len(chain) >= 2 and abs(sum(m.hi - m.lo for m in chain) - overall) < SAME_MM * 2:
-                ids = tuple(m.spec["id"] for m in chain)
+            ids = tuple(dict.fromkeys(str(m.spec["id"]) for m in chain))
+            if len(chain) >= 2 and abs(sum(m.hi - m.lo for m in chain) - overall) < SAME_MM * 2:  # noqa: PLR2004
                 text = ctx.say(
                     f"Las cotas {', '.join(ids)} forman una cadena que suma la cota total en {axis} "
-                    f"({ctx.num(overall)} mm): sobreacotado; quita una.",
+                    f"({ctx.num(overall)} mm): sobreacotado. Deja el localizador desde el borde de referencia con la separación y "
+                    "quita la cota del otro extremo (drawing(action=\"remove\", items=[\"<su id>\"]); un id que empieza por rq_ "
+                    "pide además reason=).",
                     f"Dimensions {', '.join(ids)} form a chain that adds up to the overall size along {axis} "
-                    f"({ctx.num(overall)} mm): over-dimensioned; remove one.",
+                    f"({ctx.num(overall)} mm): over-dimensioned. Keep the locator from the reference edge together with the spacing "
+                    "and drop the dimension at the other end (drawing(action=\"remove\", items=[\"<its id>\"]); an id that "
+                    "starts with rq_ also needs reason=).",
                 )
                 out.append(Finding("over_dimensioned", "warning", text, ids))
     return out
@@ -670,6 +887,149 @@ def _datums(data: ReviewInput) -> list[Finding]:
     return out
 
 
+def _position_frames(
+    data: ReviewInput,
+) -> list[tuple[dict[str, Any], list[HoleInfo], tuple[float, float, float] | None]]:
+    """Every position frame hung from a callout, with the holes it tolerates and the direction of their axis (``None`` for
+    the axis of a cylinder that is no hole: the direction of its face)."""
+    ctx = data.ctx
+    out: list[tuple[dict[str, Any], list[HoleInfo], tuple[float, float, float] | None]] = []
+    for frame in (i for i in _of(data, "gdt") if i.get("char") == "position" and "on" in i):
+        target = next((i for i in data.items if i["id"] == frame["on"]), None)
+        if target is None:
+            continue
+        if target.get("type") == "hole_dim":
+            try:
+                holes = select_callout_holes(ctx, target)
+            except ItemError:
+                continue
+            out.append((frame, holes, tuple(unit_vector(holes[0].direction)) if holes else None))  # type: ignore[arg-type]
+        elif target.get("face"):
+            try:
+                axis = ctx.geometry.face(target["face"][0]).axis_dir
+            except ItemError:
+                continue
+            out.append((frame, [], tuple(unit_vector(axis)) if axis is not None else None))  # type: ignore[arg-type]
+    return out
+
+
+def _gdt_location_exact(data: ReviewInput) -> list[Finding]:
+    """The dimensions that locate a feature with a position tolerance are theoretically exact (ISO 1101, ISO 5458): boxed.
+    The ones the sheet writes itself (``loc``, ``datum_dims``) are boxed by the sheet; a ``dim`` the agent added is not
+    unless it says ``exact``."""
+    ctx = data.ctx
+    out: list[Finding] = []
+    for frame, holes, _ in _position_frames(data):
+        wanted = {h.index for h in holes}
+        plain = [
+            d["id"]
+            for d in _distance_dims(data)
+            if not d.get("exact") and wanted & {h.index for end in ("from", "to") for h in _hole_of_ref(ctx, d[end])}
+        ]
+        if plain:
+            text = ctx.say(
+                f"{frame['id']} (posición) tolera un agujero que localizan las cotas {', '.join(plain)} sin recuadro: con una "
+                "tolerancia de posición la cota de localización es teóricamente exacta (ISO 1101); añade exact=true a esas cotas.",
+                f"{frame['id']} (position) tolerates a hole located by the dimensions {', '.join(plain)} with no box: with a "
+                "position tolerance the locating dimension is theoretically exact (ISO 1101); add exact=true to those dimensions.",
+            )
+            out.append(Finding("gdt_location_not_exact", "warning", text, (frame["id"], *plain), key=frame["id"]))
+    return out
+
+
+def _parallel(a: tuple[float, float, float], b: tuple[float, float, float]) -> bool:
+    return abs(dot(unit_vector(a), unit_vector(b))) > 0.999
+
+
+def _fixes_direction(data: ReviewInput, datum: dict[str, Any], axis: tuple[float, float, float]) -> bool:
+    """Whether a datum item fixes the direction ``axis`` has: a plane the axis is perpendicular to, or an axis parallel to it."""
+    ctx = data.ctx
+    try:
+        if datum.get("face"):
+            face = ctx.geometry.face(datum["face"][0])
+            if face.kind == "plane" and face.normal is not None:
+                return _parallel(face.normal, axis)
+            return face.kind == "cylinder" and face.axis_dir is not None and _parallel(face.axis_dir, axis)
+    except ItemError:
+        return False
+    target = next((i for i in data.items if i["id"] == datum.get("on")), None)
+    if target is None:
+        return False
+    if target.get("type") == "hole_dim":
+        try:
+            return any(_parallel(h.direction, axis) for h in select_callout_holes(ctx, target))
+        except ItemError:
+            return False
+    try:
+        direction = ctx.geometry.face(target["face"][0]).axis_dir if target.get("face") else None
+    except ItemError:
+        return False
+    return direction is not None and _parallel(direction, axis)
+
+
+def _gdt_axis_oriented(data: ReviewInput) -> list[Finding]:
+    """A position tolerance of a hole needs a datum that fixes the direction of its axis: the face the hole is perpendicular
+    to (the primary datum of a through hole), then the edges that locate it. Datums that only fix the location leave the
+    axis free to tilt."""
+    ctx = data.ctx
+    datums = {d["letter"]: d for d in _of(data, "datum") if "letter" in d}
+    out: list[Finding] = []
+    for frame, _, axis in _position_frames(data):
+        if axis is None:
+            continue
+        cited = [datums[c] for c in _letters(frame.get("datums")) if c in datums]
+        if any(_fixes_direction(data, d, axis) for d in cited):
+            continue
+        text = ctx.say(
+            f"{frame['id']} (posición) no cita ningún datum que fije la dirección del eje: el datum primario de un agujero es "
+            "la cara a la que es perpendicular (declárala con un ítem datum y cítala la primera: ⌖ Ø0,05 | C | A | B).",
+            f"{frame['id']} (position) cites no datum that fixes the direction of the axis: the primary datum of a hole is "
+            "the face it is perpendicular to (declare it with a datum item and cite it first: ⌖ Ø0,05 | C | A | B).",
+        )
+        out.append(Finding("gdt_axis_not_oriented", "warning", text, (frame["id"],), key=frame["id"]))
+    return out
+
+
+_NUMBER = r"(?:Ø|⌀)?\s?\d+[.,]\d+"
+_GDT_STRONG = (
+    r"planitud|rectitud|circularidad|redondez|cilindricidad|paralelismo|perpendicularidad|angularidad|concentricidad|"
+    r"coaxialidad|salto (?:radial|axial|total|circular)|flatness|straightness|roundness|circularity|cylindricity|"
+    r"parallelism|perpendicularity|angularity|concentricity|coaxiality|(?:total |circular )?runout"
+)
+_GDT_WEAK = r"posici.n|simetr.a|perfil de (?:l.nea|superficie)|position|symmetry|profile of (?:a )?(?:line|surface)"
+_GDT_SYMBOLS = "⊥∥⌖◎⌭⌒⌓↗⌯⏥"
+GDT_IN_TEXT = re.compile(
+    rf"(?:{_GDT_STRONG})\b[^.;\n]{{0,40}}?{_NUMBER}"
+    rf"|(?:toleranc\w+|tolerance)\s+(?:de |of )?(?:{_GDT_WEAK})\b[^.;\n]{{0,40}}?{_NUMBER}"
+    rf"|(?:{_GDT_WEAK})\b[^.;\n]{{0,25}}?(?:toleranc\w+|tolerance)[^.;\n]{{0,25}}?{_NUMBER}"
+    rf"|[{_GDT_SYMBOLS}]\s?{_NUMBER}",
+    re.IGNORECASE,
+)
+
+
+def _gdt_as_note(data: ReviewInput) -> list[Finding]:
+    """A geometric tolerance written as the text of a note (``perpendicularidad 0,02 A``, ``⊥ Ø0,1 A``): a shop reads a
+    feature control frame (ISO 1101) on the feature, not a sentence in the notes block. The note is flagged and the
+    answer is a ``gdt`` item (and its ``datum`` items); a note that only names a characteristic without a value is quiet."""
+    ctx = data.ctx
+    out: list[Finding] = []
+    for note in _of(data, "note"):
+        text = str(note.get("text") or "")
+        if not GDT_IN_TEXT.search(text):
+            continue
+        shown = text if len(text) <= 60 else text[:57] + "..."
+        message = ctx.say(
+            f'{note["id"]} escribe una tolerancia geométrica como texto ("{shown}"): va en un marco ISO 1101 sobre el rasgo '
+            "o colgado de su cota, con sus datums definidos y usados. Usa un ítem gdt (char, value, datums, face u on) y "
+            "borra la nota; si no es una tolerancia geométrica, respóndelo como decisión (no aplica: <por qué>).",
+            f'{note["id"]} writes a geometric tolerance as text ("{shown}"): it belongs in an ISO 1101 frame on the feature '
+            "or hung from its dimension, with its datums defined and used. Use a gdt item (char, value, datums, face or on) "
+            "and remove the note; if it is not a geometric tolerance, answer it as a decision (not applicable: <why>).",
+        )
+        out.append(Finding("gdt_as_note", "warning", message, (str(note["id"]),), key=str(note["id"])))
+    return out
+
+
 # --- views ---------------------------------------------------------------------------------------------------------------
 
 
@@ -677,6 +1037,8 @@ def _view_lines(data: ReviewInput) -> list[Finding]:
     ctx = data.ctx
     if _of(data, "view_lines") or not ctx.holes:
         return []
+    if any(i.get("in_place") for i in _of(data, "section")):
+        return []  # the section that stands in the main view draws the centre line of every bore of the part by itself
     text = ctx.say(
         'El plano tiene agujeros y no lleva líneas ocultas ni ejes: añade {"type":"view_lines"}.',
         'The sheet has holes and no hidden lines or centre lines: add {"type":"view_lines"}.',
@@ -686,6 +1048,184 @@ def _view_lines(data: ReviewInput) -> list[Finding]:
 
 HIDDEN_CHECK_LIMIT = 80  # instances looked at for "hidden in every view": the first of each part, then the rest
 REVIEW_MARGIN_MM = 2.5
+
+
+JOINT_WORDS = re.compile(
+    r"tornill|perno|tuerca|arandela|remach|pasador|chaveta|espárrag|esparrag|bulón|bulon|soldad|solda|adhesiv|pegad|pegament|"
+    r"ajuste|interferencia|prensad|encaj|unión|union|screw|bolt|nut\b|washer|rivet|dowel|pin\b|weld|adhesive|glue|bond|"
+    r"press[\s-]*fit|interference|clamp|abraz|fasten|sujec|fij",
+    re.I,
+)  # a fastener, a weld, a fit, or a note that says how the parts are held
+
+
+def _assembly_joints(data: ReviewInput) -> list[Finding]:
+    """An assembly of two or more parts that nothing joins: no fastener among the parts, no weld, no fit on the sheet and
+    no note of the engineer saying how they are held. A question to the designer: the harness adds nothing."""
+    ctx = data.ctx
+    if ctx.assembly is None or len(ctx.assembly.groups) < 2:
+        return []
+    for group in ctx.assembly.groups:
+        if group.bought or JOINT_WORDS.search(f"{group.name} {group.remarks}"):
+            return []
+    if any(i.get("type") == "weld" for i in data.items):
+        return []
+    if any("fit" in i for i in data.items if i.get("type") in ("dim", "hole_dim")):
+        return []
+    if any(JOINT_WORDS.search(n) for n in sheet_checks._notes(data)):
+        return []
+    text = ctx.say(
+        "Las piezas del conjunto no están unidas: ninguna es un elemento de fijación (tornillo, perno, pasador, remache), ni hay "
+        "soldadura, ni un ajuste, ni una nota del ingeniero que diga cómo se sujetan. Pregunta al diseñador cómo se unen "
+        "(¿tornillos que se añaden al conjunto, soldadura, ajuste a presión?) y refléjalo: inserta la pieza de fijación o escribe "
+        "una nota. El arnés no añade nada por su cuenta.",
+        "The parts of the assembly are not joined: none is a fastener (screw, bolt, pin, rivet), and there is no weld, no fit "
+        "and no note of the engineer saying how they are held. Ask the designer how they are joined (screws to add to the "
+        "assembly, a weld, a press fit?) and show it: insert the fastener or write a note. The harness adds nothing by itself.",
+    )
+    return [Finding("assembly_not_joined", "warning", text)]
+
+
+def _weldment_lists(data: ReviewInput) -> list[Finding]:
+    """The sheet of a welded part carries its cut list and a balloon per body, numbered as the list (``sheet_weldrules``), and
+    every position has the designation (profile and size) the designer gave: the harness never guesses it."""
+    ctx = data.ctx
+    if ctx.weldment is None:
+        return []
+    lists = _of(data, "parts_list")
+    balloons = _of(data, "balloons")
+    list_ids = tuple(i["id"] for i in lists)
+    balloon_ids = tuple(i["id"] for i in balloons)
+    listed = frozenset(str(n) for n in ctx.extras.get("parts_list", {}).get("positions", []))
+    drawn = frozenset(str(n) for n in ctx.extras.get("balloons", {}).get("drawn", set()))
+    sheet = sheet_weldrules.WeldSheet(True, listed, drawn if balloons else frozenset())
+    names = {str(g.position): g for g in ctx.weldment.groups}
+    out: list[Finding] = []
+    for found in sheet_weldrules.weld_documentation(sheet):
+        shown = ", ".join(f"{n} ({names[n].instances[0]})" if n in names else n for n in found.numbers)
+        if found.code == "weld_list_missing":
+            text = ctx.say(
+                'El plano de la pieza soldada no lleva lista de corte: añade {"type":"parts_list"} (una fila por pieza '
+                'distinta, con su cantidad, designación y longitud) y {"type":"balloons"}.',
+                'The sheet of the welded part has no cut list: add {"type":"parts_list"} (one row per distinct piece, with '
+                'quantity, designation and length) and {"type":"balloons"}.',
+            )
+            out.append(Finding("weld_list_missing", "warning", text, balloon_ids))
+        elif found.code == "item_without_balloon":
+            text = ctx.say(
+                f"Cuerpos de la lista de corte sin globo en el plano: posiciones {shown}. Cada cuerpo lleva su globo "
+                "(balloons, en la vista donde se ve).",
+                f"Bodies of the cut list with no balloon on the sheet: positions {shown}. Every body has its balloon "
+                "(balloons, on the view that shows it).",
+            )
+            out.append(Finding("item_without_balloon", "warning", text, (*list_ids, *balloon_ids)))
+        else:
+            text = ctx.say(
+                f"Globos sin fila en la lista de corte: {', '.join(found.numbers)}.",
+                f"Balloons with no row in the cut list: {', '.join(found.numbers)}.",
+            )
+            out.append(Finding("balloon_not_in_list", "warning", text, (*list_ids, *balloon_ids)))
+    unnamed = [names[str(n)] for n in ctx.extras.get("parts_list", {}).get("unnamed", []) if str(n) in names]
+    if unnamed:
+        shown = ", ".join(f"{g.position} ({g.instances[0]}: {g.reference})" for g in unnamed)
+        first = unnamed[0]
+        text = ctx.say(
+            f"Cuerpos sin designación en la lista de corte: {shown}. Pregunta al diseñador qué es cada uno (perfil y medida, "
+            "p. ej. tubo 40x40x3, pletina 50x6, o chapa de espesor y material) y escríbelo; nunca el nombre del objeto. "
+            f'En la lista: rows=[{{"component": "{first.instances[0]}", "name": "<designación>"}}].',
+            f"Bodies with no designation in the cut list: {shown}. Ask the designer what each one is (profile and size, e.g. "
+            "tube 40x40x3, flat bar 50x6, or plate thickness and material) and write it; never the object name. "
+            f'In the list: rows=[{{"component": "{first.instances[0]}", "name": "<designation>"}}].',
+        )
+        out.append(Finding("weld_body_unnamed", "warning", text, list_ids))
+    out += _weldment_designations(data, names, list_ids)
+    out += _weldment_views(data)
+    out += _weldment_welds(data)
+    return out
+
+
+def _weldment_designations(data: ReviewInput, names: dict[str, Any], list_ids: tuple[str, ...]) -> list[Finding]:
+    """The designation the designer wrote agrees with the body (tubes, flat bars and plates; the rest is said, not checked)."""
+    import sheet_weldment  # noqa: PLC0415
+
+    ctx = data.ctx
+    written = ctx.extras.get("parts_list", {}).get("names", {})
+    wrong: list[str] = []
+    skipped: list[str] = []
+    for position, name in written.items():
+        group = names.get(str(position))
+        if group is None or group.measured is None:
+            continue
+        verdict = sheet_weldment.check_designation(str(name), group.measured)
+        label = f"{position} ({group.instances[0]}, {name!r})"
+        if verdict.status == "mismatch":
+            wrong.append(f"{label}: {verdict.why}")
+        elif verdict.status == "skipped":
+            skipped.append(f"{label}: {verdict.why}")
+    out: list[Finding] = []
+    if wrong:
+        out.append(
+            Finding(
+                "weld_designation_mismatch",
+                "warning",
+                ctx.say(
+                    "La designación de la lista de corte no coincide con el cuerpo medido: "
+                    + "; ".join(wrong)
+                    + ". Corrige el cuerpo del modelo (¿hueco o macizo? ¿qué sección?) o la designación, y pregunta al diseñador cuál es la buena.",
+                    "The designation in the cut list does not agree with the measured body: "
+                    + "; ".join(wrong)
+                    + ". Fix the model body (hollow or solid? which section?) or the designation, and ask the designer which is right.",
+                ),
+                list_ids,
+            )
+        )
+    if skipped:
+        out.append(
+            Finding(
+                "weld_designation_unchecked",
+                "info",
+                ctx.say(
+                    "No se comprobó la designación contra el cuerpo (solo se leen tubos, pletinas y chapas): "
+                    + "; ".join(skipped)
+                    + ".",
+                    "The designation was not checked against the body (only tubes, flat bars and plates are read): "
+                    + "; ".join(skipped)
+                    + ".",
+                ),
+                list_ids,
+            )
+        )
+    return out
+
+
+def _weldment_views(data: ReviewInput) -> list[Finding]:
+    """Two standard views that draw the same rectangles for every body: one of them adds nothing."""
+    import sheet_weldment  # noqa: PLC0415
+
+    ctx = data.ctx
+    boxes = ctx.geometry.body_boxes() if ctx.geometry is not None else []
+    out: list[Finding] = []
+    for kept, repeat in sheet_weldment.congruent_views(boxes):
+        if kept not in ctx.views or repeat not in ctx.views:
+            continue
+        text = ctx.say(
+            f"La vista {repeat} dibuja lo mismo que la vista {kept} (cada cuerpo ocupa el mismo rectángulo): no añade nada. "
+            f"Quítala (drawing action=remove_view, views=[{repeat}]) y las demás se reparten el espacio.",
+            f"The {repeat} view draws the same as the {kept} view (every body fills the same rectangle): it adds nothing. "
+            f"Drop it (drawing action=remove_view, views=[{repeat}]) and the others share the room.",
+        )
+        out.append(Finding("view_redundant", "warning", text, (repeat,), key=repeat))
+    return out
+
+
+WELD_TEXT = re.compile(r"solda|weld|cord[oó]n|bead|2553", re.I)
+
+
+def _weldment_welds(data: ReviewInput) -> list[Finding]:
+    """The welds of a welded part (``sheet_weldreview``): a symbol on every measured joint, one per joint, no ISO 13920 as a
+    quality class."""
+    import sheet_weldreview  # noqa: PLC0415
+
+    return sheet_weldreview.findings(data)
 
 
 def _assembly_lists(data: ReviewInput) -> list[Finding]:
@@ -721,9 +1261,22 @@ def _assembly_lists(data: ReviewInput) -> list[Finding]:
             rows = rows_of(ctx, lists[0])
         except ItemError:
             rows = []
+        unnamed = [g for g, cells in rows if not cells[2].strip()]
+        if unnamed:
+            shown = ", ".join(f"{g.position} ({g.instances[0]})" for g in unnamed)
+            first = unnamed[0]
+            text = ctx.say(
+                f"Piezas sin designación en la lista de piezas: {shown}. Pregunta al diseñador cómo se llama cada una "
+                "(en español, no el nombre del archivo) y escríbela: doc(action=set_title, name=...) en el documento de la "
+                f'pieza, o rows=[{{"component": "{first.instances[0]}", "name": "<designación>"}}] en la lista.',
+                f"Parts with no designation in the parts list: {shown}. Ask the designer what each is called (in the "
+                "project language, not the file name) and write it: doc(action=set_title, name=...) in the part's "
+                f'document, or rows=[{{"component": "{first.instances[0]}", "name": "<designation>"}}] in the list.',
+            )
+            out.append(Finding("part_unnamed", "warning", text, list_ids))
         bare = [g for g, cells in rows if not cells[3].strip() and not g.bought]
         if bare:
-            shown = ", ".join(f"{g.position} ({g.name})" for g in bare)
+            shown = ", ".join(f"{g.position} ({g.label})" for g in bare)
             text = ctx.say(
                 f"Piezas propias sin Nº de plano / Referencia en la lista: {shown}. Dales número de plano (campo "
                 "drawing_number de su hoja) o escríbelo con rows.",
@@ -735,7 +1288,7 @@ def _assembly_lists(data: ReviewInput) -> list[Finding]:
     listed = set(ctx.extras.get("parts_list", {}).get("positions", []))
     drawn = set(book.get("drawn", set()))
     if lists and balloons:
-        names = {g.position: g.name for g in ctx.assembly.groups}
+        names = {g.position: g.label for g in ctx.assembly.groups}
         missing = sorted(listed - drawn)
         if missing:
             shown = ", ".join(f"{n} ({names.get(n, '?')})" for n in missing)
@@ -752,6 +1305,20 @@ def _assembly_lists(data: ReviewInput) -> list[Finding]:
                 f"Balloons without a row in the parts list: {shown}.",
             )
             out.append(Finding("balloon_without_row", "warning", text, (*list_ids, *balloon_ids)))
+    thin = {n: s for n, s in sorted(book.get("share", {}).items()) if n in drawn and s < sheet_isoview.VISIBLE_MIN}
+    if thin:
+        labels = {g.position: g.label for g in ctx.assembly.groups}
+        shown = ", ".join(f"{n} ({labels.get(n, '?')}, {round(100 * s)} %)" for n, s in thin.items())
+        percent = round(100 * sheet_isoview.VISIBLE_MIN)
+        text = ctx.say(
+            f"El globo de la(s) posición(es) {shown} señala una pieza de la que la vista casi no enseña nada (menos del "
+            f"{percent} % de su contorno es superficie suya a la vista): no se ve lo que el globo nombra. Pon el globo de esa "
+            "pieza en una vista donde se vea (una vista explosionada: exploded, y balloons sobre ella), o cambia la dirección de la vista.",
+            f"The balloon of position(s) {shown} points at a part that the view barely shows (less than {percent} % of its "
+            "outline is its own surface in view): what the balloon names cannot be seen. Put that part's balloon on a view where "
+            "it shows (an exploded view, with the balloons on it), or change the view direction.",
+        )
+        out.append(Finding("balloon_part_hidden", "warning", text, balloon_ids))
     rect = ctx.extras.get("parts_list", {}).get("rect")
     if rect is not None:
         for name, box in _rects(data).items():
@@ -761,6 +1328,14 @@ def _assembly_lists(data: ReviewInput) -> list[Finding]:
                 )
                 out.append(Finding("parts_list_over_view", "warning", text, list_ids))
     return out
+
+
+def sub_(a: tuple[float, ...], b: tuple[float, ...]) -> tuple[float, float, float]:
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _corners(low: tuple[float, ...], high: tuple[float, ...]) -> list[tuple[float, float, float]]:
+    return [(x, y, z) for x in (low[0], high[0]) for y in (low[1], high[1]) for z in (low[2], high[2])]
 
 
 def _hidden_instances(data: ReviewInput) -> list[Finding]:
@@ -777,6 +1352,17 @@ def _hidden_instances(data: ReviewInput) -> list[Finding]:
     ordered += [i for g in ctx.assembly.groups for i in g.instances[1:]]
     ordered = ordered[:HIDDEN_CHECK_LIMIT]
     hidden = set(ordered)
+    for at, normal in ctx.extras.get("section_planes", {}).values():  # a part the plane of a section cuts is seen in the cut
+        for cid in list(hidden):
+            try:
+                low, high = ctx.geometry.instance_box(cid)
+            except ItemError:
+                continue
+            sides = [dot(sub_(corner, at), normal) for corner in _corners(low, high)]
+            if min(sides) <= 1e-6 <= max(sides):
+                hidden.discard(cid)
+    if not hidden:
+        return []
     for view in views:
         offsets = explosion.get("offsets", {}) if view.name == "exploded" else {}
         try:
@@ -793,8 +1379,8 @@ def _hidden_instances(data: ReviewInput) -> list[Finding]:
         position = ctx.assembly.position_of(cid)
         group = next(g for g in ctx.assembly.groups if g.position == position)
         text = ctx.say(
-            f"El componente {cid} (posición {position}, {group.name}) no se ve en ninguna vista del plano.",
-            f"Component {cid} (position {position}, {group.name}) is not visible in any view of the sheet.",
+            f"El componente {cid} (posición {position}, {group.label}) no se ve en ninguna vista del plano.",
+            f"Component {cid} (position {position}, {group.label}) is not visible in any view of the sheet.",
         )
         out.append(Finding("instance_hidden", "warning", text))
     if len(ctx.assembly.instances()) > HIDDEN_CHECK_LIMIT:
@@ -871,6 +1457,10 @@ def _layout(data: ReviewInput) -> list[Finding]:
     return out
 
 
+def _box(x0: float, y0: float, x1: float, y1: float) -> str:
+    return f"[{x0:.2f}, {y0:.2f}, {x1:.2f}, {y1:.2f}]"
+
+
 def _item_places(data: ReviewInput, frame: Rect, flagged: set[str]) -> list[Finding]:
     """An item whose drawing (lines, frames, text) runs outside the frame or over the title block: placed by the
     placer, or asked for with ``at_mm`` -- either way the sheet would be printed wrong, and the finding names the item."""
@@ -883,8 +1473,8 @@ def _item_places(data: ReviewInput, frame: Rect, flagged: set[str]) -> list[Find
         x0, y0, x1, y1 = unit.rect
         if unit.key not in flagged and (x0 < frame[0] or y0 < frame[1] or x1 > frame[2] or y1 > frame[3]):
             text = ctx.say(
-                f"{unit.key} ({unit.item_type}) se sale del marco del plano: muévelo (offset_mm, side o at_mm).",
-                f"{unit.key} ({unit.item_type}) runs outside the frame of the sheet: move it (offset_mm, side or at_mm).",
+                f"{unit.key} ({unit.item_type}) se sale del marco del plano ({_box(x0, y0, x1, y1)} frente a {_box(*frame)}): muévelo (offset_mm, side o at_mm).",
+                f"{unit.key} ({unit.item_type}) runs outside the frame of the sheet ({_box(x0, y0, x1, y1)} against {_box(*frame)}): move it (offset_mm, side or at_mm).",
             )
             out.append(Finding("item_outside_frame", "warning", text, (unit.key,)))
         if block is not None and unit.item_type != "parts_list" and _overlap((x0, y0, x1, y1), block):

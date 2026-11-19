@@ -2,6 +2,7 @@
 """Who reviews a drawing before it is exported (``drawing_review`` of the brief): the setting, the reports of the
 manufacturer and the engineer, the engineer's choice with its wait (the clock is injected), and the gate in every mode."""
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -64,7 +65,9 @@ def session_in(settings: Settings, mode: str, wait: int | None = None) -> tuple[
 
 
 def report(call: Caller, by: str, *items: dict[str, str]) -> str:
-    return call.ok("drawing", action="review_report", sheet="Drawing", by=by, items=list(items))
+    said = " / ".join(item["text"] for item in items) or "sin observaciones"
+    words = {"reason": call.says(said)} if by == "engineer" else {}  # his report carries what he typed
+    return call.ok("drawing", action="review_report", sheet="Drawing", by=by, items=list(items), **words)
 
 
 # --- the setting ----------------------------------------------------------------------------------------------------------
@@ -82,10 +85,10 @@ def test_the_setting_is_kept_in_the_brief_next_to_the_sector_and_needs_the_engin
     refused = call.err("memory", action="brief", drawing_review="own")
     assert "engineer's decision" in refused and "text" in refused
     assert "drawing review own" in call.ok(
-        "memory", action="brief", drawing_review="own", text="Ana: revisa tú el plano"
+        "memory", action="brief", drawing_review="own", text=call.says("revisa tú el plano")
     )
     data = yaml.safe_load((settings.workspace / "brief.yaml").read_text(encoding="utf-8"))
-    assert data["drawing_review"] == "own" and data["drawing_review_said"] == "Ana: revisa tú el plano"
+    assert data["drawing_review"] == "own" and data["drawing_review_said"] == "revisa tú el plano"
     assert data["sector"] == "chapa y soldadura"  # a new setting does not lose the old ones
     call.ok("memory", action="brief", sector="mecanizado")
     assert design_memory.load_brief(settings).drawing_review == "own"  # nor does a later sector
@@ -243,6 +246,7 @@ def test_ingeniero_waits_for_his_report_without_a_time_limit(settings: Settings,
     call, _ = session_in(settings, "engineer")
     text = call.ok("drawing", action="request_review", sheet="Drawing")
     assert "ask the engineer to review sheet Drawing" in text and "No time limit" in text
+    assert "end your turn" in text and "never end the turn" not in text
     clock.minutes(24 * 60)
     refused = call.err("export", action="pdf")
     assert "no engineer report yet" in refused and 'by="engineer"' in refused
@@ -254,7 +258,7 @@ def test_ingeniero_waits_for_his_report_without_a_time_limit(settings: Settings,
 # --- engineer_or_fabricator: the engineer chooses, or the manufacturer is assumed ------------------------------------------------------
 
 
-def test_the_first_export_asks_for_the_request_and_the_request_says_what_to_ask_and_starts_the_timer(
+def test_the_first_export_asks_for_the_request_and_the_request_says_what_to_ask_and_to_wait_with_one_call(
     settings: Settings, clock: Clock
 ) -> None:
     call, fake = session_in(settings, "engineer_or_fabricator")
@@ -263,9 +267,10 @@ def test_the_first_export_asks_for_the_request_and_the_request_says_what_to_ask_
     assert 'drawing(action="request_review", sheet="Drawing")' in refused
     text = call.ok("drawing", action="request_review")
     assert "¿Revisas tú la hoja Drawing o la revisa el agente fabricante?" in text
-    assert "within 15 min the manufacturer review counts" in text and "NEVER end the turn" in text
-    assert "`sleep 900`" in text and "run_in_background=true" in text and "Start-Sleep -Seconds 900" in text
-    assert "if the engineer has already answered the choice, ignore the timer" in text
+    assert "within 15 min the manufacturer review counts" in text
+    assert "Lo que escribas lo leo en un minuto como máximo; si quieres que lo lea ya, pulsa Esc." in text  # he is told
+    assert 'drawing(action="wait_review", sheet="Drawing")' in text and "never by polling" in text
+    assert "sleep" not in text and "Bash" not in text  # the drafter has no shell: no timer to start
     assert [a.action for a in fake.annotated][-1] == "request_review" and fake.annotated[-1].at == clock.now
 
 
@@ -278,7 +283,8 @@ def test_while_the_engineer_has_not_answered_the_refusal_says_how_many_minutes_a
     refused = call.err("export", action="pdf")
     assert "waiting for the engineer's choice" in refused and "15 min left of 20" in refused
     assert "¿Revisas tú la hoja Drawing o la revisa el agente fabricante?" in refused
-    assert 'drawing(action="review_choice"' in refused and "never end the turn to wait" in refused
+    assert 'drawing(action="review_choice"' in refused and 'drawing(action="wait_review", sheet="Drawing")' in refused
+    assert "never end the turn" not in refused
     clock.minutes(14.5)
     assert "1 min left of 20" in call.err("export", action="pdf")  # rounded up: it is never 0 min while waiting
     review = call.ok("drawing", action="review")
@@ -321,7 +327,7 @@ def test_the_engineer_chose_himself_so_the_gate_waits_for_his_report_with_no_tim
     call.ok("drawing", action="request_review")
     text = call.ok("drawing", action="review_choice", sheet="Drawing", by="engineer")
     assert "reviews sheet Drawing himself" in text and "no time limit" in text
-    clock.minutes(600)  # the timer would have gone off long ago: it means nothing now
+    clock.minutes(600)  # his review has no time limit: the clock means nothing now
     refused = call.err("export", action="pdf")
     assert "the engineer chose to review the sheet himself (no time limit): no engineer report" in refused
     assert 'by="engineer"' in refused
@@ -329,6 +335,217 @@ def test_the_engineer_chose_himself_so_the_gate_waits_for_his_report_with_no_tim
     assert "eng1.1" in call.err("export", action="pdf")
     call.ok("drawing", action="answer", id="eng1.1", text="applies: añadí la nota de material en el bloque de notas")
     assert "exported pdf" in call.ok("export", action="pdf")
+
+
+# --- waiting costs one call, not a loop ---------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def passing(clock: Clock, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """``wait_review`` lets the fake clock pass instead of sleeping; the list holds every pause it asked for."""
+    pauses: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        pauses.append(seconds)
+        clock.now += seconds
+
+    monkeypatch.setattr(drawing_gate, "sleep", sleep)
+    return pauses
+
+
+def test_a_waiting_sheet_costs_one_call_and_not_a_loop(settings: Settings, clock: Clock, passing: list[float]) -> None:
+    call, fake = session_in(settings, "engineer_or_fabricator", wait=1)
+    call.ok("drawing", action="request_review")
+    text = call.ok("drawing", action="wait_review")  # ONE call: it blocks until the wait is over
+    assert sum(passing) == pytest.approx(60) and clock.now == pytest.approx(1_000_000.0 + 60)
+    assert "the engineer did not choose within 1 min: the manufacturer review counts" in text
+    assert 'subagent_type="fabricator"' in text
+    assert [a.action for a in fake.annotated].count("request_review") == 1  # it asks for nothing, it only waits
+
+
+def test_a_long_wait_is_bounded_calls_each_saying_to_call_again(
+    settings: Settings, clock: Clock, passing: list[float]
+) -> None:
+    call, _ = session_in(settings, "engineer_or_fabricator")
+    call.ok("drawing", action="request_review")
+    first = call.ok("drawing", action="wait_review")
+    assert sum(passing) == pytest.approx(drawing_gate.WAIT_CHUNK_S) and drawing_gate.WAIT_CHUNK_S <= 60  # his typed answer is read within a minute
+    assert "still waiting for the engineer's choice" in first and "14 min left of 15" in first
+    assert 'drawing(action="wait_review", sheet="Drawing")' in first and "review_choice" in first
+    assert "Do not export, review or ask doc(status)" in first
+    calls = 1
+    last = first
+    while "manufacturer review counts" not in last:
+        last = call.ok("drawing", action="wait_review")
+        calls += 1
+    assert calls == 15 and 'subagent_type="fabricator"' in last  # 15 calls for 15 min (the polling it replaces was ~120)
+    assert sum(passing) == pytest.approx(15 * 60)
+
+
+def test_wait_review_returns_at_once_when_there_is_nothing_to_wait_for(
+    settings: Settings, clock: Clock, passing: list[float]
+) -> None:
+    call, _ = session_in(settings, "engineer_or_fabricator")
+    unasked = call.ok("drawing", action="wait_review")
+    assert "nobody has been asked who reviews sheet Drawing" in unasked and "request_review" in unasked
+    call.ok("drawing", action="request_review")
+    call.ok("drawing", action="review_choice", sheet="Drawing", by="fabricator")
+    chosen = call.ok("drawing", action="wait_review")
+    assert 'subagent_type="fabricator"' in chosen
+    call.ok("drawing", action="review_choice", sheet="Drawing", by="engineer")
+    himself = call.ok("drawing", action="wait_review")
+    assert "end your turn" in himself and "no time limit" in himself
+    assert "only when nothing else is pending" in himself and "`channel`" in himself  # not when other work remains
+    assert passing == []  # not one pause
+
+
+@pytest.mark.parametrize("mode", ["fabricator", "own", "none"])
+def test_wait_review_in_the_other_modes_does_not_wait(
+    settings: Settings, clock: Clock, passing: list[float], mode: str
+) -> None:
+    call, _ = session_in(settings, mode)
+    text = call.ok("drawing", action="wait_review")
+    assert passing == [] and text.startswith("sheet Drawing:")
+
+
+def test_the_second_refused_export_for_the_wait_says_plainly_what_to_do(
+    settings: Settings, clock: Clock, passing: list[float]
+) -> None:
+    call, _ = session_in(settings, "engineer_or_fabricator")
+    call.ok("drawing", action="request_review")
+    first = call.err("export", action="pdf")
+    assert "refused AGAIN" not in first and "waiting for the engineer's choice" in first
+    assert 'drawing(action="wait_review", sheet="Drawing")' in first
+    second = call.err("export", action="pdf")
+    assert "refused AGAIN, for the same reason" in second and "15 min left of 15" in second
+    assert 'The one call to make is drawing(action="wait_review", sheet="Drawing")' in second
+    assert "do not ask doc(status)" in second
+    call.ok("drawing", action="wait_review")  # the wait call starts the count again
+    assert "refused AGAIN" not in call.err("export", action="pdf")
+
+
+def test_a_refusal_with_other_points_pending_is_never_the_plain_wait_message(settings: Settings, clock: Clock) -> None:
+    call, fake = session_in(settings, "engineer_or_fabricator")
+    fake.findings = [NOT_LOCATED]
+    call.ok("drawing", action="request_review")
+    for _ in range(3):
+        refused = call.err("export", action="pdf")
+        assert "refused AGAIN" not in refused and "hole_not_located" in refused
+
+
+def test_the_second_refused_export_while_the_engineer_reviews_says_to_end_the_turn(
+    settings: Settings, clock: Clock
+) -> None:
+    call, _ = session_in(settings, "engineer")
+    call.ok("drawing", action="request_review")
+    assert "refused AGAIN" not in call.err("export", action="pdf")
+    second = call.err("export", action="pdf")
+    assert "refused AGAIN" in second and "end your turn" in second and "wait_review" not in second
+
+
+def test_doc_status_during_the_wait_points_at_the_call_that_waits(settings: Settings, clock: Clock) -> None:
+    call, _ = session_in(settings, "engineer_or_fabricator")
+    assert "review wait" not in call.ok("doc", action="status")
+    call.ok("drawing", action="request_review")
+    clock.minutes(5)
+    status = call.ok("doc", action="status")
+    assert "review wait: sheet Drawing waits for the engineer's choice of reviewer, 10 min left" in status
+    assert "changes nothing" in status and 'drawing(action="wait_review", sheet="Drawing")' in status
+    call.ok("drawing", action="review_choice", sheet="Drawing", by="fabricator")
+    assert "review wait" not in call.ok("doc", action="status")
+
+
+def test_esc_ends_the_wait_and_the_cad_is_free_while_it_runs(
+    settings: Settings, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    call, _ = session_in(settings, "engineer_or_fabricator")
+    call.ok("drawing", action="request_review")
+    gave_up = threading.Event()
+    free: list[bool] = []
+
+    def sleep(seconds: float) -> None:
+        taken: list[bool] = []
+
+        def try_lock() -> None:  # another thread of the server: the CAD is not held while the call waits
+            got = call.session.lock.acquire(timeout=1)
+            taken.append(got)
+            if got:
+                call.session.lock.release()
+
+        other = threading.Thread(target=try_lock)
+        other.start()
+        other.join()
+        free.extend(taken)
+        clock.now += seconds
+        gave_up.set()  # the engineer presses Esc
+
+    monkeypatch.setattr(drawing_gate, "sleep", sleep)
+    said = drawing_gate.wait_review(call.session, "Drawing", gave_up)
+    assert free == [True] and "given up" in said
+    assert clock.now < 1_000_000.0 + 60  # it did not go on to the end of the chunk
+
+
+def test_the_engineer_mode_notes_the_wait_and_a_document_that_goes_forgets_it(settings: Settings, clock: Clock) -> None:
+    call, _ = session_in(settings, "engineer")
+    call.ok("drawing", action="request_review")
+    assert "waits for the engineer's remarks (no time limit)" in call.ok("doc", action="status")
+    assert "only when nothing else is pending" in call.err("export", action="pdf")
+    call.ok("doc", action="close", discard=True)
+    assert getattr(call.session, "review_waits", {}) == {}
+
+
+def long_remarks(count: int) -> list[dict[str, str]]:
+    """Remarks of about 230 characters in the dialog: nine of them do not fit in one (it takes 1500), five do."""
+    return [
+        {"kind": "missing", "where": f"vista {n}", "text": f"Punto {n}: " + "falta el detalle de la cota o de la nota, " * 4 + f"fin{n}"}
+        for n in range(1, count + 1)
+    ]
+
+
+def test_a_long_report_of_the_engineer_is_recorded_in_pieces_with_continuous_ids_and_the_gate_sees_all(
+    settings: Settings, clock: Clock
+) -> None:
+    call, fake = session_in(settings, "engineer")
+    everything = long_remarks(9)
+    refused = call.err("drawing", action="review_report", sheet="Drawing", by="engineer", items=everything, reason=call.says("sus nueve observaciones"))
+    assert "too long" in refused and "append=true" in refused and "Split it" not in refused
+    assert not [r for r in fake.annotated if r.action == "review_report"]  # nothing was recorded
+    first = call.ok("drawing", action="review_report", sheet="Drawing", by="engineer", items=everything[:5], reason=call.says("las cinco primeras"))
+    assert "5 remark(s)" in first and "eng1.5" in first and "this call added" not in first
+    clock.minutes(1)
+    last = call.ok("drawing", action="review_report", sheet="Drawing", by="engineer", items=everything[5:], append=True, reason=call.says("las cuatro últimas"))
+    assert "engineer report 1" in last and "9 remark(s)" in last and "this call added 4" in last
+    assert "eng1.1" in last and "eng1.9" in last
+    held = fake.drawings["Drawing"]["reports"]["engineer"]
+    assert [r.id for r in held["remarks"]] == [f"eng1.{n}" for n in range(1, 10)]  # the ids go on
+    assert [r.text for r in held["remarks"]] == [r["text"] for r in everything]
+    assert held["n"] == 1 and held["at"] == clock.now  # the time is the last piece's
+    blocked = call.err("export", action="pdf")
+    assert "engineer report 1" in blocked and "9 remark(s)" in blocked and "eng1.1" in blocked and "eng1.9" in blocked
+    for n in range(1, 10):
+        call.ok("drawing", action="answer", id=f"eng1.{n}", text="applies: añadí el detalle que faltaba en la hoja")
+    assert "exported pdf" in call.ok("export", action="pdf")
+    again = call.ok("drawing", action="review_report", sheet="Drawing", by="engineer", items=everything[:1], reason=call.says("una sola"))
+    assert "engineer report 2" in again and "eng2.1" in again  # a call without append still replaces, as it always did
+    assert [r.id for r in fake.drawings["Drawing"]["reports"]["engineer"]["remarks"]] == ["eng2.1"]
+
+
+def test_an_append_with_no_report_yet_starts_one_and_never_holds_more_than_a_report_takes(
+    settings: Settings, clock: Clock
+) -> None:
+    call, fake = session_in(settings, "fabricator")
+    text = call.ok("drawing", action="review_report", sheet="Drawing", by="fabricator", items=[REMARK], append=True)
+    assert "fab1.1" in text and "this call added" not in text
+    ok = [{"text": f"punto {n}"} for n in range(29)]
+    call.ok("drawing", action="review_report", sheet="Drawing", by="fabricator", items=ok, append=True)  # 30 in all: the limit
+    over = call.err("drawing", action="review_report", sheet="Drawing", by="fabricator", items=[REMARK], append=True)
+    assert "at most 30" in over and "nothing was changed" in over
+    assert len(fake.drawings["Drawing"]["reports"]["fabricator"]["remarks"]) == 30
+
+
+def test_append_belongs_to_a_report_only(settings: Settings) -> None:
+    call, _ = session_in(settings, "fabricator")
+    assert "append belongs to review_report" in call.err("drawing", action="list", append=True)
 
 
 def test_the_engineer_chose_the_manufacturer_and_the_reply_says_to_launch_it(settings: Settings, clock: Clock) -> None:

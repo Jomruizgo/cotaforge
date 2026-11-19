@@ -45,7 +45,8 @@ PURPOSE: dict[str, str] = {
     "cut": "pocket the closed profiles of a sketch (removes material, blind or through)",
     "revolve": "revolve the profiles of a sketch about an axis (adds material)",
     "sweep": "sweep the profile of a sketch along a path (adds material)",
-    "hole": "drill a hole into a planar face at a world point (at) or a (u, v) position",
+    "hole": "drill a hole into a planar face at a world point (at) or a (u, v) position; ONE call also makes the "
+    "counterbore, the countersink, the tapped hole and the blind or angled-point end",
     "linear_pattern": "repeat features along one or two directions",
     "circular_pattern": "repeat features about an axis",
     "chamfer": "bevel the given edges",
@@ -54,6 +55,10 @@ PURPOSE: dict[str, str] = {
     "draft": "taper faces by a draft angle about a neutral plane",
     "mirror": "mirror features about a plane inside their body",
     "mirror_body": "mirror a whole body about a plane into a new body",
+    "shrink_body": "derive a LINKED, scaled copy of a body for a plastic's shrinkage (a mould cavity); the shrinkage and its source are mandatory",
+    "mould_split": "split the shrunk part's negative into the mould's cavity and core along the parting surface (and the slides its undercuts need); see inspect(action=parting) first",
+    "mould_component": "build a standard mould component from the DME catalogue (a 2-plate base kit, guide pin and bush, locating ring, sprue bush, ejector and return pins, angle pin, wear plate) as native parametric bodies carrying their catalogue reference; refs and sizes are listed in the guide",
+    "slide_mechanism": "add the carrier, T-gibs, angle pin, locking heel, ball detent and wear plate of a slide made by mould_split; refused unless the stroke clears the undercut, the heel is steeper than the pin and nothing interferes closed or open",
     "split": "split a body with a plane into two",
     "copy_body": "copy a body, optionally moved",
     "base_flange": "start a sheet-metal part: a sketch outline (holes inside it) becomes a flat sheet of a thickness",
@@ -110,6 +115,10 @@ EXAMPLES: dict[str, dict[str, Any]] = {
     "draft": {"faces": [_FACE_SIDE], "neutral": _PLANE_XY, "pull": "Z", "angle_deg": 3},
     "mirror": {"features": ["s3"], "plane": _PLANE_YZ},
     "mirror_body": {"source": _BODY, "plane": _PLANE_YZ},
+    "shrink_body": {"source": _BODY, "shrinkage_percent": 0.6, "factor_source": "resin datasheet"},
+    "mould_split": {"source": _BODY, "pull": "Z", "zero_draft_to": "cavity", "slides": "all"},
+    "mould_component": {"kind": "mould_base", "size": "1012", "at": [{"origin": [0, 0, 30], "axis": "Z"}]},
+    "slide_mechanism": {"split": "inserts", "slide": 1, "part": _BODY, "pull": "Z", "angle_deg": 15},
     "split": {"source": _BODY, "plane": _PLANE_XY, "keep": "both"},
     "copy_body": {"source": _BODY, "offset": [50, 0, 0]},
     "base_flange": {"sketch": "s1", "thickness_mm": 2},
@@ -161,7 +170,13 @@ FIELD_NOTES: dict[tuple[str, str], str] = {
     ("cut", "depth_mm"): "required when end_condition is blind",
     ("cut", "direction"): "negative = into the material for a sketch on a face",
     ("revolve", "axis"): "u|v (sketch axes) or the name of a line entity of the sketch; profile on ONE side of it",
-    ("hole", "position"): "(u, v) mm from the face CENTRE in the face frame, not world coordinates; or give at",
+    ("hole", "position"): "(u, v) mm in the face frame, not world coordinates, measured from the centre of the face's "
+    "BOUNDING BOX (it does not move when holes are drilled in the face; the centre of mass does). On an L-shaped or "
+    "notched face that point can lie outside the material: it is only the reference. Or give at",
+    ("hole", "positions"): "several holes in ONE call and one feature: a list of (u, v), each as position (e.g. the 4 "
+    "corners of a rectangular pattern); no two closer than one diameter; not with up_to_face",
+    ("hole", "bolt_circle"): "holes equally spaced on a circle in ONE feature: {diameter_mm (pitch circle), count, "
+    "center [u, v] (default [0, 0]), start_angle_deg (from +u towards +v, default 0)}",
     ("hole", "at"): "world point [x, y, z] mm instead of position: projected onto the face, refused (by how many mm) "
     "when outside it",
     ("hole", "size"): "required for iso_clearance / iso_tapped, e.g. M6",

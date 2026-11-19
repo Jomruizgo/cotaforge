@@ -14,10 +14,9 @@ What the page holds:
   (``drawing._sync_template_fields``); the overall dimensions are TechDraw dimension objects (``makeExtentDim``) and the
   views of a ``techdraw`` sheet are its own view objects: all native;
 * everything an item draws -- callouts with their leader and shelf, dimension lines (we decide how they stack), GD&T
-  frames, datum and finish symbols, tables, the section hatch, thread arcs -- is a ``DrawViewSymbol`` whose SVG is that
+  frames, datum and finish symbols, tables, the section hatch -- is a ``DrawViewSymbol`` whose SVG is that
   item's own drawing (``sheet_svg.fragment``), centred where the drawing sits on the page. TechDraw has dimension and
   leader objects, but they place their own lines and text, so the window would show something other than the PDF;
-* an ``hlr`` sheet has no view objects: its views are symbols of our projection too, so the window is never blank.
 
 Each object carries the key of the unit it mirrors (``CotaforgeKey``); a unit whose object already holds exactly the SVG
 and the position the sheet gives it is left alone, so adding one item to a sheet of thirty touches one object (and an
@@ -37,6 +36,8 @@ import sheet_model as sm
 import sheet_native
 import sheet_svg
 import sheet_units as su
+import sheet_weights as sw
+from sheet_draw import native_label
 
 PROP_KEY = "CotaforgeKey"
 PROP_NATIVE = "CotaforgeNative"
@@ -116,9 +117,7 @@ def tag_item(obj: Any, item_id: str, sheet: str) -> None:
 
 
 def _remove(fc_doc: Any, objects: list[Any]) -> None:
-    for obj in objects:
-        if fc_doc.getObject(obj.Name) is not None:
-            fc_doc.removeObject(obj.Name)
+    sheet_native.remove(fc_doc, objects)
 
 
 Guides = tuple[list[float], list[float]]
@@ -242,12 +241,11 @@ def page_position(page: Any, view: Any) -> tuple[float, float]:
 
 def _label_place(page: Any, obj: Any, info: dict[str, Any]) -> tuple[float, float]:
     """Where the label of the native dimension ``obj`` goes, in its view's own coordinates (y up): the dimension line is
-    the one the sheet draws, the label sits at its middle."""
+    the one the sheet draws, the label is put so that TechDraw lands its line there (``sheet_draw.native_label``)."""
     view = obj.Document.getObject(str(getattr(obj, PROP_VIEW)))
     vx, vy = page_position(page, view)
-    if info["orient"] == "h":
-        return float(info["mid"]) - vx, float(info["line"]) - vy
-    return float(info["line"]) - vx, float(info["mid"]) - vy
+    x, y = native_label(str(info["orient"]), float(info["mid"]), float(info["line"]))
+    return x - vx, y - vy
 
 
 def _split_native(page: Any, units: list[su.Unit]) -> tuple[list[su.Unit], list[su.Unit]]:
@@ -274,10 +272,16 @@ def _sync_overall(fc_doc: Any, page: Any, units: list[su.Unit], report: Report) 
         if abs(float(obj.X) - x) > POSITION_TOL_MM or abs(float(obj.Y) - y) > POSITION_TOL_MM:
             obj.X, obj.Y = x, y
             report.updated.append(key)
+        text = str(info.get("text", ""))
+        if text.startswith("Ø") and str(obj.FormatSpec) != text:
+            obj.Arbitrary = True  # the extent dimension measures a number: a diameter is written with its symbol
+            obj.FormatSpec = text
+            report.updated.append(key)
 
 
 def _symbols(objects: list[Any]) -> list[Any]:
-    return [o for o in objects if str(o.TypeId) == SYMBOL]
+    """The symbols of the harness's own drawing among a unit's objects (a library symbol the sheet inserted is native)."""
+    return [o for o in objects if str(o.TypeId) == SYMBOL and sheet_native.PROP_SIG not in o.PropertiesList]
 
 
 def symbol_unit(unit: su.Unit, native_ok: bool) -> su.Unit | None:
@@ -288,6 +292,32 @@ def symbol_unit(unit: su.Unit, native_ok: bool) -> su.Unit | None:
     if not unit.residue:
         return None
     return replace(unit, entities=unit.residue, natives=())
+
+
+WAIT_VIEWS_S = 60.0
+POLL_S = 0.05
+SETTLE_S = 0.3
+
+
+def _wait_computed(fc_doc: Any, page: Any) -> None:
+    """Return once every view of ``page`` is computed (nothing touched), running the Qt event loop between polls, as
+    ``drawing.wait_views`` does (this module cannot import it)."""
+    import time  # noqa: PLC0415
+
+    start = time.monotonic()
+    while True:
+        gui.pump()
+        views = [v for v in _view_objects(page) if hasattr(v, "getVisibleEdges")]
+        touched = [v for v in views if "Touched" in [str(x) for x in v.State]]
+        if not touched or time.monotonic() - start > WAIT_VIEWS_S:
+            break
+        fc_doc.recompute()
+        time.sleep(POLL_S)
+    if gui.available():
+        until = time.monotonic() + SETTLE_S
+        while time.monotonic() < until:
+            gui.pump()
+            time.sleep(POLL_S)
 
 
 def sync(fc_doc: Any, page: Any, units: list[su.Unit], page_h: float, sheet: str = "") -> Report:
@@ -306,8 +336,33 @@ def sync(fc_doc: Any, page: Any, units: list[su.Unit], page_h: float, sheet: str
         if key not in wanted:
             _remove(fc_doc, have.pop(key))
             report.removed.append(key)
-    report.fallbacks = sheet_native.sync(fc_doc, page, [u for u in units if u.natives], sheet, have, report)
+    # the views of the items first (a section, a detail): the cosmetic edges and the dimensions are made on them
+    views_failed, views_new = sheet_native.sync_views(
+        fc_doc, page, [u for u in units if su.view_of(u) is not None], sheet, have, report, lambda: _wait_computed(fc_doc, page)
+    )
+    units_native = [u for u in units if u.natives and u.key not in views_failed]
+    # the hidden edges of the views before the lines: a centre line hangs from the two sides of its hole, which are hidden
+    # edges in a view from the side, and TechDraw numbers the edges of a view again when it shows them
+    if sheet_native.sync_flags(page, units_native):
+        fc_doc.recompute()
+        _wait_computed(fc_doc, page)
+    # the cosmetic edges next: a dimension may measure one (the pitch circle of a bolt pattern), so its view must have it
+    drawn: list[str] = []
+    report.fallbacks = {**views_failed, **sheet_native.sync_cosmetics(page, units_native, drawn)}
+    if drawn or views_new:
+        fc_doc.recompute()
+        _wait_computed(fc_doc, page)  # the dimensions measure the edges of the views AS they are now: in the CAD window TechDraw
+        # finishes a view in the background, and a dimension made against the list it had before points at other edges
+        if sheet_native.verify_centre_lines(page, lambda: _wait_computed(fc_doc, page)):  # a centre line TechDraw drew elsewhere is a cosmetic line now
+            fc_doc.recompute()
+            _wait_computed(fc_doc, page)
+    report.fallbacks.update(
+        sheet_native.sync(
+            fc_doc, page, [u for u in units if u.natives and u.key not in report.fallbacks], sheet, have, report, views_new
+        )
+    )
     sheet_native.sync_flags(page, [u for u in units if u.natives and u.key not in report.fallbacks])
+    report.updated += [k for k in drawn if k not in report.touched()]  # the edges of a view are made or taken off
     have = owned(page)  # the native objects were made again: what is on the page now
     for unit in units:
         shown = symbol_unit(unit, unit.key not in report.fallbacks)
@@ -341,28 +396,51 @@ def _view_objects(page: Any) -> list[Any]:
     return out
 
 
+def _set_width(vo: Any, prop: str, width: float) -> None:
+    if hasattr(vo, prop) and abs(float(getattr(vo, prop)) - width) > 1e-6:
+        setattr(vo, prop, width)
+
+
+def _geom_hatches(page: Any) -> list[Any]:
+    return [o for o in page.Document.Objects if str(o.TypeId) == "TechDraw::DrawGeomHatch"]
+
+
 def apply_weights(page: Any) -> None:
-    """ISO 128 line weights on TechDraw's own objects (they live on the view providers, so only in the GUI): the visible
-    outline of a view is thick (0.5 mm); hidden, smooth and iso lines and every dimension line are thin -- the same
-    hierarchy the PDF has."""
+    """The line weights of ``sheet_weights`` on TechDraw's own objects (they live on the view providers, so only in the GUI):
+    the views (visible, hidden, tangent and extra widths, the hatch of a section), the dimensions, balloons and leaders. The
+    page then carries ``PROP_MARK``, which the visible CAD reads to set a file written without a window."""
+    done = False
     for obj in _view_objects(page):
         vo = getattr(obj, "ViewObject", None)
         if vo is None:
             continue
-        for prop, width in (
-            ("LineWidth", sm.THICK_MM if "Dim" not in str(obj.TypeId) else sm.THIN_MM),
-            ("HiddenWidth", sm.THIN_MM),
-            ("IsoWidth", sm.HAIR_MM),
-            ("ExtraWidth", sm.THIN_MM),
-        ):
-            if hasattr(vo, prop) and abs(float(getattr(vo, prop)) - width) > 1e-6:
-                setattr(vo, prop, width)
+        done = True
+        if hasattr(vo, "HiddenWidth"):
+            for prop, kind in sw.VIEW_PROPS.items():
+                _set_width(vo, prop, sw.weight(kind))
+            _set_width(vo, sw.SECTION_PROP, sw.weight(sw.HATCH))
+        else:
+            _set_width(vo, "LineWidth", sw.weight(sw.DIMENSION))
         if (
             "Dim" in str(obj.TypeId)
             and hasattr(vo, "Fontsize")
             and abs(float(vo.Fontsize) - sheet_native.FONT_MM) > 1e-6
         ):
             vo.Fontsize = sheet_native.FONT_MM  # the 3.5 mm of ISO 3098, as every other text of the sheet
+    for hatch in _geom_hatches(page):
+        vo = getattr(hatch, "ViewObject", None)
+        if vo is not None:
+            _set_width(vo, sw.SECTION_PROP, sw.weight(sw.HATCH))
+    if done and (sw.PROP_MARK not in page.PropertiesList or str(getattr(page, sw.PROP_MARK)) != sw.MARK_VALUE):
+        if sw.PROP_MARK not in page.PropertiesList:
+            page.addProperty("App::PropertyString", sw.PROP_MARK, sheet_native.GROUP, "The line weights the view providers carry")
+            page.setEditorMode(sw.PROP_MARK, 1)
+        setattr(page, sw.PROP_MARK, sw.MARK_VALUE)
+
+
+def weights_set(page: Any) -> bool:
+    """Whether a window has set the table on this page (``PROP_MARK``): False for a sheet the headless CAD made or saved."""
+    return sw.PROP_MARK in page.PropertiesList and str(getattr(page, sw.PROP_MARK)) == sw.MARK_VALUE
 
 
 def line_weights(page: Any) -> dict[str, float]:
@@ -373,12 +451,47 @@ def line_weights(page: Any) -> dict[str, float]:
         vo = getattr(obj, "ViewObject", None)
         if vo is None or not hasattr(vo, "LineWidth"):
             continue
-        if "Dim" in str(obj.TypeId):
+        if not hasattr(vo, "HiddenWidth"):
             found["dimension"] = float(vo.LineWidth)
-        elif hasattr(vo, "HiddenWidth"):
+        else:
             found["outline"] = float(vo.LineWidth)
             found["thin"] = float(vo.HiddenWidth)
+            found["tangent"] = float(vo.IsoWidth)
+            if hasattr(vo, sw.SECTION_PROP):
+                found["hatch"] = float(getattr(vo, sw.SECTION_PROP))
     return found
+
+
+def weight_readings(page: Any) -> list[tuple[str, str | None, float]]:
+    """``(object, kind, width)`` of every width the page's native objects carry: the view providers' (GUI only) against the
+    kind each one draws, and the ``Format`` of every cosmetic edge and centre line (the CAD without a window has these only),
+    against any width of the table."""
+    out: list[tuple[str, str | None, float]] = []
+    for obj in _view_objects(page):
+        name = str(obj.Label)
+        vo = getattr(obj, "ViewObject", None)
+        if vo is not None and hasattr(vo, "LineWidth"):
+            if hasattr(vo, "HiddenWidth"):
+                out += [(name, kind, float(getattr(vo, prop))) for prop, kind in sw.VIEW_PROPS.items() if hasattr(vo, prop) and prop != "ExtraWidth"]
+                if hasattr(vo, sw.SECTION_PROP):
+                    out.append((name, sw.HATCH, float(getattr(vo, sw.SECTION_PROP))))
+            else:
+                out.append((name, sw.DIMENSION, float(vo.LineWidth)))
+        for attr in ("CosmeticEdges", "CenterLines"):
+            try:
+                edges = list(getattr(obj, attr, None) or [])
+            except Exception:  # noqa: BLE001 - a property this FreeCAD does not have
+                continue
+            for edge in edges:
+                fmt = getattr(edge, "Format", None)
+                if isinstance(fmt, dict) and "weight" in fmt:
+                    out.append((name, None, float(fmt["weight"])))
+    return out
+
+
+def off_table(page: Any) -> list[str]:
+    """What on the page carries a width outside the table, as lines for the review (``sheet_weights.off_table``)."""
+    return sw.off_table(weight_readings(page))
 
 
 # --- the check: the window against the sheet model -----------------------------------------------------------------
@@ -409,6 +522,9 @@ def _compare_overall(page: Any, held: list[su.Unit]) -> list[str]:
     for name, info in wanted.items():
         obj = present.get(f"overall:{name}")
         if obj is None:
+            continue
+        if obj.Document.getObject(str(getattr(obj, PROP_VIEW))) is None:  # the engineer deleted the view it measured
+            problems.append(f"overall {name}: the view it measures is gone from the page")
             continue
         x, y = _label_place(page, obj, info)
         if abs(float(obj.X) - x) > POSITION_TOL_MM or abs(float(obj.Y) - y) > POSITION_TOL_MM:
@@ -454,7 +570,34 @@ def page_crosses(page: Any, page_h: float) -> list[tuple[float, float]]:
                 for a, b, c, d in _PATH.findall(group.group(0))
             ]
             found += crosses(lines)
-    return found
+    return found + _cosmetic_crosses(page)
+
+
+def _cosmetic_crosses(page: Any) -> list[tuple[float, float]]:
+    """The centre marks that live on the views as centre lines or cosmetic edges (``sheet_native.sync_cosmetics``), in page mm."""
+    lines: list[tuple[float, float, float, float]] = []
+    for name in sheet_native.view_names(page):
+        view = sheet_native.view_object(page, name)
+        if view is None:
+            continue
+        frame = sheet_native.Frame(page, view)
+        for a, b, c, d in sheet_native.centre_line_segments(view):  # a mark whose bars are TechDraw's centre-line objects
+            lines.append((frame.x + a * frame.scale, frame.y + b * frame.scale, frame.x + c * frame.scale, frame.y + d * frame.scale))
+        for edge in view.CosmeticEdges:
+            if edge.Format.get("style") != sheet_native.ISO_STYLE["centre"]:
+                continue
+            kind, values = sheet_native._cosmetic_geometry(edge)  # noqa: SLF001 - the one reader of a cosmetic edge
+            if kind != "line":
+                continue
+            lines.append(
+                (
+                    frame.x + values[0] * frame.scale,
+                    frame.y + values[1] * frame.scale,
+                    frame.x + values[2] * frame.scale,
+                    frame.y + values[3] * frame.scale,
+                )
+            )
+    return crosses(lines)
 
 
 def compare(page: Any, units: list[su.Unit], page_h: float) -> list[str]:
@@ -469,6 +612,9 @@ def compare(page: Any, units: list[su.Unit], page_h: float) -> list[str]:
         problems.append(f"{key}: on the page but not on the sheet")
     for whole in units:
         objects = have.get(whole.key)
+        if not objects and sheet_native.only_view_bound(whole):
+            problems += sheet_native.cosmetic_problems(page, whole) + sheet_native.flag_problems(page, whole)
+            continue
         if not objects:
             problems.append(f"{whole.key}: on the sheet but not on the page")
             continue

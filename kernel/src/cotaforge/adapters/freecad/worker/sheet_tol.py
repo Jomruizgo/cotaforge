@@ -1,7 +1,6 @@
 """Tolerances on a dimension as sheet text (no FreeCAD import): the ``fit`` / ``tol`` / ``show`` fields that
 ``hole_dim`` and ``dim`` share, what they print (``Ø8 H7 (+0,015/0)``, ``20 +0,1/-0,05``, ``Ø8,015 / 8``), the ISO
-2768 general tolerance that applies to a dimension with none of its own, and the note a sheet carries while the ISO
-tables are only transcribed.
+2768 general tolerance that applies to a dimension with none of its own.
 
 A tolerance is a property of a dimension, not a drawing element of its own, so it is a field of the dimension that
 shows the value (the number always comes from the model; the tolerance is the engineer's requirement). Deviations are
@@ -13,12 +12,10 @@ from typing import Any
 
 import iso286
 import iso2768
-import sheet_collide
 from sheet_context import Check, Context, ItemError, v_enum
-from sheet_model import DIMENSIONS, TEXT, Text, text_width
+from sheet_model import DIMENSIONS, Text, text_width
 
 SHOWS = ("symbol", "deviations", "both", "limits")
-NOTE_HEIGHT = 2.5
 DEV_DECIMALS = 4
 
 
@@ -235,38 +232,3 @@ def general_notes(ctx: Context, kind: str, sizes: dict[str, float]) -> str:
         ctx.extras["iso2768_said"] = True
         phrase += f" [{iso2768.TRANSCRIPTION_NOTE['es' if ctx.comma else 'en']}]"
     return f"; {phrase}"
-
-
-# --- the note a sheet carries while the tables are transcribed -------------------------------------------------------
-
-
-def mark_iso286(ctx: Context) -> None:
-    """Record that the sheet shows a limit deviation out of the ISO 286 tables (call it once the item is drawn)."""
-    ctx.extras["iso286"] = True
-
-
-def footnotes(ctx: Context) -> None:
-    """After all items: the transcription note when a fit was used, in the first free corner of the drawing area."""
-    if not ctx.extras.get("iso286") or not iso286.SHOW_TRANSCRIPTION_NOTE:
-        return
-    text = iso286.TRANSCRIPTION_NOTE["es" if ctx.language == "es" else "en"]
-    left, low, right, top = ctx.area
-    width = text_width(text, NOTE_HEIGHT)
-    y_top = top - 3.0
-    candidates = [(left + 2.0, y_top), (right - width - 2.0, y_top), (right - width - 2.0, low + 1.0)]
-    for step in range(1, 40):  # then down the two margins, wherever there is room
-        y = y_top - 6.0 * step
-        if y < low + 1.0:
-            break
-        candidates += [(left + 2.0, y), (right - width - 2.0, y)]
-    ink = sheet_collide.ink_of("sheet", ctx.sheet.entities)
-    for x, y in candidates:
-        rect = (x, y - 0.5, x + width, y + NOTE_HEIGHT + 0.5)
-        if ctx.free(rect) and not any(sheet_collide.segment_hits_rect(seg, rect) for seg in ink.lines):
-            break
-    else:
-        x, y = candidates[0]
-        rect = (x, y - 0.5, x + width, y + NOTE_HEIGHT + 0.5)
-        ctx.warnings.append("the ISO 286 transcription note overlaps something on the sheet")
-    ctx.reserve(rect)
-    ctx.add([Text(x, y, text, NOTE_HEIGHT, TEXT, "left")])

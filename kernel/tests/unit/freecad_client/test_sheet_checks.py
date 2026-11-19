@@ -68,6 +68,14 @@ def test_a_plain_hole_of_a_dowel_size_asks_for_its_fit() -> None:
     assert 'fit="H7"' in named[0].message
 
 
+def test_a_callout_prints_the_fit_the_hole_declared_so_it_closes_the_finding_too() -> None:
+    declared = [sc.HoleInfo(0, (20.0, 20.0, 8.0), (0.0, 0.0, -1.0), 6.0, 8.0, True, ("face:h0",), None, True, None, "H7", "precision", 8)]
+    bare = run_review(views_context(declared), {"type": "overall"})
+    assert found("fit_hole_no_tolerance", bare)  # nothing calls it out yet
+    called = run_review(views_context(declared), {"type": "overall"}, {"type": "hole_dim", "all": True})
+    assert found("fit_hole_no_tolerance", called) == []
+
+
 def test_a_toleranced_callout_closes_the_fit_finding() -> None:
     findings = run_review(views_context(dowels()), {"type": "overall"}, {"type": "hole_dim", "all": True, "fit": "H7"})
     assert found("fit_hole_no_tolerance", findings) == []
@@ -298,6 +306,24 @@ def test_a_threaded_hole_no_view_sees_square_on_has_no_thread_representation() -
     assert found("thread_no_representation", run_review(ctx, {"type": "overall"})) == []
 
 
+def test_a_thread_arc_the_engineer_drew_by_hand_on_the_page_is_a_representation() -> None:
+    """TechDraw's *Cosmetic thread* command leaves a cosmetic arc concentric with the hole and wider than it: the check reads the
+    page, so such an arc counts, and a circle of the hole's own size, one far too wide or one off the hole does not."""
+    ctx = views_context([hole(0, 10.0, 10.0, 5.0, thread=("M6", 8.0))])
+    (threaded,) = ctx.holes
+    top = ctx.views["top"]
+    cx, cy = top.project(threaded.centre)
+    r = threaded.diameter / 2 * top.scale
+    assert found("thread_no_representation", run_review(ctx, {"type": "overall"}))  # nothing drawn: the finding
+    for circle in ((cx, cy, r), (cx, cy, 3 * r), (cx + 5.0, cy, r / 0.85)):
+        ctx.extras["page_circles"] = [("top", *circle)]
+        assert found("thread_no_representation", run_review(ctx, {"type": "overall"}))
+    ctx.extras["page_circles"] = [("front", cx, cy, r / 0.85)]  # in a view that does not look along the hole
+    assert found("thread_no_representation", run_review(ctx, {"type": "overall"}))
+    ctx.extras["page_circles"] = [("top", cx, cy, r / 0.85)]  # what the command draws
+    assert found("thread_no_representation", run_review(ctx, {"type": "overall"})) == []
+
+
 # --- ids and the questions ----------------------------------------------------------------------------------------------------------
 
 
@@ -333,7 +359,7 @@ def test_the_questions_of_judgement_keep_only_what_no_memory_principle_asks_and_
     data = review.ReviewInput([], {}, ctx, ctx.sheet)
     assert [q.id for q in checks.judgement(data)] == base
     ctx.extras["facts"] = checks.PartFacts(sheet_metal=True)
-    assert [q.id for q in checks.judgement(data)] == [*base, "q.sheet_metal"]
+    assert [q.id for q in checks.judgement(data)] == base  # the bends are a row of the table of requirements
     english = views_context([])
     english.language = "en"
     assert (
@@ -344,3 +370,40 @@ def test_the_questions_of_judgement_keep_only_what_no_memory_principle_asks_and_
 def test_the_review_still_finds_what_it_found_before() -> None:
     findings = run_review(views_context(), {"type": "overall"})
     assert len(found("hole_no_callout", findings)) == 4 and len(found("hole_not_located", findings)) == 4
+
+
+def test_a_note_that_states_the_material_while_the_title_block_has_none_says_to_fill_the_title_block() -> None:
+    note = {"type": "note", "text": "Material: AISI 1045, lámina rectificada."}
+    (finding,) = found("material_only_in_note", run_review(views_context([]), {"type": "overall"}, note))
+    assert finding.severity == "warning" and finding.items == ("n2",) and "AISI 1045" in finding.message and "rótulo" in finding.message
+    ctx = views_context([])
+    ctx.extras["fields"] = {"part_material": "AISI 1045"}
+    assert found("material_only_in_note", run_review(ctx, {"type": "overall"}, note)) == []  # the title block has it: no finding
+
+
+def test_a_note_that_sends_another_datum_to_the_title_block_needs_it_there() -> None:
+    note = {"type": "note", "text": "Tolerancias generales según rótulo"}
+    ctx = views_context([])
+    ctx.extras["fields"] = {"general_tolerances": "", "part_material": "AISI 1045"}
+    (finding,) = found("title_block_field_empty", run_review(ctx, {"type": "overall"}, note))
+    assert finding.severity == "warning" and finding.items == ("n2",) and "general_tolerances" in finding.message
+    assert "title_block_field_empty" not in checks.NON_BLOCKING  # a note that points at nothing holds the export
+    filled = views_context([])
+    filled.extras["fields"] = {"general_tolerances": "ISO 2768-mK"}
+    assert found("title_block_field_empty", run_review(filled, {"type": "overall"}, note)) == []
+    other = views_context([])
+    other.extras["fields"] = {"general_tolerances": ""}
+    plain = {"type": "note", "text": "Tolerancias generales ISO 2768-mK"}  # it says them: it does not point anywhere
+    assert found("title_block_field_empty", run_review(other, {"type": "overall"}, plain)) == []
+
+
+def test_a_note_that_sends_the_drawing_number_or_the_company_to_an_empty_field_is_flagged_once_each() -> None:
+    ctx = views_context([])
+    ctx.extras["fields"] = {"drawing_number": "", "legal_owner_1": "", "creator": "JR"}
+    notes = (
+        {"type": "note", "text": "Número de plano según rótulo"},
+        {"type": "note", "text": "Empresa: ver rótulo"},
+        {"type": "note", "text": "Dibujó: ver rótulo"},
+    )
+    keys = sorted(f.key for f in found("title_block_field_empty", run_review(ctx, {"type": "overall"}, *notes)))
+    assert len(keys) == 2 and keys[0].endswith(":drawing_number") and keys[1].endswith(":legal_owner_1")  # the creator is filled

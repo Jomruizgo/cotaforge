@@ -40,6 +40,7 @@ from typing import Any
 from cotaforge import paths
 from cotaforge.language import say
 
+from cotaforge_mcp import engineer_orders
 from cotaforge_mcp.design_memory import workspace_language
 from cotaforge_mcp.drawing_window import (
     AGENT_RE,
@@ -99,20 +100,32 @@ def _checked_name(name: str | None) -> str:
 @contextlib.contextmanager
 def _locked(lock: Path, wait_s: float = LOCK_WAIT_S, stale_s: float = LOCK_STALE_S) -> Iterator[None]:
     """One writer at a time across processes: the lock is a file made with ``O_EXCL``. A lock whose file is older than
-    ``stale_s`` belongs to a process that died inside the section: it is taken over."""
+    ``stale_s`` belongs to a process that died inside the section: it is taken over.
+
+    On Windows a file that was just deleted stays in the folder, "delete pending", until every handle to it is closed
+    (another session looking at it, a virus scanner, the indexer), and so does a file its owner still has open. Opening,
+    reading or deleting such a file does not fail with "exists" or "not found": it fails with ``PermissionError``. That
+    is the lock being busy, not a refusal, so it is waited for like any held lock. A ``PermissionError`` that lasts
+    (a folder that cannot be written) still ends as itself when the wait is over, not as a lock held by someone."""
     lock.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + wait_s
     while True:
         try:
             descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
+        except (FileExistsError, PermissionError) as refused:
             try:
                 if time.time() - lock.stat().st_mtime > stale_s:
                     lock.unlink()
                     continue
             except FileNotFoundError:
+                if time.monotonic() > deadline:
+                    raise refused from None  # nothing holds it and it still cannot be made
                 continue  # its holder just let go
+            except PermissionError:
+                pass  # delete pending or still open: look again
             if time.monotonic() > deadline:
+                if isinstance(refused, PermissionError) and not _is_there(lock):
+                    raise
                 raise ToolError(
                     f"{lock.name} is held by another session for too long; try again", code="busy"
                 ) from None
@@ -124,8 +137,29 @@ def _locked(lock: Path, wait_s: float = LOCK_WAIT_S, stale_s: float = LOCK_STALE
     try:
         yield
     finally:
-        with contextlib.suppress(FileNotFoundError):
+        _release(lock)
+
+
+def _is_there(path: Path) -> bool:
+    """Whether the file is in the folder; a file that cannot even be looked at (delete pending) is."""
+    try:
+        return path.exists()
+    except OSError:
+        return True
+
+
+def _release(lock: Path) -> None:
+    """Delete the lock. On Windows the delete is refused while someone has the file open (a session that is checking
+    whether it is stale, a scanner): try again for a moment. A lock that stays is taken over as stale later."""
+    for _ in range(100):
+        try:
             lock.unlink()
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            time.sleep(0.02)
+        else:
+            return
 
 
 def read_events(log: Path) -> list[dict[str, Any]]:
@@ -370,7 +404,7 @@ def _ask(workspace: Path, args: ChannelArgs, name: str) -> Reply:
     return ok(
         f"question {event['q']} recorded (n={event['n']}). Keep drawing what does not depend on it, then "
         f'channel(action="wait", role="drafter", name="{name}", since={event["n"]}) for the reply; if the engineer '
-        f'answers in this session first, record his words with channel(action="reply", by="engineer", q={event["q"]}).'
+        f'answers in this session first, record his words with channel(action="reply", by="engineer", q={event["q"]}): Claude Code asks him to confirm it.'
     )
 
 
@@ -395,6 +429,8 @@ def _reply(workspace: Path, args: ChannelArgs, name: str) -> Reply:
             code="not_allowed",
             field_name="by",
         )
+    if args.by == "engineer":
+        engineer_orders.confirmed(f"the engineer's reply to question {args.q}")
     fields = {"kind": "reply", "via": role, "by": args.by, "q": args.q, "text": text}
     event = _append(workspace, name, fields, _about(args, name))
     return ok(f"reply to {event['q']} recorded (n={event['n']}); the question is answered, not decided.")
@@ -419,6 +455,7 @@ def _decide(workspace: Path, args: ChannelArgs, name: str) -> Reply:
         raise ToolError(
             "decide needs q and is always the engineer's decision (by=engineer)", code="invalid_input", field_name="by"
         )
+    engineer_orders.confirmed(f"the engineer's decision on question {args.q}")
     fields = {
         "kind": "decide",
         "via": role,

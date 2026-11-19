@@ -7,14 +7,17 @@ These are the drawing blocks the items (``items_*.py``) compose; they know nothi
 
 import math
 
+import sheet_weights as sw
 from sheet_model import (
     AXES,
+    CENTRE_OVERSHOOT_MM,
     DIMENSIONS,
     TEXT,
     TITLE_BLOCK,
     Arc,
     Entity,
     Line,
+    Polyline,
     Solid,
     Text,
     text_width,
@@ -29,8 +32,24 @@ LINE_STEP_MM = (
     7.9  # between the lines of a multi-line callout: TechDraw spaces a dimension's lines 2.25 text heights (measured)
 )
 SHELF_MM = 4.0
+LABEL_LIFT_MM = 3.5  # TechDraw sets a dimension line this far from the label (the text) it is given: measured on the sheet it printed, 6.5 mm from the outline for the 10 mm the sheet drew
 Point = tuple[float, float]
 Rect = tuple[float, float, float, float]
+
+
+def lifted_label(orient: str, label: Point) -> Point:
+    """Where TechDraw's own linear dimension object takes the label the sheet puts at ``label`` (the middle of a horizontal
+    dimension on its line, the middle of a vertical one on its line) so that its dimension line lands ON the line the sheet
+    draws: the text stands on the line (above a horizontal one, left of a vertical one, read from the right), and TechDraw puts
+    the line ``LABEL_LIFT_MM`` off the label it is given, so the label goes that far to the text's side."""
+    if orient == "h":
+        return label[0], label[1] + LABEL_LIFT_MM
+    return label[0] - LABEL_LIFT_MM, label[1]
+
+
+def native_label(orient: str, mid: float, line: float) -> Point:
+    """``lifted_label`` of the overall dimension that runs ``mid`` along its ``line``."""
+    return lifted_label(orient, (mid, line) if orient == "h" else (line, mid))
 
 
 def arrow(tip: Point, direction: Point) -> Solid:
@@ -165,8 +184,8 @@ def leader(tip: Point, elbow: Point, lines: list[str], side: str, height: float 
 
 
 def centre_mark(cx: float, cy: float, r: float) -> list[Entity]:
-    """The cross of a circle's centre lines, reaching 2 mm beyond the circle."""
-    reach = r + 2.0
+    """The cross of a circle's centre lines, reaching ``CENTRE_OVERSHOOT_MM`` (3 mm on paper) beyond the circle."""
+    reach = r + CENTRE_OVERSHOOT_MM
     return [Line(cx - reach, cy, cx + reach, cy, AXES), Line(cx, cy - reach, cx, cy + reach, AXES)]
 
 
@@ -224,13 +243,13 @@ def table(
     if title:
         out.append(Text(x + 1.0, y_top - row_height + 1.8, title, text_height + 0.5, TITLE_BLOCK, "left"))
     bottom = top - count * row_height
-    out.append(Line(x, top, x + total, top, TITLE_BLOCK, 0.35))
+    out.append(Line(x, top, x + total, top, TITLE_BLOCK, sw.weight(sw.TITLE_BLOCK)))
     for index in range(count + 1):
-        out.append(Line(x, top - index * row_height, x + total, top - index * row_height, TITLE_BLOCK, 0.25))
+        out.append(Line(x, top - index * row_height, x + total, top - index * row_height, TITLE_BLOCK, sw.weight(sw.TABLE_GRID)))
     edge = x
     for width in [0.0, *widths]:
         edge += width
-        out.append(Line(edge, top, edge, bottom, TITLE_BLOCK, 0.25))
+        out.append(Line(edge, top, edge, bottom, TITLE_BLOCK, sw.weight(sw.TABLE_GRID)))
     for r, cells in enumerate([header, *rows]):
         left = x
         for width, cell in zip(widths, cells, strict=False):
@@ -238,3 +257,29 @@ def table(
             left += width
     box = (x, bottom, x + total, y_top)
     return out, box
+
+
+EXACT_PAD_MM = 1.0
+
+
+def exact_box(entities: list[Entity]) -> None:
+    """Draw the frame ISO 1101 / 5458 puts round a theoretically exact dimension (a basic size, the location of a feature
+    with a position tolerance): a closed box round the value text of ``entities`` (a dimension's), turned with the text."""
+    index = max((i for i, e in enumerate(entities) if isinstance(e, Text)), default=None)
+    if index is None:
+        return
+    text: Text = entities[index]
+    width = text_width(text.text, text.height)
+    left = {"left": 0.0, "center": -width / 2, "right": -width}.get(text.anchor, 0.0)
+    low, high = -EXACT_PAD_MM, text.height + 0.2
+    angle = math.radians(text.angle)
+    ux, uy = math.cos(angle), math.sin(angle)
+    corners = []
+    for u, v in (
+        (left - EXACT_PAD_MM, low),
+        (left + width + EXACT_PAD_MM, low),
+        (left + width + EXACT_PAD_MM, high),
+        (left - EXACT_PAD_MM, high),
+    ):
+        corners.append((text.x + u * ux - v * uy, text.y + u * uy + v * ux))
+    entities.append(Polyline(tuple(corners), text.layer, closed=True))

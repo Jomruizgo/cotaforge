@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.conftest import Cad, pending_points, running_server
+from tests.integration.conftest import Cad, order, pending_points, pending_rows, running_server
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="the visible FreeCAD window is exercised on Windows")
 
@@ -65,11 +65,14 @@ async def make_plate(cad: Cad, dowel_fit: str | None = None) -> None:
 
 
 async def declare_references(cad: Cad) -> None:
-    """What the engineer says of this plate: it is symmetric across x (the sheet counts x from that plane by itself) but not
-    across y, so the positions along y are counted from the front face. Without a reference the default location asks."""
+    """What the engineer says of this plate: its design is symmetric (``symmetry=true``: the sheet counts x from the plane of
+    symmetry the shape has across x by itself; the shape is never taken for intent) but not across y, so the positions along
+    y are counted from the front face. Without a reference the default location asks."""
     faces = await cad.ok("inspect", action="faces", op="base")
     front = next(line.split()[0] for line in faces.splitlines() if "n(0, -1, 0)" in line)
-    await cad.ok("drawing", action="add", items=[{"type": "datum", "id": "dC", "letter": "C", "face": front}])
+    datum = {"type": "datum", "id": "dC", "letter": "C", "face": front}
+    await cad.ok("drawing", action="add", items=[datum])
+    await cad.ok("drawing", action="update", symmetry=True)
 
 
 class Transcript:
@@ -95,7 +98,7 @@ async def test_a_plate_drawing_is_refused_until_it_is_finished_then_written_and_
     async with running_server(workspace, visible=True) as (cad, _):
         await make_plate(cad)
         await cad.ok(
-            "memory", action="brief", drawing_review="propio", text="Ana: el agente revisa el plano por su cuenta"
+            "memory", action="brief", drawing_review="propio", text=cad.says("el agente revisa el plano por su cuenta")
         )
 
         # 1. a deliberately incomplete drawing: no material, no notes, the dowels not called out
@@ -133,16 +136,16 @@ async def test_a_plate_drawing_is_refused_until_it_is_finished_then_written_and_
         for question in ("q.callouts", "q.line_weights"):  # the rest are memory principles, asked once
             assert question in review, question
         for gone in ("q.views", "q.sections", "q.dimensions", "q.tolerances", "q.fab_notes"):
-            assert gone not in review, gone
+            assert not re.search(rf"^  {re.escape(gone)}: ", review, re.M), gone  # a question line ("row req.dimensions" is not it)
         assert "drawing-manufacturing-data-in-title-block" in review and "[NOT read: memory get first]" in review
         assert "export of this sheet is REFUSED" in review
 
         # 3. the export is refused and lists exactly what is missing; nothing is written
         refused = await cad.err("export", action="pdf", path="placa19.pdf")
         out.say("export pdf (refused)", refused)
-        assert "drawing_unfinished" in refused and "hole_no_callout:@-38,22," in refused
+        assert "drawing_unfinished" in refused and "req.dimensions" in refused  # the callouts findings are the row of the table
         assert (
-            "notes_material:material" in refused
+            "req.title_block" in refused  # the finding notes_material is a row of the table
             and "q.callouts" in refused
             and "drawing-manufacturing-data-in-title-block" in refused
         )
@@ -175,6 +178,8 @@ async def test_a_plate_drawing_is_refused_until_it_is_finished_then_written_and_
             assert gone not in after_fixes, gone
         assert "notes_heat_treatment" in after_fixes  # still to be answered
         await out.shot(cad, "02_corregido.png")
+        if "view_adds_nothing:right" in after_fixes:  # the side view of a plate adds nothing: "applies" does not close it, the view goes
+            await cad.ok("drawing", action="remove_view", views=["right"])
 
         # ... and answer the rest: some "no aplica" with their reason, the memory ones after reading them
         findings, questions, memory = await pending_points(cad)
@@ -202,6 +207,14 @@ async def test_a_plate_drawing_is_refused_until_it_is_finished_then_written_and_
                 text="no aplica: una placa sin soldadura ni asientos de rodamiento",
             )
             assert f"answered: {entry}" in answered
+        for row in await pending_rows(cad):  # the table of requirements: the open rows are answered too, on the engineer's word
+            await cad.ok(
+                "drawing",
+                action="answer",
+                id=row,
+                text="no aplica: la nota de la hoja y el archivo de intención ya lo dicen",
+                **order(cad),
+            )
         done = await cad.ok("drawing", action="review")
         out.say("review after the answers", done)
         assert "export of this sheet is open" in done and "answered (the engineer reads these)" in done
@@ -227,7 +240,7 @@ async def test_a_plate_drawing_is_refused_until_it_is_finished_then_written_and_
 
         # 8. the engineer approves; "Aprobó" is filled and a change of the sheet empties it
         approved = await cad.ok(
-            "drawing", action="approve", sheet="Drawing", by="Engineer", reason="the engineer: approve it"
+            "drawing", action="approve", sheet="Drawing", by="Engineer", reason=cad.says("I approve this drawing")
         )
         out.say("approve", approved)
         listed = await cad.ok("drawing", action="list")

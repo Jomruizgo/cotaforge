@@ -40,12 +40,16 @@ import geometry as g
 import gui
 import hole_colours
 import holes
+import mould
+import mould_parts
+import mould_split
 import ops_assembly
 import ops_features
 import ops_joints
 import ops_native
 import ops_primitives
 import ops_sheetmetal
+import ops_threads
 import overlap
 import persist
 import queries
@@ -53,6 +57,7 @@ import recorder
 import registry as reg
 import reporting
 import sketches
+import slide_mech
 import validate
 import watch
 import windows
@@ -80,6 +85,7 @@ MUTATING_METHODS = frozenset(
         "revolve",
         "sweep",
         "hole",
+        "external_thread",
         "linear_pattern",
         "circular_pattern",
         "chamfer",
@@ -96,6 +102,10 @@ MUTATING_METHODS = frozenset(
         "move_body",
         "copy_body",
         "mirror_body",
+        "shrink_body",
+        "mould_split",
+        "mould_component",
+        "slide_mechanism",
         "split",
         "edit_feature",
         "remove_feature",
@@ -277,6 +287,7 @@ class Worker:
             "revolve": lambda p: ops_features.revolve(d(p), p),
             "sweep": lambda p: ops_features.sweep(d(p), p),
             "hole": lambda p: ops_features.hole(d(p), p),
+            "external_thread": lambda p: ops_threads.external_thread(d(p), p),
             "linear_pattern": lambda p: ops_features.linear_pattern(d(p), p),
             "circular_pattern": lambda p: ops_features.circular_pattern(d(p), p),
             "chamfer": lambda p: ops_features.chamfer(d(p), p),
@@ -293,6 +304,10 @@ class Worker:
             "move_body": lambda p: ops_primitives.move_body(d(p), p),
             "copy_body": lambda p: ops_primitives.copy_body(d(p), p),
             "mirror_body": lambda p: ops_primitives.mirror_body(d(p), p),
+            "shrink_body": lambda p: ops_primitives.shrink_body(d(p), p),
+            "mould_split": lambda p: mould_split.mould_split(d(p), p),
+            "mould_component": lambda p: mould_parts.mould_component(d(p), p),
+            "slide_mechanism": lambda p: slide_mech.slide_mechanism(d(p), p),
             "split": lambda p: ops_primitives.split(d(p), p),
             "edit_feature": lambda p: edit.edit_feature(d(p), p),
             "measure_bodies": lambda p: edit.measure_bodies(d(p), p),
@@ -323,6 +338,8 @@ class Worker:
             "is_valid": lambda p: queries.is_valid(d(p), p),
             "body_interference": lambda p: queries.body_interference(d(p), p),
             "list_holes": lambda p: holes.list_holes(d(p), p),
+            "draft_analysis": lambda p: mould.draft_analysis(d(p), p),
+            "parting_analysis": lambda p: mould_split.parting_analysis(d(p), p),
             "tool_overlap": lambda p: overlap.tool_overlap(d(p), p),
             "mass_properties": lambda p: queries.mass_properties(d(p), p),
             "bounding_box": lambda p: queries.bounding_box(d(p), p),

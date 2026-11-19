@@ -132,7 +132,7 @@ def test_a_dimension_is_not_judged_against_its_own_lines_nor_across_views() -> N
     assert crossing(d30, other_view) == []
 
 
-def test_the_review_reports_the_crossing_with_the_free_side_and_never_holds_an_export() -> None:
+def test_the_review_reports_the_crossing_with_the_free_side_and_holds_the_export() -> None:
     from sheet_checks import NON_BLOCKING
 
     view = sc.ViewInfo(
@@ -147,7 +147,7 @@ def test_the_review_reports_the_crossing_with_the_free_side_and_never_holds_an_e
     found = [f for f in checks.check(data) if f.code == "dimension_crossing"]
     assert len(found) == 1 and found[0].items == ("d30", "o60")
     assert "o60" in found[0].message and "side=left" in found[0].message
-    assert "dimension_crossing" in NON_BLOCKING
+    assert "dimension_crossing" not in NON_BLOCKING  # an extension line across another dimension's line holds the export (ISO 129)
 
 
 # --- 3. a datum symbol on a line of another item ---------------------------------------------------------------------------------

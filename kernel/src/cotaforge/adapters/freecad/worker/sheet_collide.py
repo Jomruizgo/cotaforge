@@ -9,10 +9,13 @@ by one unit -- and reports where the ink of one unit lies on the ink of another:
 * a text box over a text box (>= ``MIN_OVERLAP_MM2``);
 * a text box over a line, arrow or frame edge of another unit or of a view's outline, or inside / over the frame (a closed
   rectangle: a datum or tolerance frame) of another unit even when no edge crosses it;
+* two frames (datum, tolerance) on one another, a line of one unit (a leader, an extension line, an arrow) through the frame of
+  another, a frame over the outline of a view;
 * two dimension lines of different units lying on one another (collinear and overlapping).
 
-A leader crossing a dimension line, an extension line crossing an outline and centre lines under anything are how a
-drawing is made, so they are NOT collisions. The same check serves ``review`` (which names the items) and the placement
+An extension line crossing an outline and centre lines under anything are how a drawing is made, so they are NOT
+collisions. A leader crossing a dimension line is not a collision either (it is not ink on ink of two texts) but a defect of
+its own: ``sheet_quality`` reports it (``leader_crosses_dimension``) and the global layout does not draw it. The same check serves ``review`` (which names the items) and the placement
 (``drawing.compose`` nudges the later item of each pair away and composes again).
 """
 
@@ -27,7 +30,9 @@ from sheet_model import (
     DIMENSIONS,
     HATCH,
     HIDDEN,
+    PARTING,
     TITLE_BLOCK,
+    ZONE,
     Arc,
     Circle,
     Entity,
@@ -53,8 +58,8 @@ LINE_END_TOL_MM = (
 MIN_RUN_MM = 1.5
 VIEW_LAYERS = frozenset({CONTOUR, HIDDEN})
 IGNORED_LAYERS = frozenset(
-    {AXES, HATCH, TITLE_BLOCK}
-)  # centre lines go under everything; the title block is the frame's
+    {AXES, HATCH, TITLE_BLOCK, PARTING, ZONE}
+)  # centre lines go under everything; the title block is the frame's; the parting line and the zones lie on the part
 
 
 @dataclass(frozen=True)
@@ -76,7 +81,7 @@ class Collision:
 
     a: str
     b: str
-    kind: str  # text_text | text_line | dimension_lines
+    kind: str  # text_text | text_line | line_text | text_frame | frame_frame | line_frame | frame_line | dimension_lines
     at: Point
     what: str = ""
 
@@ -344,6 +349,33 @@ def _pair(a: Ink, b: Ink) -> list[Collision]:
                         )
                     )
                     break
+    for fa in a.frames:  # two frames (a datum, a tolerance) on one another
+        for fb in b.frames:
+            if _area(fa, fb) >= MIN_OVERLAP_MM2:
+                out.append(
+                    Collision(
+                        a.owner,
+                        b.owner,
+                        "frame_frame",
+                        ((max(fa[0], fb[0]) + min(fa[2], fb[2])) / 2, (max(fa[1], fb[1]) + min(fa[3], fb[3])) / 2),
+                        f"a frame of {a.owner} lies on a frame of {b.owner}",
+                    )
+                )
+                break
+    for first, second in ((a, b), (b, a)):  # a line (a leader, an extension line, an arrow) through the frame of another item
+        for frame in second.frames:
+            shrunk = _shrunk(frame, TEXT_SHRINK_MM)
+            if any(segment_hits_rect(seg, shrunk) for seg in first.lines):
+                out.append(
+                    Collision(
+                        first.owner,
+                        second.owner,
+                        "line_frame",
+                        ((frame[0] + frame[2]) / 2, (frame[1] + frame[3]) / 2),
+                        f"a line of {first.owner} crosses a frame of {second.owner}",
+                    )
+                )
+                break
     for sa in a.dimension_lines:
         for sb in b.dimension_lines:
             if _collinear_overlap(sa, sb) >= MIN_RUN_MM:
@@ -372,6 +404,17 @@ def _against_view(a: Ink, view: Ink) -> list[Collision]:
                     "text_line",
                     ((ta[0] + ta[2]) / 2, (ta[1] + ta[3]) / 2),
                     f"{text_a!r} over the outline of {view.owner}",
+                )
+            )
+    for frame in a.frames:  # a datum or tolerance frame over the outline of the part
+        if any(segment_hits_rect(seg, _shrunk(frame, TEXT_SHRINK_MM)) for seg in view.lines):
+            out.append(
+                Collision(
+                    a.owner,
+                    view.owner,
+                    "frame_line",
+                    ((frame[0] + frame[2]) / 2, (frame[1] + frame[3]) / 2),
+                    f"a frame of {a.owner} over the outline of {view.owner}",
                 )
             )
     return out

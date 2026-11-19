@@ -1,0 +1,941 @@
+# The drawing rule catalog: every rule a drawing must follow, written once.
+#
+# The rules also live, for now, in the drawing guide, the requirements table, the review checks and the memory
+# principles. This file names each rule once, says where it applies (sheet type, process, feature), at which step of
+# the work sequence, which review check(s) hold it and how much they weigh. The per-step plan reads it (plan.py:
+# `drawing(action=plan)` serves, at each step, the rules that apply to the drawing at hand, and the drafter prompt
+# holds none). Tests keep it in step with the code: every finding the review can raise belongs to a rule here, every check named here exists, the weights agree
+# with what holds the export, and every requirement row is a rule here. A rule with no check is DEBT, listed, and the
+# debt may only shrink.
+#
+# Fields of a rule:
+#   id        stable name (sheet_type.topic / process.topic / feature.topic / layout.topic ...)
+#   step      purpose | views | references | dimensions | tolerances | notes | deliverables | layout | review
+#             (layout: holds at every step, it is how the sheet is laid out; review: who checks the sheet)
+#   applies   sheet_types / processes / features it is for; empty or absent = every drawing
+#   text      what the rule asks, in one or two sentences
+#   standard  the standard it rests on, if any (numbers only: no clause until checked against the text)
+#   origin    standard | owner | harness  (owner: the owner's own practice, given in the workshop)
+#   checks    review finding codes that stand for this rule being broken; none = debt (or a gate)
+#   weight    blocks (holds the export) | warns (listed, never holds) | gate (a tool refuses it) | debt (no check yet)
+#   gate      only for weight gate: what the tool does (a call that needs the engineer's order)
+#   requirement  the requirement row id when the rule is one of them (it is then also a question to the designer)
+#   sources   where the rule is written today: prompt, guide, requirements, checks, memory_base, owner
+
+version: 1
+
+steps: [purpose, views, references, dimensions, tolerances, notes, deliverables, layout, review]
+sheet_types: [part, welded, assembly, exploded, nesting]
+processes: [machining, turning, milling, grinding, laser_plasma_water, wire_edm, sinker_edm, casting, hand_tools,
+            sheet_metal_bending, welding, injection_moulding]
+features: [hole, hole_group, circular_pattern, thread, fit, revolution_body, flat_beside_axis, keyway, chamfer, round,
+           edge_form, bearing_seat, datum, geometric_tolerance, functional_relation, weld_joint, solid_part_in_section,
+           parting_line, bend, section, part_in_assembly]
+
+# Checks named below that are not on develop yet: the open PR that brings each. Remove the entry when it is merged.
+awaiting_merge:
+  side_view_repeats_section: 61
+  centre_line_gap: 61
+  dimension_off_part: 61
+  assembly_solid_cut: 61
+  assembly_whole_guess: 65
+
+rules:
+
+  # ---------------------------------------------------------------- purpose: what the drawing is for, who reads it
+  - id: drawing.purpose
+    step: purpose
+    text: >-
+      The sheet is the only thing the shop receives. It is done when, with it alone and the shop's general
+      instruments, the part is made right the first time and checked, with no question and no guess.
+    origin: owner
+    sources: [prompt, guide]
+    checks: []
+    weight: debt
+  - id: drawing.destructive_needs_order
+    step: purpose
+    text: >-
+      A sheet that exists is redone with create, which keeps what is on it. Throwing it away (create with fresh=true)
+      or removing the whole sheet (remove_sheet) happens only when the engineer orders it.
+    origin: owner
+    sources: [owner]
+    gate: "the tool refuses both calls without the engineer's order (by, reason: his words), which Claude Code asks him to confirm"
+    weight: gate
+  - id: drawing.read_as_shop
+    step: review
+    text: >-
+      Before a step is called done, the sheet is read as the machinist, welder or fitter who receives it. What nobody
+      uses goes; what they would have to guess is added.
+    origin: owner
+    sources: [prompt]
+    checks: []
+    weight: debt
+  - id: drawing.independent_review
+    step: review
+    text: >-
+      A drawing is finished when someone other than the agent that drew it (the fabricator agent or the engineer)
+      reviewed it and every point raised is closed, by fixing it or by an answer with its reason, never by silencing
+      it; the export waits for it.
+    origin: harness
+    sources: [prompt, guide]
+    checks: []
+    weight: debt
+  - id: process.declared
+    step: purpose
+    text: >-
+      The process or route the design chose (machining, laser, wire EDM, casting, hand tools, a mix) is declared in
+      the intent file; it sets who reads the sheet, what is delivered and which rules apply. Undeclared, it is asked.
+    origin: owner
+    sources: [owner]
+    checks: []
+    weight: debt
+
+  # ---------------------------------------------------------------- views
+  - id: views.each_view_shows_its_own
+    step: views
+    text: >-
+      Every view shows something no other view shows. Only the isometric may carry no dimension.
+    standard: ISO 128-30
+    origin: owner
+    sources: [prompt, guide, checks, memory_base]
+    checks: [view_adds_nothing, view_duplicate]
+    weight: blocks
+  - id: views.redundant
+    step: views
+    text: >-
+      A view that only carries a cutting line another staying view can carry, or whose dimensions another view
+      repeats, is removed.
+    origin: harness
+    sources: [prompt, guide, checks]
+    checks: [view_redundant]
+    weight: warns
+  - id: views.plate_single_view
+    step: views
+    applies: {sheet_types: [part]}
+    text: >-
+      A plate whose holes go through its thickness gets one view and a thickness note.
+    origin: harness
+    sources: [guide, checks]
+    checks: [single_view_enough]
+    weight: warns
+  - id: views.turned_axial_section
+    step: views
+    applies: {features: [revolution_body]}
+    text: >-
+      An all-coaxial part of revolution gets one axial section plus the isometric; no end view. A section already
+      giving the profile makes a plain side view of it superfluous.
+    origin: owner
+    sources: [owner, guide, checks]
+    checks: [side_view_repeats_section]
+    weight: blocks
+  - id: views.isometric
+    step: views
+    text: >-
+      The isometric stays on the sheet, in colour by hole kind (precision red, plain green, threaded blue), with its
+      own scale under it when it differs.
+    standard: ISO 5455
+    origin: harness
+    sources: [prompt, checks]
+    checks: [no_isometric]
+    weight: blocks
+  - id: views.hidden_or_section
+    step: views
+    text: >-
+      Inner features are shown by a section where hidden lines would be dense or the feature is not seen.
+    origin: standard
+    sources: [checks, memory_base]
+    checks: [hidden_feature_no_section, hidden_dense, hidden_check_partial]
+    weight: blocks
+  - id: views.edge_form_detail
+    step: views
+    applies: {features: [edge_form]}
+    text: >-
+      A small edge form (a groove, an undercut, a small chamfer pair) gets a detail view.
+    origin: owner
+    sources: [owner]
+    checks: []
+    weight: debt
+  - id: views.flat_beside_axis
+    step: views
+    applies: {features: [flat_beside_axis]}
+    text: >-
+      With a centre line in the view, a flat face seen face-on gets thin diagonals so it does not read as cylindrical.
+    standard: ISO 128
+    origin: owner
+    sources: [owner, checks]
+    checks: [flat_face_unmarked]
+    weight: blocks
+  - id: views.centre_lines
+    step: views
+    applies: {features: [hole, revolution_body]}
+    text: >-
+      Every hole and round feature carries its centre mark or centre line, drawn as the thin long-dash dotted line
+      (ISO 128 line type 04.1, a chain line), never as a dashed one, which reads as a hidden edge; one continuous centre
+      line per axis, not crossing text, not overlong. A centre line (and the cross of a hole or of the end arc of a
+      keyway) runs 2 to 5 mm past the outline of its feature at every end, measured on paper (the harness gives 3 mm,
+      set through TechDraw's own extension of the line); the one that is longer without a reason is flagged. The chain
+      check judges only the lines the harness made: the ones the engineer draws himself carry his own line style and
+      his own extension.
+    standard: ISO 128
+    origin: standard
+    requirement: req.centre_lines
+    sources: [requirements, prompt, checks]
+    checks: [centre_mark_missing, cylinder_no_axis, no_view_lines, centre_line_crosses, centre_line_long, centre_line_gap,
+             centre_line_not_chain, flat_face_unmarked]
+    weight: blocks
+  - id: turned.centre_line_every_segment
+    step: views
+    applies: {features: [revolution_body]}
+    text: >-
+      Every coaxial segment of a turned part carries the centre line, continuous along the whole axis; a gap on a
+      bearing seat or any other segment is a defect.
+    standard: ISO 128
+    origin: owner
+    sources: [owner, checks]
+    checks: [cylinder_no_axis, centre_line_gap]
+    weight: blocks
+  - id: keyway.shown_face_on
+    step: views
+    applies: {features: [keyway]}
+    text: >-
+      A turned part with a keyway has ONE axial view, and the part is rolled about its axis in it so that the keyway faces
+      the viewer: the diameters, the lengths, the keyway's length and its locator stand there, never on hidden lines. A view is never added only for the keyway: the sheet is the axial
+      view, the keyway's removed section and the isometric view. The end arcs of the keyway carry their centre cross.
+      A keyway no standard view looks at (it opens towards the back, the bottom or the left) has no tool: the engineer
+      is told.
+    origin: owner
+    sources: [owner, checks]
+    checks: [dimension_on_hidden]
+    weight: blocks
+  - id: thread.end_line_native
+    step: views
+    applies: {features: [thread]}
+    text: >-
+      The thread-end line is FreeCAD's own thread representation, never a line longer than the thread diameter.
+    standard: ISO 6410
+    origin: owner
+    sources: [owner]
+    checks: []
+    weight: debt
+  - id: views.centre_line_deleted_stays
+    step: views
+    text: >-
+      An axis or centre mark the harness made and the engineer deleted by hand stays deleted: no sync, item, review or
+      export draws it again, and it never holds the export. The review says it once, as information.
+    origin: owner
+    sources: [owner, checks]
+    checks: [line_deleted_by_hand]
+    weight: warns
+  - id: views.scale_per_view
+    step: views
+    text: >-
+      The title block gives the scale; a view at another scale carries its own under it. With laser, plasma or
+      waterjet cutting and views at different scales this is indispensable.
+    standard: ISO 5455
+    origin: owner
+    sources: [owner]
+    checks: []
+    weight: debt
+  - id: views.label_under_its_view
+    step: views
+    text: >-
+      Each view's label (section letters, detail, scale) stands under its own view and cannot be read as another's.
+    origin: harness
+    checks: [view_label_ambiguous]
+    weight: blocks
+  - id: section.hatch_only_cut_material
+    step: views
+    applies: {features: [section]}
+    text: >-
+      Hatching only on cut material; touching bodies differ by hatch angle, then spacing; the same material keeps
+      its pattern.
+    standard: ISO 128-50
+    origin: standard
+    sources: [prompt, checks, memory_base]
+    checks: [hatch_same_as_neighbour, hatch_pattern_differs]
+    weight: warns
+  - id: section.solid_parts_not_cut
+    step: views
+    applies: {sheet_types: [assembly, welded], features: [solid_part_in_section]}
+    text: >-
+      In an assembly section shafts, bolts, screws, nuts, washers, pins, keys, rivets, balls and lengthwise ribs are
+      drawn whole; a shaft is cut only by a local section when something inside it must be shown.
+    standard: ISO 128-50
+    origin: owner
+    sources: [owner, checks]
+    checks: [assembly_solid_cut, assembly_whole_guess]
+    weight: blocks
+  - id: section.bearing_simplified
+    step: views
+    applies: {sheet_types: [assembly]}
+    text: >-
+      A rolling bearing in an assembly section is drawn in its simplified representation, never hatched.
+    standard: ISO 8826-1
+    origin: standard
+    checks: []
+    weight: debt
+
+  # ---------------------------------------------------------------- references
+  - id: references.functional_datums
+    step: references
+    text: >-
+      Positions are counted from the functional references the intent file declares (or a declared symmetry); with
+      none it is asked, never from the corner of the part's box. create takes symmetry=true only if the intent file
+      declares the part symmetric: the shape alone never says so.
+    standard: ISO 129-1
+    origin: owner
+    sources: [prompt, guide, checks, memory_base]
+    checks: [hole_no_reference]
+    weight: blocks
+  - id: references.datum_defined
+    step: references
+    applies: {features: [datum, geometric_tolerance]}
+    text: >-
+      Every datum a tolerance cites is defined on the sheet, with its symbol on the surface, extension line or in
+      line with the size dimension.
+    standard: ISO 5459
+    origin: standard
+    sources: [checks]
+    checks: [datum_undefined, datum_on_line]
+    weight: blocks
+  - id: references.datum_used
+    step: references
+    applies: {features: [datum]}
+    text: >-
+      A datum defined on the sheet is cited by some tolerance frame.
+    standard: ISO 5459
+    origin: standard
+    checks: [datum_unused]
+    weight: warns
+
+  # ---------------------------------------------------------------- dimensions
+  - id: dimensions.size_and_position
+    step: dimensions
+    applies: {sheet_types: [part]}
+    text: >-
+      Every hole, feature and radius carries its size and its position from a reference the sheet has, once.
+    standard: ISO 129-1
+    origin: standard
+    requirement: req.dimensions
+    sources: [requirements, prompt, checks, memory_base]
+    checks: [hole_not_located, hole_partly_located, hole_no_callout, feature_no_dimension, feature_not_located,
+             round_no_dimension, pattern_not_polar, hole_no_reference]
+    weight: blocks
+  - id: dimensions.functional_direct
+    step: dimensions
+    applies: {features: [functional_relation]}
+    text: >-
+      Every measure the function depends on is on the sheet directly, between the two features that define it, with
+      its tolerance or fit; never the result of a chain.
+    standard: ISO 129-1
+    origin: owner
+    requirement: req.functional_dimensions
+    sources: [requirements, prompt]
+    checks: []
+    weight: debt
+  - id: dimensions.scheme_from_function
+    step: dimensions
+    text: >-
+      Each dimension says what is critical: from a datum, that distance to the datum; in a chain, each link; between
+      two features, the relation between them. It holds for every dimension (lengths, steps, slots, shoulders, faces,
+      angles, hole positions), by what the part couples or locates there, not by habit; the sheet says which scheme it
+      follows (a note). Where the intent file does not say which relation is critical and from what, it is asked.
+    origin: owner
+    sources: [prompt, owner]
+    checks: []
+    weight: debt
+  - id: dimensions.for_the_instrument
+    step: dimensions
+    text: >-
+      The scheme follows the instrument the shop measures with (caliper by default; micrometer, depth gauge, height
+      gauge and dial indicator are general): spacing within each hole group plus one locator from a real flat face the
+      caliper reaches, never from the box of a round outline; never an unstated symmetry. A measurement that needs a
+      special instrument (CMM, roundness tester, profile projector) gets a note that names the feature; no word of the
+      agent closes it, only the note or the engineer's order.
+    origin: owner
+    sources: [owner, prompt, checks]
+    checks: [measurement_unstated]
+    weight: blocks
+  - id: hole_group.spacing_from_first
+    step: dimensions
+    applies: {features: [hole_group]}
+    text: >-
+      A group of holes that receives screws is located by its function, the first from the edge (directly, or from
+      another hole that is itself located) and the others from the first, centre to centre.
+    origin: owner
+    sources: [prompt, checks]
+    checks: [hole_group_no_locator]
+    weight: blocks
+  - id: circular_pattern.polar
+    step: dimensions
+    applies: {features: [circular_pattern]}
+    text: >-
+      A circular hole pattern gives the pitch circle drawn and dimensioned, radial centre lines, the count and the
+      angle; never X/Y and never the pitch circle only in a note.
+    origin: owner
+    sources: [owner, checks]
+    checks: [pattern_not_polar]
+    weight: blocks
+  - id: dimensions.once
+    step: dimensions
+    text: >-
+      One dimension per feature and direction; no repeated or chained-closed dimension, and no dimension given
+      twice under different kinds. A chain that closes on the overall size is this defect (8 + 44 + 8 on a 60 plate:
+      the locators and the spacing of the holes count like any other length), reported once and holding the export
+      (dimensions.no_redundant does not list it again). The default hole location gives, per direction, ONE locator from
+      the reference edge and the spacings that tie every group to it, so it never closes by itself; where the chain is
+      the engineer's, the fix keeps the locator with the spacing and drops the dimension at the other end.
+    standard: ISO 129-1
+    origin: standard
+    sources: [prompt, checks, memory_base]
+    checks: [duplicate_dimension, over_dimensioned, dimension_twice]
+    weight: blocks
+  - id: dimensions.no_redundant
+    step: dimensions
+    text: >-
+      No dimension is the sum or the difference of others of the same view and axis (the overall length is not given
+      beside the segments that add up to it); the shop gets each measure once, by one chain of independent dimensions.
+      A loop that closes on the overall size is already reported, and held, by dimensions.once; this row holds the
+      other loops (a difference of two others, a baseline beside a chain, the overall beside a baseline that already
+      reaches both ends). The defaults never make one: the hole location is a forest, the overall is left out when the
+      other dimensions chain both ends, and a dimension equal to half of another is only given when the intent declares
+      the symmetry.
+    standard: ISO 129-1
+    origin: owner
+    sources: [owner, checks]
+    checks: [dimension_redundant]
+    weight: blocks
+  - id: dimensions.never_on_hidden
+    step: dimensions
+    text: >-
+      A hidden line is never dimensioned: no dimension has a hidden edge, or the end of one, as a reference. The
+      feature is dimensioned where it is seen face-on: in the standard view that looks at it square (add_view puts it
+      on the sheet) or in a full section (an aux_view takes no dimensions and there is no partial section tool). The
+      dimension is moved there with drawing update, not removed.
+    standard: ISO 129-1
+    origin: owner
+    sources: [owner, checks]
+    checks: [dimension_on_hidden]
+    weight: blocks
+  - id: dimensions.repeated_in_views
+    step: dimensions
+    text: >-
+      The same size shown in two views is a style fault the shop reads without trouble.
+    standard: ISO 129-1
+    origin: standard
+    checks: [dimension_repeated]
+    weight: warns
+  - id: dimensions.stacks
+    step: dimensions
+    text: >-
+      Parallel dimensions run shortest nearest the part, longest outermost, evenly spaced; extension lines never
+      cross another dimension's line.
+    standard: ISO 129-1
+    origin: owner
+    sources: [owner, prompt, checks]
+    checks: [dimension_stack_order, dimension_gap, dimension_crossing]
+    weight: blocks
+  - id: dimensions.side_and_arrows
+    step: dimensions
+    text: >-
+      A dimension stands on the side of the feature where its extension lines cross the least part; a short one has
+      its arrows outside.
+    origin: harness
+    sources: [prompt, checks]
+    checks: [dimension_side, arrows_inside_short]
+    weight: warns
+  - id: dimensions.outside_outline
+    step: dimensions
+    text: >-
+      Dimensions stand outside the outline of the part.
+    standard: ISO 129-1
+    origin: standard
+    sources: [prompt, checks]
+    checks: [dimension_inside_outline]
+    weight: blocks
+  - id: dimensions.on_the_part
+    step: dimensions
+    text: >-
+      Every dimension's extension lines start on the feature it measures; an overall dimension spans the part.
+    origin: owner
+    checks: [dimension_off_part]
+    weight: blocks
+  - id: dimensions.printed_as_read
+    step: dimensions
+    text: >-
+      A dimension prints its value and deviations in millimetres with the sheet's decimal sign, without modelling
+      noise.
+    origin: harness
+    checks: [dimension_tolerance_unit, dimension_value_noise, dimension_value_unclean, dimension_decimal_sign]
+    weight: blocks
+  - id: chamfer.dimensioned
+    step: dimensions
+    applies: {features: [chamfer]}
+    text: >-
+      Every chamfer carries its size and angle on the view where it is seen in profile, with its leader on the
+      chamfer's line.
+    standard: ISO 13715
+    origin: standard
+    requirement: req.chamfers
+    sources: [requirements, checks]
+    checks: [chamfer_no_dimension]
+    weight: blocks
+  - id: chamfer.leader
+    step: dimensions
+    applies: {features: [chamfer]}
+    text: >-
+      The leader of a chamfer callout ends on the chamfer's line, from outside, square to it.
+    origin: harness
+    checks: [leader_not_on_chamfer]
+    weight: warns
+  - id: turned.diameters
+    step: dimensions
+    applies: {features: [revolution_body]}
+    text: >-
+      A turned part carries its diameters on the section or side view and its lengths from one axial reference.
+    standard: ISO 129-1
+    origin: standard
+    requirement: req.turned_part
+    sources: [requirements]
+    checks: []
+    weight: debt
+  - id: keyway.dimensioned
+    step: dimensions
+    applies: {features: [keyway]}
+    text: >-
+      A keyway carries its width with the tolerance class, its depth, its length and its position; on a shaft the width
+      and the depth in a removed section. The default length is the distance between the centres of the two end arcs
+      (the travel of the end mill) with the locator from the shoulder to the first centre; the overall length of the
+      keyway with its locator from the shoulder is as correct, and no check blocks either form.
+    standard: DIN 6885-1
+    origin: standard
+    requirement: req.keyway
+    sources: [requirements, owner]
+    checks: []
+    weight: debt
+  - id: turned.diameter_where_it_reads
+    step: dimensions
+    applies: {features: [revolution_body]}
+    text: >-
+      A diameter dimension sits where it reads best on its own segment, not pushed to an edge of the segment without
+      a reason.
+    origin: owner
+    sources: [owner]
+    checks: []
+    weight: debt
+  - id: keyway.closed_depth
+    step: dimensions
+    applies: {features: [keyway]}
+    text: >-
+      A closed keyway (one that does not run out at a shaft end) gets its depth from the shaft surface, measured with a
+      depth gauge (t1): from the keyway bottom up to the tangent line of the shaft, the theoretical outline of the
+      cylinder over the slot, never from the edge the slot leaves. The value across the shaft (d - t1) is only for a
+      keyway that runs out at a shaft end, where a caliper reaches it. The default keyway dimensions give it so.
+    standard: DIN 6885-1
+    origin: owner
+    sources: [owner]
+    checks: []
+    weight: debt
+  - id: thread.designation
+    step: dimensions
+    applies: {features: [thread]}
+    text: >-
+      Every thread carries its full designation and usable length and is drawn as the standard shows, with the
+      cosmetic lines of the view (what TechDraw's own thread commands make); one the engineer drew by hand counts.
+    standard: ISO 6410
+    origin: standard
+    requirement: req.thread
+    sources: [requirements, checks, memory_base]
+    checks: [thread_no_callout, thread_no_representation, thread_undeclared]
+    weight: blocks
+  - id: bend.dimensioned
+    step: dimensions
+    applies: {processes: [sheet_metal_bending], features: [bend]}
+    text: >-
+      Inside radius, direction and angle of each bend, the flat pattern with its dimensions and the thickness.
+    origin: standard
+    requirement: req.bent_sheet
+    sources: [requirements]
+    checks: []
+    weight: debt
+  - id: process.stage_sizes
+    step: dimensions
+    applies: {processes: [grinding, wire_edm, turning, casting]}
+    text: >-
+      A size passing several processes gets one dimension per stage, labelled with its process; the intermediate
+      ones are secondary. The route is declared in the process section of the intent file (a part that names wire cut,
+      grinding or honing with another process and no route is asked for it); every stage of it has its dimension, and the
+      final size is the model's. The route is the designer's and the drawing gives each stage of that route. The usual stock
+      (a few tenths of a mm on a turned size before grinding; for a profile turning cannot make, the turned blank is the
+      profile tip diameter plus stock) is only a proposal: the engineer confirms every number.
+    origin: owner
+    requirement: req.process_stages
+    sources: [owner, requirements, guide, checks]
+    checks: [stage_no_final]
+    weight: blocks
+  - id: callouts.clear
+    step: dimensions
+    text: >-
+      Equal holes share one callout; a callout says what the model declares, never contradicts it, and is not
+      crowded against another. The fit or thread is written out in it, so a sheet printed in black and white loses
+      nothing of what the isometric shows in colour. Colour and fit belong to the model: the callout is made with
+      hole_dim and never changes them.
+    origin: harness
+    sources: [guide, prompt, checks]
+    checks: [callout_contradicts, callouts_crowded, hole_fit_differs]
+    weight: blocks
+  - id: dowel.marked
+    step: dimensions
+    applies: {features: [fit]}
+    text: >-
+      A dowel hole is called out as such.
+    origin: harness
+    checks: [dowel_unmarked]
+    weight: warns
+
+  # ---------------------------------------------------------------- tolerances
+  - id: fit.tolerance_class
+    step: tolerances
+    applies: {features: [fit]}
+    text: >-
+      Every hole or shaft with a fit, and every face that mates with a commercial part, carries its tolerance class.
+      A fit is what the model or the intent file declares: a diameter that only measures round (12.000) is not one.
+    standard: ISO 286
+    origin: standard
+    requirement: req.fit_class
+    sources: [requirements, prompt, checks]
+    checks: [fit_hole_no_tolerance]
+    weight: blocks
+  - id: tolerances.not_finer_than_needed
+    step: tolerances
+    text: >-
+      A tolerance finer than IT6 is questioned; it costs a grinding or lapping operation.
+    origin: harness
+    checks: [tolerance_finer_than_it6]
+    weight: blocks
+  - id: tolerances.general
+    step: tolerances
+    text: >-
+      The general tolerance is declared in the title block (ISO 2768 / ISO 22081; ISO 13920 for a weldment).
+    standard: ISO 2768-1
+    origin: standard
+    requirement: req.general_tolerance
+    sources: [requirements, memory_base]
+    checks: []
+    weight: debt
+  - id: assembly.joint_fit
+    step: tolerances
+    applies: {sheet_types: [assembly]}
+    text: >-
+      The assembly sheet names the fit of each joint where two parts fit (for example H7/g6), as the intent file
+      declares it; a joint with no fit declared is asked.
+    standard: ISO 286
+    origin: harness
+    checks: []
+    weight: debt
+  - id: gdt.from_function
+    step: tolerances
+    applies: {features: [geometric_tolerance, bearing_seat]}
+    text: >-
+      Geometric tolerances come from the function (coaxiality or runout on seats, perpendicularity of shoulders),
+      cite datums defined on the sheet, and the feature is located from them.
+    standard: ISO 1101
+    origin: owner
+    requirement: req.geometric_tolerance
+    sources: [requirements, owner, checks]
+    checks: [gdt_not_located, gdt_as_note, gdt_location_not_exact, gdt_axis_not_oriented, datum_undefined]
+    weight: blocks
+  - id: gdt.native_symbols
+    step: tolerances
+    applies: {features: [geometric_tolerance, datum]}
+    text: >-
+      Frames, datum and finish symbols are files of a symbol library inserted as FreeCAD symbols, editable, attached
+      to their view; never a symbol the harness drew.
+    origin: owner
+    checks: [foreign_symbol, native_orphaned]
+    weight: blocks
+  - id: surface.texture
+    step: tolerances
+    applies: {sheet_types: [part]}
+    text: >-
+      The surface texture of the functional faces and the general roughness of the sheet.
+    standard: ISO 21920-1
+    origin: standard
+    requirement: req.surface_texture
+    sources: [requirements, checks]
+    checks: [notes_roughness]
+    weight: blocks
+
+  # ---------------------------------------------------------------- notes and title block
+  - id: title.material_scale_projection
+    step: notes
+    text: >-
+      The title block carries the material and starting form, the scale and the projection symbol; a note that
+      points at the title block finds its field filled.
+    standard: ISO 7200
+    origin: standard
+    requirement: req.title_block
+    sources: [requirements, checks, memory_base]
+    checks: [notes_material, material_title_block_empty, material_inconsistent, material_only_in_note,
+             title_block_field_empty, title_block_overflow]
+    weight: blocks
+  - id: notes.edge_state
+    step: notes
+    applies: {sheet_types: [part]}
+    text: >-
+      The state of the edges is stated (break sharp edges, no burrs, or the chamfer size).
+    standard: ISO 13715
+    origin: standard
+    requirement: req.edge_state
+    sources: [requirements, checks]
+    checks: [notes_edges]
+    weight: blocks
+  - id: notes.heat_treatment
+    step: notes
+    applies: {sheet_types: [part]}
+    text: >-
+      The heat treatment with its hardness, or "no heat treatment".
+    origin: standard
+    requirement: req.heat_treatment
+    sources: [requirements, checks]
+    checks: [notes_heat_treatment]
+    weight: blocks
+  - id: notes.coating
+    step: notes
+    applies: {sheet_types: [part]}
+    text: >-
+      The coating or paint, or "no coating".
+    origin: standard
+    requirement: req.coating
+    sources: [requirements, checks]
+    checks: [notes_coating]
+    weight: blocks
+  - id: notes.marking
+    step: notes
+    applies: {sheet_types: [part]}
+    text: >-
+      How the part is marked or identified, or that it is not.
+    origin: standard
+    requirement: req.marking
+    sources: [requirements, checks]
+    checks: [notes_marking]
+    weight: blocks
+  - id: notes.quantity_process
+    step: notes
+    applies: {sheet_types: [part]}
+    text: >-
+      The quantity and the manufacturing process, in the title block or a note.
+    origin: standard
+    requirement: req.quantity_process
+    sources: [requirements]
+    checks: []
+    weight: debt
+  - id: notes.numbered_project_language
+    step: notes
+    text: >-
+      Notes are numbered in the NOTAS block and written in the project language.
+    origin: harness
+    sources: [prompt, guide]
+    checks: []
+    weight: debt
+  - id: model.measured_alerts_closed
+    step: notes
+    text: >-
+      No design alert the harness measured on the model is still open, unless the engineer ordered it kept.
+    origin: harness
+    requirement: req.measured_alerts
+    sources: [requirements]
+    checks: []
+    weight: debt
+
+  # ---------------------------------------------------------------- welded and assembly sheets
+  - id: welded.weld_symbols
+    step: dimensions
+    applies: {sheet_types: [welded], features: [weld_joint]}
+    text: >-
+      One weld symbol per joint or group of equal joints, with size, sides and extent, on its line, the standard
+      named; the ISO 5817 quality level, not ISO 13920, as the weld class. A joint the CAD cannot draw a symbol for is
+      written in a note.
+    standard: ISO 2553, ISO 5817
+    origin: standard
+    requirement: req.welds
+    sources: [requirements, prompt, checks]
+    checks: [weld_joint_unspecified, weld_class_13920, weld_duplicate, weld_not_specified, weld_on_pictorial,
+             weld_standard_unstated, page_weld_off_line, weld_designation_unchecked]
+    weight: blocks
+  - id: welded.no_form_of_detailed_parts
+    step: dimensions
+    applies: {sheet_types: [welded, assembly]}
+    text: >-
+      A part with a sheet of its own carries here only the dimensions that place it: no hole position and no other
+      form dimension of it is repeated. What is machined after joining is drawn on the welded or assembly sheet, and
+      the part's own sheet shows it as it is before (with the allowance).
+    origin: owner
+    sources: [prompt, owner]
+    checks: []
+    weight: debt
+  - id: assembly.parts_list_and_balloons
+    step: notes
+    applies: {sheet_types: [assembly, welded, exploded, nesting]}
+    text: >-
+      A parts list and one balloon per position, numbered as the list, each balloon with a leader ending on its part
+      where the part is seen. The balloons are spread over all the views, each position once, on the view where its
+      part is best seen; never all on the isometric.
+    standard: ISO 7573, ISO 6433
+    origin: owner
+    requirement: req.parts_list
+    sources: [requirements, owner, checks]
+    checks: [no_parts_list, parts_without_balloons, balloons_without_row, position_without_balloon, balloon_without_row,
+             parts_list_over_view, instance_hidden, balloon_part_hidden, weld_list_missing,
+             item_without_balloon, balloon_not_in_list, weld_body_unnamed, weld_designation_mismatch,
+             page_balloons_not_matching, page_balloon_no_leader, page_balloon_off_part, page_cell_overflow,
+             weld_not_specified]
+    weight: blocks
+  - id: assembly.parts_named
+    step: notes
+    applies: {sheet_types: [assembly, welded]}
+    text: >-
+      Every part of an assembly is named and has its reference, and the assembly is joined.
+    origin: harness
+    checks: [part_unnamed, part_without_reference, assembly_not_joined]
+    weight: blocks
+
+  # ---------------------------------------------------------------- moulded parts
+  - id: moulded.marks
+    step: notes
+    applies: {processes: [injection_moulding], features: [parting_line]}
+    text: >-
+      Parting line in its own line type, opening direction with the general draft, permitted gate and ejector-mark
+      zones with their symbols, and the no-draft or sharp-edge exceptions.
+    standard: ISO 10135
+    origin: standard
+    requirement: req.moulded_part
+    sources: [requirements]
+    checks: [mark_overlaps_itself]
+    weight: blocks
+
+  # ---------------------------------------------------------------- deliverables
+  - id: deliverables.revision_on_change
+    step: deliverables
+    text: >-
+      A first issue carries no revision row. A sheet that changes after it went out records the change in the title
+      block's own revision table: the letter, what changed with the previous value, who asked for it and the date, the
+      revision field takes the letter, and FreeCAD's revision marker stands beside each changed dimension. An earlier row
+      is never rewritten. The harness adds the row when the sheet is exported again; the record of what was released is an
+      answer stored in the sheet.
+    standard: ISO 7200
+    origin: owner
+    sources: [owner, guide]
+    checks: [revision_marker_missing]
+    weight: warns
+  - id: deliverables.cut_dxf
+    step: deliverables
+    applies: {processes: [laser_plasma_water, wire_edm]}
+    text: >-
+      A cut part is delivered with a 1:1 DXF of its outline (closed contours, no dimensions or title on the cut
+      layer) besides the PDF, and the sheet says the part is cut from the DXF, never measured on the PDF.
+    origin: owner
+    sources: [owner]
+    checks: []
+    weight: debt
+  - id: deliverables.nesting_remnant
+    step: deliverables
+    applies: {sheet_types: [nesting]}
+    text: >-
+      Fewest stock sheets first; unavoidable waste left as one usable rectangular remnant, preferably square, and
+      dimensioned. The layout gives sheets per format, weights, utilisation, cut length and pierce count.
+    origin: owner
+    sources: [owner]
+    checks: []
+    weight: debt
+  - id: deliverables.one_sheet_one_file
+    step: deliverables
+    text: >-
+      One drawing is one sheet and one file; a bigger paper if it does not fit.
+    origin: owner
+    sources: [guide]
+    checks: [paper_too_small]
+    weight: blocks
+  - id: deliverables.native_only
+    step: deliverables
+    text: >-
+      Everything on the sheet is FreeCAD's own object, so the engineer can go on without AI; what the review cannot
+      read holds the export.
+    origin: owner
+    sources: [owner, checks]
+    checks: [native_unread]
+    weight: blocks
+  - id: deliverables.native_fallback
+    step: deliverables
+    text: >-
+      An item that could not be made as a FreeCAD object and fell back to another form is said so.
+    origin: harness
+    checks: [native_fallback]
+    weight: warns
+  - id: deliverables.line_weights
+    step: deliverables
+    text: >-
+      Every line carries the line weights of the owner's reference drawings (ISO 128-20 group 0.35).
+    standard: ISO 128-20
+    origin: owner
+    sources: [owner]
+    checks: [line_weight_off_table]
+    weight: warns
+  - id: deliverables.print_reads_as_screen
+    step: deliverables
+    text: >-
+      Text height and symbols follow the standard, so a printed copy reads the same as the screen.
+    standard: ISO 3098
+    origin: harness
+    sources: [prompt]
+    checks: []
+    weight: debt
+  - id: deliverables.no_test_marks
+    step: deliverables
+    text: >-
+      No cell or text of a delivered sheet holds a test marker.
+    origin: harness
+    checks: [page_test_marker]
+    weight: blocks
+
+  # ---------------------------------------------------------------- layout (holds at every step)
+  - id: layout.nothing_on_anything
+    step: layout
+    text: >-
+      Nothing lies on anything else; no text on a line, no leader across a dimension, the part or another leader.
+      A collision stays only where no free place exists, and then as an answered decision.
+    origin: owner
+    sources: [owner, prompt, checks]
+    checks: [collision, text_over_part, text_over_text, leader_crosses_dimension, leader_crosses_part, leader_crossing]
+    weight: blocks
+  - id: layout.inside_frame
+    step: layout
+    text: >-
+      Views, items and texts stay inside the drawing frame and off the title block; views do not overlap.
+    origin: standard
+    sources: [checks]
+    checks: [view_outside_frame, item_outside_frame, text_outside_frame, view_over_title_block, item_over_title_block,
+             views_overlap]
+    weight: blocks
+  - id: layout.uses_the_paper
+    step: layout
+    text: >-
+      The views use the paper; a sheet mostly empty where a larger scale or smaller paper fits is not finished.
+    origin: owner
+    sources: [owner, checks]
+    checks: [sheet_underused]
+    weight: blocks
+  - id: layout.balanced
+    step: layout
+    text: >-
+      The block of views is not crammed into one corner.
+    origin: harness
+    checks: [sheet_unbalanced]
+    weight: warns
+  - id: layout.window_matches
+    step: layout
+    text: >-
+      The CAD window shows the same sheet that is exported; an item that could not be placed is said so.
+    origin: harness
+    checks: [window_differs, layout_unplaced]
+    weight: warns

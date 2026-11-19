@@ -120,10 +120,9 @@ def test_fits_are_checked() -> None:
         iso286.deviations("H7", 0)
 
 
-def test_the_tables_say_where_they_come_from_and_carry_the_note() -> None:
+def test_the_tables_say_where_they_come_from_and_have_no_note_for_the_shop() -> None:
     assert iso286.EDITION.startswith("ISO 286-1")
-    assert iso286.SHOW_TRANSCRIPTION_NOTE is True
-    assert iso286.TRANSCRIPTION_NOTE["es"] == "Tablas ISO 286 transcritas; verificar contra la norma"
+    assert not hasattr(iso286, "TRANSCRIPTION_NOTE")  # a sheet never tells the shop to verify the tables
 
 
 # --- ISO 2768 ---------------------------------------------------------------------------------------------------------

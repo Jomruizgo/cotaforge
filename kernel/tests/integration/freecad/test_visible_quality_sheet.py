@@ -2,7 +2,7 @@
 """The quality floor of a drawing, in the visible CAD: the 19 mm plate (4 dowel holes H7, 2 counterbored holes, one M6) drawn
 three ways -- all its views, ONE view with a thickness note, and in third angle -- and measured: every hole located in x and
 y by baseline dimensions stacked outside the part, callouts whose leaders never cross and cut the outline once, the dowels
-marked, the material in the title block, the notes numbered with the ISO 286 footnote among them.
+marked, the material in the title block, the notes numbered, none of them a request to verify the ISO 286 tables.
 
 Needs a display (on Windows the GUI binary opens its own window); skipped without one, carries the ``visible`` marker (run
 serially). Set ``COTAFORGE_TEST_SHOTS`` to a folder to keep the window images, the PDF and the transcript.
@@ -109,6 +109,7 @@ def _floor(name: str, metrics: dict[str, Any]) -> list[str]:
         "hole_partly_located",
         "leader_crossing",
         "leader_crosses_part",
+        "leader_crosses_dimension",
         "dimension_inside_outline",
         "window_differs",
         "native_fallback",
@@ -147,9 +148,7 @@ def test_the_plate_meets_the_floor_in_three_variants(visible: FreeCADAdapter, tm
     metrics = _measure(visible, doc, None, shots, "v1_all_views")
     transcript.append(f"v1 review: {metrics['review']}")
     assert metrics["material"] == MATERIAL, metrics["material"]
-    assert any(t.startswith("4. ") and "ISO 286" in t for t in metrics["texts"]) or any(
-        "ISO 286" in t for t in metrics["texts"]
-    ), metrics["texts"]
+    assert not any("ISO 286" in t for t in metrics["texts"]), metrics["texts"]  # a fit prints its limits, never a note to verify them
     problems += _floor("v1", metrics)
     pdf = shots / "v1_plate.pdf"
     written = visible.export_drawing(
@@ -168,7 +167,7 @@ def test_the_plate_meets_the_floor_in_three_variants(visible: FreeCADAdapter, tm
     _add(visible, "b2", _notes()[:2], sheet="Una")
     metrics = _measure(visible, doc, "Una", shots, "v2_one_view")
     transcript.append(f"v2 texts: {metrics['texts']}")
-    assert any("de espesor" in t and "19" in t for t in metrics["texts"]), metrics["texts"]
+    assert any("Espesor" in t and "19" in t for t in metrics["texts"]), metrics["texts"]
     problems += _floor("v2", metrics)
 
     # 3. third angle: the symbol and the views placed the other way round

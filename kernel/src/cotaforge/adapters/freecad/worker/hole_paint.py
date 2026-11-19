@@ -1,7 +1,7 @@
 # ruff: noqa: E501
 """What a body's per-face colour list becomes when its holes are coloured (no FreeCAD import: unit-testable).
 
-A face colour is a list with one ``(r, g, b, a)`` per face, indexed by face number, and FreeCAD leaves it exactly as it was
+A face colour is a list with one ``(r, g, b, a)`` per face, indexed by face number (``a`` is the OPACITY, 1 opaque: see ``appearance``), and FreeCAD leaves it exactly as it was
 when a later feature changes the solid (confirmed on 1.1.3, see ``highlight.expand_to_length``): after a fillet the list is
 stale. So the colours of the holes are re-derived from the registry (which follows the faces through every operation, see
 ``hole_colours.face_colours``) and written again whenever the list is not what they need.
@@ -10,19 +10,36 @@ The engineer's own colour is respected: a face is only repainted while it still 
 colour this harness put there. A face the engineer painted another colour is left alone."""
 
 from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 
 RGBA = tuple[float, float, float, float]
 Rgb = tuple[int, int, int]
 
 
-def to_rgba(colour: Rgb, alpha: float = 0.0) -> RGBA:
-    """A convention colour (0..255) as FreeCAD's face colour (0..1; alpha is transparency, 0 opaque)."""
+def to_rgba(colour: Rgb, alpha: float = 1.0) -> RGBA:
+    """A convention colour (0..255) as a face colour (0..1; ``alpha`` is the OPACITY, 1 opaque: see ``appearance``)."""
     return (colour[0] / 255.0, colour[1] / 255.0, colour[2] / 255.0, alpha)
 
 
 def key(colour: Sequence[float]) -> Rgb:
     """The 0..255 bytes of a colour, to compare colours without float noise."""
     return (round(colour[0] * 255), round(colour[1] * 255), round(colour[2] * 255))
+
+
+def base_of(current: Sequence[RGBA], ours: Iterable[Rgb], fallback: RGBA) -> RGBA:
+    """The colour of the object itself: the one most faces of ``current`` show that is not one of ours, ``fallback`` (the
+    object's own ``ShapeColor``) when every face is. FreeCAD's ``ShapeColor`` follows the FIRST face of a per-face list, so
+    once face 0 is a hole it is the hole's colour and not the part's."""
+    mine = {tuple(c) for c in ours}
+    seen: dict[Rgb, list[Any]] = {}
+    for colour in current:
+        shown = key(colour)
+        if shown not in mine:
+            seen.setdefault(shown, []).append(colour)
+    if not seen:
+        return fallback
+    most = max(seen.values(), key=len)  # the earliest of the most frequent: max keeps the first on a tie
+    return tuple(most[0])  # type: ignore[return-value]
 
 
 def plan(

@@ -11,29 +11,60 @@ import subprocess
 import sys
 import threading
 import time
+import types
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from cotaforge_mcp import channel_tools, drawing_window
+from cotaforge_mcp import channel_tools, drawing_window, engineer_orders
 from cotaforge_mcp.config import Settings
 from cotaforge_mcp.reply import Reply, ToolError
 from cotaforge_mcp.schemas import TOOLS_BY_NAME, ChannelArgs, input_schema, visible_tools
-from tests.conftest import BareFake, Caller, DrawingFake, MakeSession
+from tests.conftest import BareFake, Caller, DrawingFake, Engineer, MakeSession
 
 NAME = "soporte"
 
 
+ENGINEERS: dict[Path, Engineer] = {}
+
+
+def engineer(workspace: Path) -> Engineer:
+    """The person at the Claude Code session that runs the channel in ``workspace``."""
+    if workspace not in ENGINEERS:
+        ENGINEERS[workspace] = Engineer(workspace.parent / f"{workspace.name}-home", workspace)
+    return ENGINEERS[workspace]
+
+
+def said(workspace: Path, text: str) -> str:
+    """The engineer types ``text`` in that session and will confirm it at the dialog; returns it."""
+    return engineer(workspace).says(text)
+
+
+def through_claude_code(workspace: Path, arguments: dict[str, object]) -> Reply:
+    """One ``channel`` call the way it reaches the server: the hook first (the engineer confirms an order of
+    his at the dialog), then the server's own gate, then the tool."""
+    person = engineer(workspace)
+    call_id = f"toolu_{uuid.uuid4().hex}"
+    refusal = person.before("channel", arguments, call_id)
+    if refusal is not None:
+        raise ToolError(refusal, code="rejected")
+    settings = Settings(adapter="fake", workspace=workspace, home=person.home)
+    order = engineer_orders.admit(settings, "channel", arguments, call_id)
+    with engineer_orders.confirming(order):
+        return channel_tools.run(workspace, ChannelArgs.model_validate(arguments))
+
+
 def call(workspace: Path, **arguments: object) -> str:
-    reply: Reply = channel_tools.run(workspace, ChannelArgs.model_validate(arguments))
+    reply: Reply = through_claude_code(workspace, arguments)
     assert not reply.is_error
     return reply.text
 
 
 def refused(workspace: Path, **arguments: object) -> ToolError:
     with pytest.raises(ToolError) as caught:
-        channel_tools.run(workspace, ChannelArgs.model_validate(arguments))
+        through_claude_code(workspace, arguments)
     return caught.value
 
 
@@ -95,14 +126,14 @@ def test_the_dibujante_never_answers_its_own_question_and_only_relays_the_engine
     ask(tmp_path)
     error = refused(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="designer", text="H7")
     assert error.code == "not_allowed" and "never answers its own question" in error.message
-    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text="H7, sí")
+    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text=said(tmp_path, "H7, sí"))
     last = log(tmp_path)[-1]
     assert (last["by"], last["via"]) == ("engineer", "drafter")
 
 
 def test_a_reply_from_the_design_session_is_the_designers_not_the_engineers(tmp_path: Path) -> None:
     ask(tmp_path)
-    error = refused(tmp_path, action="reply", role="designer", name=NAME, q=1, by="engineer", text="H7")
+    error = refused(tmp_path, action="reply", role="designer", name=NAME, q=1, by="engineer", text=said(tmp_path, "H7"))
     assert error.code == "not_allowed" and "drawing session" in error.message
 
 
@@ -175,7 +206,7 @@ def test_a_wait_does_not_return_what_its_own_session_wrote(tmp_path: Path) -> No
 
 def test_the_engineers_answer_given_in_the_drawing_session_reaches_the_designer_with_a_reminder(tmp_path: Path) -> None:
     ask(tmp_path)
-    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text="No, es libre")
+    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text=said(tmp_path, "No, es libre"))
     text, _ = wait(tmp_path, "designer", since=1)
     assert "RESPUESTA a 1 del ingeniero" in text and "No, es libre" in text
     assert "not a decision yet" in text and "assumptions-and-decisions.md" in text
@@ -272,6 +303,60 @@ def test_a_lock_held_by_a_live_writer_is_waited_for_and_then_reported(tmp_path: 
     assert caught.value.code == "busy" and lock.exists(), "a lock that is not ours stays"
 
 
+def test_a_lock_that_windows_refuses_to_open_is_waited_for_not_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On Windows a lock that was just deleted (delete pending) or is still open by its owner is not "exists": opening it
+    is ``PermissionError``. It is the lock being busy: wait, and take it when it frees."""
+    lock = tmp_path / "drawings" / f"{NAME}-questions.lock"
+    real_open = os.open
+    refusals = []
+
+    def open_refusing_twice(path: object, flags: int, *more: object) -> int:
+        if len(refusals) < 2:
+            refusals.append(path)
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, flags, *more)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "open", open_refusing_twice)
+    with channel_tools._locked(lock):
+        assert lock.exists()
+    assert len(refusals) == 2 and not lock.exists()
+
+
+def test_a_folder_that_cannot_be_written_is_reported_as_it_is_not_as_a_held_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock = tmp_path / "drawings" / f"{NAME}-questions.lock"
+
+    def never(path: object, flags: int, *more: object) -> int:
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(os, "open", never)
+    with pytest.raises(PermissionError), channel_tools._locked(lock, wait_s=0.2):
+        pass
+
+
+def test_a_lock_that_cannot_be_deleted_yet_is_deleted_when_it_can(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The release too: Windows refuses to delete a file somebody has open (a session checking whether it is stale)."""
+    lock = tmp_path / "held.lock"
+    lock.write_text("1", encoding="utf-8")
+    real_unlink = Path.unlink
+    refusals = []
+
+    def unlink_refusing_twice(self: Path, missing_ok: bool = False) -> None:
+        if self == lock and len(refusals) < 2:
+            refusals.append(1)
+            raise PermissionError(13, "Permission denied", str(self))
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink_refusing_twice)
+    channel_tools._release(lock)
+    assert len(refusals) == 2 and not lock.exists()
+
+
 # --- an answer is not a decision --------------------------------------------------------------------------------
 
 
@@ -286,9 +371,9 @@ def status_of(workspace: Path, q: int) -> str:
 def test_a_question_goes_from_open_to_answered_to_decided(tmp_path: Path) -> None:
     ask(tmp_path)
     assert status_of(tmp_path, 1) == "open"
-    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text="H7")
+    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text=said(tmp_path, "H7"))
     assert status_of(tmp_path, 1) == "answered"
-    call(tmp_path, action="decide", role="designer", name=NAME, q=1, by="engineer", text="H7, confirmado")
+    call(tmp_path, action="decide", role="designer", name=NAME, q=1, by="engineer", text=said(tmp_path, "H7, confirmado"))
     assert status_of(tmp_path, 1) == "decided"
     last = log(tmp_path)[-1]
     assert (last["kind"], last["by"], last["via"]) == ("decide", "engineer", "designer")
@@ -296,7 +381,7 @@ def test_a_question_goes_from_open_to_answered_to_decided(tmp_path: Path) -> Non
 
 def test_the_designer_disputes_the_engineers_answer_and_the_drafter_holds_the_point(tmp_path: Path) -> None:
     ask(tmp_path)
-    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text="Sin ajuste")
+    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text=said(tmp_path, "Sin ajuste"))
     call(tmp_path, action="dispute", role="designer", name=NAME, q=1, text="recibe un pasador: H7 (ISO 286)")
     assert status_of(tmp_path, 1) == "disputed"
     heard, _ = wait(tmp_path, "drafter", since=2)
@@ -306,10 +391,9 @@ def test_the_designer_disputes_the_engineers_answer_and_the_drafter_holds_the_po
 
 def test_a_disputed_question_is_decided_only_with_the_objection_on_record(tmp_path: Path) -> None:
     ask(tmp_path)
-    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text="Sin ajuste")
+    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text=said(tmp_path, "Sin ajuste"))
     call(tmp_path, action="dispute", role="designer", name=NAME, q=1, text="recibe un pasador: H7")
-    error = refused(
-        tmp_path, action="decide", role="designer", name=NAME, q=1, by="engineer", text="Sin ajuste, insiste"
+    error = refused(tmp_path, action="decide", role="designer", name=NAME, q=1, by="engineer", text=said(tmp_path, "Sin ajuste, insiste")
     )
     assert error.field_name == "objection" and status_of(tmp_path, 1) == "disputed"
     call(
@@ -318,7 +402,7 @@ def test_a_disputed_question_is_decided_only_with_the_objection_on_record(tmp_pa
         role="designer",
         name=NAME,
         q=1,
-        text="Sin ajuste, insiste",
+        text=said(tmp_path, "Sin ajuste, insiste"),
         objection="el diseñador recomendó H7: recibe un pasador",
     )
     assert status_of(tmp_path, 1) == "decided"
@@ -330,7 +414,7 @@ def test_a_disputed_question_is_decided_only_with_the_objection_on_record(tmp_pa
 
 def test_the_drafter_can_object_too_and_a_decided_question_takes_no_more_answers(tmp_path: Path) -> None:
     ask(tmp_path)
-    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text="Cotas en cadena")
+    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text=said(tmp_path, "Cotas en cadena"))
     call(tmp_path, action="dispute", role="drafter", name=NAME, q=1, text="una cadena acumula tolerancia")
     call(
         tmp_path,
@@ -338,12 +422,12 @@ def test_the_drafter_can_object_too_and_a_decided_question_takes_no_more_answers
         role="drafter",
         name=NAME,
         q=1,
-        text="Cotas en cadena",
+        text=said(tmp_path, "Cotas en cadena"),
         objection="acumula tolerancia",
     )
     assert refused(tmp_path, action="reply", role="designer", name=NAME, q=1, by="designer", text="x").code == "decided"
     assert refused(tmp_path, action="dispute", role="designer", name=NAME, q=1, text="x").code == "decided"
-    assert refused(tmp_path, action="decide", role="drafter", name=NAME, q=1, text="otra vez").code == "decided"
+    assert refused(tmp_path, action="decide", role="drafter", name=NAME, q=1, text=said(tmp_path, "otra vez")).code == "decided"
 
 
 def test_a_decision_is_the_engineers_and_the_designer_is_told_when_he_answered(tmp_path: Path) -> None:
@@ -351,7 +435,7 @@ def test_a_decision_is_the_engineers_and_the_designer_is_told_when_he_answered(t
     assert (
         refused(tmp_path, action="decide", role="designer", name=NAME, q=1, by="designer", text="x").field_name == "by"
     )
-    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text="Libre")
+    call(tmp_path, action="reply", role="drafter", name=NAME, q=1, by="engineer", text=said(tmp_path, "Libre"))
     heard, _ = wait(tmp_path, "designer", since=1)
     assert "not a decision yet" in heard and "check it against" in heard and 'action="dispute"' in heard
 
@@ -359,7 +443,7 @@ def test_a_decision_is_the_engineers_and_the_designer_is_told_when_he_answered(t
 def test_done_names_the_questions_still_not_decided(tmp_path: Path) -> None:
     ask(tmp_path)
     ask(tmp_path, "otra")
-    call(tmp_path, action="decide", role="drafter", name=NAME, q=1, text="libre")
+    call(tmp_path, action="decide", role="drafter", name=NAME, q=1, text=said(tmp_path, "libre"))
     assert "question(s) 2" in call(tmp_path, action="done", role="drafter", name=NAME)
 
 
@@ -383,12 +467,12 @@ class FakePopen:
 
 
 class Machine:
-    """A fake machine: a clock that moves when somebody sleeps, processes that are alive until killed, a config folder."""
+    """A fake machine: a clock that moves when somebody sleeps, processes that are alive until ended, a config folder."""
 
     def __init__(self, tmp: Path, terminal: bool = True, claude: str = "C:\\bin\\claude.exe") -> None:
         self.popen = FakePopen()
         self.clock = 1_000_000.0
-        self.killed: list[tuple[int, bool]] = []
+        self.ended: list[int] = []
         self.dead: set[int] = set()
         self.home = tmp / "claude-home"
         self.paths = {"wt.exe": "C:\\wt.exe"} if terminal else {}
@@ -401,7 +485,7 @@ class Machine:
             platform="win32",
             which=self.paths.get,
             popen=self.popen,
-            kill=self.kill,
+            end=self.end,
             alive=lambda pid: pid not in self.dead,
             now=lambda: self.clock,
             sleep=self.sleep,
@@ -414,8 +498,10 @@ class Machine:
         self.clock += seconds
         self.on_sleep()
 
-    def kill(self, pid: int, tree: bool) -> None:
-        self.killed.append((pid, tree))
+    def end(self, proc: object) -> None:
+        """What a wrapper does to the ``claude`` it owns: close its container (never a pid taken from a record)."""
+        pid = proc.pid  # type: ignore[attr-defined]
+        self.ended.append(pid)
         self.dead.add(pid)
         self.on_kill(pid)
 
@@ -459,11 +545,11 @@ def test_without_windows_terminal_a_plain_console_is_started_through_cmd(tmp_pat
     assert "cotaforge-othercad:drafter" in line
 
 
-def test_claude_behind_a_cmd_shim_is_started_through_cmd_and_its_tree_is_the_one_ended(tmp_path: Path) -> None:
+def test_claude_behind_a_cmd_shim_is_started_through_cmd_inside_the_same_container(tmp_path: Path) -> None:
     machine = Machine(tmp_path, claude="C:\\npm\\claude.cmd")
     open_window(tmp_path, machine.host())
     ((line, _),) = machine.popen.calls
-    assert "--tree" in line and line[line.index("--") + 1 : line.index("--") + 4] == [
+    assert "--tree" not in line and line[line.index("--") + 1 : line.index("--") + 4] == [
         "cmd.exe",
         "/c",
         "C:\\npm\\claude.cmd",
@@ -545,13 +631,13 @@ def wrapped(
     drawing_window.write_record(record, {"state": "starting", "session_id": SESSION, "started": machine.clock})
     host = channel_tools.Host(
         platform="win32",
-        popen=(lambda command: proc) if not isinstance(proc, OSError) else _raise(proc),
-        kill=machine.kill,
+        spawn=(lambda command: proc) if not isinstance(proc, OSError) else _raise(proc),
+        end=machine.end,
         alive=opener_alive,
         now=lambda: machine.clock,
         pid=555,
     )
-    return drawing_window.run_wrapper(record, 4321, False, ["claude"], host, beat_s=5.0), record
+    return drawing_window.run_wrapper(record, 4321, ["claude"], host, beat_s=5.0), record
 
 
 def _raise(exc: OSError) -> Callable[..., object]:
@@ -570,17 +656,17 @@ def test_the_wrapper_records_its_child_keeps_a_beat_and_marks_the_record_closed_
         return True
 
     code, record = wrapped(tmp_path, machine, FakeProc(machine, ticks=3), opener)
-    assert code == 0 and machine.killed == []
+    assert code == 0 and machine.ended == []
     assert seen and seen[0]["state"] == "running" and seen[0]["claude_pid"] == 777 and seen[0]["wrapper_pid"] == 555
     assert seen[0]["session_id"] == SESSION and seen[-1]["beat"] > seen[0]["beat"]  # type: ignore[operator]
     final = drawing_window.read_record(record)
     assert final is not None and final["state"] == "closed" and final["opener_pid"] == 4321
 
 
-def test_the_wrapper_ends_claude_by_pid_when_the_design_session_is_gone(tmp_path: Path) -> None:
+def test_the_wrapper_ends_the_claude_it_owns_when_the_design_session_is_gone(tmp_path: Path) -> None:
     machine = Machine(tmp_path)
     code, record = wrapped(tmp_path, machine, FakeProc(machine, ticks=None), lambda pid: False)
-    assert machine.killed == [(777, False)] and code == 1
+    assert machine.ended == [777] and code == 1
     assert (drawing_window.read_record(record) or {})["state"] == "closed"
 
 
@@ -593,8 +679,10 @@ def test_a_claude_that_cannot_start_leaves_a_closed_record(tmp_path: Path) -> No
 # --- closing: only what the harness opened, only when the drawing is done and nobody is mid-turn -------------------------
 
 
-def running_window(tmp: Path, machine: Machine, idle_s: float | None = 120.0, tree: bool = False) -> Path:
-    """A window the wrapper is running: a fresh record, and the drawing session's transcript last written ``idle_s`` ago."""
+def running_window(tmp: Path, machine: Machine, idle_s: float | None = 120.0, answers: bool = True) -> Path:
+    """A window the wrapper is running: a fresh record, and the drawing session's transcript last written ``idle_s`` ago.
+    With ``answers`` the wrapper does what it does at its next beat after the harness marked ``closing``: it ends its
+    ``claude`` and marks the record ``closed`` (the harness itself never ends a process)."""
     record = tmp / "drawings" / f"{NAME}-window.json"
     drawing_window.write_record(
         record,
@@ -604,7 +692,6 @@ def running_window(tmp: Path, machine: Machine, idle_s: float | None = 120.0, tr
             "wrapper_pid": 555,
             "opener_pid": 4321,
             "session_id": SESSION,
-            "tree": tree,
             "started": machine.clock - 60,
             "beat": machine.clock,
         },
@@ -617,13 +704,20 @@ def running_window(tmp: Path, machine: Machine, idle_s: float | None = 120.0, tr
     machine.on_kill = lambda pid: drawing_window.write_record(
         record, {**(drawing_window.read_record(record) or {}), "state": "closed"}
     )
+
+    def wrapper_beat() -> None:
+        marked = (drawing_window.read_record(record) or {}).get("closing")
+        if answers and marked and 777 not in machine.dead:
+            machine.end(types.SimpleNamespace(pid=777))
+
+    machine.on_sleep = wrapper_beat
     return record
 
 
 def finished(workspace: Path, settled: bool = True) -> None:
     ask(workspace)
     if settled:
-        call(workspace, action="decide", role="drafter", name=NAME, q=1, text="libre")
+        call(workspace, action="decide", role="drafter", name=NAME, q=1, text=said(workspace, "libre"))
     call(workspace, action="done", role="drafter", name=NAME)
 
 
@@ -632,14 +726,16 @@ def close(workspace: Path, machine: Machine, **more: object) -> str:
     return channel_tools.run(workspace, ChannelArgs.model_validate(fields), host=machine.host()).text
 
 
-def test_the_designer_hears_done_and_the_window_is_closed_by_pid_after_the_work_is_saved(tmp_path: Path) -> None:
+def test_the_designer_hears_done_and_the_window_is_closed_through_its_wrapper_after_the_work_is_saved(
+    tmp_path: Path,
+) -> None:
     machine = Machine(tmp_path)
     running_window(tmp_path, machine, idle_s=120)
     finished(tmp_path)
     args = ChannelArgs.model_validate({"action": "wait", "role": "designer", "name": NAME, "since": 0})
     text = channel_tools.run(tmp_path, args, host=machine.host()).text
     assert "stop waiting" in text and "-> window: the drawing window of soporte was closed" in text
-    assert machine.killed == [(777, False)]
+    assert machine.ended == [777]
     assert f"claude --resume {SESSION}" in text
 
 
@@ -649,7 +745,7 @@ def test_nothing_is_closed_while_a_question_is_open_or_disputed(tmp_path: Path) 
     finished(tmp_path, settled=False)
     args = ChannelArgs.model_validate({"action": "wait", "role": "designer", "name": NAME, "since": 0})
     text = channel_tools.run(tmp_path, args, host=machine.host()).text
-    assert "NOT closed, question(s) 1" in text and machine.killed == []
+    assert "NOT closed, question(s) 1" in text and machine.ended == []
 
 
 def test_a_drawing_session_in_the_middle_of_a_turn_is_not_closed(tmp_path: Path) -> None:
@@ -659,7 +755,7 @@ def test_a_drawing_session_in_the_middle_of_a_turn_is_not_closed(tmp_path: Path)
     machine.on_sleep = lambda: os.utime(path, (machine.clock, machine.clock))  # a turn keeps writing its transcript
     finished(tmp_path)
     text = close(tmp_path, machine)
-    assert text.startswith("NOT closed") and "active" in text and machine.killed == []
+    assert text.startswith("NOT closed") and "active" in text and machine.ended == []
     assert machine.clock >= 1_000_000.0 + channel_tools.WAIT_IDLE_S, "it waited for the turn to end, within a bound"
 
 
@@ -667,7 +763,7 @@ def test_a_turn_that_ends_while_waiting_lets_the_close_go_on(tmp_path: Path) -> 
     machine = Machine(tmp_path)
     running_window(tmp_path, machine, idle_s=25)  # 5 s more and the 30 s of quiet are there
     finished(tmp_path)
-    assert "was closed" in close(tmp_path, machine) and machine.killed == [(777, False)]
+    assert "was closed" in close(tmp_path, machine) and machine.ended == [777]
 
 
 def test_when_it_cannot_be_known_whether_the_engineer_is_typing_the_designer_is_told_to_ask(tmp_path: Path) -> None:
@@ -675,8 +771,8 @@ def test_when_it_cannot_be_known_whether_the_engineer_is_typing_the_designer_is_
     running_window(tmp_path, machine, idle_s=None)  # no transcript found
     finished(tmp_path)
     text = close(tmp_path, machine)
-    assert text.startswith("NOT closed") and "ask him" in text and machine.killed == []
-    assert "was closed" in close(tmp_path, machine, confirmed=True) and machine.killed == [(777, False)]
+    assert text.startswith("NOT closed") and "ask him" in text and machine.ended == []
+    assert "was closed" in close(tmp_path, machine, confirmed=True) and machine.ended == [777]
 
 
 def test_an_explicit_close_before_done_needs_the_engineers_word(tmp_path: Path) -> None:
@@ -684,24 +780,27 @@ def test_an_explicit_close_before_done_needs_the_engineers_word(tmp_path: Path) 
     running_window(tmp_path, machine, idle_s=1)
     ask(tmp_path)
     text = close(tmp_path, machine)
-    assert text.startswith("NOT closed") and "unsaved" in text and machine.killed == []
+    assert text.startswith("NOT closed") and "unsaved" in text and machine.ended == []
     assert "was closed" in close(tmp_path, machine, confirmed=True), "he said so: neither done nor quiet is asked"
 
 
-def test_a_window_behind_a_cmd_shim_is_ended_with_its_tree(tmp_path: Path) -> None:
+def test_a_wrapper_that_does_not_answer_leaves_the_window_open_and_nothing_is_ended_from_outside(
+    tmp_path: Path,
+) -> None:
     machine = Machine(tmp_path)
-    running_window(tmp_path, machine, tree=True)
+    record = running_window(tmp_path, machine, answers=False)
     finished(tmp_path)
-    close(tmp_path, machine)
-    assert machine.killed == [(777, True)]
+    text = close(tmp_path, machine)
+    assert "still open" in text and not text.startswith("the drawing window of soporte was closed")
+    assert (drawing_window.read_record(record) or {})["closing"] is True and machine.ended == []
 
 
-def test_a_stale_record_never_ends_a_pid_and_a_missing_one_is_nothing_to_close(tmp_path: Path) -> None:
+def test_a_stale_record_is_never_asked_to_close_and_a_missing_one_is_nothing_to_close(tmp_path: Path) -> None:
     machine = Machine(tmp_path)
     record = running_window(tmp_path, machine)
     finished(tmp_path)
     machine.clock += drawing_window.STALE_S + 1  # the wrapper stopped beating: the pid may be another process by now
-    assert "stale" in close(tmp_path, machine, confirmed=True) and machine.killed == []
+    assert "stale" in close(tmp_path, machine, confirmed=True) and machine.ended == []
     record.unlink()
     assert "no drawing window is open" in close(tmp_path, machine, confirmed=True)
 
@@ -713,10 +812,10 @@ def test_only_the_designer_closes_and_only_the_record_of_that_drawing(tmp_path: 
     args = ChannelArgs.model_validate({"action": "close", "role": "drafter", "name": NAME})
     with pytest.raises(ToolError) as caught:
         channel_tools.run(tmp_path, args, host=machine.host())
-    assert caught.value.code == "not_allowed" and machine.killed == []
+    assert caught.value.code == "not_allowed" and machine.ended == []
     other = ChannelArgs.model_validate({"action": "close", "role": "designer", "name": "otra"})
     assert "no drawing window is open for otra" in channel_tools.run(tmp_path, other, host=machine.host()).text
-    assert machine.killed == []
+    assert machine.ended == []
 
 
 # --- through the server's dispatcher ---------------------------------------------------------------------------
@@ -760,9 +859,9 @@ def test_the_wrapper_entry_point_needs_a_command_and_hands_the_options_to_the_wr
     monkeypatch.setattr(signal, "signal", lambda *a: None)  # the test process keeps its own Ctrl+C
     assert drawing_window.main(["--record", "r.json", "--opener", "7"]) == 2
     assert drawing_window.main(["--record", "r.json", "--", "claude"]) == 2
-    argv = ["--record", str(tmp_path / "r.json"), "--opener", "7", "--tree", "--", "cmd.exe", "/c", "claude"]
+    argv = ["--record", str(tmp_path / "r.json"), "--opener", "7", "--", "cmd.exe", "/c", "claude"]
     assert drawing_window.main(argv) == 0
-    assert seen == [(tmp_path / "r.json", 7, True, ["cmd.exe", "/c", "claude"])]
+    assert seen == [(tmp_path / "r.json", 7, ["cmd.exe", "/c", "claude"])]
 
 
 # --- the window closed by mistake: the channel hears it, the designer reopens the same conversation ----------------------
@@ -835,9 +934,9 @@ def test_a_resume_that_fails_at_once_is_replaced_by_the_fresh_session_the_record
         return Failing(machine, ticks=0) if len(started) == 1 else FakeProc(machine, ticks=1, pid=888)
 
     host = channel_tools.Host(
-        platform="win32", popen=popen, kill=machine.kill, alive=lambda pid: True, now=lambda: machine.clock, pid=555
+        platform="win32", spawn=popen, end=machine.end, alive=lambda pid: True, now=lambda: machine.clock, pid=555
     )
-    drawing_window.run_wrapper(record, 4321, False, ["claude", "--resume", SESSION], host, beat_s=5.0)
+    drawing_window.run_wrapper(record, 4321, ["claude", "--resume", SESSION], host, beat_s=5.0)
     assert started == [["claude", "--resume", SESSION], ["claude", "--session-id", "new-id", "prompt"]]
     assert (drawing_window.read_record(record) or {})["session_id"] == "new-id"
 
@@ -858,13 +957,13 @@ def test_a_resume_that_runs_for_a_while_and_then_fails_is_not_started_again(tmp_
 
     host = channel_tools.Host(
         platform="win32",
-        popen=lambda command: started.append(command) or Late(machine, ticks=0),
-        kill=machine.kill,
+        spawn=lambda command: started.append(command) or Late(machine, ticks=0),
+        end=machine.end,
         alive=lambda pid: True,
         now=lambda: machine.clock,
         pid=555,
     )
-    drawing_window.run_wrapper(record, 4321, False, ["claude", "--resume", SESSION], host, beat_s=5.0)
+    drawing_window.run_wrapper(record, 4321, ["claude", "--resume", SESSION], host, beat_s=5.0)
     assert len(started) == 1
 
 
@@ -921,11 +1020,16 @@ def test_reopen_is_the_designers_and_not_while_the_window_is_open(tmp_path: Path
     assert "second terminal" in text and "claude --agent cotaforge:drafter" in text
 
 
-def test_a_close_marks_the_record_before_it_ends_claude(tmp_path: Path) -> None:
+def test_a_close_marks_the_record_and_the_wrapper_sees_the_mark_when_it_ends_claude(tmp_path: Path) -> None:
     machine = Machine(tmp_path)
     record = running_window(tmp_path, machine)
     marks: list[object] = []
-    machine.on_kill = lambda pid: marks.append((drawing_window.read_record(record) or {}).get("closing"))
+
+    def ends(pid: int) -> None:
+        marks.append((drawing_window.read_record(record) or {}).get("closing"))
+        drawing_window.write_record(record, {**(drawing_window.read_record(record) or {}), "state": "closed"})
+
+    machine.on_kill = ends
     finished(tmp_path)
     close(tmp_path, machine)
-    assert marks == [True]
+    assert marks == [True] and machine.ended == [777]

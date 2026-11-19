@@ -1,10 +1,11 @@
 # ruff: noqa: E501
 """``line``: an axis or a line between two points of the part, in an ISO 128 line type (no FreeCAD import).
 
-The sheet draws its own lines (the ``EJES`` layer is the ISO 128-20 long-dash dotted line, ``OCULTAS`` the dashed one,
-``COTAS`` the thin continuous one) and TechDraw shows them as the picture of the item, so what the window and the PDF paint
-is exactly the line type asked for. TechDraw's own cosmetic lines cannot be used for this: in 1.1.3 every ``style`` number
-paints the same ISO dashed line (measured), so a centre line made with ``makeCosmeticLine`` is never a chain.
+The line types are those of ISO 128-20: the ``EJES`` layer is the long-dash dotted line (04), ``OCULTAS`` the dashed
+one, ``COTAS`` the thin continuous one. On the page a centre line is TechDraw's own centre-line object between the two
+edges it lies midway between (it follows the model and the view), or a cosmetic line where the view has no such edges; both
+carry TechDraw's line number of the chain line, which is what the window paints and the PDF exports (``sheet_linetype``
+says what was measured: the ``style`` of ``Format`` is not the line type, the line number is).
 
 ``axis=<cylinder face>`` draws the centre line of a shaft, a boss or a bore along its whole length (plus a few mm beyond), in
 every standard view that sees it from the side, and the centre cross in the views that look along it; ``view`` says where
@@ -15,6 +16,7 @@ axis), thin continuous by default. Everything is placed from the model; nothing 
 import math
 from typing import Any
 
+import sheet_centre
 from items_common import VIEW_ORDER
 from items_dims import resolve_ref
 from sheet_context import (
@@ -30,13 +32,14 @@ from sheet_context import (
     v_ids,
     v_num,
     v_ref,
+    v_str,
     v_view_or_section,
 )
 from sheet_draw import centre_mark
-from sheet_model import AXES, DIMENSIONS, HIDDEN, Entity, Line
+from sheet_model import AXES, CENTRE_OVERSHOOT_MM, DIMENSIONS, HIDDEN, Entity, Line
 
 STYLES = {"chain": AXES, "dashed": HIDDEN, "continuous": DIMENSIONS}
-DEFAULT_REACH_MM = 3.0  # an axis goes this far beyond the ends of its cylinder
+DEFAULT_REACH_MM = CENTRE_OVERSHOOT_MM  # an axis goes this far beyond the ends of its cylinder
 
 CHECKS = {
     "style": v_enum(*STYLES),
@@ -45,6 +48,7 @@ CHECKS = {
     "to": v_ref,
     "view": v_view_or_section,
     "extend_mm": v_num(0.0, 50.0),
+    "reason": v_str(200),  # why a centre line goes farther than the set overshoot
 }
 
 
@@ -70,7 +74,7 @@ def _views(ctx: Context, wanted: str | None) -> list[ViewInfo]:
     return [ctx.views[n] for n in VIEW_ORDER if n in ctx.views]
 
 
-def _axis_line(ctx: Context, view: ViewInfo, face_id: str, reach: float, layer: str) -> list[Entity]:
+def _axis_line(ctx: Context, view: ViewInfo, face_id: str, reach: float, layer: str, spec: dict[str, Any] | None = None) -> list[Entity]:
     """The centre line of the cylinder in ``view``: through its axis, as long as the face is in the view plus ``reach``;
     the centre cross when the view looks along the axis."""
     face = ctx.geometry.face(face_id)
@@ -94,7 +98,15 @@ def _axis_line(ctx: Context, view: ViewInfo, face_id: str, reach: float, layer: 
     if not along:
         msg = f"{face_id} has nothing to measure its length from in the {view.name} view"
         raise ItemError(msg)
-    lo, hi = min(along) - reach, max(along) + reach
+    lo, hi = min(along), max(along)
+    if layer == AXES:  # a centre line: the same reach at both ends, shortened when a dimension or a text is in its way
+        explicit = spec is not None and "extend_mm" in spec  # the engineer chose the length (a long one says why in ``reason``)
+        reason = str(spec.get("reason", "")) if spec is not None else ""
+        line = sheet_centre.side_line(
+            ctx, view.name, (centre[0] + u[0] * lo, centre[1] + u[1] * lo), (centre[0] + u[0] * hi, centre[1] + u[1] * hi), reach, fixed=explicit, reason=reason
+        )
+        return [line] if line is not None else []
+    lo, hi = lo - reach, hi + reach
     return [Line(centre[0] + u[0] * lo, centre[1] + u[1] * lo, centre[0] + u[0] * hi, centre[1] + u[1] * hi, layer)]
 
 
@@ -106,7 +118,7 @@ def draw(ctx: Context, spec: dict[str, Any]) -> tuple[str, str]:
     if "axis" in spec:
         face_id = spec["axis"][0]
         for view in _views(ctx, spec.get("view")):
-            entities = _axis_line(ctx, view, face_id, reach, layer)
+            entities = _axis_line(ctx, view, face_id, reach, layer, spec)
             if entities:
                 ctx.add(entities)
                 ctx.used_view(view.name)

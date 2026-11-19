@@ -27,31 +27,57 @@ ITEM_FIELDS: dict[str, frozenset[str]] = {
             "show",
             "text",
             "thread",
+            "leader_mm",
         }
     ),
     "dim": frozenset(
-        {"kind", "from", "to", "along", "face", "faces", "view", "offset_mm", "side", "fit", "tol", "show", "arrows"}
+        {
+            "kind",
+            "from",
+            "to",
+            "along",
+            "face",
+            "faces",
+            "view",
+            "offset_mm",
+            "side",
+            "elbow_mm",
+            "fit",
+            "tol",
+            "show",
+            "arrows",
+            "exact",
+            "stage",
+            "size_mm",
+        }
     ),
     "datum_dims": frozenset(
         {"mode", "x_from", "y_from", "holes", "x_side", "y_side", "at_mm", "view", "offset_mm", "auto"}
     ),
     "note": frozenset({"text", "at_mm", "auto", "view"}),
-    "revision": frozenset({"index", "description", "date", "by"}),
-    "overall": frozenset({"offset_mm"}),
+    "keyway_dims": frozenset({"fit", "depth_tol", "section", "letter"}),
+    "baseline_dims": frozenset({"from", "view", "side"}),
+    "chamfer_dims": frozenset(),
+    "thread_dims": frozenset(),
+    "revision": frozenset({"index", "description", "date", "by", "at"}),
+    "overall": frozenset({"offset_mm", "side"}),
+    "hole_positions": frozenset({"auto"}),
+    "pattern_dim": frozenset({"kind", "at", "about", "auto", "elbow_mm", "view", "offset_mm", "side"}),
     "view_lines": frozenset({"hidden", "centres"}),
-    "line": frozenset({"style", "axis", "from", "to", "view", "extend_mm"}),
-    "section": frozenset({"view", "at", "normal", "holes", "letter", "flip", "at_mm", "hatch"}),
+    "line": frozenset({"style", "axis", "from", "to", "view", "extend_mm", "reason"}),
+    "section": frozenset({"view", "at", "normal", "holes", "letter", "flip", "at_mm", "hatch", "in_place", "removed"}),
     "detail": frozenset({"view", "at", "radius_mm", "scale", "letter", "at_mm"}),
     "aux_view": frozenset({"face", "view", "letter", "at_mm"}),
-    "datum": frozenset({"letter", "face", "on", "view", "side", "offset_mm"}),
+    "datum": frozenset({"letter", "face", "on", "view", "side", "offset_mm", "tip_at"}),
     "gdt": frozenset({"char", "value", "diameter", "modifier", "datums", "face", "on", "view", "side", "offset_mm"}),
     "finish": frozenset({"ra", "machining", "face", "general", "view", "side", "offset_mm"}),
     "parts_list": frozenset({"rows"}),
-    "balloons": frozenset({"view", "side"}),
+    "balloons": frozenset({"view", "side", "positions"}),
     "exploded": frozenset({"view", "mode", "axis", "factor", "base", "moves", "trails", "at_mm"}),
     "weld": frozenset(
         {
             "between",
+            "also",
             "kind",
             "size_mm",
             "size_kind",
@@ -63,8 +89,13 @@ ITEM_FIELDS: dict[str, frozenset[str]] = {
             "view",
             "side",
             "offset_mm",
+            "anchor_at",
         }
     ),
+    "parting_line": frozenset({"pull", "level_mm", "view"}),
+    "pull_direction": frozenset({"pull", "draft_deg", "view", "side", "offset_mm"}),
+    "mould_zone": frozenset({"kind", "at", "radius_mm", "normal", "view"}),
+    "no_draft": frozenset({"kind", "at", "view", "side", "offset_mm"}),
 }
 
 # item types the sheet will have, and the phase that builds them: refused until then
@@ -72,12 +103,16 @@ PLANNED_ITEMS: dict[str, str] = {}
 
 REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "dim": ("kind",),
+    "baseline_dims": ("from",),
+    "pattern_dim": ("at",),
     "note": ("text",),
     "revision": ("index", "description"),
     "detail": ("at", "radius_mm"),
     "aux_view": ("face",),
     "datum": ("letter",),
     "gdt": ("char", "value"),
+    "mould_zone": ("kind", "at"),
+    "no_draft": ("at",),
 }
 
 ITEM_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,23}$")
@@ -127,6 +162,28 @@ def remark_problems(remarks: Sequence[Any]) -> list[str]:
                 found.append(f"{label}: {name} must be text")
             elif len(value) > MAX_REMARK_TEXT:
                 found.append(f"{label}: {name} has {len(value)} characters, at most {MAX_REMARK_TEXT}")
+    return found
+
+
+def edit_problems(items: Sequence[Any]) -> list[str]:
+    """What is wrong with the changes of an ``edit`` without asking the CAD (``{"id": "d3", "offset_mm": 12}``: the id
+    of the item and at least one field to change; the fields are checked against the type of the stored item)."""
+    if not items:
+        return ["edit needs items: a list like [{\"id\": \"d3\", \"offset_mm\": 12}]"]
+    found: list[str] = []
+    if len(items) > MAX_ITEMS_PER_CALL:
+        found.append(f"at most {MAX_ITEMS_PER_CALL} items per call, got {len(items)}")
+    seen: set[str] = set()
+    for position, item in enumerate(items, start=1):
+        label = f"item {position}"
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            found.append(f'{label} is not an object like {{"id": "d3", "offset_mm": 12}} (the id of the item to edit)')
+        elif not set(item) - {"id", "type"}:
+            found.append(f"{label} ({item['id']}): nothing to change (give the fields to set; null takes one off)")
+        elif item["id"] in seen:
+            found.append(f"{label}: id {item['id']!r} is repeated in this call")
+        else:
+            seen.add(item["id"])
     return found
 
 
