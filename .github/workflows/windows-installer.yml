@@ -191,6 +191,7 @@ jobs:
           name: cotaforge-windows-installer
           path: dist/cotaforge-*-setup.exe
           if-no-files-found: error
+          retention-days: ${{ github.ref_type == 'tag' && 90 || 3 }}
 
       - name: Draft release (tags only; never published here)
         if: github.ref_type == 'tag'
